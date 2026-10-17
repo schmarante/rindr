@@ -16,8 +16,11 @@
 //     render time of plastic and came out too dark – dropped.
 import * as THREE from 'three/webgpu';
 import { diffuseColor, materialEmissive, luminance, select, float, vec4, uniform, normalView, positionViewDirection,
-    positionGeometry, positionWorld, cameraPosition, modelWorldMatrixInverse } from 'three/tsl';
+    positionGeometry, positionWorld, cameraPosition, modelWorldMatrixInverse, materialColor } from 'three/tsl';
 import { marbleGlow } from './marble.js';
+import { WOOL_SHADE } from './wool.js';
+import { GRASS_SHADE } from './grass-field.js';
+import { SOAP_IOR, soapThicknessNode, soapSceneCell } from './soap.js';
 
 // brightness of the lit colour relative to the base colour → tone (thresholds, tones as share of the base colour)
 const TOON_STEPS = { shadow: 0.55, mid: 1.1 };
@@ -66,9 +69,89 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         this._sssColor = uniform(new THREE.Color(1, 1, 1));
         this._sssWeight = uniform(0);
         this.marble = false;   // cache key (emissiveNode); colour/scale/intensity as uniforms
+        this.wool = false;     // cache key (root colour, sheenNode)
+        this.grass = false;    // cache key (soil shade)
+        this.soap = false;     // cache key (film thickness node); film/swirl/scale as uniforms
+        this._soap = { film: uniform(380), swirl: uniform(0.7), scale: uniform(1) };
         this._marbleColor = uniform(new THREE.Color(0.2, 1, 0.45));
         this._marbleScale = uniform(10);
         this._marbleIntensity = uniform(1);
+    }
+
+    /**
+     * Wool (wool.js): on (> 0) → fibres over the surface (raster: shells, path tracer: wool-pt.js); length = share of
+     * the scene size. The surface itself gets the colour of the fibre roots and their sheen (between the fibres the
+     * material's own sheen colour showed as light speckles).
+     */
+    setWool(on, length) {
+        if (on > 0) this.userData.wool = { length };
+        else delete this.userData.wool;
+        if ((on > 0) !== this.wool) {
+            this.wool = on > 0;
+            this.sheenNode = this.wool ? materialColor.mul(WOOL_SHADE.root * WOOL_SHADE.sheen) : null;
+            this.needsUpdate = true;
+        }
+        // path tracer stand-in of the fibres (set by WoolSystem, wool.js) – gone with the wool
+        const pt = this.userData.ptStandIn;
+        if (!(on > 0) && pt?.ptVolume === 4) {
+            for (const key of ['ptVolume', 'iridescence', 'iridescenceThicknessRange']) delete pt[key];
+            if (!Object.keys(pt).length) delete this.userData.ptStandIn;
+        }
+    }
+
+    /**
+     * Grass (grass.js): on (> 0) → blades over the surface (real geometry, raster and path tracer); height = share of
+     * the scene size, density = blades per area (1 = lawn), dry = share of straw-coloured blades. The surface itself
+     * gets a dark shade of the colour (soil between the blades; path tracer: stand-in colour, grass.js).
+     */
+    setGrass(on, height, density, dry) {
+        if (on > 0) this.userData.grass = { height, density, dry };
+        else delete this.userData.grass;
+        if ((on > 0) !== this.grass) {
+            this.grass = on > 0;
+            this.needsUpdate = true;
+        }
+    }
+
+    /**
+     * Soap film (soap.js): on (> 0) → a thin film matched to air (the material's ior should be 1: nothing refracts),
+     * coloured by thin-film interference – iridescence 1, film ior 1.33; film = mean thickness (nm), swirl 0…1 =
+     * how much it varies, scale = swirl size (× share of the scene size). Double sided (front and back skin).
+     * Path tracer: ptVolume 5, thickness noise in rindr-soap (soap-pt.js) – mean film and swirl cell (world units,
+     * read when the materials are packed: follows the scene size) in iridescenceThicknessRange, swirl in
+     * sheenRoughness (sheen off).
+     */
+    setSoap(on, film, swirl, scale) {
+        const u = this._soap;
+        u.film.value = film;
+        u.swirl.value = swirl;
+        u.scale.value = scale;
+        if ((on > 0) !== this.soap) {
+            this.soap = on > 0;
+            this.iridescenceThicknessNode = this.soap ? soapThicknessNode(u) : null;
+            this.side = this.soap ? THREE.DoubleSide : THREE.FrontSide;
+            this.needsUpdate = true;
+        }
+        const pt = this.userData.ptStandIn ?? {};
+        if (pt.ptVolume === 5) for (const key of ['ptVolume', 'iridescenceThicknessRange', 'sheen', 'sheenRoughness']) delete pt[key];
+        if (this.soap) {
+            this.iridescence = 1;
+            this.iridescenceIOR = SOAP_IOR;
+            this.iridescenceThicknessRange = [film, film];
+            Object.assign(pt, { ptVolume: 5, sheen: 0, sheenRoughness: swirl });
+            Object.defineProperty(pt, 'iridescenceThicknessRange', {
+                get: () => [film, soapSceneCell() * scale], enumerable: true, configurable: true,
+            });
+        } else {
+            this.iridescenceIOR = 1.3;
+        }
+        if (Object.keys(pt).length) this.userData.ptStandIn = pt; else delete this.userData.ptStandIn;
+    }
+
+    setupDiffuseColor(builder) {
+        super.setupDiffuseColor(builder);
+        if (this.wool) diffuseColor.rgb.mulAssign(WOOL_SHADE.root);
+        if (this.grass) diffuseColor.rgb.mulAssign(GRASS_SHADE.ground);
     }
 
     /**
@@ -178,6 +261,12 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         this.setMarble(source._marbleIntensity.value * (source.marble ? 1 : 0), '#' + source._marbleColor.value.getHexString(), source._marbleScale.value);
         const cloud = source.userData.cloud;
         this.setCloud(cloud?.density ?? 0, cloud?.color ?? '#ffffff', cloud?.puff ?? 0.1);
+        this.setWool(source.userData.wool ? 1 : 0, source.userData.wool?.length ?? 0.012);
+        const grass = source.userData.grass;
+        this.setGrass(grass ? 1 : 0, grass?.height ?? 0.03, grass?.density ?? 1, grass?.dry ?? 0);
+        this.soap = false;
+        const s = source._soap;
+        this.setSoap(source.soap ? 1 : 0, s.film.value, s.swirl.value, s.scale.value);
         return this;
     }
 }

@@ -20,7 +20,7 @@ export class SplatSorter {
         this.hist = shared ? new Uint32Array(new SharedArrayBuffer(n * 65536 * 4)) : null;
         this.workers = [];
         for (let w = 0; w < n; w++) {
-            const worker = new Worker(new URL('./splat-sort-worker.js', import.meta.url), { type: 'module' });
+            const worker = new Worker(new URL('./splat-sort-worker.js', import.meta.url), { type: 'module', name: 'splat-sort' });
             const start = Math.floor(count * w / n), end = Math.floor(count * (w + 1) / n);
             worker.postMessage({
                 type: 'init', worker: w, start, end, a: shared ? a.buffer : a.buffer.slice(0),

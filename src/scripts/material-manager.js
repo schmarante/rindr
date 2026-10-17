@@ -52,6 +52,21 @@ export const PARAMS = [
     { key: 'cloud', type: 'number', min: 0, max: 5, default: 0, group: 'cloud' },
     { key: 'cloudColor', type: 'color', default: '#ffffff', group: 'cloud' },
     { key: 'cloudPuff', type: 'number', min: 0.02, max: 0.25, default: 0.05, group: 'cloud' },
+    // wool (wool.js): fibres on the surface (raster), length as a share of the scene size
+    { key: 'wool', type: 'number', min: 0, max: 1, default: 0, group: 'wool' },
+    { key: 'woolLength', type: 'number', min: 0.005, max: 0.08, default: 0.03, group: 'wool' },
+    // grass (grass.js): real blades on the surface; height as a share of the scene size, density 1 = lawn, dry =
+    // share of straw-coloured blades
+    { key: 'grass', type: 'number', min: 0, max: 1, default: 0, group: 'grass' },
+    { key: 'grassHeight', type: 'number', min: 0.005, max: 0.15, default: 0.03, group: 'grass' },
+    { key: 'grassDensity', type: 'number', min: 0.1, max: 2, default: 1, group: 'grass' },
+    { key: 'grassDry', type: 'number', min: 0, max: 1, default: 0, group: 'grass' },
+    // soap film (soap.js): thin-film colours, film = mean thickness in nm, swirl = how much it varies, swirl size ×
+    // share of the scene size; the glass params stay (soap bubble preset: transmission 1, ior 1)
+    { key: 'soap', type: 'number', min: 0, max: 1, default: 0, group: 'soap' },
+    { key: 'soapFilm', type: 'number', min: 100, max: 1000, default: 380, group: 'soap' },
+    { key: 'soapSwirl', type: 'number', min: 0, max: 1, default: 0.7, group: 'soap' },
+    { key: 'soapScale', type: 'number', min: 0.2, max: 4, default: 1, group: 'soap' },
 ];
 const PARAM_BY_KEY = Object.fromEntries(PARAMS.map(p => [p.key, p]));
 
@@ -455,6 +470,9 @@ function applyParams(material, params) {
     material.setSubsurface(p.subsurface, p.subsurfaceColor, p.subsurfaceRadius);   // after the physical params
     material.setMarble(p.marble, p.marbleColor, p.marbleScale);
     material.setCloud(p.cloud, p.cloudColor, p.cloudPuff);
+    material.setWool(p.wool, p.woolLength);
+    material.setGrass(p.grass, p.grassHeight, p.grassDensity, p.grassDry);
+    material.setSoap(p.soap, p.soapFilm, p.soapSwirl, p.soapScale);   // after setMarble (shares stand-in fields)
     material.toon = p.toon > 0;
     material.flat = p.flat > 0;
     if (material.flat) {
@@ -478,7 +496,7 @@ function applyRender(material, r, hasGraph) {
         if (hasGraph ? !IMPORT_SLOTS[key] : !bakedSlots.has(key)) material[key] = tex;
     }
     material.userData.importMaps = r.maps || {};
-    material.side = r.side ?? THREE.FrontSide;
+    material.side = material.soap ? THREE.DoubleSide : (r.side ?? THREE.FrontSide);   // soap: both skins
     material.alphaTest = r.alphaTest || 0;
     if (r.transparent) material.transparent = true;
     if (r.normalScale && !baked.height) material.normalScale.fromArray(r.normalScale);

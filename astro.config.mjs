@@ -269,12 +269,111 @@ function cloudPatch() {
         code = code.replace(from, to);
       };
       if (file.endsWith('three-mesh-bvh/src/webgpu/BVHComputeData.js')) {
-        replaceOnce('let visible = isObjectVisible( object );', () => 'let visible = isObjectVisible( object ) && ! object.material?.userData?.cloud;', 'BVHComputeData.js');
+        // ptHidden: helper meshes of the raster only (wool fibre shells, wool.js; fading out grass)
+        replaceOnce('let visible = isObjectVisible( object );', () => 'let visible = isObjectVisible( object ) && ! object.material?.userData?.cloud && ! object.userData?.ptHidden;', 'BVHComputeData.js');
         return { code, map: null };
       }
       if (!file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) return null;
       replaceOnce(/\n\t+materialInfo\.opacity \*= objectInfo\.color\.a;\n/, m => m + readFileSync(CLOUD_WALK_PATCH, 'utf8'), 'PathTracerMegaKernel.js');
       return { code: `import { CLOUD_PT as __CLOUD } from ${JSON.stringify(CLOUD_PT_MODULE)};\n` + code, map: null };
+    },
+  };
+}
+
+// Wool fibres (src/scripts/materials/wool.js, wool-pt.js – fails loudly if the library changed, check on every update):
+// - PathtracerBVHComputeData (the path tracer's ray test): a triangle of a wool mesh (ptVolume 4) also tests its shells
+//   and keeps fibre hits only (wool-hit.patch.wgsl); the fibre length in local units is set when the ray enters the
+//   object
+// - BVHComputeData.getBVH: the BVH bounds of wool geometries hold the fibres (wool-bounds.js)
+// - megakernel: a fibre hit is shaded at the fibre (position, facing normal), darker towards the roots, tinted
+const WOOL_PT_MODULE = fileURLToPath(new URL('./src/scripts/materials/wool-pt.js', import.meta.url));
+const WOOL_BOUNDS_MODULE = fileURLToPath(new URL('./src/scripts/materials/wool-bounds.js', import.meta.url));
+const WOOL_HIT_PATCH = fileURLToPath(new URL('./src/scripts/materials/wool-hit.patch.wgsl', import.meta.url));
+const WOOL_SHADE = `
+						// RINDR wool (wool.js, wool-pt.js): a fibre hit lies above the base triangle – shaded there; the surface
+						// below (seen between the fibres and where shells part at hard edges) in the colour of the roots
+						if ( materialInfo.fogVolume == 4 ) {
+
+							let wlHit = ray.origin + ray.direction * hitResult.dist;
+							let wlShade = \${ __WOOL.shade }( wlHit, vertexData.position.xyz, objectInfo.inverseMatrixWorld, ray.direction, max( materialInfo.iridescenceThicknessMinimum, 1e-9 ) );
+							if ( wlShade.x > 0.0 ) {
+
+								vertexData.position = vec4f( wlHit, 1.0 );
+								vertexData.normal = vec4f( hitResult.normal, 0.0 );
+
+							}
+							materialInfo.color = min( materialInfo.color * wlShade.y, vec3f( 1.0 ) );
+							materialInfo.sheenColor = min( materialInfo.color * \${ __WOOL.sheen }, vec3f( 1.0 ) );   // like the raster's shells
+
+						}
+`;
+function woolPatch() {
+  return {
+    name: 'rindr-wool',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.replace(/\\/g, '/').split('?')[0];
+      const name = file.split('/').pop();
+      const replaceOnce = (from, to) => {
+        const n = typeof from === 'string' ? code.split(from).length - 1 : (code.match(new RegExp(from.source, 'g')) || []).length;
+        if (n !== 1) this.error(`rindr-wool: ${from} not found exactly once in ${name} (three-gpu-pathtracer changed?)`);
+        code = code.replace(from, to);
+      };
+      const head = `import { WOOL_PT as __WOOL } from ${JSON.stringify(WOOL_PT_MODULE)};\n`;
+      if (file.endsWith('three-mesh-bvh/src/webgpu/BVHComputeData.js')) {
+        replaceOnce(/\n(\t+)return bvh;\n/, (m, tab) => `\n${tab}return __woolBounds( object, bvh );\n`);
+        return { code: `import { woolBounds as __woolBounds } from ${JSON.stringify(WOOL_BOUNDS_MODULE)};\n` + code, map: null };
+      }
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/PathtracerBVHComputeData.js')) {
+        // fibre length of the object the ray is in (local units, 0: no wool)
+        replaceOnce("const baseOpacityScalar = float( 1.0 ).toVar( 'bvh_baseOpacity' );", m => `${m}
+		const woolLength = float( 0.0 ).toVar( 'bvh_woolLength' );`);
+        replaceOnce(/\n(\t+)var triResult = \$\{ intersectRayTriangle \}\( ray, a, b, c, 0\.0 \);/, m => '\n' + readFileSync(WOOL_HIT_PATCH, 'utf8') + m.slice(1));
+        replaceOnce(/\n(\t+)let material = \$\{ storage\.materials \}\[ object\.materialIndex \];/, (m, tab) => `${m}\n${tab}\${ woolLength } = select( 0.0, material.iridescenceThicknessMinimum / \${ scratchRayScalar }, material.fogVolume == 4 );`);
+        replaceOnce(/\n(\t+)\$\{ scratchRayScalar \} = 1\.0;\n\t+\$\{ baseOpacityScalar \} = 1\.0;/, (m, tab) => `${m}\n${tab}\${ woolLength } = 0.0;`);
+        return { code: head + code, map: null };
+      }
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) {
+        replaceOnce(/\n\t+vertexData\.position = objectInfo\.matrixWorld \* vertexData\.position;\n/, m => m + WOOL_SHADE);
+        return { code: head + code, map: null };
+      }
+      return null;
+    },
+  };
+}
+
+// Soap film (src/scripts/materials/soap.js, soap-pt.js – fails loudly if the library changed, check on every update):
+// megakernel, before the surface record: a hit on a soap material (ptVolume 5) gets its film thickness from the noise
+// (mean film and swirl cell in iridescenceThicknessRange, swirl in sheenRoughness – RindrMaterial.setSoap); the
+// interference is the library's own thin film on a matched-IOR (ior 1) transmissive surface; passing a film does not
+// count as a bounce (two per bubble – bubbles behind bubbles)
+const SOAP_PT_MODULE = fileURLToPath(new URL('./src/scripts/materials/soap-pt.js', import.meta.url));
+const SOAP_FILM = `
+						// RINDR soap film (soap.js, soap-pt.js): film thickness from the swirl noise (world space)
+						if ( materialInfo.fogVolume == 5 ) {
+
+							materialInfo.iridescenceThicknessMaximum = \${ __SOAP.thickness }( vertexData.position.xyz, vertexData.normal.xyz, materialInfo.iridescenceThicknessMinimum, materialInfo.sheenRoughness, max( materialInfo.iridescenceThicknessMaximum, 1e-9 ) );
+
+						}
+`;
+function soapPatch() {
+  return {
+    name: 'rindr-soap',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.replace(/\\/g, '/').split('?')[0];
+      if (!file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) return null;
+      const from = /\n\t+vertexData\.position = objectInfo\.matrixWorld \* vertexData\.position;\n/;
+      if ((code.match(new RegExp(from.source, 'g')) || []).length !== 1) this.error(`rindr-soap: ${from} not found exactly once in PathTracerMegaKernel.js (three-gpu-pathtracer changed?)`);
+      code = code.replace(from, m => m + SOAP_FILM);
+      // a ray crosses two films per bubble – passing a soap film does not use up the bounce budget (up to
+      // SOAP_PT.filmBounces; the loop limit comes from rindr-glass-bounces, which runs before)
+      const loop = /\n(\t+)for \( var bounce = 0u; bounce < maxBounces \+ glassBounce; bounce \+\+ \) \{/;
+      const next = /\n(\t+)if \( \( scatterRec\.isTransmissive \|\| /;
+      for (const re of [loop, next]) if ((code.match(new RegExp(re.source, 'g')) || []).length !== 1) this.error(`rindr-soap: ${re} not found exactly once in PathTracerMegaKernel.js`);
+      code = code.replace(loop, (m, tab) => `\n${tab}var filmBounce = 0u;\n${tab}for ( var bounce = 0u; bounce < maxBounces + glassBounce + filmBounce; bounce ++ ) {`);
+      code = code.replace(next, (m, tab) => `\n${tab}if ( scatterRec.isTransmissive && materialInfo.fogVolume == 5 && filmBounce < \${ __SOAP.filmBounces } ) {\n\n${tab}\tfilmBounce ++;\n\n${tab}} else` + m.replace(/^\n\t+/, ' '));
+      return { code: `import { SOAP_PT as __SOAP } from ${JSON.stringify(SOAP_PT_MODULE)};\n` + code, map: null };
     },
   };
 }
@@ -319,7 +418,7 @@ export default defineConfig({
     headers: isolationHeaders,
   },
   vite: {
-    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), ptStandInPatch(), glassBouncesPatch(), cloudPatch(), glassShadowPatch()],
+    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), ptStandInPatch(), glassBouncesPatch(), cloudPatch(), woolPatch(), soapPatch(), glassShadowPatch()],
     server: { headers: isolationHeaders },
     preview: { headers: isolationHeaders },
     worker: { format: 'es' },

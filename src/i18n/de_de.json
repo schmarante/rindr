@@ -144,7 +144,17 @@
             "contourWidth": "Konturbreite (px)",
             "cloud": "Wolke (Dichte)",
             "cloudColor": "Wolkenfarbe",
-            "cloudPuff": "Aufquellen"
+            "cloudPuff": "Aufquellen",
+            "wool": "Wolle",
+            "woolLength": "Faserlänge (Anteil)",
+            "grass": "Gras",
+            "grassHeight": "Halmhöhe (Anteil)",
+            "grassDensity": "Dichte",
+            "grassDry": "Anteil trockener Halme",
+            "soap": "Seifenhaut",
+            "soapFilm": "Filmdicke (nm)",
+            "soapSwirl": "Schlieren",
+            "soapScale": "Größe der Schlieren"
         },
         "paramGroups": {
             "base": "Basis",
@@ -155,7 +165,10 @@
             "subsurface": "Subsurface Scattering",
             "marble": "Leuchtmarmor",
             "style": "Stil",
-            "cloud": "Wolke"
+            "cloud": "Wolke",
+            "wool": "Wolle",
+            "grass": "Gras",
+            "soap": "Seifenhaut"
         },
         "categories": {
             "metal": "Metall",
@@ -209,7 +222,12 @@
             "marble-glow-amber": "Leuchtmarmor bernstein",
             "toon-orange": "Toon (orange)",
             "outline-white": "Weiß, Kontur schwarz",
-            "outline-black": "Schwarz, Kontur weiß"
+            "outline-black": "Schwarz, Kontur weiß",
+            "wool-cream": "Wolle naturweiß",
+            "wool-red": "Wolle rot",
+            "grass-lawn": "Rasen",
+            "grass-meadow": "Wiese",
+            "soap-bubble": "Seifenblase"
         },
         "defaultNames": {
             "material": "Material",
@@ -839,6 +857,7 @@
         "material": {
             "glass": "transparent wie Glas",
             "glassIor": "transparent wie Glas (IOR {ior})",
+            "soap": "hauchdünne Seifenhaut wie eine Seifenblase, fast durchsichtig, schillernde Regenbogenfarben mit Schlieren",
             "metal": "Metall",
             "dielectric": "nichtmetallisch (Kunststoff/Lack)",
             "polished": "hochglänzend/poliert",
@@ -893,7 +912,14 @@
         "ramNone": "RAM      n/v{device}",
         "triangles": "Dreiecke {total}  (sichtbar {visible})",
         "unique": "         eindeutig {unique} · {meshes} Meshes",
-        "frame": "Bild     {triangles} Dreiecke · {drawCalls} Draw-Calls"
+        "frame": "Bild     {triangles} Dreiecke · {drawCalls} Draw-Calls",
+        "workers": {
+            "summary": "Worker   {alive} aktiv · {total} gestartet · {cores} Kerne",
+            "row": "  {name} {bar} {load} % · {tasks} Aufträge · {memory}",
+            "unmeasured": "  {name} ohne Messung · {messages} Nachrichten · {memory}",
+            "more": "  … {count} weitere",
+            "ended": "  {count} beendet · {seconds} s gerechnet"
+        }
     },
     "benchmark": {
         "title": "Pathtracing-Benchmark",
@@ -926,6 +952,7 @@
         "gpuError": "GPU-Fehler"
     },
     "status": {
+        "growingGrass": "Gras wächst …",
         "focusPick": "Klick ins Modell setzt die Schärfeebene – Esc bricht ab",
         "busyLoading": "Während des Ladens nicht möglich",
         "nothingToRedo": "Nichts zum Wiederholen",

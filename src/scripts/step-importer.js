@@ -78,7 +78,7 @@ export async function readStepFile(blob, signal = null) {
 
 // --- Worker pool ---
 
-const createWorker = () => new Worker(new URL('./step/worker.js', import.meta.url), { type: 'module' });
+const createWorker = () => new Worker(new URL('./step/worker.js', import.meta.url), { type: 'module', name: 'step' });
 
 // Single request to a worker, answer as a promise (a worker only ever handles one request at a time).
 // Pending requests are tracked: abortStepImport() rejects them with AbortError (terminated workers

@@ -441,7 +441,7 @@ function materialIdFactory(materialManager, scale, fileName) {
  */
 function readFbxLean(buffer, { fallback, onStatus }) {
     return new Promise((resolve, reject) => {
-        const worker = new Worker(new URL('./fbx/fbx-worker.js', import.meta.url), { type: 'module' });
+        const worker = new Worker(new URL('./fbx/fbx-worker.js', import.meta.url), { type: 'module', name: 'fbx' });
         worker.onmessage = ({ data }) => {
             if (data.type === 'progress') { onStatus(t('import.mesh.buildingGeometries'), data.done / data.total); return; }
             worker.terminate();
@@ -571,7 +571,7 @@ async function convertLeanFbx({ scene, geometries: parts }, source, materialMana
 
 function readMaxLean(buffer, { onStatus }) {
     return new Promise((resolve, reject) => {
-        const worker = new Worker(new URL('./max/max-worker.js', import.meta.url), { type: 'module' });
+        const worker = new Worker(new URL('./max/max-worker.js', import.meta.url), { type: 'module', name: 'max' });
         worker.onmessage = ({ data }) => {
             if (data.type === 'progress') { onStatus(t('import.mesh.buildingGeometries'), data.done / data.total); return; }
             worker.terminate();

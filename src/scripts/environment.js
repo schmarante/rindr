@@ -16,7 +16,7 @@ export function createStudioEnvironment(width = 1024, height = width / 2) {
 /** built-in studio in a worker (4k: sharp enough as a visible background) */
 export function renderStudioEnvironment(width = 4096, height = width / 2) {
     return new Promise((resolve, reject) => {
-        const worker = new Worker(new URL('./studio-hall-worker.js', import.meta.url), { type: 'module' });
+        const worker = new Worker(new URL('./studio-hall-worker.js', import.meta.url), { type: 'module', name: 'studio-hdri' });
         worker.onmessage = ({ data: msg }) => { worker.terminate(); resolve(studioTexture(msg.data, msg.width, msg.height)); };
         worker.onerror = e => { worker.terminate(); reject(new Error(e.message || 'studio worker failed')); };
         worker.postMessage({ width, height });
@@ -90,7 +90,7 @@ export class VignetteBackground {
  */
 export function loadHdri(url, onProgress) {
     return new Promise((resolve, reject) => {
-        const worker = new Worker(new URL('./hdr-worker.js', import.meta.url), { type: 'module' });
+        const worker = new Worker(new URL('./hdr-worker.js', import.meta.url), { type: 'module', name: 'hdr-decode' });
         worker.onmessage = ({ data: msg }) => {
             if (msg.type === 'progress') { onProgress?.(msg); return; }
             worker.terminate();

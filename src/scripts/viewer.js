@@ -1,3 +1,5 @@
+// first: the debug overlay's worker overview replaces `Worker` before anything starts one (only with ?debug)
+import './worker-monitor.js';
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { ViewCube } from './view-cube.js';
@@ -15,6 +17,9 @@ import { MaterialPanel, MATERIAL_MIME } from './material-panel.js';
 import { MaterialThumbs } from './material-thumbs.js';
 import { uvCheckerTexture } from './uv-checker.js';
 import { CloudSystem } from './materials/clouds.js';
+import { WoolSystem } from './materials/wool.js';
+import { setSoapSceneSize } from './materials/soap.js';
+import { GrassSystem } from './materials/grass.js';
 import { GraphApplier } from './graph-apply.js';
 import { NodeEditor } from './node-editor.js';
 import { createStudioEnvironment, renderStudioEnvironment, loadHdri, listHdris, VignetteBackground } from './environment.js';
@@ -469,6 +474,28 @@ const clouds = new CloudSystem(scene, () => [rootGroup, ...extraModels.map(x => 
 clouds.onChange = () => { pathTracing.updateTransforms(); pathTracing.updateMaterials(); markShadowsDirty(); };
 // override passes (contour, contact shadow, …) leave the boxes out; Basic (clay, defined further down) keeps them
 clouds.attach(renderer, () => { try { return clayMaterial; } catch { return null; } });
+// wool material (wool.js): fibre shells over the meshes that carry it; the path tracer intersects the same fibres
+// (wool-pt.js) from the material's stand-in – a new fibre length = new material data, maybe new BVH bounds
+const wool = new WoolSystem(scene, () => [rootGroup, ...extraModels.map(x => x.root)], () => environment?.modelSize ?? 1);
+wool.onChange = () => { pathTracing.updateMaterials(); pathTracing.reset(); };
+wool.onBounds = () => { invalidatePathTracing(); updatePathTracingScene(); };   // BVH bounds over the fibres (wool-bounds.js)
+wool.attach(renderer);
+// grass material (grass.js): real blades over the meshes that carry it – raster and path tracer draw the same geometry;
+// new blades = new path tracer scene, moved/hidden ones = its transforms
+const grass = new GrassSystem(scene, () => [rootGroup, ...extraModels.map(x => x.root)], () => environment?.modelSize ?? 1);
+grass.onChange = () => { pathTracing.updateMaterials(); pathTracing.reset(); };
+grass.onMove = () => { pathTracing.updateTransforms(); markShadowsDirty(); };
+grass.onGeometry = () => { invalidatePathTracing(); updatePathTracingScene(); markShadowsDirty(); };
+// the blades block the sun in the light shafts' depth passes (volume-shafts.js) like any mesh
+grass.attach(renderer, () => { try { return [clayMaterial, lens.volume.sunDepthMaterial, lens.volume.camDepthMaterial]; } catch { return null; } });
+// growing blades (worker): progress bottom left – unless a load or another task already shows its own
+let grassProgress = false;
+grass.onProgress = fraction => {
+    const label = t('status.growingGrass');
+    if (fraction !== null && (!progressEl.hidden && progressLabel.textContent !== label)) return;
+    if (fraction !== null) { grassProgress = true; showProgress(label, fraction); }
+    else if (grassProgress) { grassProgress = false; if (progressLabel.textContent === label) hideProgress(); }
+};
 
 // HDRI editor (hdri/, docs/hdri-editor.md): own procedural HDRIs, rendered in a worker
 const CUSTOM_HDRI = 'editor:';
@@ -1254,8 +1281,8 @@ const graphApplier = new GraphApplier(renderer, { onBaked: () => pathTracing.upd
 materialManager.onApply = entry => graphApplier.apply(entry);
 materialManager.addEventListener('change', () => pathTracing.updateMaterials());
 materialManager.addEventListener('update', () => pathTracing.updateMaterials());
-materialManager.addEventListener('change', () => clouds.invalidate());
-materialManager.addEventListener('update', () => clouds.invalidate());
+materialManager.addEventListener('change', () => { clouds.invalidate(); wool.invalidate(); grass.invalidate(); });
+materialManager.addEventListener('update', () => { clouds.invalidate(); wool.invalidate(); grass.invalidate(); });
 // edited material (alpha map, side …) can change the shadow; assignments are seen by the batcher's comparison
 materialManager.addEventListener('update', () => markShadowsDirty());
 const isModelEntry = e => e && (e.kind === 'node' || e.kind === 'model' || e.kind === 'surface' || e.kind === 'selection');
@@ -1272,8 +1299,8 @@ const materialPanel = new MaterialPanel(document.getElementById('materials'), ma
     thumbs: new MaterialThumbs(renderer, () => (environment.on
         ? { texture: environment.texture, intensity: environment.intensity * environment.lightBoost, rotation: scene.environmentRotation.y }
         : { texture: studioTexture, intensity: 0.8, rotation: 0 }),
-    // the cloud material has no surface: its preview is a cloud volume around the sphere
-    (material, radius) => clouds.previewFor(material, radius)),
+    // the cloud material has no surface: its preview is a cloud volume around the sphere; wool: the sphere with fibres
+    (material, radius) => clouds.previewFor(material, radius) ?? wool.previewFor(material, radius) ?? grass.previewFor(material, radius)),
     // select all meshes with this material (multi-selection, "assign" replaces it on all of them)
     onSelectUsers: id => {
         const entry = materialManager.get(id);
@@ -1533,6 +1560,7 @@ function setAnimPlaying(play) {
 // paused: the path tracer renders the current frame (deformed meshes: new BVHs + scene)
 function settleAnimation(list = clipAnims(), options) {
     list.forEach(a => a.anim.settle(options));
+    grass.invalidate();   // deformed meshes: blades for the new pose
     pathTracing.resumeAfterEdit('node');
     contactShadow.markDirty();
     if (list.some(a => a.anim.deforms)) { pathTracing.invalidate(); updatePathTracingScene(); }
@@ -1635,6 +1663,7 @@ function updateSceneExtent() {
     const sceneSize = Math.max(size.x, size.y, size.z);
     environment.modelSize = sceneSize;
     pathTracing.setSceneSize(sceneSize);   // glass shadow fringe fades relative to it
+    if (setSoapSceneSize(sceneSize)) pathTracing.updateMaterials();   // soap film swirls (cell size in the stand-ins)
     box.getBoundingSphere(shaftBounds);
     lens.volume.markDirty();
     environment.centerX = center.x;
@@ -4401,7 +4430,7 @@ if (MODEL_FILE && !(crashed?.url && crashed.name === MODEL_FILE)) {
 
 // Debug access for automated tests + fps/memory/polygon display (only with ?debug in the URL)
 if (new URLSearchParams(location.search).has('debug')) {
-    globalThis.__viewer = { clouds, getSplats: () => splatMesh, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+    globalThis.__viewer = { clouds, grass, getSplats: () => splatMesh, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 }
 
 // --- Resize ---
@@ -4529,6 +4558,9 @@ renderer.setAnimationLoop(() => {
     updateSplatSpin(frameStart);
     exploder.update(frameStart);
     clouds.update(camera);
+    wool.update();
+    grass.update();
+    if (grass.fading) { loadRender.dirty = true; markShadowsDirty(); }   // blades fading in: frames, their shadow
     controls.update();
     applyCameraRoll();
     viewCube.update(camera);

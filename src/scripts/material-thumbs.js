@@ -21,8 +21,9 @@ import { uvCheckerTexture, sampleUvChecker } from './uv-checker.js';
 
 export const THUMB_SIZE = 96;               // output pixels (tile sphere 56 CSS px, sharp up to ~1.7× HiDPI)
 const RENDER_SIZE = THUMB_SIZE * 2;         // rendered at twice the size, box-filtered down (anti-aliasing)
-const THUMB_VERSION = 16;                   // raise when the look changes (old images are not used any more)
+const THUMB_VERSION = 26;                   // raise when the look changes (old images are not used any more)
 const RADIUS = 25;                          // scene units (mm for CAD) – subsurface radius, marble scale etc. fit
+const SOAP_PREVIEW_CELL = 0.5;              // soap film: swirl cell × radius (a few bands across the sphere)
 const FOV = 30;
 const FILL = 0.8;                           // sphere diameter / image size (the checkerboard shows around it)
 const THICKNESS = 0.4 * RADIUS;             // transmission thickness on the sphere (see _render)
@@ -189,8 +190,10 @@ export class MaterialThumbs extends EventTarget {
             s.scene.environmentRotation.y = env.rotation;
             // glass in front of the checkerboard: refraction traced exactly (see traceRefraction) – the raster renders
             // in front of a black and a white wall give everything else (reflections, gloss, tint, how much passes)
-            const traced = this.checker && material.transmission > 0;
-            const walls = traced ? [s.black, s.white] : [this.checker ? s.checker : s.plain];
+            // soap film: nothing to trace (ior 1, straight through) – in front of the dark wall, its colours are the
+            // reflections (the checkerboard drowned them)
+            const traced = this.checker && material.transmission > 0 && !material.soap;
+            const walls = traced ? [s.black, s.white] : [this.checker && !material.soap ? s.checker : s.plain];
             // compile for the thumbnail target, then render – the renderer state is restored before the main loop
             // sees it (shader-compile.js: node builds read the state of the call)
             const saved = save(r);
@@ -199,6 +202,13 @@ export class MaterialThumbs extends EventTarget {
             restore(r, saved);
             await compiled;
             const images = [];
+            // double sided transmission (soap film): three draws back and front side in two passes whose
+            // pipelines compileAsync does not make – the first image came out with only specks now and then; one
+            // render first, thrown away
+            if (special || (material.transmission > 0 && material.side === THREE.DoubleSide)) {
+                s.backdrop.material = walls[0];
+                await this._renderOnce(s, material, special?.userData);
+            }
             for (const wall of walls) {
                 s.backdrop.material = wall;
                 images.push(await this._renderOnce(s, material, special?.userData));
@@ -213,7 +223,7 @@ export class MaterialThumbs extends EventTarget {
             if (job.persist && generation === this.generation) this._db.then(db => db && dbPut(db, job.key, blob));
             return URL.createObjectURL(blob);
         } finally {
-            if (special) { s.scene.remove(special); special.material.dispose(); }
+            if (special) { s.scene.remove(special); if (special.userData.dispose) special.userData.dispose(); else special.material.dispose(); }
             s.mesh.visible = true;
             if (job.dispose) material.dispose();
         }
@@ -253,6 +263,7 @@ export class MaterialThumbs extends EventTarget {
         scene.add(key);
         const mesh = new THREE.Mesh(new THREE.SphereGeometry(RADIUS, 96, 64));
         mesh.rotation.y = -0.6;               // marble/procedural patterns: not the seam towards the camera
+        mesh.userData.soapCell = SOAP_PREVIEW_CELL * RADIUS;   // soap film swirls relative to the sphere (soap.js)
         scene.add(mesh);
         const camera = new THREE.PerspectiveCamera(FOV, 1, 1, 1000);
         camera.position.set(0, 0, cameraDistance());

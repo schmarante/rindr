@@ -67,6 +67,14 @@ export const MATERIAL_PRESETS = [
 
     // --- other ---
     // special: the object as a fluffy cloud (clouds.js – volume, puffs out over the shape)
+    // wool: soft fibres (wool.js), sheen for the shimmer, fully rough
+    { libraryId: 'wool-cream', category: 'special', params: { color: '#e9dfca', metalness: 0, roughness: 1, specularIntensity: 0.3, sheen: 1, sheenRoughness: 0.6, sheenColor: '#fff6e6', wool: 1, woolLength: 0.02 } },
+    { libraryId: 'wool-red', category: 'special', params: { color: '#a5202b', metalness: 0, roughness: 1, specularIntensity: 0.3, sheen: 1, sheenRoughness: 0.6, sheenColor: '#ff8a8a', wool: 1, woolLength: 0.02 } },
+    // grass: real blades (grass.js); colour = the blades, the surface below a dark shade of it
+    { libraryId: 'grass-lawn', category: 'special', params: { color: '#4f8a2c', metalness: 0, roughness: 0.6, grass: 1, grassHeight: 0.025, grassDensity: 1, grassDry: 0 } },
+    { libraryId: 'grass-meadow', category: 'special', params: { color: '#6a9634', metalness: 0, roughness: 0.6, grass: 1, grassHeight: 0.045, grassDensity: 0.6, grassDry: 0.12 } },
+    // soap film (soap.js): thin-film colours, light passes straight through (ior 1, matched to air)
+    { libraryId: 'soap-bubble', category: 'special', params: { color: '#ffffff', metalness: 0, roughness: 0, transmission: 1, ior: 1, iridescence: 1, soap: 1, soapFilm: 380, soapSwirl: 0.7, soapScale: 1 } },
     { libraryId: 'cloud-white', category: 'special', params: { color: '#ffffff', metalness: 0, roughness: 1, cloud: 1, cloudColor: '#ffffff', cloudPuff: 0.05 } },
 
     { libraryId: 'ceramic-white', category: 'other', params: { color: '#f4f3ef', metalness: 0, roughness: 0.2, clearcoat: 0.6, clearcoatRoughness: 0.08 } },
