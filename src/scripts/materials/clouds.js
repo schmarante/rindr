@@ -20,6 +20,7 @@ import { Fn, uniform, uniformArray, texture3D, vec2, vec3, vec4, float, If, Loop
 import { MeshBVH } from 'three-mesh-bvh';
 import { FIELD_RES, FIELD_RANGE, NOISE_RES, detailNoise, sphereField } from './cloud-field.js';
 import { debugLog } from '../log.js';
+import { hideInOverridePasses } from './override-hide.js';
 
 export const CLOUD_SLOTS = 4;               // cloud materials at the same time (more: the rest stays invisible)
 const ATLAS_SLOTS = CLOUD_SLOTS + 1;        // + the material preview's sphere
@@ -346,7 +347,7 @@ export class CloudSystem {
         const byMaterial = new Map();
         for (const root of this.getRoots()) {
             root?.traverse(o => {
-                if (!o.isMesh) return;
+                if (!o.isMesh || o.userData.animationPuppet) return;
                 const cloud = cloudOf(o.material);
                 if (!cloud) return;
                 if (!byMaterial.has(o.material)) byMaterial.set(o.material, []);
@@ -419,7 +420,7 @@ export class CloudSystem {
     }
 
     _createWorker() {
-        const w = new Worker(new URL('./cloud-worker.js', import.meta.url), { type: 'module' });
+        const w = new Worker(new URL('./cloud-worker.js', import.meta.url), { type: 'module', name: 'cloud' });
         w.onmessage = ({ data }) => {
             const job = this._jobs.get(data.id);
             if (!job) return;
@@ -442,23 +443,12 @@ export class CloudSystem {
     }
 
     /**
-     * Passes that draw the scene with an override material (contour, contact shadow, depth of field lines, section
-     * caps, selection outline, light shafts …) must not see the boxes – they drew them as solid boxes. renderer.render
-     * is wrapped once: with an override material other than `keep` (Basic's clay) the group is hidden for that call;
-     * the light shafts' depth passes (beginDepth) draw the clouds' own depth instead.
+     * Passes that draw the scene with an override material must not see the boxes (they drew them as solid boxes) –
+     * except Basic's clay (`keep`, the cloud stays a cloud) and the light shafts' depth passes (beginDepth: the
+     * clouds' own depth). override-hide.js
      */
     attach(renderer, keep = () => null) {
-        const render = renderer.render.bind(renderer);
-        renderer.render = (scene, camera) => {
-            const override = scene.overrideMaterial;
-            const hide = override && override !== keep() && !this._depthPass && this.group.visible;
-            if (hide) this.group.visible = false;
-            try {
-                return render(scene, camera);
-            } finally {
-                if (hide) this.group.visible = true;
-            }
-        };
+        hideInOverridePasses(renderer, this.group, { keep, active: () => !!this._depthPass });
     }
 
     /**

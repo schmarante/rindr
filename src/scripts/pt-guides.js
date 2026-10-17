@@ -28,6 +28,7 @@ import { uniform, globalId, textureStore } from 'three/tsl';
 import { proxy, proxyFn, wgslTagFn, rayStruct, ndcToCameraRay } from 'three-mesh-bvh/webgpu';
 import { offsetRayOriginFunc } from 'three-gpu-pathtracer/src/webgpu/nodes/utils.wgsl.js';
 import { FISHEYE_RAY } from './fisheye.js';
+import { WOOL_PT } from './materials/wool-pt.js';
 
 // 4 uniform random numbers per pixel (pcg4d, Jarzynski & Olano 2020) – rotation of the sample sequence
 const guideRandom = wgslTagFn/* wgsl */`
@@ -204,6 +205,21 @@ export class GuideKernel {
                         vertexData.normal = normalize( transpose( objectInfo.inverseMatrixWorld ) * vertexData.normal );
                         vertexData.tangent = vec4f( ( objectInfo.matrixWorld * vec4f( vertexData.tangent.xyz, 0.0 ) ).xyz, vertexData.tangent.w );
                         vertexData.position = objectInfo.matrixWorld * vertexData.position;
+                        // wool (wool-pt.js): fibre hits at the fibre, coloured like the path tracer shades them – the
+                        // denoiser keeps the fibres (with the surface's normal and colour it smeared them)
+                        if ( materialInfo.fogVolume == 4 ) {
+
+                            let woolHit = ray.origin + ray.direction * hit.dist;
+                            let woolShade = ${ WOOL_PT.shade }( woolHit, vertexData.position.xyz, objectInfo.inverseMatrixWorld, ray.direction, max( materialInfo.iridescenceThicknessMinimum, 1e-9 ) );
+                            if ( woolShade.x > 0.0 ) {
+
+                                vertexData.position = vec4f( woolHit, 1.0 );
+                                vertexData.normal = vec4f( hit.normal, 0.0 );
+
+                            }
+                            materialInfo.color *= woolShade.y;
+
+                        }
                         let surface = ${ getSurfaceRecord }( materialInfo, vertexData, hit.side, hit.normal, - ray.direction, 0.0 );
 
                         if ( firstDepth < 0.0 ) {

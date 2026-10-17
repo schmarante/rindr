@@ -50,7 +50,8 @@ export function buildPrompt(title, materials, { environment = '' } = {}) {
 export function describeMaterial(p = {}) {
     const out = [];
     const r = p.roughness ?? 0.5;
-    if ((p.transmission ?? 0) > 0.5) out.push(p.ior ? t('ki.material.glassIor', { ior: (+p.ior).toFixed(2) }) : t('ki.material.glass'));
+    if ((p.soap ?? 0) > 0) out.push(t('ki.material.soap'));
+    else if ((p.transmission ?? 0) > 0.5) out.push(p.ior ? t('ki.material.glassIor', { ior: (+p.ior).toFixed(2) }) : t('ki.material.glass'));
     else if ((p.metalness ?? 0) > 0.5) out.push(t('ki.material.metal'));
     else out.push(t('ki.material.dielectric'));
     out.push(t(`ki.material.${r < 0.12 ? 'polished' : r < 0.35 ? 'glossy' : r < 0.6 ? 'satin' : 'matte'}`));

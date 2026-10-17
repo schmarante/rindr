@@ -46,7 +46,7 @@ export async function loadSplats(source, options = {}) {
 
 function loadInWorker(source, { signal, onProgress, onBegin, onLoaded, ...options } = {}) {
     return new Promise((resolve, reject) => {
-        const worker = new Worker(new URL('./splat-load-worker.js', import.meta.url), { type: 'module' });
+        const worker = new Worker(new URL('./splat-load-worker.js', import.meta.url), { type: 'module', name: 'splat-load' });
         const finish = () => { worker.terminate(); signal?.removeEventListener('abort', abort); };
         const abort = () => { finish(); reject(new DOMException('Aborted', 'AbortError')); };
         if (signal?.aborted) { abort(); return; }
@@ -122,7 +122,7 @@ async function loadPlyParallel(source, { signal, onProgress, onBegin, onLoaded, 
             let left = n;
             signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
             ranges.forEach(([start, end], w) => {
-                const worker = new Worker(new URL('./splat-parse-worker.js', import.meta.url), { type: 'module' });
+                const worker = new Worker(new URL('./splat-parse-worker.js', import.meta.url), { type: 'module', name: 'splat-parse' });
                 workers.push(worker);
                 worker.onmessage = ({ data }) => {
                     if (data.type === 'progress') {

@@ -42,6 +42,8 @@ export class ModelAnimation {
                 // never hit by picking: SkinnedMesh.raycast skins every vertex on the CPU (hover/material drag
                 // while playing stuttered) – picking uses our meshes (userData.liveHidden) instead
                 o.raycast = () => {};
+                // the special materials' systems (grass, wool, clouds) leave it out: they follow our meshes
+                o.userData.animationPuppet = true;
             }
         });
         for (const it of this.items) {
@@ -121,10 +123,26 @@ export class ModelAnimation {
         for (const [mesh, its] of this.live) {
             if (Array.isArray(mesh.material)) {
                 const mats = [...mesh.material];
-                for (const it of its) if (it.materialIndex >= 0) mats[it.materialIndex] = it.target.material;
+                for (const it of its) if (it.materialIndex >= 0) mats[it.materialIndex] = this._liveMaterial(it.target.material);
                 mesh.material = mats;
-            } else mesh.material = its[0].target.material;
+            } else mesh.material = this._liveMaterial(its[0].target.material);
         }
+    }
+
+    // a cloud material (clouds.js) has no surface – its volume stands in for our meshes, which are hidden while live:
+    // the puppet shows a plain surface in the material's base colour instead (wish of the user)
+    _liveMaterial(material) {
+        if (!material?.userData?.cloud) return material;
+        this._fallbacks ??= new Map();
+        let m = this._fallbacks.get(material);
+        if (!m) {
+            m = new THREE.MeshStandardNodeMaterial({ side: material.side });
+            this._fallbacks.set(material, m);
+        }
+        m.color.copy(material.color);
+        m.roughness = material.roughness ?? 0.5;
+        m.metalness = material.metalness ?? 0;
+        return m;
     }
 
     /** Back to our baked meshes with the current pose (CPU, once) */
@@ -286,6 +304,7 @@ export class ModelAnimation {
         this.stopLive();
         this.mixer.stopAllAction();
         this.mixer.uncacheRoot(this.root);
+        this._fallbacks?.forEach(m => m.dispose());
     }
 }
 

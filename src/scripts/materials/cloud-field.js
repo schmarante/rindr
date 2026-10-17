@@ -21,7 +21,21 @@ export const NOISE_RES = 32;          // tiling detail noise, voxels per period
  * @returns {Uint8Array} FIELD_RES³ values, x fastest
  */
 export function shapeField(triangles, box, scale) {
-    const n = FIELD_RES, size = [0, 1, 2].map(a => (box.max[a] - box.min[a]) / n);
+    const n = FIELD_RES, { distance } = signedDistances(triangles, box, n);
+    const field = new Uint8Array(n * n * n), range = FIELD_RANGE * scale;
+    for (let i = 0; i < field.length; i++) field[i] = Math.round(Math.min(Math.max(distance[i] / range * 0.5 + 0.5, 0), 1) * 255);
+    return field;
+}
+
+/**
+ * Signed distance per voxel (world units, negative inside; steps 1–3 above)
+ * @param {Float32Array} triangles  positions, 9 floats per triangle
+ * @param {{ min: number[], max: number[] }} box  grid bounds
+ * @param {number} n  voxels along every axis
+ * @returns {{ distance: Float32Array, size: number[] }}  n³ values (x fastest), voxel size per axis
+ */
+export function signedDistances(triangles, box, n) {
+    const size = [0, 1, 2].map(a => (box.max[a] - box.min[a]) / n);
     const surface = new Uint8Array(n * n * n);
     // 1. surface voxels
     const step = 0.5 * Math.min(...size);
@@ -66,13 +80,10 @@ export function shapeField(triangles, box, scale) {
     // 3. distances (squared, world units) to the nearest inside voxel / to the nearest outside voxel
     const toInside = edt(i => !outside[i], n, size);
     const toOutside = edt(i => outside[i] === 1, n, size);
-    // 4. signed distance, 8 bit
-    const field = new Uint8Array(n * n * n), range = FIELD_RANGE * scale;
-    for (let i = 0; i < field.length; i++) {
-        const d = outside[i] ? Math.sqrt(toInside[i]) : -Math.sqrt(toOutside[i]);
-        field[i] = Math.round(Math.min(Math.max(d / range * 0.5 + 0.5, 0), 1) * 255);
-    }
-    return field;
+    // signed distance
+    const distance = new Float32Array(n * n * n);
+    for (let i = 0; i < distance.length; i++) distance[i] = outside[i] ? Math.sqrt(toInside[i]) : -Math.sqrt(toOutside[i]);
+    return { distance, size };
 }
 
 /** Field of a sphere (centre 0, `radius`) for the material preview – the same sphere as every other material's: exact */

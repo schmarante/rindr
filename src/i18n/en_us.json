@@ -144,7 +144,17 @@
             "contourWidth": "Contour width (px)",
             "cloud": "Cloud (density)",
             "cloudColor": "Cloud colour",
-            "cloudPuff": "Puff"
+            "cloudPuff": "Puff",
+            "wool": "Wool",
+            "woolLength": "Fibre length (share)",
+            "grass": "Grass",
+            "grassHeight": "Blade height (share)",
+            "grassDensity": "Density",
+            "grassDry": "Share of dry blades",
+            "soap": "Soap film",
+            "soapFilm": "Film thickness (nm)",
+            "soapSwirl": "Swirls",
+            "soapScale": "Swirl size"
         },
         "paramGroups": {
             "base": "Base",
@@ -155,7 +165,10 @@
             "subsurface": "Subsurface scattering",
             "marble": "Glowing marble",
             "style": "Style",
-            "cloud": "Cloud"
+            "cloud": "Cloud",
+            "wool": "Wool",
+            "grass": "Grass",
+            "soap": "Soap film"
         },
         "categories": {
             "metal": "Metal",
@@ -209,7 +222,12 @@
             "marble-glow-amber": "Glowing marble amber",
             "toon-orange": "Toon (orange)",
             "outline-white": "White, black outline",
-            "outline-black": "Black, white outline"
+            "outline-black": "Black, white outline",
+            "wool-cream": "Wool natural white",
+            "wool-red": "Wool red",
+            "grass-lawn": "Lawn",
+            "grass-meadow": "Meadow",
+            "soap-bubble": "Soap bubble"
         },
         "defaultNames": {
             "material": "Material",
@@ -839,6 +857,7 @@
         "material": {
             "glass": "transparent like glass",
             "glassIor": "transparent like glass (IOR {ior})",
+            "soap": "paper-thin soap film like a soap bubble, almost clear, iridescent rainbow colours with swirls",
             "metal": "metal",
             "dielectric": "non-metallic (plastic/paint)",
             "polished": "high-gloss/polished",
@@ -893,7 +912,14 @@
         "ramNone": "RAM      n/a{device}",
         "triangles": "Triangles {total}  (visible {visible})",
         "unique": "         unique {unique} · {meshes} meshes",
-        "frame": "Frame    {triangles} triangles · {drawCalls} draw calls"
+        "frame": "Frame    {triangles} triangles · {drawCalls} draw calls",
+        "workers": {
+            "summary": "Workers  {alive} alive · {total} started · {cores} cores",
+            "row": "  {name} {bar} {load} % · {tasks} tasks · {memory}",
+            "unmeasured": "  {name} not measured · {messages} messages · {memory}",
+            "more": "  … {count} more",
+            "ended": "  {count} ended · {seconds} s computed"
+        }
     },
     "benchmark": {
         "title": "Path tracing benchmark",
@@ -926,6 +952,7 @@
         "gpuError": "GPU error"
     },
     "status": {
+        "growingGrass": "Growing grass …",
         "focusPick": "Click on the model to set the focus plane – Esc cancels",
         "busyLoading": "Not possible while loading",
         "nothingToRedo": "Nothing to redo",

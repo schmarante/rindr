@@ -13,12 +13,18 @@
 //   (rounded by the browser, Chrome at most 8 GB).
 // - Polygons: triangles of the model (counted per instance) total / visible, unique geometry;
 //   drawn = triangles + draw calls in the last frame (all passes: shadows, highlight, gizmo …).
+// - Workers (worker-monitor.js): like a task manager – alive / started so far / CPU cores, per alive worker its load
+//   over the last update (busy time handling messages: bar + %), messages handled, memory (with the page
+//   measurement); workers of three.js' loaders (classic/blob) without load. Ended ones summed up.
 // - "Measure duplicates" (button): geometries identical in shape that are still stored separately
 //   (duplicate-scan.js) – would a hash-based instancer pay off? Details in the console.
 
 import { t } from './i18n.js';
+import { workerRecords, busyTime, attributeWorkerMemory } from './worker-monitor.js';
 
 const MB = 1024 * 1024;
+const WORKER_ROWS = 16;   // workers listed at most (a STEP import starts one per core)
+const bar = (f, n = 10) => { const k = Math.round(f * n); return '█'.repeat(k) + '░'.repeat(n - k); };
 const fmtMB = b => (b >= 1024 * MB ? `${(b / 1024 / MB).toFixed(2)} GB` : `${(b / MB).toFixed(b < 10 * MB ? 1 : 0)} MB`);
 const fmtN = n => (n >= 1e6 ? t('debugStats.millions', { value: (n / 1e6).toFixed(2) }) : n >= 1e4 ? t('debugStats.thousands', { value: (n / 1e3).toFixed(0) }) : String(Math.round(n)));
 
@@ -151,6 +157,7 @@ export class DebugStats {
         try {
             const r = await performance.measureUserAgentSpecificMemory();
             this.pageMemory = r.bytes;
+            attributeWorkerMemory(r);
         } catch { return; }
         setTimeout(() => this._measurePage(), 10000);
     }
@@ -182,6 +189,41 @@ export class DebugStats {
             lines.push(t('debugStats.unique', { unique: fmtN(p.unique), meshes: fmtN(p.meshes) }));
         }
         lines.push(t('debugStats.frame', { triangles: fmtN(info.render.triangles), drawCalls: info.render.drawCalls }));
+        lines.push(...this._workerLines());
         this.text.textContent = lines.join('\n');
+    }
+
+    // task manager of the workers: load = share of the time since the last update spent handling messages
+    _workerLines() {
+        const records = workerRecords(), now = performance.now();
+        const prev = this._workerBusy ?? new Map(), prevTime = this._workerTime ?? now;
+        const span = Math.max(now - prevTime, 1);
+        this._workerBusy = new Map(records.map(r => [r, busyTime(r, now)]));
+        this._workerTime = now;
+        const alive = records.filter(r => r.ended === null), ended = records.length - alive.length;
+        const lines = [t('debugStats.workers.summary', { alive: alive.length, total: records.length, cores: navigator.hardwareConcurrency || '?' })];
+        // the same name several times (pool): numbered
+        const count = new Map(), seen = new Map();
+        for (const r of alive) count.set(r.name, (count.get(r.name) || 0) + 1);
+        const rows = alive.map(r => {
+            const n = (seen.get(r.name) || 0) + 1;
+            seen.set(r.name, n);
+            const load = r.measured ? Math.min(1, Math.max(0, (busyTime(r, now) - (prev.get(r) ?? busyTime(r, prevTime))) / span)) : null;
+            return { r, label: count.get(r.name) > 1 ? `${r.name} #${n}` : r.name, load };
+        });
+        const width = Math.min(18, Math.max(8, ...rows.map(x => x.label.length)));
+        for (const { r, label, load } of rows.slice(0, WORKER_ROWS)) {
+            const name = label.length > width ? label.slice(0, width - 1) + '…' : label.padEnd(width);
+            const memory = r.memory != null ? fmtMB(r.memory) : '–';
+            lines.push(load === null
+                ? t('debugStats.workers.unmeasured', { name, messages: fmtN(r.messagesIn + r.messagesOut), memory })
+                : t('debugStats.workers.row', { name, bar: bar(load), load: String(Math.round(load * 100)).padStart(3), tasks: fmtN(r.tasks), memory }));
+        }
+        if (rows.length > WORKER_ROWS) lines.push(t('debugStats.workers.more', { count: rows.length - WORKER_ROWS }));
+        if (ended) {
+            const busy = records.filter(r => r.ended !== null).reduce((s, r) => s + r.busyMs, 0);
+            lines.push(t('debugStats.workers.ended', { count: ended, seconds: (busy / 1000).toFixed(1) }));
+        }
+        return lines;
     }
 }

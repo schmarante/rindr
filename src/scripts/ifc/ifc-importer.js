@@ -87,7 +87,7 @@ function styleMaterial({ name, color }) {
 // worker with request/response by id
 class BimWorker {
     constructor() {
-        this.worker = new Worker(new URL('./ifc-worker.js', import.meta.url), { type: 'module' });
+        this.worker = new Worker(new URL('./ifc-worker.js', import.meta.url), { type: 'module', name: 'ifc' });
         this.pending = new Map();
         this.seq = 0;
         this.worker.onmessage = ({ data }) => {

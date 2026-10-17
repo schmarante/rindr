@@ -38,7 +38,7 @@ export function prepareEnvCdf(tex) {
     const { data, width, height } = tex.image;
     const entry = { signature: signature(tex.image), result: null, promise: null };
     entry.promise = new Promise(resolve => {
-        const worker = new Worker(new URL('./env-cdf-worker.js', import.meta.url), { type: 'module' });
+        const worker = new Worker(new URL('./env-cdf-worker.js', import.meta.url), { type: 'module', name: 'env-cdf' });
         const done = result => { worker.terminate(); entry.result = result; resolve(); };
         worker.onmessage = ({ data: result }) => done(result);
         // fallback: the library computes it itself

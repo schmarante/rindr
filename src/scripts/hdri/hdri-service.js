@@ -10,7 +10,7 @@ export class HdriRenderService {
 
     _ensureWorker() {
         if (this._worker) return this._worker;
-        const w = this._worker = new Worker(new URL('./hdri-worker.js', import.meta.url), { type: 'module' });
+        const w = this._worker = new Worker(new URL('./hdri-worker.js', import.meta.url), { type: 'module', name: 'hdri-editor' });
         w.onmessage = ({ data }) => {
             const p = this._pending.get(data.id);
             if (!p) return;
