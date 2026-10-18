@@ -19,5 +19,5 @@ export default [
     { libraryId: 'metal-alu-anodized-red', category: 'metal', params: { color: '#b8323a', metalness: 1, roughness: 0.3 } },
 
     // --- glowing ---
-    { libraryId: 'emissive-neon-red', category: 'other', params: { color: '#ff2a2a', metalness: 0, roughness: 0.5, emissive: '#ff2a2a', emissiveIntensity: 5 } },
+    { libraryId: 'emissive-neon-red', category: 'other', params: { color: '#ff1408', metalness: 0, roughness: 0.5, emissive: '#ff1408', emissiveIntensity: 2.5 } },   // at 5 the tone mapping washed it out to pink
 ];
