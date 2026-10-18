@@ -24,10 +24,12 @@
 // in between is it baked – with the model's UVs, at the resolution of the source texture.
 import { t, has } from './i18n.js';
 import * as THREE from 'three/webgpu';
-import { float, vec2, vec3, vec4, uv, texture, mat3, fract, floor, dot, mix, mod, clamp, max, min, pow, abs, step, dFdx, dFdy, sRGBTransferOETF } from 'three/tsl';
+import { float, vec2, vec3, vec4, uv, uniform, texture, mat3, fract, floor, dot, mix, mod, clamp, max, min, pow, abs, step, dFdx, dFdy, sRGBTransferOETF } from 'three/tsl';
 import { LUMA, linear, C, T, tsl, convert, input } from './node-lib.js';
 
 export const BAKE_SIZE = 1024;
+// auto resolution in UV mode: one texture spans the whole UV range of the parts, a decal covers only a part of it
+const UV_BAKE_SIZE = 2048;
 export const BAKE_RESOLUTIONS = ['auto', '512', '1024', '2048', '4096'];
 /** bake edge length of a resolution setting ('auto' or a number as string); null = auto */
 export const bakeResolution = res => (res && res !== 'auto' ? Math.min(MAX_BAKE_SIZE, Math.max(64, Number(res) || BAKE_SIZE)) : null);
@@ -175,10 +177,12 @@ for (const mod of Object.values(import.meta.glob('./nodes/*.js', { eager: true }
 // and an angle around the picture's centre. Defaults = the coordinate unchanged (older graphs look the same).
 // Integer tiling, mirroring and 90° steps keep a repeating texture seamless; other values break the tile edges.
 export const MAPPING_PARAMS = [
-    { key: 'offsetU', kind: 'number', min: -100, max: 100, step: 0.01, default: 0, mapping: true },
-    { key: 'offsetV', kind: 'number', min: -100, max: 100, step: 0.01, default: 0, mapping: true },
-    { key: 'tilingU', kind: 'number', min: 0.01, max: 100, step: 0.01, default: 1, mapping: true },
-    { key: 'tilingV', kind: 'number', min: 0.01, max: 100, step: 0.01, default: 1, mapping: true },
+    // offsets in tile units – a decal sits at the model's UV of its spot (large on big models)
+    { key: 'offsetU', kind: 'number', min: -10000, max: 10000, step: 0.01, default: 0, mapping: true },
+    { key: 'offsetV', kind: 'number', min: -10000, max: 10000, step: 0.01, default: 0, mapping: true },
+    // negative tiling mirrors the axis (decals on faces whose UVs run mirrored)
+    { key: 'tilingU', kind: 'number', min: -100, max: 100, step: 0.01, default: 1, mapping: true },
+    { key: 'tilingV', kind: 'number', min: -100, max: 100, step: 0.01, default: 1, mapping: true },
     { key: 'angle', kind: 'number', min: -180, max: 180, step: 1, default: 0, mapping: true },
 ];
 for (const def of Object.values(NODE_TYPES)) {
@@ -261,7 +265,7 @@ export function defaultParams(type) {
  */
 export function evaluateGraph(graph, textures, importMaps = {}, { domain = null } = {}) {
     // bakeSize: texels across the tile – nodes that smooth edges over about one texel need it
-    const fixed = bakeResolution(graph.nodes.find(n => n.type === 'output')?.params?.resolution);
+    const fixed = bakeResolution(graph.nodes.find(n => n.type === 'output')?.params?.resolution) || (domain ? UV_BAKE_SIZE : null);
     // coordinate of a bake texel: tile mode – the tile's UV (0..1 = one tile); UV mode (domain = { min, max, scale }) –
     // the model's UV range across the texture, in tile units (× scale = UV_TILE / size)
     const modelUv = domain ? mix(vec2(...domain.min), vec2(...domain.max), uv()) : uv();
@@ -429,16 +433,14 @@ function evalNode(n, port, get, ctx) {
 
 const clamp01 = v => Math.min(Math.max(v, 0), 1);
 
-// coordinate settings of a texture node: (c − offset) × tiling, turned by `angle` around the centre of the copy
+// coordinate settings of a texture node: (c − offset) × tiling, turned by `angle` around the centre of the copy.
+// The values are uniforms: moving a decal changes only them, the bake shader stays the same (no new compile per step)
 function mapCoord(c, p) {
     const off = [p.offsetU || 0, p.offsetV || 0], til = [p.tilingU ?? 1, p.tilingV ?? 1], a = (p.angle || 0) * Math.PI / 180;
     if (!off[0] && !off[1] && til[0] === 1 && til[1] === 1 && !a) return c;   // unchanged (older graphs: same shader)
-    let s = c.sub(vec2(...off)).mul(vec2(...til));
-    if (a) {
-        const d = s.sub(0.5), co = Math.cos(-a), si = Math.sin(-a);
-        s = vec2(d.x.mul(co).sub(d.y.mul(si)), d.x.mul(si).add(d.y.mul(co))).add(0.5);
-    }
-    return s;
+    const d = c.sub(uniform(new THREE.Vector2(...off))).mul(uniform(new THREE.Vector2(...til))).sub(0.5);
+    const co = uniform(Math.cos(-a)), si = uniform(Math.sin(-a));
+    return vec2(d.x.mul(co).sub(d.y.mul(si)), d.x.mul(si).add(d.y.mul(co))).add(0.5);
 }
 
 // one axis of an image coordinate: { t: 0..1 to sample, inside: 1 where the picture is (0 outside a non-repeating one) }

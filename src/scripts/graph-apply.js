@@ -43,6 +43,7 @@ export class GraphApplier {
         this.images = new Map();     // Data-URL -> Promise<Texture>
         this.queue = Promise.resolve();
         this.pending = new Map();    // material ID -> timer
+        this.waiting = new Set();    // material IDs with a bake run waiting in the queue
     }
 
     /** Synchronous part; schedules the baking */
@@ -123,8 +124,12 @@ export class GraphApplier {
         clearTimeout(this.pending.get(id));
         this.pending.set(id, setTimeout(() => {
             this.pending.delete(id);
-            // bake one after another (one bake target)
-            this.queue = this.queue.then(() => this._bake(entry)).catch(err => console.error('[Material graph] Baking failed:', err));
+            // bake one after another (one bake target); one waiting run per material is enough – it bakes the graph
+            // current when it starts
+            if (this.waiting.has(id)) return;
+            this.waiting.add(id);
+            this.queue = this.queue.then(() => { this.waiting.delete(id); return this._bake(entry); })
+                .catch(err => console.error('[Material graph] Baking failed:', err));
         }, 150));
     }
 
