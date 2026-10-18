@@ -67,6 +67,10 @@ export const PARAMS = [
     { key: 'soapFilm', type: 'number', min: 100, max: 1000, default: 380, group: 'soap' },
     { key: 'soapSwirl', type: 'number', min: 0, max: 1, default: 0.7, group: 'soap' },
     { key: 'soapScale', type: 'number', min: 0.2, max: 4, default: 1, group: 'soap' },
+    // rounded edges (edges.js): shading only – the normal turns towards the neighbouring face within the radius
+    // (scene units, mm for CAD; 0 = off), raster + path tracer; concave = inner edges too
+    { key: 'edgeRadius', type: 'number', min: 0, max: 20, default: 0, group: 'edges' },
+    { key: 'edgeConcave', type: 'number', min: 0, max: 1, default: 1, group: 'edges' },
 ];
 const PARAM_BY_KEY = Object.fromEntries(PARAMS.map(p => [p.key, p]));
 
@@ -473,6 +477,7 @@ function applyParams(material, params) {
     material.setWool(p.wool, p.woolLength);
     material.setGrass(p.grass, p.grassHeight, p.grassDensity, p.grassDry);
     material.setSoap(p.soap, p.soapFilm, p.soapSwirl, p.soapScale);   // after setMarble (shares stand-in fields)
+    material.setEdges(p.edgeRadius, p.edgeConcave);
     material.toon = p.toon > 0;
     material.flat = p.flat > 0;
     if (material.flat) {

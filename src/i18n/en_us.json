@@ -156,7 +156,9 @@
             "soap": "Soap film",
             "soapFilm": "Film thickness (nm)",
             "soapSwirl": "Swirls",
-            "soapScale": "Swirl size"
+            "soapScale": "Swirl size",
+            "edgeRadius": "Edge radius",
+            "edgeConcave": "Inner edges"
         },
         "paramGroups": {
             "base": "Base",
@@ -170,7 +172,8 @@
             "cloud": "Cloud",
             "wool": "Wool",
             "grass": "Grass",
-            "soap": "Soap film"
+            "soap": "Soap film",
+            "edges": "Rounded edges (shader)"
         },
         "categories": {
             "metal": "Metal",
