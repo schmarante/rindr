@@ -240,7 +240,18 @@
             "grass-lawn": "Lawn",
             "grass-meadow": "Meadow",
             "soap-bubble": "Soap bubble",
-            "plastic-blue-rounded": "Blue plastic, rounded edges"
+            "plastic-blue-rounded": "Blue plastic, rounded edges",
+            "glass-blue": "Glass, blue tint",
+            "glass-bronze": "Glass, bronze tint",
+            "glass-bottle-green": "Green bottle glass",
+            "glass-reflective": "Reflective solar glass",
+            "glass-painted-dark": "Back-painted glass, dark",
+            "mirror": "Mirror",
+            "paint-lacquer-black": "Piano lacquer black",
+            "paint-lacquer-white": "Piano lacquer white",
+            "metal-alu-anodized-blue": "Aluminium anodised blue",
+            "metal-alu-anodized-red": "Aluminium anodised red",
+            "emissive-neon-red": "Neon red (emissive)"
         },
         "defaultNames": {
             "material": "Material",
