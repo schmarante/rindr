@@ -1,0 +1,56 @@
+{
+    "de_de": {
+        "nodes": {
+            "types": {
+                "noise": {
+                    "label": "Rauschen",
+                    "inputs": { "uv": "Koordinate", "a": "Farbe A", "b": "Farbe B" },
+                    "outputs": { "value": "Wert", "color": "Farbe" },
+                    "params": {
+                        "noiseType": "Art", "scale": "Größe", "detail": "Detail", "stretch": "Streckung",
+                        "low": "Schwelle unten", "high": "Schwelle oben", "seed": "Variante",
+                        "a": "Farbe A", "b": "Farbe B"
+                    },
+                    "options": { "noiseType": { "regular": "Einfach", "fractal": "Fraktal", "turbulence": "Turbulenz" } }
+                },
+                "dent": {
+                    "label": "Dellen",
+                    "inputs": { "uv": "Koordinate", "a": "Farbe A", "b": "Farbe B" },
+                    "outputs": { "value": "Wert", "color": "Farbe" },
+                    "params": {
+                        "scale": "Anzahl", "size": "Dellengröße", "density": "Dichte", "strength": "Tiefe",
+                        "detail": "Detail", "distort": "Unregelmäßigkeit", "seed": "Variante",
+                        "a": "Farbe A", "b": "Farbe B"
+                    }
+                }
+            }
+        }
+    },
+    "en_us": {
+        "nodes": {
+            "types": {
+                "noise": {
+                    "label": "Noise",
+                    "inputs": { "uv": "Coordinate", "a": "Colour A", "b": "Colour B" },
+                    "outputs": { "value": "Value", "color": "Colour" },
+                    "params": {
+                        "noiseType": "Type", "scale": "Size", "detail": "Detail", "stretch": "Stretch",
+                        "low": "Low threshold", "high": "High threshold", "seed": "Variant",
+                        "a": "Colour A", "b": "Colour B"
+                    },
+                    "options": { "noiseType": { "regular": "Regular", "fractal": "Fractal", "turbulence": "Turbulence" } }
+                },
+                "dent": {
+                    "label": "Dents",
+                    "inputs": { "uv": "Coordinate", "a": "Colour A", "b": "Colour B" },
+                    "outputs": { "value": "Value", "color": "Colour" },
+                    "params": {
+                        "scale": "Count", "size": "Dent size", "density": "Density", "strength": "Depth",
+                        "detail": "Detail", "distort": "Irregularity", "seed": "Variant",
+                        "a": "Colour A", "b": "Colour B"
+                    }
+                }
+            }
+        }
+    }
+}
