@@ -355,15 +355,31 @@
             "noise": {
                 "label": "Rauschen",
                 "outputs": {
-                    "value": "Wert"
+                    "value": "Wert",
+                    "color": "Farbe"
                 },
                 "params": {
                     "scale": "Größe",
                     "detail": "Detail",
-                    "stretch": "Streckung"
+                    "stretch": "Streckung",
+                    "noiseType": "Art",
+                    "low": "Schwelle unten",
+                    "high": "Schwelle oben",
+                    "seed": "Variante",
+                    "a": "Farbe A",
+                    "b": "Farbe B"
                 },
                 "inputs": {
-                    "uv": "Koordinate"
+                    "uv": "Koordinate",
+                    "a": "Farbe A",
+                    "b": "Farbe B"
+                },
+                "options": {
+                    "noiseType": {
+                        "regular": "Einfach",
+                        "fractal": "Fraktal",
+                        "turbulence": "Turbulenz"
+                    }
                 }
             },
             "gradient": {
@@ -477,6 +493,299 @@
                 },
                 "params": {
                     "value": "Wert"
+                }
+            },
+            "cellular": {
+                "label": "Zellen",
+                "inputs": {
+                    "uv": "Koordinate",
+                    "a": "Zellfarbe",
+                    "b": "Fugenfarbe"
+                },
+                "outputs": {
+                    "color": "Farbe",
+                    "value": "Höhe",
+                    "random": "Zufall je Zelle"
+                },
+                "params": {
+                    "mode": "Art",
+                    "scale": "Zellen",
+                    "spread": "Zellgröße",
+                    "smoothing": "Weichheit",
+                    "roughness": "Unregelmäßigkeit",
+                    "fractal": "Fraktal",
+                    "variation": "Farbvariation",
+                    "a": "Zellfarbe",
+                    "b": "Fugenfarbe"
+                },
+                "options": {
+                    "mode": {
+                        "cells": "Steine",
+                        "chips": "Platten (scharfkantig)",
+                        "circular": "Kiesel (rund)"
+                    }
+                }
+            },
+            "speckle": {
+                "label": "Sprenkel",
+                "inputs": {
+                    "uv": "Koordinate",
+                    "a": "Grundfarbe",
+                    "b": "Sprenkelfarbe"
+                },
+                "outputs": {
+                    "color": "Farbe",
+                    "value": "Höhe",
+                    "random": "Zufall je Sprenkel"
+                },
+                "params": {
+                    "scale": "Raster",
+                    "size": "Sprenkelgröße",
+                    "density": "Dichte",
+                    "variation": "Größenvariation",
+                    "layers": "Körnungen",
+                    "roundness": "Rundheit",
+                    "elongation": "Streckung",
+                    "softness": "Weichheit",
+                    "tone": "Farbvariation",
+                    "a": "Grundfarbe",
+                    "b": "Sprenkelfarbe"
+                }
+            },
+            "dots": {
+                "label": "Lochmuster",
+                "inputs": {
+                    "uv": "Koordinate",
+                    "a": "Farbe Loch/Grund",
+                    "b": "Farbe Material"
+                },
+                "outputs": {
+                    "value": "Maske",
+                    "color": "Farbe",
+                    "random": "Zufall"
+                },
+                "params": {
+                    "pattern": "Muster",
+                    "shape": "Lochform",
+                    "stagger": "Versatz",
+                    "count": "Spalten",
+                    "rows": "Reihen (0 = auto)",
+                    "size": "Größe",
+                    "length": "Länge",
+                    "rounding": "Rundung",
+                    "bevel": "Wölbung",
+                    "bars": "Stege je Gruppe",
+                    "rotation": "Drehung",
+                    "a": "Farbe Loch/Grund",
+                    "b": "Farbe Material"
+                },
+                "options": {
+                    "pattern": {
+                        "perforated": "Lochblech",
+                        "dots": "Punkte/Noppen",
+                        "expanded": "Streckmetall",
+                        "tread": "Tränenblech",
+                        "bars": "Riffelblech (Stege)"
+                    },
+                    "shape": {
+                        "circle": "Rund",
+                        "square": "Quadrat",
+                        "slot": "Langloch"
+                    },
+                    "stagger": {
+                        "none": "Gerade",
+                        "half": "Versetzt"
+                    },
+                    "rotation": {
+                        "0": "0°",
+                        "90": "90°"
+                    }
+                }
+            },
+            "dent": {
+                "label": "Dellen",
+                "inputs": {
+                    "uv": "Koordinate",
+                    "a": "Farbe A",
+                    "b": "Farbe B"
+                },
+                "outputs": {
+                    "value": "Wert",
+                    "color": "Farbe"
+                },
+                "params": {
+                    "scale": "Anzahl",
+                    "size": "Dellengröße",
+                    "density": "Dichte",
+                    "strength": "Tiefe",
+                    "detail": "Detail",
+                    "distort": "Unregelmäßigkeit",
+                    "seed": "Variante",
+                    "a": "Farbe A",
+                    "b": "Farbe B"
+                }
+            },
+            "tiles": {
+                "label": "Fliesen & Ziegel",
+                "inputs": {
+                    "uv": "Koordinate",
+                    "a": "Steinfarbe",
+                    "b": "Fugenfarbe",
+                    "c": "Steinfarbe 2"
+                },
+                "outputs": {
+                    "color": "Farbe",
+                    "value": "Höhe",
+                    "mask": "Maske",
+                    "random": "Zufall",
+                    "uv": "Koordinate je Stein"
+                },
+                "params": {
+                    "pattern": "Muster",
+                    "countU": "Anzahl U",
+                    "countV": "Anzahl V",
+                    "ratio": "Seitenverhältnis",
+                    "gap": "Fugenbreite",
+                    "bevel": "Fase",
+                    "profile": "Kantenform",
+                    "edgeNoise": "Kanten unregelmäßig",
+                    "surface": "Oberfläche rau",
+                    "variation": "Farbvariation",
+                    "colorMix": "Anteil Steinfarbe 2",
+                    "jitter": "Zufallsversatz",
+                    "seed": "Zufallswert",
+                    "a": "Steinfarbe",
+                    "b": "Fugenfarbe",
+                    "c": "Steinfarbe 2"
+                },
+                "options": {
+                    "pattern": {
+                        "stack": "Raster",
+                        "running": "Läuferverband (½)",
+                        "third": "Drittelverband (⅓)",
+                        "english": "Blockverband",
+                        "flemish": "Flämischer Verband",
+                        "herringbone": "Fischgrät",
+                        "basket": "Flechtmuster",
+                        "diamond": "Diagonal (Raute)",
+                        "planks": "Dielen"
+                    },
+                    "profile": {
+                        "round": "Gerundet",
+                        "chamfer": "Gefast"
+                    }
+                }
+            },
+            "waves": {
+                "label": "Wellen & Streifen",
+                "inputs": {
+                    "uv": "UV",
+                    "a": "Farbe Tal",
+                    "b": "Farbe Kamm"
+                },
+                "outputs": {
+                    "value": "Höhe",
+                    "color": "Farbe",
+                    "random": "Zufall je Streifen",
+                    "uv": "UV je Streifen"
+                },
+                "params": {
+                    "profile": "Profil",
+                    "count": "Anzahl",
+                    "axis": "Richtung",
+                    "width": "Breite (erhaben)",
+                    "slope": "Flanke",
+                    "softness": "Weichheit",
+                    "distortion": "Verzerrung",
+                    "centres": "Zentren je Zelle",
+                    "wavelength": "Wellenlänge",
+                    "variation": "Farbvariation",
+                    "seed": "Zufallswert",
+                    "a": "Farbe Tal",
+                    "b": "Farbe Kamm"
+                },
+                "options": {
+                    "profile": {
+                        "sine": "Sinus (Wellblech)",
+                        "triangle": "Dreieck",
+                        "square": "Rechteck (Latten, Streifen)",
+                        "trapezoid": "Trapez (Trapezblech)",
+                        "seam": "Falz (Stehfalz)",
+                        "sawtooth": "Sägezahn (Stülpschalung)",
+                        "ripples": "Wasserringe"
+                    },
+                    "axis": {
+                        "u": "U",
+                        "v": "V"
+                    }
+                }
+            },
+            "weave": {
+                "label": "Gewebe",
+                "inputs": {
+                    "uv": "Koordinate",
+                    "a": "Kette",
+                    "b": "Schuss"
+                },
+                "outputs": {
+                    "color": "Farbe",
+                    "value": "Höhe",
+                    "mask": "Kette oben",
+                    "random": "Zufall"
+                },
+                "params": {
+                    "pattern": "Bindung",
+                    "count": "Fäden",
+                    "gap": "Abstand",
+                    "fuzz": "Flaum",
+                    "variation": "Unregelmäßigkeit",
+                    "a": "Kette",
+                    "b": "Schuss"
+                },
+                "options": {
+                    "pattern": {
+                        "plain": "Leinwand",
+                        "twill": "Köper 2/2",
+                        "denim": "Köper 3/1 (Denim)",
+                        "satin": "Satin",
+                        "basket": "Panama (2×2)",
+                        "herringbone": "Fischgrat",
+                        "loop": "Schlinge (Berber)",
+                        "cut": "Velours"
+                    }
+                }
+            },
+            "wood": {
+                "label": "Holz",
+                "inputs": {
+                    "uv": "Koordinate",
+                    "a": "Frühholz",
+                    "b": "Spätholz"
+                },
+                "outputs": {
+                    "color": "Farbe",
+                    "value": "Relief",
+                    "ring": "Jahresring",
+                    "pores": "Poren"
+                },
+                "params": {
+                    "cut": "Schnitt",
+                    "rings": "Jahresringe",
+                    "arches": "Fladern",
+                    "irregularity": "Unregelmäßigkeit",
+                    "stretch": "Streckung",
+                    "latewood": "Spätholzanteil",
+                    "contrast": "Kontrast",
+                    "pores": "Poren",
+                    "seed": "Variante",
+                    "a": "Frühholz",
+                    "b": "Spätholz"
+                },
+                "options": {
+                    "cut": {
+                        "flat": "Fladerschnitt",
+                        "quarter": "Riftschnitt"
+                    }
                 }
             }
         }
