@@ -787,6 +787,42 @@
                         "quarter": "Quarter-sawn"
                     }
                 }
+            },
+            "marble": {
+                "label": "Marble / stone",
+                "inputs": {
+                    "uv": "Coordinate",
+                    "a": "Base colour",
+                    "b": "Vein colour",
+                    "c": "Second colour"
+                },
+                "outputs": {
+                    "color": "Colour",
+                    "value": "Mask",
+                    "pores": "Pores"
+                },
+                "params": {
+                    "mode": "Type",
+                    "scale": "Size",
+                    "veins": "Density",
+                    "stretch": "Stretch",
+                    "width": "Width",
+                    "turbulence": "Turbulence",
+                    "detail": "Detail",
+                    "softness": "Softness",
+                    "grain": "Grain",
+                    "pores": "Pores",
+                    "seed": "Variant",
+                    "a": "Base colour",
+                    "b": "Vein colour",
+                    "c": "Second colour"
+                },
+                "options": {
+                    "mode": {
+                        "veins": "Veins",
+                        "banded": "Layers"
+                    }
+                }
             }
         }
     },
