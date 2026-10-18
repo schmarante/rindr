@@ -378,6 +378,57 @@ function soapPatch() {
   };
 }
 
+// Rounded edges (src/scripts/materials/edges.js – fails loudly if the library changed, check on every update):
+// - BVHComputeData: remembers per geometry where its vertices start in the packed attribute buffer
+// - PathtracerBVHComputeData.writeMaterialData: spare transform fields = the geometry's block in EDGE_DATA
+//   (_alignment0) and that vertex start (_alignment1)
+// - megakernel: a hit on a material with an edge radius (stand-in anisotropyRotation, anisotropy 0) bends the
+//   object-space normal with the same function as the raster (EDGE_WGSL), before it goes to world space
+const EDGES_MODULE = fileURLToPath(new URL('./src/scripts/materials/edges.js', import.meta.url));
+const EDGE_NORMAL = `
+						// RINDR rounded edges (edges.js): the normal near sharp edges like a fillet, object space – on the
+						// camera ray and the first bounce (reflections of the edges); deeper bounces barely show it
+						if ( materialInfo.anisotropyRotation != 0.0 && materialInfo.anisotropy == 0.0 && bounce < \${ __EDGE_BOUNCES } ) {
+
+							let edScale = ( length( objectInfo.matrixWorld[ 0 ].xyz ) + length( objectInfo.matrixWorld[ 1 ].xyz ) + length( objectInfo.matrixWorld[ 2 ].xyz ) ) / 3.0;
+							vertexData.normal = vec4f( \${ __EDGES }( vertexData.position.xyz, vertexData.normal.xyz, hitResult.indices.x - objectInfo._alignment1, objectInfo._alignment0, materialInfo.anisotropyRotation / max( edScale, 1e-30 ) ), 0.0 );
+							materialInfo.anisotropyRotation = 0.0;
+
+						}
+`;
+function edgesPatch() {
+  return {
+    name: 'rindr-edges',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.replace(/\\/g, '/').split('?')[0];
+      const name = file.split('/').pop();
+      const replaceOnce = (from, to) => {
+        const n = typeof from === 'string' ? code.split(from).length - 1 : (code.match(new RegExp(from.source, 'g')) || []).length;
+        if (n !== 1) this.error(`rindr-edges: ${from} not found exactly once in ${name} (three-gpu-pathtracer / three-mesh-bvh changed?)`);
+        code = code.replace(from, to);
+      };
+      if (file.endsWith('three-mesh-bvh/src/webgpu/BVHComputeData.js')) {
+        replaceOnce(/\n(\t+)bvh: primBvh,\n/, (m, tab) => `${m}${tab}rindrGeometry: object.geometry,\n`);
+        replaceOnce(/\n(\t+)appendGeometryData\( info\.bvh, info\.range, attributesOffset, attributesBuffer, attributeStruct, this \);\n/,
+          (m, tab) => `${m}${tab}( this.rindrVertexStart ??= new Map() ).set( info.rindrGeometry, ( attributesOffset - info.range.vertexStart ) >>> 0 );\n`);
+        return { code, map: null };
+      }
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/PathtracerBVHComputeData.js')) {
+        replaceOnce(/\n(\t+)transformBufferU32\[ writeOffset \* transformStruct\.getLength\(\) \+ 33 \] = index;\n/, (m, tab) => `${m}`
+          + `${tab}transformBufferU32[ writeOffset * transformStruct.getLength() + 34 ] = __edgeBase( object.geometry );\n`
+          + `${tab}transformBufferU32[ writeOffset * transformStruct.getLength() + 35 ] = this.rindrVertexStart?.get( object.geometry ) ?? 0;\n`);
+        return { code: `import { edgeBase as __edgeBase } from ${JSON.stringify(EDGES_MODULE)};\n` + code, map: null };
+      }
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) {
+        replaceOnce(/\n\t+var vertexData = \$\{ sampleTrianglePointFn \}\( hitResult\.barycoord, hitResult\.indices\.xyz \);\n/, m => m + EDGE_NORMAL);
+        return { code: `import { EDGE_WGSL as __EDGES, EDGE_BOUNCES as __EDGE_BOUNCES } from ${JSON.stringify(EDGES_MODULE)};\n` + code, map: null };
+      }
+      return null;
+    },
+  };
+}
+
 // Cross-origin isolation: required for SharedArrayBuffer so three-mesh-bvh can build the BVH
 // in parallel on several workers (= CPU cores). In production public/.htaccess sets the
 // same headers.
@@ -420,7 +471,7 @@ export default defineConfig({
     headers: isolationHeaders,
   },
   vite: {
-    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), ptStandInPatch(), glassBouncesPatch(), cloudPatch(), woolPatch(), soapPatch(), glassShadowPatch()],
+    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), ptStandInPatch(), glassBouncesPatch(), cloudPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch()],
     server: { headers: isolationHeaders },
     preview: { headers: isolationHeaders },
     worker: { format: 'es' },

@@ -156,7 +156,9 @@
             "soap": "Seifenhaut",
             "soapFilm": "Filmdicke (nm)",
             "soapSwirl": "Schlieren",
-            "soapScale": "Größe der Schlieren"
+            "soapScale": "Größe der Schlieren",
+            "edgeRadius": "Kantenradius",
+            "edgeConcave": "Innenkanten"
         },
         "paramGroups": {
             "base": "Basis",
@@ -170,7 +172,8 @@
             "cloud": "Wolke",
             "wool": "Wolle",
             "grass": "Gras",
-            "soap": "Seifenhaut"
+            "soap": "Seifenhaut",
+            "edges": "Kanten abrunden (Shader)"
         },
         "categories": {
             "metal": "Metall",
