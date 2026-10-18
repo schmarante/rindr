@@ -1,0 +1,72 @@
+{
+  "de_de": {
+    "materials": {
+      "presets": {
+        "fabric-linen": "Leinen natur",
+        "fabric-canvas": "Baumwoll-Canvas grau",
+        "fabric-denim": "Denim blau",
+        "fabric-wool-twill": "Wollstoff Köper grau",
+        "fabric-herringbone": "Fischgrat",
+        "fabric-tweed": "Tweed meliert",
+        "fabric-satin": "Satin weinrot",
+        "fabric-velvet": "Samt rot",
+        "fabric-corduroy": "Cord braun",
+        "fabric-chenille": "Chenille blau",
+        "fabric-burlap": "Jute (Sackleinen)",
+        "fabric-plaid": "Schottenkaro",
+        "fabric-stripes": "Streifenstoff blau-weiß",
+        "fabric-netting": "Tüll / Netz weiß",
+        "fabric-cane": "Rattangeflecht",
+        "leather-smooth": "Glattleder braun",
+        "leather-pebbled": "Narbenleder schwarz",
+        "leather-patent": "Lackleder schwarz",
+        "carpet-berber": "Teppich Schlinge (Berber)",
+        "carpet-velour": "Teppich Velours blau",
+        "carpet-needle-punch": "Nadelfilz anthrazit",
+        "carpet-sisal": "Sisal",
+        "plastic-carbon": "Carbon (Kohlefaser)",
+        "plastic-grained": "Kunststoff genarbt",
+        "plastic-laminate": "Schichtstoff (HPL) gesprenkelt",
+        "rubber-neoprene": "Neopren",
+        "rubber-studded": "Gummi-Noppenboden",
+        "foam-polystyrene": "Polystyrol-Hartschaum (EPS)",
+        "foam-rubber": "Schaumstoff"
+      }
+    }
+  },
+  "en_us": {
+    "materials": {
+      "presets": {
+        "fabric-linen": "Linen natural",
+        "fabric-canvas": "Cotton canvas grey",
+        "fabric-denim": "Denim blue",
+        "fabric-wool-twill": "Wool twill grey",
+        "fabric-herringbone": "Herringbone",
+        "fabric-tweed": "Tweed flecked",
+        "fabric-satin": "Satin wine red",
+        "fabric-velvet": "Velvet red",
+        "fabric-corduroy": "Corduroy brown",
+        "fabric-chenille": "Chenille blue",
+        "fabric-burlap": "Hessian (burlap)",
+        "fabric-plaid": "Tartan check",
+        "fabric-stripes": "Striped fabric blue/white",
+        "fabric-netting": "Netting white",
+        "fabric-cane": "Cane webbing",
+        "leather-smooth": "Smooth leather brown",
+        "leather-pebbled": "Pebbled leather black",
+        "leather-patent": "Patent leather black",
+        "carpet-berber": "Carpet loop pile (berber)",
+        "carpet-velour": "Carpet cut pile blue",
+        "carpet-needle-punch": "Needle felt anthracite",
+        "carpet-sisal": "Sisal",
+        "plastic-carbon": "Carbon fibre",
+        "plastic-grained": "Plastic grained",
+        "plastic-laminate": "Laminate (HPL) speckled",
+        "rubber-neoprene": "Neoprene",
+        "rubber-studded": "Studded rubber flooring",
+        "foam-polystyrene": "Expanded polystyrene (EPS)",
+        "foam-rubber": "Foam rubber"
+      }
+    }
+  }
+}
