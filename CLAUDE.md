@@ -65,6 +65,7 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 | `docs/hdri-editor.md` | HDRI-Editor – eigene prozedurale HDRIs (`src/scripts/hdri/`): Modell, Generator, Pins, Sonne & Himmel, Export, Fenster. |
 | `docs/environment.md` | Umgebung, HDRI, Boden – `environment.js`, `ground.js`, `background-dome.js`, `contact-shadow.js`, `shadow-catcher.js`. |
 | `docs/materials.md` | Materialien und Node-Editor – `material-*.js`, `graph-apply.js`, `node-editor.js`; besondere Materialien in `src/scripts/materials/` (Toon/RindrMaterial, Konturen, Leuchtmarmor, Wolke, Wolle, Gras, Seifenhaut). |
+| `docs/material-library.md` | Material-Bibliothek – Presets je Kategorie in `src/scripts/presets/` (aus den MAX-Bibliotheken nachgebaut), Graph-Baukasten, Prüfweg. |
 | `docs/scene-state.md` | Szenen-Zustand, Speichern/Laden, Assets, Rückgängig – `scene-state.js`, `assets.js`, `history.js`, Teile von `viewer.js`. |
 | `docs/ui.md` | Oberfläche und Bedienung – Scene Graph, Eigenschaften/Gizmo, Leiste, Drop-Fläche, mehrere Modelle, Menüs, Dialoge, Tasten, Auswahl. |
 | `docs/export-ki.md` | Bild-Export und KI-Rendering – `image-export.js`, `png-encode.js`, `ki-render.js`, `ki-gemini.js`. |
