@@ -21,6 +21,7 @@ import { WoolSystem } from './materials/wool.js';
 import { setSoapSceneSize } from './materials/soap.js';
 import { GrassSystem } from './materials/grass.js';
 import { GraphApplier } from './graph-apply.js';
+import { EdgeRounding } from './edge-rounding.js';
 import { NodeEditor } from './node-editor.js';
 import { createStudioEnvironment, renderStudioEnvironment, loadHdri, listHdris, VignetteBackground } from './environment.js';
 import { PathTracingView } from './pathtracer.js';
@@ -845,6 +846,12 @@ const properties = new PropertiesPanel(document.getElementById('properties'), {
     onPickFocus: () => startFocusPick(),
     // dragging the focus slider: raster preview with tinted focus plane, then path tracing restarts
     onFocusEdit: active => (active ? pathTracing.pauseForEdit() : pathTracing.resumeAfterEdit('camera')),
+    // rounded edges per object (real geometry, edge-rounding.js)
+    edgeRounding: {
+        get: entry => ({ ...edgeRounding.get(entry.object), ...pendingRound.get(entry.object) }),
+        remember: (entry, v) => pendingRound.set(entry.object, { ...pendingRound.get(entry.object), ...v }),
+        set: (entry, v) => setEdgeRounding(entry.object, v),
+    },
     // quality per part (STEP only)
     partQuality: {
         presets: Object.keys(TESS_PRESETS),
@@ -2200,6 +2207,31 @@ async function releaseLargeStep() {
     if (!model.file && !model.url) return;   // cannot be read again
     model.content = null;
     releaseStepFile();
+}
+
+// Rounded edges: geometry swapped per body in a worker (edge-rounding.js); one undo step per change
+const edgeRounding = new EdgeRounding({
+    modelMeshes: () => [...currentMeshes, ...extraModels.flatMap(x => x.meshes)],
+    makeGeometry: g => makeGeometry(g),
+    onProgress: f => showProgress(t('status.roundingEdges'), f),
+    onReplaced: () => { invalidatePathTracing(); updateHighlight(); updatePathTracingScene(); },
+});
+const pendingRound = new WeakMap();   // fillet choice made while the radius is still 0
+async function setEdgeRounding(object, value, { record = true } = {}) {
+    const before = { ...edgeRounding.get(object) };
+    const next = { radius: value.radius, fillet: value.fillet ?? before.fillet };
+    if (before.radius === next.radius && before.fillet === next.fillet) return;
+    pendingRound.delete(object);
+    if (record) history.record({ label: t('viewer.undo.roundEdges'), undo: () => setEdgeRounding(object, before, { record: false }), redo: () => setEdgeRounding(object, next, { record: false }) });
+    showProgress(t('status.roundingEdges'), 0);
+    try {
+        await edgeRounding.set(object, next);
+        finishProgress();
+    } catch (err) {
+        hideProgress();
+        console.error('[Rounded edges]', err);
+    }
+    if (selection?.object === object) properties.show(selection);
 }
 
 /** Set the level of a part ('' = as parent) and re-tessellate only the affected solids */
@@ -4435,6 +4467,7 @@ if (new URLSearchParams(location.search).has('debug')) {
         // material node graphs: bake an input into a PNG / render a description on the thumbnail sphere (debug-graph.js)
         bakeGraph: (graph, opts) => import('./debug-graph.js').then(m => m.bakeGraphImage(graphApplier, graph, opts)),
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel.thumbs, def)),
+        setEdgeRounding,
         clouds, grass, getSplats: () => splatMesh, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 }
 
