@@ -35,6 +35,8 @@ export const MATERIAL_PRESETS = [
     { libraryId: 'plastic-red', category: 'plastic', params: { color: '#c4161c', metalness: 0, roughness: 0.3 } },
     { libraryId: 'plastic-blue', category: 'plastic', params: { color: '#1f5fbf', metalness: 0, roughness: 0.3 } },
     { libraryId: 'plastic-yellow', category: 'plastic', params: { color: '#f2c200', metalness: 0, roughness: 0.3 } },
+    // demo of the rounded edges shader (edges.js): glossy, so the highlight runs along the rounded edges
+    { libraryId: 'plastic-blue-rounded', category: 'plastic', params: { color: '#2f6fd6', metalness: 0, roughness: 0.22, edgeRadius: 1, edgeConcave: 1 } },
     { libraryId: 'rubber-black', category: 'plastic', params: { color: '#141414', metalness: 0, roughness: 0.9, sheen: 0.3, sheenRoughness: 0.8, sheenColor: '#3a3a3a' } },
 
     // --- paint ---
