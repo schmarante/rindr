@@ -32,7 +32,7 @@ const CHECKER_BEHIND = 6;                   // backdrop distance behind the sphe
 const EXPOSURE = 1.0;
 const DB_NAME = 'rindr-thumbs';
 const CHECKER_KEY = 'rindr.materials.checker';
-const DB_LIMIT = 64;                        // stored images (presets only); the oldest are removed beyond that
+const DB_LIMIT = 256;                       // stored images (presets only, ~2–3 KB each); the oldest are removed beyond that
 
 /** Short hash of a material description (part of the image key) */
 export function thumbKey(description) {
