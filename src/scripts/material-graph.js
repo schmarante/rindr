@@ -9,6 +9,11 @@
 //    tracer see exactly the same.
 // "Relief" (height) is additionally converted into a normal map, "alpha" cuts the surface (alpha test).
 //
+// Coordinates (like the coordinate settings of texture maps in MAX): every texture node has offset U/V, tiling U/V
+// and an angle (MAPPING_PARAMS); the image node also a wrap mode per axis (repeat / mirror / off). An image that does
+// not repeat on an axis is a single picture – a decal. Such a graph cannot be baked into a repeating tile: it is baked
+// once over the UV range of the meshes that use the material ("UV mode", isUvMode – graph-apply.js passes the range).
+//
 // Procedural texture nodes live in their own modules in nodes/ (one per type, default export = node type with an
 // `evaluate` function; see node-lib.js for the result format and the tileable helpers) and register themselves here.
 //
@@ -17,9 +22,9 @@
 // reads it, e.g. metalness = B, roughness = G), the original texture is set directly as a map
 // (kind 'map', full resolution, material parameters act as a factor). Only when something sits
 // in between is it baked – with the model's UVs, at the resolution of the source texture.
-import { t } from './i18n.js';
+import { t, has } from './i18n.js';
 import * as THREE from 'three/webgpu';
-import { float, vec3, vec4, uv, texture, mat3, fract, floor, dot, mix, mod, clamp, max, min, pow, sRGBTransferOETF } from 'three/tsl';
+import { float, vec2, vec3, vec4, uv, texture, mat3, fract, floor, dot, mix, mod, clamp, max, min, pow, abs, step, dFdx, dFdy, sRGBTransferOETF } from 'three/tsl';
 import { LUMA, linear, C, T, tsl, convert, input } from './node-lib.js';
 
 export const BAKE_SIZE = 1024;
@@ -72,10 +77,13 @@ export const NODE_TYPES = {
     },
     image: {
         category: 'texture', color: 'bg-amber-700', texture: true,
-        inputs: [], outputs: [{ key: 'color', type: 'color' }, { key: 'value', type: 'float' }],
+        inputs: [], outputs: [{ key: 'color', type: 'color' }, { key: 'value', type: 'float' }, { key: 'alpha', type: 'float' }],
         params: [
             { key: 'image', kind: 'image', default: null },
             { key: 'scale', kind: 'number', min: 1, max: 50, step: 1, default: 4 },
+            // per axis: repeat, mirror every other copy, or off (a single picture – decal; alpha 0 outside)
+            { key: 'wrapU', kind: 'select', options: ['repeat', 'mirror', 'off'], default: 'repeat' },
+            { key: 'wrapV', kind: 'select', options: ['repeat', 'mirror', 'off'], default: 'repeat' },
         ],
     },
     importMap: {
@@ -162,6 +170,24 @@ for (const mod of Object.values(import.meta.glob('./nodes/*.js', { eager: true }
     if (def?.type) NODE_TYPES[def.type] = def;
 }
 
+// Coordinates of every texture node (not the imported textures – they follow the model's UVs): offset (in tile units
+// – for a decal the position of its lower left corner), tiling per axis (copies per tile; for a decal 1 / its size)
+// and an angle around the picture's centre. Defaults = the coordinate unchanged (older graphs look the same).
+// Integer tiling, mirroring and 90° steps keep a repeating texture seamless; other values break the tile edges.
+export const MAPPING_PARAMS = [
+    { key: 'offsetU', kind: 'number', min: -100, max: 100, step: 0.01, default: 0, mapping: true },
+    { key: 'offsetV', kind: 'number', min: -100, max: 100, step: 0.01, default: 0, mapping: true },
+    { key: 'tilingU', kind: 'number', min: 0.01, max: 100, step: 0.01, default: 1, mapping: true },
+    { key: 'tilingV', kind: 'number', min: 0.01, max: 100, step: 0.01, default: 1, mapping: true },
+    { key: 'angle', kind: 'number', min: -180, max: 180, step: 1, default: 0, mapping: true },
+];
+for (const def of Object.values(NODE_TYPES)) {
+    if (def.texture && !def.importOnly) def.params = [...(def.params || []), ...MAPPING_PARAMS];
+}
+
+/** graph with a picture that does not repeat (decal): baked over the UV range of its meshes instead of a tile */
+export const isUvMode = graph => !!graph?.nodes?.some(n => n.type === 'image' && (n.params?.wrapU === 'off' || n.params?.wrapV === 'off'));
+
 export const NODE_CATEGORIES = ['input', 'texture', 'color', 'value'];
 
 /** Display label of a node type */
@@ -171,9 +197,10 @@ export const categoryLabel = category => t(`nodes.categories.${category}`);
 /** Display label of an input ('inputs') or output ('outputs') port */
 export const portLabel = (type, side, key) => t(`nodes.types.${type}.${side}.${key}`);
 /** Display label of a node parameter */
-export const paramLabel = (type, key) => t(`nodes.types.${type}.params.${key}`);
+export const paramLabel = (type, key) => (has(`nodes.types.${type}.params.${key}`) ? t(`nodes.types.${type}.params.${key}`) : t(`nodes.mapping.${key}`));
 /** Display label of an option of a select parameter */
-export const optionLabel = (type, param, option) => t(`nodes.types.${type}.options.${param}.${option}`);
+export const optionLabel = (type, param, option) => (has(`nodes.types.${type}.options.${param}.${option}`)
+    ? t(`nodes.types.${type}.options.${param}.${option}`) : t(`nodes.mapping.options.${param}.${option}`));
 
 /** Empty graph with output */
 export function createGraph() {
@@ -232,10 +259,14 @@ export function defaultParams(type) {
  * @returns {{ [input]: { kind: 'const', value: number|THREE.Color } | { kind: 'map', texture }
  *           | { kind: 'tsl', node, type, sig, size } }}
  */
-export function evaluateGraph(graph, textures, importMaps = {}) {
+export function evaluateGraph(graph, textures, importMaps = {}, { domain = null } = {}) {
     // bakeSize: texels across the tile – nodes that smooth edges over about one texel need it
     const fixed = bakeResolution(graph.nodes.find(n => n.type === 'output')?.params?.resolution);
-    const ctx = { textures, importMaps, bakeSize: fixed || BAKE_SIZE };
+    // coordinate of a bake texel: tile mode – the tile's UV (0..1 = one tile); UV mode (domain = { min, max, scale }) –
+    // the model's UV range across the texture, in tile units (× scale = UV_TILE / size)
+    const modelUv = domain ? mix(vec2(...domain.min), vec2(...domain.max), uv()) : uv();
+    const base = domain ? modelUv.mul(domain.scale) : uv();
+    const ctx = { textures, importMaps, bakeSize: fixed || BAKE_SIZE, base, modelUv };
     const nodes = new Map(graph.nodes.map(n => [n.id, n]));
     const linkTo = new Map(graph.links.map(l => [l.to.node + ':' + l.to.port, l.from]));
     const cache = new Map();
@@ -306,12 +337,23 @@ export function evaluateGraph(graph, textures, importMaps = {}) {
     }
     result.reliefStrength = out.params?.reliefStrength ?? 1;
     result.size = out.params?.size ?? 100;
+    result.domain = domain;
     return result;
 }
 
 function evalNode(n, port, get, ctx) {
     const { textures, importMaps } = ctx;
     const p = { ...defaultParams(n.type), ...n.params };
+    const def = NODE_TYPES[n.type];
+    // texture nodes: coordinate = connected `uv` input or the bake texel's, then the node's coordinate settings;
+    // the node reads it through its `uv` input
+    let at = null;
+    if (def?.texture && !def.importOnly) {
+        const connected = get('uv');
+        at = mapCoord(connected?.type === 'vector' ? connected.node : ctx.base, p);
+        const inner = get;
+        get = k => (k === 'uv' ? T(at, 'vector') : inner(k));
+    }
     switch (n.type) {
         case 'value': return C(p.value);
         case 'color': return C(linear(p.color));
@@ -352,38 +394,59 @@ function evalNode(n, port, get, ctx) {
         }
         case 'gradient': {
             const s = Math.max(1, Math.round(p.scale));
-            const c = p.axis === 'v' ? uv().y : uv().x;
+            const c = p.axis === 'v' ? at.y : at.x;
             return T(fract(c.mul(s)), 'float');
         }
         case 'checker': {
             const s = Math.max(1, Math.round(p.scale));
-            const cell = floor(uv().mul(s));
+            const cell = floor(at.mul(s));
             const m = mod(cell.x.add(cell.y), 2);
             const a = input(get, 'a', 'color', p.a), b = input(get, 'b', 'color', p.b);
             return port === 'value' ? T(m, 'float') : T(mix(tsl(a), tsl(b), m), 'color');
         }
         case 'image': {
             const tex = textures?.get(n.id);
-            if (!tex) return port === 'value' ? C(0.5) : C(new THREE.Color(0.5, 0.5, 0.5));
-            const s = Math.max(1, Math.round(p.scale));
-            const c = texture(tex, fract(uv().mul(s))).rgb;
-            return port === 'value' ? T(dot(c, vec3(...LUMA)), 'float') : T(c, 'color');
+            if (!tex) return port === 'value' ? C(0.5) : port === 'alpha' ? C(0) : C(new THREE.Color(0.5, 0.5, 0.5));
+            const s = at.mul(Math.max(1, Math.round(p.scale)));
+            // wrap per axis ourselves; mip level from the unwrapped coordinate (no seam line at the wrap)
+            const u = wrapAxis(s.x, p.wrapU), v = wrapAxis(s.y, p.wrapV);
+            const c = texture(tex, vec2(u.t, v.t)).grad(dFdx(s), dFdy(s));
+            if (port === 'alpha') return T(c.a.mul(u.inside).mul(v.inside), 'float');
+            return port === 'value' ? T(dot(c.rgb, vec3(...LUMA)), 'float') : T(c.rgb, 'color');
         }
         case 'importMap': {
             const tex = importMaps?.[p.map];
             if (!tex) return port === 'color' ? C(new THREE.Color(0.5, 0.5, 0.5)) : C(0.5);
             // model UVs incl. texture transform (e.g. KHR_texture_transform)
             if (tex.matrixAutoUpdate) tex.updateMatrix();
-            const c = texture(tex, mat3(tex.matrix.clone()).mul(vec3(uv(), 1)).xy);
+            const c = texture(tex, mat3(tex.matrix.clone()).mul(vec3(ctx.modelUv, 1)).xy);
             return port === 'color' ? T(c.rgb, 'color') : T(c[port], 'float');
         }
     }
-    const def = NODE_TYPES[n.type];
     if (def?.evaluate) return def.evaluate(port, p, get, ctx);
     return C(0);
 }
 
 const clamp01 = v => Math.min(Math.max(v, 0), 1);
+
+// coordinate settings of a texture node: (c − offset) × tiling, turned by `angle` around the centre of the copy
+function mapCoord(c, p) {
+    const off = [p.offsetU || 0, p.offsetV || 0], til = [p.tilingU ?? 1, p.tilingV ?? 1], a = (p.angle || 0) * Math.PI / 180;
+    if (!off[0] && !off[1] && til[0] === 1 && til[1] === 1 && !a) return c;   // unchanged (older graphs: same shader)
+    let s = c.sub(vec2(...off)).mul(vec2(...til));
+    if (a) {
+        const d = s.sub(0.5), co = Math.cos(-a), si = Math.sin(-a);
+        s = vec2(d.x.mul(co).sub(d.y.mul(si)), d.x.mul(si).add(d.y.mul(co))).add(0.5);
+    }
+    return s;
+}
+
+// one axis of an image coordinate: { t: 0..1 to sample, inside: 1 where the picture is (0 outside a non-repeating one) }
+function wrapAxis(x, mode) {
+    if (mode === 'mirror') return { t: float(1).sub(abs(fract(x.mul(0.5)).mul(2).sub(1))), inside: float(1) };
+    if (mode === 'off') return { t: clamp(x, 0, 1), inside: step(0, x).mul(step(x, 1)) };
+    return { t: fract(x), inside: float(1) };
+}
 
 // --- Baking ---
 

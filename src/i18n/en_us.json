@@ -517,7 +517,8 @@
                 "label": "Image texture",
                 "outputs": {
                     "color": "Colour",
-                    "value": "Brightness"
+                    "value": "Brightness",
+                    "alpha": "Alpha"
                 },
                 "params": {
                     "image": "Image",
@@ -1007,6 +1008,27 @@
                         "veins": "Veins",
                         "banded": "Layers"
                     }
+                }
+            }
+        },
+        "mapping": {
+            "offsetU": "Offset U",
+            "offsetV": "Offset V",
+            "tilingU": "Tiling U",
+            "tilingV": "Tiling V",
+            "angle": "Angle (°)",
+            "wrapU": "Tile U",
+            "wrapV": "Tile V",
+            "options": {
+                "wrapU": {
+                    "repeat": "Repeat",
+                    "mirror": "Mirror",
+                    "off": "Off (single picture)"
+                },
+                "wrapV": {
+                    "repeat": "Repeat",
+                    "mirror": "Mirror",
+                    "off": "Off (single picture)"
                 }
             }
         }

@@ -22,6 +22,7 @@ import { setSoapSceneSize } from './materials/soap.js';
 import { GrassSystem } from './materials/grass.js';
 import { EdgeSystem } from './materials/edges.js';
 import { GraphApplier } from './graph-apply.js';
+import { isUvMode } from './material-graph.js';
 import { NodeEditor } from './node-editor.js';
 import { createStudioEnvironment, renderStudioEnvironment, loadHdri, listHdris, VignetteBackground } from './environment.js';
 import { PathTracingView } from './pathtracer.js';
@@ -1285,7 +1286,36 @@ const materialManager = new MaterialManager();
 materialManager.scene = scene;
 materialManager.history = history;
 // Node graphs: constants directly, textures are baked (then update the path tracer)
-const graphApplier = new GraphApplier(renderer, { onBaked: () => pathTracing.updateMaterials() });
+const graphApplier = new GraphApplier(renderer, { onBaked: () => pathTracing.updateMaterials(), uvDomain: material => uvDomainOf(material) });
+// UV range of the meshes using a material – a material with a decal (non-repeating picture) is baked over it once
+// (graph-apply.js); the box per geometry is cached
+function uvDomainOf(material) {
+    const min = [Infinity, Infinity], max = [-Infinity, -Infinity];
+    for (const root of [rootGroup, ...extraModels.map(x => x.root)]) {
+        root?.traverse(o => {
+            if (!o.isMesh || o.material !== material) return;
+            const box = o.geometry.userData.uvBox ??= uvBoxOf(o.geometry);
+            if (!box) return;
+            for (let i = 0; i < 2; i++) { min[i] = Math.min(min[i], box.min[i]); max[i] = Math.max(max[i], box.max[i]); }
+        });
+    }
+    return Number.isFinite(min[0]) ? { min, max } : null;
+}
+function uvBoxOf(geometry) {
+    const a = geometry.getAttribute('uv');
+    if (!a) return null;
+    const min = [Infinity, Infinity], max = [-Infinity, -Infinity];
+    for (let i = 0; i < a.count; i++) {
+        const u = a.getX(i), v = a.getY(i);
+        if (u < min[0]) min[0] = u; if (u > max[0]) max[0] = u;
+        if (v < min[1]) min[1] = v; if (v > max[1]) max[1] = v;
+    }
+    return { min, max };
+}
+// assignments changed: decal materials bake over a different UV range (re-baked only if it really changed)
+materialManager.addEventListener('change', () => {
+    for (const entry of materialManager.list) if (isUvMode(entry.def.graph)) graphApplier.apply(entry);
+});
 materialManager.onApply = entry => graphApplier.apply(entry);
 materialManager.addEventListener('change', () => pathTracing.updateMaterials());
 materialManager.addEventListener('update', () => pathTracing.updateMaterials());

@@ -6,8 +6,10 @@
 // unconnected inputs have no map (applyRender does not set them then).
 // Baked maps repeat UV_TILE / size times per UV unit (output node `size` = mm per baked tile); a preview entry
 // (entry.preview, material thumbnails on a sphere with 0..1 UVs) shows one tile across the visible half instead.
+// UV mode (a picture that does not repeat – decal, isUvMode): the maps are baked once over the UV range of the meshes
+// using the material (uvDomain callback) and placed there (repeat/offset, clamped) – no repetition.
 import * as THREE from 'three/webgpu';
-import { evaluateGraph, GraphBaker, loadImageTexture } from './material-graph.js';
+import { evaluateGraph, GraphBaker, loadImageTexture, isUvMode } from './material-graph.js';
 import { PARAMS } from './material-manager.js';
 import { UV_TILE } from './step-importer.js';
 
@@ -30,9 +32,14 @@ const SLOTS = {
 };
 
 export class GraphApplier {
-    constructor(renderer, { onBaked } = {}) {
+    /**
+     * @param {{ onBaked?: (entry) => void, uvDomain?: (material) => { min: number[], max: number[] } | null }} opts
+     *   uvDomain: UV range of the meshes using a material (UV mode); null → 0..1
+     */
+    constructor(renderer, { onBaked, uvDomain } = {}) {
         this.baker = new GraphBaker(renderer);
         this.onBaked = onBaked || (() => {});
+        this.uvDomain = uvDomain || (() => null);
         this.images = new Map();     // Data-URL -> Promise<Texture>
         this.queue = Promise.resolve();
         this.pending = new Map();    // material ID -> timer
@@ -56,7 +63,7 @@ export class GraphApplier {
         }
         let result;
         try {
-            result = evaluateGraph(graph, this._imageTexturesSync(graph), def.render?.maps);
+            result = evaluateGraph(graph, this._imageTexturesSync(graph), def.render?.maps, { domain: this._domain(entry) });
         } catch (err) {
             console.warn('[Material graph]', err.message);
             return;
@@ -86,8 +93,8 @@ export class GraphApplier {
         }
         if (result.height?.kind === 'tsl') material.normalScale.setScalar(1);
         material.alphaTest = result.alpha?.kind === 'tsl' ? 0.5 : def.render?.alphaTest || 0;
-        material.userData.graphRepeat = repeatOf(entry, result.size);
-        for (const tex of Object.values(maps)) tex.repeat.copy(material.userData.graphRepeat);
+        material.userData.graphUvMode = !!result.domain;
+        for (const tex of Object.values(maps)) place(tex, entry, result);
         material.needsUpdate = true;
         if (textured.length) this._schedule(entry);
     }
@@ -126,14 +133,14 @@ export class GraphApplier {
         const graph = def.graph;
         if (!graph) return;
         const images = await this._imageTextures(graph);
-        const result = evaluateGraph(graph, images, def.render?.maps);
+        const result = evaluateGraph(graph, images, def.render?.maps, { domain: this._domain(entry) });
         const maps = material.userData.graphMaps ||= {};
         const sigs = material.userData.graphSigs ||= {};
         let changed = false;
         for (const [key, slot] of Object.entries(SLOTS)) {
             const r = result[key];
             if (!r || r.kind !== 'tsl') continue;
-            const sig = (key === 'height' ? r.sig + '|' + result.reliefStrength : r.sig) + '|' + r.size;
+            const sig = (key === 'height' ? r.sig + '|' + result.reliefStrength : r.sig) + '|' + r.size + (result.domain ? '|' + JSON.stringify(result.domain) : '');
             if (maps[key] && sigs[key] === sig) {
                 material[slot.map] = maps[key];   // unchanged -> keep the existing texture
                 continue;
@@ -144,7 +151,7 @@ export class GraphApplier {
                 : await this.baker.bake(r.node, r.type, { srgb: !!slot.srgb, size: r.size });
             if (entry.def.graph !== graph) { tex.dispose(); return; }   // changed in the meantime
             maps[key]?.dispose();
-            tex.repeat.copy(repeatOf(entry, result.size));
+            place(tex, entry, result);
             maps[key] = tex;
             sigs[key] = sig;
             material[slot.map] = tex;
@@ -154,6 +161,17 @@ export class GraphApplier {
         if (!changed) return;
         material.needsUpdate = true;
         this.onBaked(entry);
+    }
+
+    // UV mode: the bake domain (UV range of the meshes with this material; preview sphere 0..1) + tile scale; else null
+    _domain(entry) {
+        const graph = entry.def.graph;
+        if (!isUvMode(graph)) return null;
+        const d = (!entry.preview && this.uvDomain(entry.material)) || { min: [0, 0], max: [1, 1] };
+        const size = graph.nodes.find(n => n.type === 'output')?.params?.size ?? 100;
+        // a hair of margin so the clamped edge texels are not on the outermost vertices
+        const pad = [0, 1].map(i => Math.max(1e-6, (d.max[i] - d.min[i]) * 0.002));
+        return { min: [d.min[0] - pad[0], d.min[1] - pad[1]], max: [d.max[0] + pad[0], d.max[1] + pad[1]], scale: UV_TILE / size };
     }
 
     // Dispose baked maps. fallback undefined: put the imported texture (glTF/FBX) back
@@ -208,10 +226,21 @@ const WHITE = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
 WHITE.colorSpace = THREE.SRGBColorSpace;
 WHITE.needsUpdate = true;
 
-// repeat of the baked maps: UV_TILE mm per UV unit (box UVs) / mm per baked tile; preview sphere (0..1 UVs around
-// and from pole to pole): one tile across the visible half, square
-function repeatOf(entry, size = 100) {
-    return entry.preview ? new THREE.Vector2(2, 1) : new THREE.Vector2(UV_TILE / size, UV_TILE / size);
+// placement of a baked map on the model's UVs. Tile mode: repeat = UV_TILE mm per UV unit (box UVs) / mm per baked
+// tile; preview sphere (0..1 UVs around and from pole to pole): one tile across the visible half, square.
+// UV mode: the texture spans the bake domain once (clamped at its edges)
+function place(tex, entry, result) {
+    const d = result.domain;
+    const wrap = d ? THREE.ClampToEdgeWrapping : THREE.RepeatWrapping;
+    if (tex.wrapS !== wrap || tex.wrapT !== wrap) { tex.wrapS = tex.wrapT = wrap; tex.needsUpdate = true; }
+    if (d) {
+        const sx = 1 / (d.max[0] - d.min[0]), sy = 1 / (d.max[1] - d.min[1]);
+        tex.repeat.set(sx, sy);
+        tex.offset.set(-d.min[0] * sx, -d.min[1] * sy);
+    } else {
+        tex.repeat.copy(entry.preview ? new THREE.Vector2(2, 1) : new THREE.Vector2(UV_TILE / result.size, UV_TILE / result.size));
+        tex.offset.set(0, 0);
+    }
 }
 
 function setMap(material, key, texture) {
