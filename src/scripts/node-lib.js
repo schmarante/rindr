@@ -63,8 +63,9 @@ export const allConst = (...rs) => rs.every(r => r.isConst);
 
 // --- hashes and noise (all periodic: `period` = cells per tile, integer) ---
 
-/** cell index wrapped into 0..period−1 (also for negative indices) */
-export const wrap = (i, period) => i.sub(floor(i.div(period)).mul(period));
+/** integer cell index wrapped into 0..period−1 (also for negative indices; +½ – GPU division is not exact, 10 / 5
+ *  could floor to 1.999… and wrap 10 to 5) */
+export const wrap = (i, period) => i.sub(floor(i.add(0.5).div(period)).mul(period));
 
 /** three pseudo random numbers 0..1 from an integer cell index (vec3; pcg3d, Jarzynski & Olano 2020 – as in wool.js) */
 export const hash33 = Fn(([c]) => {
@@ -78,7 +79,8 @@ export const hash33 = Fn(([c]) => {
     v.y.addAssign(v.z.mul(v.x));
     v.z.addAssign(v.x.mul(v.y));
     return vec3(v).mul(1 / 4294967296);
-});
+}).setLayout({ name: 'rindrHash33', type: 'vec3', inputs: [{ name: 'c', type: 'vec3' }] });   // a real shader function:
+// inlined, every call copied the hash into the shader (nodes with many noise calls compiled for seconds)
 /** pseudo random 0..1 from a 2D integer cell index; `seed` (number) gives independent streams */
 export const hash2 = (p, seed = 0) => hash33(vec3(p, seed)).x;
 /** two pseudo random numbers 0..1 from a 2D integer cell index */
@@ -94,7 +96,7 @@ export const periodicNoise = Fn(([p, period]) => {
     const c = hash2(wrap(i.add(vec2(0, 1)), period));
     const d = hash2(wrap(i.add(vec2(1, 1)), period));
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-});
+}).setLayout({ name: 'rindrPeriodicNoise', type: 'float', inputs: [{ name: 'p', type: 'vec2' }, { name: 'period', type: 'vec2' }] });
 
 /** fractal sum of periodic noise 0..1 (octaves each twice as fine, half as strong) */
 export function fbm(p, period, octaves) {

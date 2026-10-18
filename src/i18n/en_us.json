@@ -355,15 +355,31 @@
             "noise": {
                 "label": "Noise",
                 "outputs": {
-                    "value": "Value"
+                    "value": "Value",
+                    "color": "Colour"
                 },
                 "params": {
                     "scale": "Size",
                     "detail": "Detail",
-                    "stretch": "Stretch"
+                    "stretch": "Stretch",
+                    "noiseType": "Type",
+                    "low": "Low threshold",
+                    "high": "High threshold",
+                    "seed": "Variant",
+                    "a": "Colour A",
+                    "b": "Colour B"
                 },
                 "inputs": {
-                    "uv": "Coordinate"
+                    "uv": "Coordinate",
+                    "a": "Colour A",
+                    "b": "Colour B"
+                },
+                "options": {
+                    "noiseType": {
+                        "regular": "Regular",
+                        "fractal": "Fractal",
+                        "turbulence": "Turbulence"
+                    }
                 }
             },
             "gradient": {
@@ -477,6 +493,299 @@
                 },
                 "params": {
                     "value": "Value"
+                }
+            },
+            "cellular": {
+                "label": "Cellular",
+                "inputs": {
+                    "uv": "Coordinate",
+                    "a": "Cell colour",
+                    "b": "Joint colour"
+                },
+                "outputs": {
+                    "color": "Colour",
+                    "value": "Height",
+                    "random": "Random per cell"
+                },
+                "params": {
+                    "mode": "Mode",
+                    "scale": "Cells",
+                    "spread": "Cell size",
+                    "smoothing": "Smoothing",
+                    "roughness": "Irregularity",
+                    "fractal": "Fractal",
+                    "variation": "Colour variation",
+                    "a": "Cell colour",
+                    "b": "Joint colour"
+                },
+                "options": {
+                    "mode": {
+                        "cells": "Stones",
+                        "chips": "Chips (sharp-edged)",
+                        "circular": "Pebbles (round)"
+                    }
+                }
+            },
+            "speckle": {
+                "label": "Speckle",
+                "inputs": {
+                    "uv": "Coordinate",
+                    "a": "Base colour",
+                    "b": "Speckle colour"
+                },
+                "outputs": {
+                    "color": "Colour",
+                    "value": "Height",
+                    "random": "Random per speckle"
+                },
+                "params": {
+                    "scale": "Grid",
+                    "size": "Speckle size",
+                    "density": "Density",
+                    "variation": "Size variation",
+                    "layers": "Grain sizes",
+                    "roundness": "Roundness",
+                    "elongation": "Elongation",
+                    "softness": "Softness",
+                    "tone": "Colour variation",
+                    "a": "Base colour",
+                    "b": "Speckle colour"
+                }
+            },
+            "dots": {
+                "label": "Hole pattern",
+                "inputs": {
+                    "uv": "Coordinate",
+                    "a": "Colour hole/base",
+                    "b": "Colour material"
+                },
+                "outputs": {
+                    "value": "Mask",
+                    "color": "Colour",
+                    "random": "Random"
+                },
+                "params": {
+                    "pattern": "Pattern",
+                    "shape": "Hole shape",
+                    "stagger": "Offset",
+                    "count": "Columns",
+                    "rows": "Rows (0 = auto)",
+                    "size": "Size",
+                    "length": "Length",
+                    "rounding": "Rounding",
+                    "bevel": "Bevel",
+                    "bars": "Bars per group",
+                    "rotation": "Rotation",
+                    "a": "Colour hole/base",
+                    "b": "Colour material"
+                },
+                "options": {
+                    "pattern": {
+                        "perforated": "Perforated sheet",
+                        "dots": "Dots/studs",
+                        "expanded": "Expanded metal",
+                        "tread": "Diamond tread plate",
+                        "bars": "Bar tread plate"
+                    },
+                    "shape": {
+                        "circle": "Round",
+                        "square": "Square",
+                        "slot": "Slot"
+                    },
+                    "stagger": {
+                        "none": "Straight",
+                        "half": "Staggered"
+                    },
+                    "rotation": {
+                        "0": "0°",
+                        "90": "90°"
+                    }
+                }
+            },
+            "dent": {
+                "label": "Dents",
+                "inputs": {
+                    "uv": "Coordinate",
+                    "a": "Colour A",
+                    "b": "Colour B"
+                },
+                "outputs": {
+                    "value": "Value",
+                    "color": "Colour"
+                },
+                "params": {
+                    "scale": "Count",
+                    "size": "Dent size",
+                    "density": "Density",
+                    "strength": "Depth",
+                    "detail": "Detail",
+                    "distort": "Irregularity",
+                    "seed": "Variant",
+                    "a": "Colour A",
+                    "b": "Colour B"
+                }
+            },
+            "tiles": {
+                "label": "Tiles & Bricks",
+                "inputs": {
+                    "uv": "Coordinate",
+                    "a": "Tile colour",
+                    "b": "Joint colour",
+                    "c": "Tile colour 2"
+                },
+                "outputs": {
+                    "color": "Colour",
+                    "value": "Height",
+                    "mask": "Mask",
+                    "random": "Random",
+                    "uv": "Coordinate per tile"
+                },
+                "params": {
+                    "pattern": "Pattern",
+                    "countU": "Count U",
+                    "countV": "Count V",
+                    "ratio": "Aspect ratio",
+                    "gap": "Joint width",
+                    "bevel": "Bevel",
+                    "profile": "Edge shape",
+                    "edgeNoise": "Irregular edges",
+                    "surface": "Surface roughness",
+                    "variation": "Colour variation",
+                    "colorMix": "Share of tile colour 2",
+                    "jitter": "Random offset",
+                    "seed": "Seed",
+                    "a": "Tile colour",
+                    "b": "Joint colour",
+                    "c": "Tile colour 2"
+                },
+                "options": {
+                    "pattern": {
+                        "stack": "Stack",
+                        "running": "Running bond (½)",
+                        "third": "Third bond (⅓)",
+                        "english": "English bond",
+                        "flemish": "Flemish bond",
+                        "herringbone": "Herringbone",
+                        "basket": "Basket weave",
+                        "diamond": "Diagonal (diamond)",
+                        "planks": "Floor boards"
+                    },
+                    "profile": {
+                        "round": "Rounded",
+                        "chamfer": "Chamfered"
+                    }
+                }
+            },
+            "waves": {
+                "label": "Waves & Stripes",
+                "inputs": {
+                    "uv": "UV",
+                    "a": "Valley color",
+                    "b": "Crest color"
+                },
+                "outputs": {
+                    "value": "Height",
+                    "color": "Color",
+                    "random": "Random per stripe",
+                    "uv": "UV per stripe"
+                },
+                "params": {
+                    "profile": "Profile",
+                    "count": "Count",
+                    "axis": "Direction",
+                    "width": "Width (raised)",
+                    "slope": "Flank",
+                    "softness": "Softness",
+                    "distortion": "Distortion",
+                    "centres": "Centres per cell",
+                    "wavelength": "Wavelength",
+                    "variation": "Color variation",
+                    "seed": "Seed",
+                    "a": "Valley color",
+                    "b": "Crest color"
+                },
+                "options": {
+                    "profile": {
+                        "sine": "Sine (corrugated)",
+                        "triangle": "Triangle",
+                        "square": "Square (slats, stripes)",
+                        "trapezoid": "Trapezoid (trapezoidal sheet)",
+                        "seam": "Seam (standing seam)",
+                        "sawtooth": "Sawtooth (lap siding)",
+                        "ripples": "Water ripples"
+                    },
+                    "axis": {
+                        "u": "U",
+                        "v": "V"
+                    }
+                }
+            },
+            "weave": {
+                "label": "Weave",
+                "inputs": {
+                    "uv": "Coordinate",
+                    "a": "Warp",
+                    "b": "Weft"
+                },
+                "outputs": {
+                    "color": "Colour",
+                    "value": "Height",
+                    "mask": "Warp on top",
+                    "random": "Random"
+                },
+                "params": {
+                    "pattern": "Pattern",
+                    "count": "Threads",
+                    "gap": "Gap",
+                    "fuzz": "Fuzz",
+                    "variation": "Variation",
+                    "a": "Warp",
+                    "b": "Weft"
+                },
+                "options": {
+                    "pattern": {
+                        "plain": "Plain",
+                        "twill": "Twill 2/2",
+                        "denim": "Twill 3/1 (denim)",
+                        "satin": "Satin",
+                        "basket": "Basket (2×2)",
+                        "herringbone": "Herringbone",
+                        "loop": "Loop pile (berber)",
+                        "cut": "Cut pile (velours)"
+                    }
+                }
+            },
+            "wood": {
+                "label": "Wood",
+                "inputs": {
+                    "uv": "Coordinate",
+                    "a": "Early wood",
+                    "b": "Late wood"
+                },
+                "outputs": {
+                    "color": "Colour",
+                    "value": "Relief",
+                    "ring": "Growth ring",
+                    "pores": "Pores"
+                },
+                "params": {
+                    "cut": "Cut",
+                    "rings": "Growth rings",
+                    "arches": "Arches",
+                    "irregularity": "Irregularity",
+                    "stretch": "Stretch",
+                    "latewood": "Late wood share",
+                    "contrast": "Contrast",
+                    "pores": "Pores",
+                    "seed": "Variant",
+                    "a": "Early wood",
+                    "b": "Late wood"
+                },
+                "options": {
+                    "cut": {
+                        "flat": "Flat-sawn",
+                        "quarter": "Quarter-sawn"
+                    }
                 }
             }
         }

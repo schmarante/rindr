@@ -408,13 +408,22 @@ export class GraphBaker {
         return makeTexture(new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength).slice(), srgb, size);
     }
 
-    /** Height (TSL) -> normal map (tangent space) */
+    /** Height (TSL) -> normal map (tangent space). The height is baked as float – in 8 bit gentle slopes showed
+     *  steps in the normals */
     async bakeNormal(heightNode, strength, size = BAKE_SIZE) {
-        const h = await this.bake(heightNode, 'float', { size });
-        const src = h.image.data;
+        const { renderer } = this;
+        const target = this.heightTarget ??= new THREE.RenderTarget(size, size, { depthBuffer: false, type: THREE.FloatType });
+        if (target.width !== size) target.setSize(size, size);
+        this.material.fragmentNode = vec4(vec3(heightNode), 1);
+        this.material.needsUpdate = true;
+        const prev = renderer.getRenderTarget();
+        renderer.setRenderTarget(target);
+        this.quad.render(renderer);
+        renderer.setRenderTarget(prev);
+        const src = await renderer.readRenderTargetPixelsAsync(target, 0, 0, size, size);
         const n = size;
         const out = new Uint8Array(n * n * 4);
-        const at = (x, y) => src[(((y + n) % n) * n + ((x + n) % n)) * 4] / 255;
+        const at = (x, y) => src[(((y + n) % n) * n + ((x + n) % n)) * 4];
         const k = strength * 8;
         for (let y = 0; y < n; y++) {
             for (let x = 0; x < n; x++) {
@@ -428,7 +437,6 @@ export class GraphBaker {
                 out[i + 3] = 255;
             }
         }
-        h.dispose();
         return makeTexture(out, false, n);
     }
 }
