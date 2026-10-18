@@ -1,0 +1,32 @@
+{
+    "de_de": {"nodes": {"types": {
+        "cellular": {
+            "label": "Zellen",
+            "inputs": {"uv": "Koordinate", "a": "Zellfarbe", "b": "Fugenfarbe"},
+            "outputs": {"color": "Farbe", "value": "Höhe", "random": "Zufall je Zelle"},
+            "params": {"mode": "Art", "scale": "Zellen", "spread": "Zellgröße", "smoothing": "Weichheit", "roughness": "Unregelmäßigkeit", "fractal": "Fraktal", "variation": "Farbvariation", "a": "Zellfarbe", "b": "Fugenfarbe"},
+            "options": {"mode": {"cells": "Steine", "chips": "Platten (scharfkantig)", "circular": "Kiesel (rund)"}}
+        },
+        "speckle": {
+            "label": "Sprenkel",
+            "inputs": {"uv": "Koordinate", "a": "Grundfarbe", "b": "Sprenkelfarbe"},
+            "outputs": {"color": "Farbe", "value": "Höhe", "random": "Zufall je Sprenkel"},
+            "params": {"scale": "Raster", "size": "Sprenkelgröße", "density": "Dichte", "variation": "Größenvariation", "layers": "Körnungen", "roundness": "Rundheit", "elongation": "Streckung", "softness": "Weichheit", "tone": "Farbvariation", "a": "Grundfarbe", "b": "Sprenkelfarbe"}
+        }
+    }}},
+    "en_us": {"nodes": {"types": {
+        "cellular": {
+            "label": "Cellular",
+            "inputs": {"uv": "Coordinate", "a": "Cell colour", "b": "Joint colour"},
+            "outputs": {"color": "Colour", "value": "Height", "random": "Random per cell"},
+            "params": {"mode": "Mode", "scale": "Cells", "spread": "Cell size", "smoothing": "Smoothing", "roughness": "Irregularity", "fractal": "Fractal", "variation": "Colour variation", "a": "Cell colour", "b": "Joint colour"},
+            "options": {"mode": {"cells": "Stones", "chips": "Chips (sharp-edged)", "circular": "Pebbles (round)"}}
+        },
+        "speckle": {
+            "label": "Speckle",
+            "inputs": {"uv": "Coordinate", "a": "Base colour", "b": "Speckle colour"},
+            "outputs": {"color": "Colour", "value": "Height", "random": "Random per speckle"},
+            "params": {"scale": "Grid", "size": "Speckle size", "density": "Density", "variation": "Size variation", "layers": "Grain sizes", "roundness": "Roundness", "elongation": "Elongation", "softness": "Softness", "tone": "Colour variation", "a": "Base colour", "b": "Speckle colour"}
+        }
+    }}}
+}
