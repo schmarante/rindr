@@ -9,7 +9,7 @@
 // UV mode (a picture that does not repeat – decal, isUvMode): the maps are baked once over the UV range of the meshes
 // using the material (uvDomain callback) and placed there (repeat/offset, clamped) – no repetition.
 import * as THREE from 'three/webgpu';
-import { evaluateGraph, GraphBaker, loadImageTexture, isUvMode } from './material-graph.js';
+import { evaluateGraph, evaluateNode, nodeSignature, GraphBaker, loadImageTexture, isUvMode } from './material-graph.js';
 import { PARAMS } from './material-manager.js';
 import { UV_TILE } from './step-importer.js';
 
@@ -166,6 +166,34 @@ export class GraphApplier {
         if (!changed) return;
         material.needsUpdate = true;
         this.onBaked(entry);
+    }
+
+    /**
+     * Preview of one node output for the node editor (graph of `def`): { size, pixels } (RGBA, sRGB) or
+     * { color: [r, g, b] } (sRGB 0..1) for a constant; null if there is nothing. Baked in the queue with the maps;
+     * the last results are kept by signature (unchanged nodes come back at once).
+     */
+    async previewNode(def, nodeId, port, size = 128) {
+        const sig = nodeSignature(def.graph, nodeId, port) + '|' + size;
+        const cache = this.previews ??= new Map();
+        if (cache.has(sig)) return cache.get(sig);
+        const run = async () => {
+            const images = await this._imageTextures(def.graph);
+            const r = evaluateNode(def.graph, nodeId, port, images, def.render?.maps, { bakeSize: size });
+            if (!r) return null;
+            if (r.isConst) {
+                const c = r.type === 'float' ? [r.value, r.value, r.value] : r.value.clone().convertLinearToSRGB().toArray();
+                return { color: c.map(v => Math.min(Math.max(v, 0), 1)) };
+            }
+            // values as plain grey (0.5 = middle grey), colours sRGB-encoded like the colour maps
+            return { size, pixels: await this.baker.bakePixels(r.node, r.type, { srgb: r.type === 'color', size }) };
+        };
+        const job = this.queue.then(run);
+        this.queue = job.catch(() => {});
+        const res = await job;
+        cache.set(sig, res);
+        if (cache.size > 64) cache.delete(cache.keys().next().value);   // oldest first
+        return res;
     }
 
     // UV mode: the bake domain (UV range of the meshes with this material; preview sphere 0..1) + tile scale; else null

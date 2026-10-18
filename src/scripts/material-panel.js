@@ -9,6 +9,7 @@ import { messageDialog } from './dialog.js';
 import { PARAMS, buildMaterial } from './material-manager.js';
 import { thumbKey } from './material-thumbs.js';
 import { MATERIALS } from './config.js';
+import { MATERIAL_TYPES, materialType, typeShows, typeAllowsGraph } from './material-types.js';
 import { MATERIAL_PRESETS, PRESET_CATEGORIES, presetName, presetCategoryLabel } from './material-presets.js';
 import { t, has } from './i18n.js';
 import { colorField, SELECT } from './ui-controls.js';
@@ -21,7 +22,8 @@ export const mapLabel = key => (has(`materials.maps.${key}`) ? t(`materials.maps
 
 const BTN = 'rounded px-2 py-0.5 text-white/80 hover:bg-white/15 disabled:opacity-40 disabled:hover:bg-transparent';
 const TAB = 'rounded px-2 py-0.5';
-const LIST = 'max-h-[30vh] min-h-0 overflow-auto px-1 pb-1 select-none';
+// the list keeps its height (up to 30vh) – the material's settings below scroll instead of squeezing it away
+const LIST = 'max-h-[30vh] min-h-12 shrink-0 overflow-auto px-1 pb-1 select-none';
 const VIEW_KEY = 'rindr.materials.view';
 const CATEGORY_KEY = 'rindr.materials.category';   // category filter of the library ('' = all)
 const VIEW_ICONS = {
@@ -76,7 +78,7 @@ export class MaterialPanel {
                 ${MATERIALS.editing ? `<button data-act="new" class="${BTN} ml-auto" title="${t('materials.panel.newTitle')}">${t('materials.panel.new')}</button>` : ''}
             </div>
             <div data-list class="${LIST}"></div>
-            <div data-editor class="border-t border-white/10 px-3 py-2" hidden></div>
+            <div data-editor class="min-h-0 overflow-y-auto border-t border-white/10 px-3 py-2" hidden></div>
             <input data-file type="file" accept="application/json,.json" hidden>
         `;
         this.list = root.querySelector('[data-list]');
@@ -84,6 +86,18 @@ export class MaterialPanel {
         this.file = root.querySelector('[data-file]');
 
         root.addEventListener('click', e => this._onClick(e));
+        // a scene row opens its material on pointerdown, not on click: a click was lost when the list was rebuilt
+        // between down and up (an edited field commits on blur → update → new rows – the pressed row was gone) or when
+        // the hand moved ≥ 4 px (rows are draggable – the browser starts a drag instead of a click)
+        this.list.addEventListener('pointerdown', e => {
+            if (e.button !== 0 || this.tab !== 'scene') return;
+            const row = e.target.closest('[data-id]');
+            if (!row) return;
+            this.listPressed = true;   // no list rebuild until released (the row stays a drag source)
+            // commit a field still being edited (number, name) to the material it belongs to before switching
+            if (this.editor.contains(document.activeElement)) document.activeElement.blur();
+            this._select(row.dataset.id);
+        });
         this.list.addEventListener('dblclick', e => {
             const row = e.target.closest('[data-library]');
             if (row) this.open(this.manager.fromLibrary(row.dataset.library).def.id, 'scene');
@@ -96,6 +110,7 @@ export class MaterialPanel {
         });
         this.file.addEventListener('change', () => this._import());
         this.categorySelect = root.querySelector('[data-category]');
+        this.newButton = root.querySelector('[data-act="new"]');   // scene tab only (wish of the user)
         this.categorySelect.addEventListener('change', () => {
             this.category = this.categorySelect.value;
             try { localStorage.setItem(CATEGORY_KEY, this.category); } catch { /* storage blocked */ }
@@ -103,6 +118,25 @@ export class MaterialPanel {
         });
         manager.addEventListener('change', () => this.render());
         manager.addEventListener('update', () => this.render({ keepEditor: true }));
+        // while a mouse button is held (slider, colour picker, number drag – in the panel or the node editor) the
+        // material previews keep their image; the new one is rendered on release (wish of the user)
+        // (not on selects: their list is native – the pointerup goes there and the hold stayed on, the type change kept
+        // the old picture)
+        window.addEventListener('pointerdown', e => { if (!e.target.closest?.('select, option')) this.holdThumbs = true; }, true);
+        // after the click/drag ended (next task): previews held back meanwhile, a list rebuild that waited
+        const release = () => {
+            const thumbs = this.holdThumbs && this.thumbsStale;
+            this.holdThumbs = false;
+            if (!thumbs && !this.listPressed) return;
+            setTimeout(() => {
+                this.listPressed = false;
+                const list = this.listStale || thumbs;
+                this.thumbsStale = this.listStale = false;
+                if (list) this.render({ keepEditor: true });
+            });
+        };
+        window.addEventListener('pointerup', release, true);
+        window.addEventListener('pointercancel', release, true);
         this.thumbs?.addEventListener('ready', e => this._onThumb(e.detail));
         this.thumbs?.addEventListener('reload', () => this.render({ keepEditor: true }));
         this.render();
@@ -111,7 +145,7 @@ export class MaterialPanel {
     /** Selection in the scene graph changed */
     setSelection(object) {
         this.selectionIds = object ? this.manager.materialsOf(object) : [];
-        if (this.selectionIds.length && this.tab === 'scene') this.current = this.selectionIds[0];
+        if (this.selectionIds.length && this.tab === 'scene') this._setCurrent(this.selectionIds[0]);
         this.render();
     }
 
@@ -123,9 +157,28 @@ export class MaterialPanel {
     }
 
     open(id, tab = this.tab) {
-        this.current = id;
+        this._setCurrent(id);
         this.tab = tab;
         this.render();
+    }
+
+    // a scene row pressed: open its material without rebuilding the list (highlight moved in place)
+    _select(id) {
+        if (id === this.current) return;
+        this._setCurrent(id);
+        for (const row of this.list.querySelectorAll('[data-id]')) {
+            const on = row.dataset.id === id;
+            row.classList.toggle('bg-sky-500/30', on);
+            row.classList.toggle('hover:bg-white/10', !on);
+        }
+        this._renderEditor();
+    }
+
+    // opened material changed (list click, selection, new/copy): onCurrentChange – e.g. an open node editor follows
+    _setCurrent(id) {
+        if (id === this.current) return;
+        this.current = id;
+        if (id) this.hooks.onCurrentChange?.(id);
     }
 
     render({ keepEditor = false } = {}) {
@@ -138,7 +191,9 @@ export class MaterialPanel {
             b.className = 'rounded p-1' + (b.dataset.view === this.view ? ' bg-sky-500/40 text-white' : ' text-white/60 hover:bg-white/15');
         });
         this.list.className = LIST + (this.view === 'grid' ? ' grid grid-cols-4 content-start gap-1' : '');
+        if (this.listPressed) { this.listStale = true; if (!keepEditor || !this.editor.contains(document.activeElement)) this._renderEditor(); return; }
         this.categorySelect.hidden = this.tab !== 'library';
+        if (this.newButton) this.newButton.hidden = this.tab === 'library';
         if (this.tab === 'scene') this._renderScene(); else this._renderLibrary();
         if (!keepEditor || !this.editor.contains(document.activeElement)) this._renderEditor();
     }
@@ -236,13 +291,38 @@ export class MaterialPanel {
         };
     }
 
+    /** Current sphere image of a scene material (requested if there is none yet) – node editor's output node;
+     *  size: output pixels (another size = its own image, kept apart from the list's) */
+    thumbUrl(id, size = null) {
+        const entry = this.manager.get(id);
+        if (!entry || !this.thumbs) return null;
+        let thumb = this._sceneThumb(entry);
+        if (!size) {
+            if (!this.thumbs.has(thumb.key)) this._requestThumb(thumb);
+            return this.thumbs.url(thumb.key) ?? thumb.previous ?? null;
+        }
+        // own size: own key and group; until the new image is there, the last one of that size
+        const group = `${size}:${thumb.group}`, last = this.lastSized ??= new Map();
+        thumb = { ...thumb, key: `${thumb.key}|${size}`, group, size };
+        if (!this.thumbs.has(thumb.key)) this._requestThumb(thumb);
+        const url = this.thumbs.url(thumb.key);
+        if (url) last.set(group, thumb.key);
+        return url ?? this.thumbs.url(last.get(group)) ?? null;
+    }
+
+    // render a preview – held back while a mouse button is down (then the previous image stays, see constructor)
+    _requestThumb(thumb) {
+        if (this.holdThumbs) { this.thumbsStale = true; return; }
+        this.thumbs.request(thumb.key, thumb.group, thumb.material, thumb);
+    }
+
     // swatch of a material: rendered image when there; while it is made a spinner over the previous image (reload) or
     // an empty tile (new); editing keeps the material's last image without a spinner; failed: the CSS sphere.
     // animate (an image just arrived): the new image fades in over the old one, the spinner fades out
     _paint(sw, thumb, params, animate = false) {
         if (!this.thumbs || !thumb) { sw.style.background = swatch(params); sw.classList.add('ring-1'); return; }
         const { key, group } = thumb;
-        if (!this.thumbs.has(key)) this.thumbs.request(key, group, thumb.material, thumb);
+        if (!this.thumbs.has(key)) this._requestThumb(thumb);
         const fresh = this.thumbs.has(key), url = this.thumbs.url(key);
         const image = url ?? (fresh ? null : thumb.previous ?? null);
         const busy = !fresh && (!!url || !thumb.previous);
@@ -302,11 +382,13 @@ export class MaterialPanel {
         const frag = document.createDocumentFragment();
 
         const editing = MATERIALS.editing;   // config.js: editing hidden for now
+        const type = materialType(def.params);
         if (editing) {
             const name = el('input', 'mb-1.5 w-full rounded bg-white/10 px-1.5 py-0.5 text-white outline-none focus:bg-white/20');
             name.value = def.name;
             name.onchange = () => this.manager.rename(def.id, name.value.trim() || def.name);
             frag.append(name);
+            frag.append(this._typeRow(def));
         } else frag.append(el('div', 'mb-1.5 truncate font-medium', def.name));
 
         const info = el('div', 'mb-1.5 flex flex-wrap items-center gap-1');
@@ -327,7 +409,7 @@ export class MaterialPanel {
         del.dataset.act = 'delete';
         del.disabled = this.manager.usage(def.id) > 0;
         del.title = del.disabled ? t('materials.panel.deleteInUse') : t('materials.panel.deleteTitle');
-        info.append(assign, ...(editing ? [nodes, dup] : []), del);
+        info.append(assign, ...(editing ? [...(typeAllowsGraph(type) ? [nodes] : []), dup] : []), del);
         frag.append(info);
         if (!editing) { this.editor.replaceChildren(frag); return; }
 
@@ -341,8 +423,12 @@ export class MaterialPanel {
             frag.append(el('div', 'mb-1 text-white/50', t('materials.panel.graphControlled')));
         }
 
+        // Standard: all its parameters in collapsible groups; a special type: only its few values, without groups
         let group = null, box = null;
+        const grouped = type === 'standard';
         for (const p of PARAMS) {
+            if (!typeShows(type, p.key)) continue;
+            if (!grouped) { frag.append(this._paramRow(def, p)); continue; }
             if (p.group !== group) {
                 group = p.group;
                 const open = this.openGroups.has(group);
@@ -357,6 +443,22 @@ export class MaterialPanel {
             box.append(this._paramRow(def, p));
         }
         this.editor.replaceChildren(frag);
+    }
+
+    // material type (material-types.js): Standard or one special kind – decides the parameters shown
+    _typeRow(def) {
+        const row = el('label', 'mb-1.5 grid grid-cols-[5.5rem_1fr] items-center gap-1.5');
+        row.append(el('span', 'truncate text-white/60', t('materials.panel.type')));
+        const select = el('select', SELECT);
+        select.title = t('materials.panel.typeTitle');
+        const type = materialType(def.params);
+        for (const k of Object.keys(MATERIAL_TYPES)) select.append(new Option(t(`materials.types.${k}`), k, false, k === type));
+        select.onchange = () => {
+            this.manager.setType(def.id, select.value);
+            this._renderEditor();   // the update keeps the editor while it has the focus – the values change with the type
+        };
+        row.append(select);
+        return row;
     }
 
     _paramRow(def, p) {
@@ -419,8 +521,7 @@ export class MaterialPanel {
             if (this.manager.remove(this.current)) { this.current = null; this.render(); }
             return;
         }
-        const row = e.target.closest('[data-id]');
-        if (row && this.tab === 'scene') this.open(row.dataset.id);
+        // scene rows: opened on pointerdown (constructor)
     }
 
     _export() {

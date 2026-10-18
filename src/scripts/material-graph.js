@@ -271,38 +271,7 @@ export function evaluateGraph(graph, textures, importMaps = {}, { domain = null 
     const modelUv = domain ? mix(vec2(...domain.min), vec2(...domain.max), uv()) : uv();
     const base = domain ? modelUv.mul(domain.scale) : uv();
     const ctx = { textures, importMaps, bakeSize: fixed || BAKE_SIZE, base, modelUv };
-    const nodes = new Map(graph.nodes.map(n => [n.id, n]));
-    const linkTo = new Map(graph.links.map(l => [l.to.node + ':' + l.to.port, l.from]));
-    const cache = new Map();
-
-    // result of an output: { isConst, value (number|Color), node (TSL), type }
-    const outputOf = (nodeId, port, stack = new Set()) => {
-        const key = nodeId + ':' + port;
-        if (cache.has(key)) return cache.get(key);
-        if (stack.has(nodeId)) throw new Error('Cycle in node graph');
-        stack.add(nodeId);
-        const n = nodes.get(nodeId);
-        const res = evalNode(n, port, inp => {
-            const from = linkTo.get(nodeId + ':' + inp);
-            return from && nodes.has(from.node) ? outputOf(from.node, from.port, stack) : null;
-        }, ctx);
-        stack.delete(nodeId);
-        cache.set(key, res);
-        return res;
-    };
-
-    // Signature of the subgraph before an output (type, parameters, links) – same
-    // signature = same texture, does not need to be baked again
-    const signature = (nodeId, port, seen = new Set()) => {
-        const n = nodes.get(nodeId);
-        if (!n || seen.has(nodeId)) return '';
-        seen.add(nodeId);
-        const ins = NODE_TYPES[n.type].inputs.map(i => {
-            const from = linkTo.get(nodeId + ':' + i.key);
-            return i.key + '=' + (from ? signature(from.node, from.port, seen) : '');
-        });
-        return `${n.type}:${port}(${JSON.stringify(n.params || {})};${ins.join(',')})`;
-    };
+    const { nodes, linkTo, outputOf, signature } = evaluator(graph, ctx);
 
     // Bake size: largest import texture in the subgraph (at least BAKE_SIZE)
     const bakeSize = (nodeId, seen = new Set()) => {
@@ -343,6 +312,60 @@ export function evaluateGraph(graph, textures, importMaps = {}, { domain = null 
     result.size = out.params?.size ?? 100;
     result.domain = domain;
     return result;
+}
+
+/**
+ * Evaluate one output of any node (node editor preview): one tile, coordinate = the tile's UV.
+ * @returns {{ isConst: true, type, value } | { isConst: false, type, node } | null}  as color/float, null if missing
+ */
+export function evaluateNode(graph, nodeId, port, textures, importMaps = {}, { bakeSize = BAKE_SIZE } = {}) {
+    const { nodes, outputOf } = evaluator(graph, { textures, importMaps, bakeSize, base: uv(), modelUv: uv() });
+    const n = nodes.get(nodeId), out = n && NODE_TYPES[n.type]?.outputs.find(o => o.key === port);
+    if (!out) return null;
+    return convert(outputOf(nodeId, port), out.type === 'float' ? 'float' : 'color');
+}
+
+/** Signature of the subgraph before an output of a node – same signature = same preview */
+export function nodeSignature(graph, nodeId, port) {
+    return evaluator(graph, null).signature(nodeId, port);
+}
+
+// shared by evaluateGraph/evaluateNode: node lookup, links (input -> source output), cached output evaluation
+// (ctx = evalNode context; null when only the signature is needed) and the signature of a subgraph
+function evaluator(graph, ctx) {
+    const nodes = new Map(graph.nodes.map(n => [n.id, n]));
+    const linkTo = new Map(graph.links.map(l => [l.to.node + ':' + l.to.port, l.from]));
+    const cache = new Map();
+
+    // result of an output: { isConst, value (number|Color), node (TSL), type }
+    const outputOf = (nodeId, port, stack = new Set()) => {
+        const key = nodeId + ':' + port;
+        if (cache.has(key)) return cache.get(key);
+        if (stack.has(nodeId)) throw new Error('Cycle in node graph');
+        stack.add(nodeId);
+        const n = nodes.get(nodeId);
+        const res = evalNode(n, port, inp => {
+            const from = linkTo.get(nodeId + ':' + inp);
+            return from && nodes.has(from.node) ? outputOf(from.node, from.port, stack) : null;
+        }, ctx);
+        stack.delete(nodeId);
+        cache.set(key, res);
+        return res;
+    };
+
+    // Signature of the subgraph before an output (type, parameters, links) – same
+    // signature = same texture, does not need to be baked again
+    const signature = (nodeId, port, seen = new Set()) => {
+        const n = nodes.get(nodeId);
+        if (!n || seen.has(nodeId)) return '';
+        seen.add(nodeId);
+        const ins = NODE_TYPES[n.type].inputs.map(i => {
+            const from = linkTo.get(nodeId + ':' + i.key);
+            return i.key + '=' + (from ? signature(from.node, from.port, seen) : '');
+        });
+        return `${n.type}:${port}(${JSON.stringify(n.params || {})};${ins.join(',')})`;
+    };
+    return { nodes, linkTo, outputOf, signature };
 }
 
 function evalNode(n, port, get, ctx) {
@@ -468,7 +491,14 @@ export class GraphBaker {
      * @param {number} size  edge length (import textures: resolution of the source)
      */
     async bake(node, type, { srgb = false, size = BAKE_SIZE } = {}) {
-        const { renderer, target } = this;
+        return makeTexture(await this.bakePixels(node, type, { srgb, size }), srgb, size);
+    }
+
+    /** Like bake(), but only the RGBA pixels (size², 8 bit); small sizes (node previews) use their own target, the
+     *  maps' target keeps its size */
+    async bakePixels(node, type, { srgb = false, size = BAKE_SIZE } = {}) {
+        const { renderer } = this;
+        const target = size < BAKE_SIZE ? (this.smallTarget ??= new THREE.RenderTarget(size, size, { depthBuffer: false, type: THREE.UnsignedByteType })) : this.target;
         if (target.width !== size) target.setSize(size, size);
         let out = type === 'float' ? vec3(node) : node;
         if (srgb) out = sRGBTransferOETF(out);
@@ -479,7 +509,12 @@ export class GraphBaker {
         this.quad.render(renderer);
         renderer.setRenderTarget(prev);
         const pixels = await renderer.readRenderTargetPixelsAsync(target, 0, 0, size, size);
-        return makeTexture(new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength).slice(), srgb, size);
+        const src = new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength), row = size * 4;
+        if (src.length === row * size) return src.slice();
+        // WebGPU pads each row to 256 bytes (sizes that are no multiple of 64, e.g. 200 px previews): drop the padding
+        const stride = src.length / size, packed = new Uint8Array(row * size);
+        for (let y = 0; y < size; y++) packed.set(src.subarray(y * stride, y * stride + row), y * row);
+        return packed;
     }
 
     /** Height (TSL) -> normal map (tangent space). The height is baked as float – in 8 bit gentle slopes showed

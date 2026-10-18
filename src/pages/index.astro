@@ -180,15 +180,11 @@ const CSP = [
             <div id="debug-stats" hidden></div>
         </div>
 
-        <!-- HDRI editor (hdri/hdri-editor.js): docked at the bottom like the node editor, or a free window -->
+        <!-- HDRI editor (hdri/hdri-editor.js): free window (float-window.js) -->
         <div id="hdri-editor" hidden></div>
 
-        <div
-            id="node-editor"
-            data-ui="down"
-            hidden
-            class="absolute inset-x-5 bottom-5 z-10 flex h-[45dvh] flex-col overflow-hidden rounded-lg bg-neutral-900/95 text-xs text-white/90 shadow-2xl ring-1 ring-white/10 backdrop-blur-sm"
-        ></div>
+        <!-- node editor (node-editor.js): free window like the HDRI editor (float-window.js) -->
+        <div id="node-editor" hidden></div>
 
         <div
             id="progress"

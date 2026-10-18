@@ -92,7 +92,9 @@
             "merge": "Gleiche zusammenfassen",
             "mergeTitle": "Identische Materialien (gleicher Name, gleiche Einstellungen und Texturen – z.B. dasselbe Modell zweimal geladen) zu je einem zusammenfassen",
             "allCategories": "Alle Kategorien",
-            "categoryTitle": "Bibliothek nach Kategorie filtern"
+            "categoryTitle": "Bibliothek nach Kategorie filtern",
+            "type": "Typ",
+            "typeTitle": "Materialtyp – Standard oder ein Spezialeffekt; der Typ bestimmt, welche Werte es gibt (Spezialeffekte schließen sich aus)"
         },
         "maps": {
             "map": "Farbe",
@@ -159,6 +161,15 @@
             "soapScale": "Größe der Schlieren",
             "edgeRadius": "Kantenradius",
             "edgeConcave": "Innenkanten"
+        },
+        "types": {
+            "standard": "Standard",
+            "toon": "Toon",
+            "cloud": "Wolke",
+            "wool": "Wolle",
+            "grass": "Gras",
+            "soap": "Seifenhaut",
+            "marble": "Leuchtmarmor"
         },
         "paramGroups": {
             "base": "Basis",
@@ -419,6 +430,7 @@
         },
         "undo": {
             "create": "Material anlegen",
+            "type": "Materialtyp ändern",
             "delete": "Material löschen",
             "edit": "Material ändern",
             "editGraph": "Node-Graph ändern",
@@ -439,10 +451,10 @@
     },
     "nodeEditor": {
         "title": "Node-Editor – {name}",
-        "close": "Schließen",
         "closeTitle": "Schließen (Esc)",
-        "addNode": "+ {label}",
         "deleteNode": "Node löschen",
+        "showPreview": "Vorschau zeigen",
+        "hidePreview": "Vorschau ausblenden",
         "portTypes": {
             "color": "Farbe",
             "float": "Wert",
