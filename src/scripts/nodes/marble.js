@@ -26,7 +26,7 @@ const veinCell = Fn(([id, V, nper, seed]) => {
     return vec4(hash22(id, seed), step(0, n.x).add(step(0, n.y).mul(2)), step(0, h));
 }).setLayout({ name: 'marbleVeinCell', type: 'vec4', inputs: [{ name: 'id', type: 'vec2' }, { name: 'V', type: 'float' }, { name: 'nper', type: 'vec2' }, { name: 'seed', type: 'float' }] });
 
-const BAKE = 1024;   // bake resolution – minimal line width (anti-aliasing) in texels
+let BAKE = 1024;   // bake resolution (ctx.bakeSize, set per evaluate) – minimal line width (anti-aliasing) in texels
 
 export default {
     type: 'marble',
@@ -54,7 +54,8 @@ export default {
         { key: 'b', kind: 'color', default: '#5f6266' },
         { key: 'c', kind: 'color', default: '#a9abae' },
     ],
-    evaluate(port, p, get) {
+    evaluate(port, p, get, ctx) {
+        BAKE = ctx?.bakeSize || 1024;
         const banded = p.mode === 'banded';
         if (port === 'pores' && (!banded || !(p.pores > 0))) return C(0);
         const s = Math.max(1, Math.round(p.scale));

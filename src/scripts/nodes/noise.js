@@ -21,11 +21,11 @@ export default {
         { key: 'a', kind: 'color', default: '#1a1a1a' },
         { key: 'b', kind: 'color', default: '#e6e6e6' },
     ],
-    evaluate(port, p, get) {
+    evaluate(port, p, get, ctx) {
         const s = Math.max(1, Math.round(p.scale));
         const period = [s, s * Math.max(1, Math.round(p.stretch))];
         const v = thresholds(noiseSum(coord(get).mul(vec2(...period)), period, Math.round(p.detail), p.noiseType,
-            Math.round(p.seed)), p.low, p.high);
+            Math.round(p.seed), (ctx?.bakeSize || 1024) / 4), p.low, p.high);
         if (port !== 'color') return T(v, 'float');
         return T(mix(tsl(input(get, 'a', 'color', p.a)), tsl(input(get, 'b', 'color', p.b)), v), 'color');
     },

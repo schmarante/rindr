@@ -34,7 +34,8 @@ export const rotatedNoise = Fn(([q, period, m, seed]) => gradient(q, c => {
     return c.sub(vec2(m.x.mul(k.x).sub(m.y.mul(k.y)), m.y.mul(k.x).add(m.x.mul(k.y))).mul(period));
 }, seed));
 
-/** finest octave kept (cells per tile): ≥ 4 px per cell in a 1024² bake – finer octaves would only alias */
+/** finest octave kept (cells per tile) for a 1024² bake: ≥ 4 px per cell – finer octaves would only alias; other
+ *  bake sizes pass their own limit (bake size / 4) */
 export const MAX_CELLS = 256;
 
 /**
@@ -45,7 +46,7 @@ export const MAX_CELLS = 256;
  * must stay along u). Octaves are shifted against each other (otherwise all lattices meet at the tile corners) and
  * dropped once finer than MAX_CELLS.
  */
-export function noiseSum(p, period, octaves, kind, seed) {
+export function noiseSum(p, period, octaves, kind, seed, maxCells = MAX_CELLS) {
     const n = kind === 'regular' ? 1 : Math.max(1, octaves);
     const square = period[0] === period[1];
     let sum = float(0);
@@ -53,7 +54,7 @@ export function noiseSum(p, period, octaves, kind, seed) {
     let ma = 1, mb = 0;   // octave matrix [[ma, −mb], [mb, ma]] = (2 + i)^o
     for (let o = 0; o < n; o++) {
         const f = square ? Math.hypot(ma, mb) : 2 ** o;
-        if (o > 0 && Math.max(period[0], period[1]) * f > MAX_CELLS) break;
+        if (o > 0 && Math.max(period[0], period[1]) * f > maxCells) break;
         const shift = vec2((o * 0.6180339) % 1 * 7, (o * 0.4142135) % 1 * 5);
         const v = square
             ? rotatedNoise(vec2(p.x.mul(ma).sub(p.y.mul(mb)), p.x.mul(mb).add(p.y.mul(ma))).add(shift), float(period[0]),

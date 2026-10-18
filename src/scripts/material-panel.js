@@ -8,6 +8,7 @@
 import { messageDialog } from './dialog.js';
 import { PARAMS, buildMaterial } from './material-manager.js';
 import { thumbKey } from './material-thumbs.js';
+import { BAKE_RESOLUTIONS } from './material-graph.js';
 import { MATERIALS } from './config.js';
 import { MATERIAL_PRESETS, PRESET_CATEGORIES, presetName, presetCategoryLabel } from './material-presets.js';
 import { t, has } from './i18n.js';
@@ -272,6 +273,26 @@ export class MaterialPanel {
         }
     }
 
+    // resolution of the material's baked node maps (output node param `resolution`) – per material, e.g. a finer
+    // fabric than a plaster; higher = sharper up close, more memory and bake time
+    _resolutionRow(def) {
+        const out = def.graph.nodes.find(n => n.type === 'output');
+        const row = el('label', 'mb-1.5 flex items-center gap-2');
+        row.append(el('span', 'shrink-0 text-white/60', t('materials.panel.resolution')));
+        const select = el('select', SELECT + ' w-auto');
+        select.title = t('materials.panel.resolutionTitle');
+        for (const r of BAKE_RESOLUTIONS) select.append(new Option(r === 'auto' ? t('materials.panel.resolutionAuto') : `${r} × ${r}`, r));
+        select.value = out?.params?.resolution || 'auto';
+        select.onchange = () => {
+            const graph = structuredClone(def.graph);
+            const o = graph.nodes.find(n => n.type === 'output');
+            if (o) o.params = { ...o.params, resolution: select.value };
+            this.manager.setGraph(def.id, graph);
+        };
+        row.append(select);
+        return row;
+    }
+
     _row(name, params, dragData, thumb) {
         const grid = this.view === 'grid';
         const row = el('div', grid
@@ -329,6 +350,7 @@ export class MaterialPanel {
         del.title = del.disabled ? t('materials.panel.deleteInUse') : t('materials.panel.deleteTitle');
         info.append(assign, ...(editing ? [nodes, dup] : []), del);
         frag.append(info);
+        if (def.graph?.nodes?.length) frag.append(this._resolutionRow(def));   // also without editing (wish of the user)
         if (!editing) { this.editor.replaceChildren(frag); return; }
 
         const maps = Object.keys(def.render?.maps || {});

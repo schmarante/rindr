@@ -21,8 +21,8 @@
 import { vec2, float, floor, abs, max, min, clamp, sqrt, length, dot, smoothstep, select, mix } from 'three/tsl';
 import { T, tsl, input, coord, wrap, hash2 } from '../node-lib.js';
 
-// half width of the edge smoothing in tile units (≈ one texel of a 1024² bake across the whole edge)
-const AA = 0.6 / 1024;
+// half width of the edge smoothing in tile units: ≈ one texel of the bake across the whole edge (ctx.bakeSize)
+const aaOf = bakeSize => 0.6 / bakeSize;
 const SQRT_HALF = Math.SQRT1_2;
 const HOLES = new Set(['perforated', 'expanded']);
 
@@ -201,7 +201,8 @@ export default {
         { key: 'a', kind: 'color', default: '#141414' },
         { key: 'b', kind: 'color', default: '#b4b8bc' },
     ],
-    evaluate(port, p, get) {
+    evaluate(port, p, get, ctx) {
+        const AA = aaOf(ctx?.bakeSize || 1024);
         const uv = coord(get);
         const q = p.rotation === '90' ? uv.yx : uv;
         const { d, id, cols, rows, bw, slope } = pattern(p, q);
