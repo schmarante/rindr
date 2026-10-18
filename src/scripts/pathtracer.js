@@ -297,6 +297,7 @@ export class PathTracingView {
             await new Promise(resolve => requestAnimationFrame(resolve));
             const t0 = performance.now();
             this.pathTracer.setScene(scene, camera);
+            this._atlasCapacity = this._atlasInfoLength();   // texture slots the pipeline was built with (atlasCapacityPatch)
             this._motionReady = false;   // new scene data: Kuwahara until the denoiser's shaders are compiled for it
             // switch only now: useMegakernel() needs the camera and BVH data of the scene
             if (PATHTRACING.megakernel && !this._megakernel) {
@@ -447,6 +448,16 @@ export class PathTracingView {
     updateMaterials() {
         if (!this.ready) return;
         this.pathTracer.updateMaterials();
+        // more textures than the pipeline has slots for (atlasCapacityPatch, astro.config.mjs): the placements of the
+        // new ones would never reach the shader – rebuild the scene instead of drawing the wrong part of the atlas
+        if (this._atlasInfoLength() > (this._atlasCapacity ?? Infinity)) {
+            debugLog('[Pathtracer] texture atlas grew beyond its slots – rebuilding the scene');
+            this.setScene(this.pathTracer.scene, this.pathTracer.camera);
+        }
+    }
+
+    _atlasInfoLength() {
+        return this.pathTracer._bvhData?.textureAtlas?.textureInfo.length ?? 0;
     }
 
     reset() {
