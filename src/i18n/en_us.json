@@ -264,7 +264,8 @@
         "deleteNode": "Delete node",
         "portTypes": {
             "color": "Colour",
-            "float": "Value"
+            "float": "Value",
+            "vector": "Coordinate"
         },
         "missingTexture": "(missing)",
         "importTextureTitle": "Texture from the imported file",
@@ -292,10 +293,12 @@
                     "emissive": "Emissive colour",
                     "normal": "Normal map",
                     "ao": "Ambient occlusion",
-                    "height": "Bump (height)"
+                    "height": "Bump (height)",
+                    "alpha": "Cutout (alpha)"
                 },
                 "params": {
-                    "reliefStrength": "Bump strength"
+                    "reliefStrength": "Bump strength",
+                    "size": "Tile (mm)"
                 }
             },
             "value": {
@@ -349,6 +352,9 @@
                     "scale": "Size",
                     "detail": "Detail",
                     "stretch": "Stretch"
+                },
+                "inputs": {
+                    "uv": "Coordinate"
                 }
             },
             "gradient": {

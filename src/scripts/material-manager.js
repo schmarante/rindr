@@ -151,7 +151,7 @@ export class MaterialManager extends EventTarget {
         }
         const preset = MATERIAL_PRESETS.find(p => p.libraryId === libraryId);
         if (!preset) return null;
-        return this.create({ name: presetName(libraryId), source: 'library', libraryId, params: preset.params });
+        return this.create({ name: presetName(libraryId), source: 'library', libraryId, params: preset.params, graph: preset.graph });
     }
 
     duplicate(id) {

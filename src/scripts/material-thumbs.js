@@ -108,17 +108,19 @@ export class MaterialThumbs extends EventTarget {
     /**
      * Ask for the image of `key`.
      * @param {string} group  newest request per group wins (material ID, library ID)
-     * @param {() => THREE.Material} material  the material to render (called only if the image is not stored)
+     * @param {() => THREE.Material | Promise<THREE.Material>} material  the material to render (called only if the
+     *                         image is not stored; async e.g. to bake its node graph first)
      * @param {object} [opts]  persist: keep in IndexedDB (library presets only); dispose: dispose the material
-     *                         afterwards (own instance). Memory-only keys must be unique to their group.
+     *                         afterwards (own instance), release(material) before that (e.g. its baked maps).
+     *                         Memory-only keys must be unique to their group.
      */
-    request(key, group, material, { persist = false, dispose = false } = {}) {
+    request(key, group, material, { persist = false, dispose = false, release = null } = {}) {
         if (this.has(key)) { this._release(group, { key, persist }); return; }
         if (this.pending.has(key) && !this.jobs.has(group)) return;   // being rendered
         const old = this.jobs.get(group);
         if (old?.key === key) return;
         if (old) this.pending.delete(old.key);
-        this.jobs.set(group, { key, material, persist, dispose });
+        this.jobs.set(group, { key, material, persist, dispose, release });
         this.pending.add(key);
         this._run();
     }
@@ -177,7 +179,7 @@ export class MaterialThumbs extends EventTarget {
 
     async _render(job, generation) {
         const s = this._setup ??= this._createSetup();
-        const material = job.material();
+        const material = await job.material();   // may bake node maps first (preset with a graph)
         const special = this.special?.(material, RADIUS) ?? null;
         try {
             const r = this.renderer;
@@ -225,7 +227,7 @@ export class MaterialThumbs extends EventTarget {
         } finally {
             if (special) { s.scene.remove(special); if (special.userData.dispose) special.userData.dispose(); else special.material.dispose(); }
             s.mesh.visible = true;
-            if (job.dispose) material.dispose();
+            if (job.dispose) { job.release?.(material); material.dispose(); }
         }
     }
 
@@ -236,14 +238,19 @@ export class MaterialThumbs extends EventTarget {
     // hooks: beforeRender/afterRender of a special mesh (cloud preview: its own light), only around this render
     async _renderOnce(s, material, hooks = null) {
         const r = this.renderer, saved = save(r), thickness = material.thickness;
+        // baked node maps of a scene material repeat in mm (UV_TILE / size): on the sphere's 0..1 UVs one tile across
+        // the visible half instead, like the library presets (graph-apply.js) – only around the synchronous render
+        const maps = Object.values(material.userData.graphMaps || {}), repeats = maps.map(m => m.repeat.clone());
         prepare(r, s.target);
         if (material.transmission > 0) material.thickness = THICKNESS;
+        for (const m of maps) m.repeat.set(2, 1);
         hooks?.beforeRender?.();
         try {
             r.render(s.scene, s.camera);
         } finally {
             hooks?.afterRender?.();
             material.thickness = thickness;
+            maps.forEach((m, i) => m.repeat.copy(repeats[i]));
             restore(r, saved);
         }
         return r.readRenderTargetPixelsAsync(s.target, 0, 0, RENDER_SIZE, RENDER_SIZE);

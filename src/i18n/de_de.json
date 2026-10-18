@@ -264,7 +264,8 @@
         "deleteNode": "Node löschen",
         "portTypes": {
             "color": "Farbe",
-            "float": "Wert"
+            "float": "Wert",
+            "vector": "Koordinate"
         },
         "missingTexture": "(fehlt)",
         "importTextureTitle": "Textur aus der importierten Datei",
@@ -292,10 +293,12 @@
                     "emissive": "Leuchtfarbe",
                     "normal": "Normal-Map",
                     "ao": "Umgebungsverdeckung",
-                    "height": "Relief (Höhe)"
+                    "height": "Relief (Höhe)",
+                    "alpha": "Ausschnitt (Alpha)"
                 },
                 "params": {
-                    "reliefStrength": "Relief-Stärke"
+                    "reliefStrength": "Relief-Stärke",
+                    "size": "Kachel (mm)"
                 }
             },
             "value": {
@@ -349,6 +352,9 @@
                     "scale": "Größe",
                     "detail": "Detail",
                     "stretch": "Streckung"
+                },
+                "inputs": {
+                    "uv": "Koordinate"
                 }
             },
             "gradient": {

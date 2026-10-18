@@ -4,9 +4,13 @@
 //  - If only constant nodes precede it (value, color, mix, math …), the value is computed
 //    directly and set as a material parameter.
 //  - Otherwise (image, noise, checker …) the subgraph is built as a TSL expression over the UVs
-//    and baked on the GPU into a tileable texture (one UV tile = UV_TILE mm).
-//    The texture is set as a map -> raster view and path tracer see exactly the same.
-// "Relief" (height) is additionally converted into a normal map.
+//    and baked on the GPU into a tileable texture covering one UV tile; the output node's `size` says how many mm
+//    that tile is on the model (map repeat = UV_TILE / size). The texture is set as a map -> raster view and path
+//    tracer see exactly the same.
+// "Relief" (height) is additionally converted into a normal map, "alpha" cuts the surface (alpha test).
+//
+// Procedural texture nodes live in their own modules in nodes/ (one per type, default export = node type with an
+// `evaluate` function; see node-lib.js for the result format and the tileable helpers) and register themselves here.
 //
 // Imported materials (glTF/FBX) get a graph on import with one "import texture" node per texture
 // of the file. If such a node is attached unchanged to the matching input (channel as three.js
@@ -15,16 +19,14 @@
 // in between is it baked – with the model's UVs, at the resolution of the source texture.
 import { t } from './i18n.js';
 import * as THREE from 'three/webgpu';
-import {
-    Fn, float, vec2, vec3, vec4, uv, texture, mat3, fract, floor, sin, dot, mix, mod, clamp, max, min, pow,
-    sRGBTransferOETF,
-} from 'three/tsl';
+import { float, vec3, vec4, uv, texture, mat3, fract, floor, dot, mix, mod, clamp, max, min, pow, sRGBTransferOETF } from 'three/tsl';
+import { LUMA, linear, C, T, tsl, convert, input } from './node-lib.js';
 
 export const BAKE_SIZE = 1024;
 const MAX_BAKE_SIZE = 4096;
 
 // --- Node types ---
-// inputs/outputs: { key, type: 'float'|'color', default? }
+// inputs/outputs: { key, type: 'float'|'color'|'vector', default? }  ('vector' = texture coordinate, see node-lib.js)
 // params: { key, kind: 'number'|'color'|'select'|'image'|'importMap', min?, max?, step?, options? (keys), default }
 // Labels come from the language file (see nodeLabel/portLabel/paramLabel/optionLabel); type ids
 // and port/param keys are persisted in the material JSON.
@@ -43,9 +45,14 @@ export const NODE_TYPES = {
             { key: 'normal', type: 'color' },
             { key: 'ao', type: 'float' },
             { key: 'height', type: 'float' },
+            { key: 'alpha', type: 'float' },
         ],
         outputs: [],
-        params: [{ key: 'reliefStrength', kind: 'number', min: 0, max: 5, step: 0.05, default: 1 }],
+        params: [
+            { key: 'reliefStrength', kind: 'number', min: 0, max: 5, step: 0.05, default: 1 },
+            // edge length of the baked tile on the model in mm (UV_TILE = one UV unit of the box UVs)
+            { key: 'size', kind: 'number', min: 10, max: 10000, step: 10, default: 100 },
+        ],
     },
     value: {
         category: 'input', color: 'bg-slate-600',
@@ -74,15 +81,6 @@ export const NODE_TYPES = {
             { key: 'b', type: 'float' }, { key: 'a', type: 'float' },
         ],
         params: [{ key: 'map', kind: 'importMap', default: 'map' }],
-    },
-    noise: {
-        category: 'texture', color: 'bg-amber-700', texture: true,
-        inputs: [], outputs: [{ key: 'value', type: 'float' }],
-        params: [
-            { key: 'scale', kind: 'number', min: 1, max: 200, step: 1, default: 20 },
-            { key: 'detail', kind: 'number', min: 1, max: 6, step: 1, default: 4 },
-            { key: 'stretch', kind: 'number', min: 1, max: 50, step: 1, default: 1 },
-        ],
     },
     gradient: {
         category: 'texture', color: 'bg-amber-700', texture: true,
@@ -152,6 +150,12 @@ export const NODE_TYPES = {
     },
 };
 
+// procedural texture nodes: one module per type in nodes/ (Vite glob – new files register themselves)
+for (const mod of Object.values(import.meta.glob('./nodes/*.js', { eager: true }))) {
+    const def = mod.default;
+    if (def?.type) NODE_TYPES[def.type] = def;
+}
+
 export const NODE_CATEGORIES = ['input', 'texture', 'color', 'value'];
 
 /** Display label of a node type */
@@ -214,9 +218,6 @@ export function defaultParams(type) {
 }
 
 // --- Evaluation ---
-
-const LUMA = [0.2126, 0.7152, 0.0722];
-const linear = hex => new THREE.Color(hex);   // hex (sRGB) -> linear color
 
 /**
  * Evaluate the graph for the output node.
@@ -296,31 +297,8 @@ export function evaluateGraph(graph, textures, importMaps = {}) {
             : { kind: 'tsl', node: r.node, type: input.type, sig: signature(from.node, from.port), size: bakeSize(from.node) };
     }
     result.reliefStrength = out.params?.reliefStrength ?? 1;
+    result.size = out.params?.size ?? 100;
     return result;
-}
-
-// type conversion float <-> color
-function convert(r, type) {
-    if (r.type === type) return r;
-    if (type === 'float') {
-        return r.isConst
-            ? { isConst: true, type, value: r.value.r * LUMA[0] + r.value.g * LUMA[1] + r.value.b * LUMA[2] }
-            : { isConst: false, type, node: dot(r.node, vec3(...LUMA)) };
-    }
-    return r.isConst
-        ? { isConst: true, type, value: new THREE.Color(r.value, r.value, r.value) }
-        : { isConst: false, type, node: vec3(r.node) };
-}
-
-const C = v => ({ isConst: true, type: typeof v === 'number' ? 'float' : 'color', value: v });
-const T = (node, type) => ({ isConst: false, type, node });
-const tsl = r => (r.isConst ? (r.type === 'float' ? float(r.value) : vec3(r.value.r, r.value.g, r.value.b)) : r.node);
-
-// read an input: connected -> result (type-converted), otherwise parameter
-function input(get, key, type, paramValue) {
-    const r = get(key);
-    if (r) return convert(r, type);
-    return C(type === 'color' ? linear(paramValue) : paramValue);
 }
 
 function evalNode(n, port, get, { textures, importMaps }) {
@@ -363,11 +341,6 @@ function evalNode(n, port, get, { textures, importMaps }) {
             if (v.isConst) return C(1 - v.value);
             return T(float(1).sub(tsl(v)), 'float');
         }
-        case 'noise': {
-            const s = Math.max(1, Math.round(p.scale));
-            const st = Math.max(1, Math.round(p.stretch));
-            return T(fbm(uv().mul(vec2(s, s * st)), vec2(s, s * st), Math.round(p.detail)), 'float');
-        }
         case 'gradient': {
             const s = Math.max(1, Math.round(p.scale));
             const c = p.axis === 'v' ? uv().y : uv().x;
@@ -396,34 +369,12 @@ function evalNode(n, port, get, { textures, importMaps }) {
             return port === 'color' ? T(c.rgb, 'color') : T(c[port], 'float');
         }
     }
+    const def = NODE_TYPES[n.type];
+    if (def?.evaluate) return def.evaluate(port, p, get, { textures, importMaps });
     return C(0);
 }
 
 const clamp01 = v => Math.min(Math.max(v, 0), 1);
-
-// Tileable value noise (period = grid cells per tile) + fBm
-const hash2 = Fn(([p]) => fract(sin(dot(p, vec2(127.1, 311.7))).mul(43758.5453)));
-const periodicNoise = Fn(([p, period]) => {
-    const i = floor(p);
-    const f = fract(p);
-    const u = f.mul(f).mul(float(3).sub(f.mul(2)));
-    const a = hash2(mod(i, period));
-    const b = hash2(mod(i.add(vec2(1, 0)), period));
-    const c = hash2(mod(i.add(vec2(0, 1)), period));
-    const d = hash2(mod(i.add(vec2(1, 1)), period));
-    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-});
-function fbm(p, period, octaves) {
-    let sum = float(0);
-    let amp = 0.5, norm = 0;
-    for (let o = 0; o < Math.max(1, octaves); o++) {
-        const f = 2 ** o;
-        sum = sum.add(periodicNoise(p.mul(f), period.mul(f)).mul(amp));
-        norm += amp;
-        amp *= 0.5;
-    }
-    return sum.div(norm);
-}
 
 // --- Baking ---
 
