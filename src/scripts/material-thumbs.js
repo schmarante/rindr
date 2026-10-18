@@ -240,7 +240,8 @@ export class MaterialThumbs extends EventTarget {
         const r = this.renderer, saved = save(r), thickness = material.thickness;
         // baked node maps of a scene material repeat in mm (UV_TILE / size): on the sphere's 0..1 UVs one tile across
         // the visible half instead, like the library presets (graph-apply.js) – only around the synchronous render
-        const maps = Object.values(material.userData.graphMaps || {}), repeats = maps.map(m => m.repeat.clone());
+        // (UV mode – a decal – keeps its placement: the sphere's own 0..1 UVs are its domain)
+        const maps = material.userData.graphUvMode ? [] : Object.values(material.userData.graphMaps || {}), repeats = maps.map(m => m.repeat.clone());
         prepare(r, s.target);
         if (material.transmission > 0) material.thickness = THICKNESS;
         for (const m of maps) m.repeat.set(2, 1);

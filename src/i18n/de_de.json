@@ -517,7 +517,8 @@
                 "label": "Bild-Textur",
                 "outputs": {
                     "color": "Farbe",
-                    "value": "Helligkeit"
+                    "value": "Helligkeit",
+                    "alpha": "Alpha"
                 },
                 "params": {
                     "image": "Bild",
@@ -1007,6 +1008,27 @@
                         "veins": "Adern",
                         "banded": "Schichten"
                     }
+                }
+            }
+        },
+        "mapping": {
+            "offsetU": "Versatz U",
+            "offsetV": "Versatz V",
+            "tilingU": "Kachelung U",
+            "tilingV": "Kachelung V",
+            "angle": "Drehung (°)",
+            "wrapU": "Kacheln U",
+            "wrapV": "Kacheln V",
+            "options": {
+                "wrapU": {
+                    "repeat": "Wiederholen",
+                    "mirror": "Spiegeln",
+                    "off": "Aus (Einzelbild)"
+                },
+                "wrapV": {
+                    "repeat": "Wiederholen",
+                    "mirror": "Spiegeln",
+                    "off": "Aus (Einzelbild)"
                 }
             }
         }
