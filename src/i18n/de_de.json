@@ -240,7 +240,18 @@
             "grass-lawn": "Rasen",
             "grass-meadow": "Wiese",
             "soap-bubble": "Seifenblase",
-            "plastic-blue-rounded": "Kunststoff blau, Kanten gerundet"
+            "plastic-blue-rounded": "Kunststoff blau, Kanten gerundet",
+            "glass-blue": "Glas blau getönt",
+            "glass-bronze": "Glas bronze getönt",
+            "glass-bottle-green": "Flaschenglas grün",
+            "glass-reflective": "Sonnenschutzglas verspiegelt",
+            "glass-painted-dark": "Glas rückseitig lackiert dunkel",
+            "mirror": "Spiegel",
+            "paint-lacquer-black": "Klavierlack schwarz",
+            "paint-lacquer-white": "Klavierlack weiß",
+            "metal-alu-anodized-blue": "Aluminium eloxiert blau",
+            "metal-alu-anodized-red": "Aluminium eloxiert rot",
+            "emissive-neon-red": "Neon-Rot leuchtend"
         },
         "defaultNames": {
             "material": "Material",
