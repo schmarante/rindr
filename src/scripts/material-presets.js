@@ -4,7 +4,9 @@
 // category labels from materials.categories.<category>.
 import { t } from './i18n.js';
 
-export const PRESET_CATEGORIES = ['metal', 'plastic', 'paint', 'glass', 'subsurface', 'marble', 'style', 'special', 'other'];
+// Order of the categories in the library (and its category filter); categories without presets are left out.
+export const PRESET_CATEGORIES = ['metal', 'plastic', 'paint', 'glass', 'wood', 'stone', 'masonry', 'concrete', 'tiles', 'fabric', 'outdoor',
+    'subsurface', 'marble', 'style', 'special', 'other'];
 
 /** Display name of a preset (also the default name of a material created from it) */
 export const presetName = libraryId => t(`materials.presets.${libraryId}`);

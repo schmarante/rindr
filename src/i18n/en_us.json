@@ -90,7 +90,9 @@
             "importFailed": "Import failed: {message}",
             "importErrorTitle": "Import failed",
             "merge": "Merge identical",
-            "mergeTitle": "Merge identical materials (same name, settings and textures – e.g. the same model loaded twice) into one each"
+            "mergeTitle": "Merge identical materials (same name, settings and textures – e.g. the same model loaded twice) into one each",
+            "allCategories": "All categories",
+            "categoryTitle": "Filter the library by category"
         },
         "maps": {
             "map": "Colour",
@@ -179,7 +181,14 @@
             "marble": "Glowing marble",
             "other": "Other",
             "style": "Style",
-            "special": "Special"
+            "special": "Special",
+            "wood": "Wood",
+            "stone": "Natural stone",
+            "masonry": "Masonry",
+            "concrete": "Concrete & plaster",
+            "tiles": "Tiles & floors",
+            "fabric": "Fabric & carpet",
+            "outdoor": "Outdoor"
         },
         "presets": {
             "metal-chrome": "Chrome",
