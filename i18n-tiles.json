@@ -1,0 +1,42 @@
+{
+  "de_de": {"nodes": {"types": {"tiles": {
+    "label": "Fliesen & Ziegel",
+    "inputs": {"uv": "Koordinate", "a": "Steinfarbe", "b": "Fugenfarbe", "c": "Steinfarbe 2"},
+    "outputs": {"color": "Farbe", "value": "Höhe", "mask": "Maske", "random": "Zufall", "uv": "Koordinate je Stein"},
+    "params": {
+      "pattern": "Muster", "countU": "Anzahl U", "countV": "Anzahl V", "ratio": "Seitenverhältnis",
+      "gap": "Fugenbreite", "bevel": "Fase", "profile": "Kantenform", "edgeNoise": "Kanten unregelmäßig",
+      "surface": "Oberfläche rau", "variation": "Farbvariation", "colorMix": "Anteil Steinfarbe 2",
+      "jitter": "Zufallsversatz", "seed": "Zufallswert",
+      "a": "Steinfarbe", "b": "Fugenfarbe", "c": "Steinfarbe 2"
+    },
+    "options": {
+      "pattern": {
+        "stack": "Raster", "running": "Läuferverband (½)", "third": "Drittelverband (⅓)",
+        "english": "Blockverband", "flemish": "Flämischer Verband", "herringbone": "Fischgrät",
+        "basket": "Flechtmuster", "diamond": "Diagonal (Raute)", "planks": "Dielen"
+      },
+      "profile": {"round": "Gerundet", "chamfer": "Gefast"}
+    }
+  }}}},
+  "en_us": {"nodes": {"types": {"tiles": {
+    "label": "Tiles & Bricks",
+    "inputs": {"uv": "Coordinate", "a": "Tile colour", "b": "Joint colour", "c": "Tile colour 2"},
+    "outputs": {"color": "Colour", "value": "Height", "mask": "Mask", "random": "Random", "uv": "Coordinate per tile"},
+    "params": {
+      "pattern": "Pattern", "countU": "Count U", "countV": "Count V", "ratio": "Aspect ratio",
+      "gap": "Joint width", "bevel": "Bevel", "profile": "Edge shape", "edgeNoise": "Irregular edges",
+      "surface": "Surface roughness", "variation": "Colour variation", "colorMix": "Share of tile colour 2",
+      "jitter": "Random offset", "seed": "Seed",
+      "a": "Tile colour", "b": "Joint colour", "c": "Tile colour 2"
+    },
+    "options": {
+      "pattern": {
+        "stack": "Stack", "running": "Running bond (½)", "third": "Third bond (⅓)",
+        "english": "English bond", "flemish": "Flemish bond", "herringbone": "Herringbone",
+        "basket": "Basket weave", "diamond": "Diagonal (diamond)", "planks": "Floor boards"
+      },
+      "profile": {"round": "Rounded", "chamfer": "Chamfered"}
+    }
+  }}}}
+}
