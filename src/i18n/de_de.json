@@ -90,7 +90,9 @@
             "importFailed": "Import fehlgeschlagen: {message}",
             "importErrorTitle": "Import fehlgeschlagen",
             "merge": "Gleiche zusammenfassen",
-            "mergeTitle": "Identische Materialien (gleicher Name, gleiche Einstellungen und Texturen – z.B. dasselbe Modell zweimal geladen) zu je einem zusammenfassen"
+            "mergeTitle": "Identische Materialien (gleicher Name, gleiche Einstellungen und Texturen – z.B. dasselbe Modell zweimal geladen) zu je einem zusammenfassen",
+            "allCategories": "Alle Kategorien",
+            "categoryTitle": "Bibliothek nach Kategorie filtern"
         },
         "maps": {
             "map": "Farbe",
@@ -179,7 +181,14 @@
             "marble": "Leuchtmarmor",
             "other": "Sonstige",
             "style": "Stil",
-            "special": "Spezial"
+            "special": "Spezial",
+            "wood": "Holz",
+            "stone": "Naturstein",
+            "masonry": "Mauerwerk",
+            "concrete": "Beton & Putz",
+            "tiles": "Fliesen & Böden",
+            "fabric": "Stoff & Teppich",
+            "outdoor": "Außenbereich"
         },
         "presets": {
             "metal-chrome": "Chrom",

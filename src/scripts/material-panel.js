@@ -11,7 +11,7 @@ import { thumbKey } from './material-thumbs.js';
 import { MATERIALS } from './config.js';
 import { MATERIAL_PRESETS, PRESET_CATEGORIES, presetName, presetCategoryLabel } from './material-presets.js';
 import { t, has } from './i18n.js';
-import { colorField } from './ui-controls.js';
+import { colorField, SELECT } from './ui-controls.js';
 
 export const MATERIAL_MIME = 'application/x-step-viewer-material';
 
@@ -23,6 +23,7 @@ const BTN = 'rounded px-2 py-0.5 text-white/80 hover:bg-white/15 disabled:opacit
 const TAB = 'rounded px-2 py-0.5';
 const LIST = 'max-h-[30vh] min-h-0 overflow-auto px-1 pb-1 select-none';
 const VIEW_KEY = 'rindr.materials.view';
+const CATEGORY_KEY = 'rindr.materials.category';   // category filter of the library ('' = all)
 const VIEW_ICONS = {
     list: '<svg viewBox="0 0 16 16" class="size-3.5 fill-current"><rect x="1" y="2.5" width="3" height="3" rx="1.5"/><rect x="6" y="3.25" width="9" height="1.5" rx=".75"/><rect x="1" y="6.5" width="3" height="3" rx="1.5"/><rect x="6" y="7.25" width="9" height="1.5" rx=".75"/><rect x="1" y="10.5" width="3" height="3" rx="1.5"/><rect x="6" y="11.25" width="9" height="1.5" rx=".75"/></svg>',
     grid: '<svg viewBox="0 0 16 16" class="size-3.5 fill-current"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1"/><rect x="9" y="9" width="5.5" height="5.5" rx="1"/></svg>',
@@ -49,6 +50,7 @@ export class MaterialPanel {
         this.thumbs = hooks.thumbs || null;   // MaterialThumbs
         this.lastThumb = new Map();           // material ID -> key of its last image (shown while the edited one renders)
         this.view = (() => { try { return localStorage.getItem(VIEW_KEY) === 'grid' ? 'grid' : 'list'; } catch { return 'list'; } })();
+        this.category = (() => { try { return localStorage.getItem(CATEGORY_KEY) || ''; } catch { return ''; } })();
 
         root.innerHTML = `
             <div class="flex items-center justify-between gap-2 px-3 py-2">
@@ -70,6 +72,7 @@ export class MaterialPanel {
             <div class="flex gap-1 px-3 pb-1.5">
                 <button data-tab="scene" class="${TAB}">${t('materials.panel.tabs.scene')}</button>
                 <button data-tab="library" class="${TAB}">${t('materials.panel.tabs.library')}</button>
+                <select data-category class="${SELECT} ml-auto w-auto max-w-40" title="${t('materials.panel.categoryTitle')}" hidden></select>
                 ${MATERIALS.editing ? `<button data-act="new" class="${BTN} ml-auto" title="${t('materials.panel.newTitle')}">${t('materials.panel.new')}</button>` : ''}
             </div>
             <div data-list class="${LIST}"></div>
@@ -92,6 +95,12 @@ export class MaterialPanel {
             e.dataTransfer.effectAllowed = 'copy';
         });
         this.file.addEventListener('change', () => this._import());
+        this.categorySelect = root.querySelector('[data-category]');
+        this.categorySelect.addEventListener('change', () => {
+            this.category = this.categorySelect.value;
+            try { localStorage.setItem(CATEGORY_KEY, this.category); } catch { /* storage blocked */ }
+            this.render({ keepEditor: true });
+        });
         manager.addEventListener('change', () => this.render());
         manager.addEventListener('update', () => this.render({ keepEditor: true }));
         this.thumbs?.addEventListener('ready', e => this._onThumb(e.detail));
@@ -129,6 +138,7 @@ export class MaterialPanel {
             b.className = 'rounded p-1' + (b.dataset.view === this.view ? ' bg-sky-500/40 text-white' : ' text-white/60 hover:bg-white/15');
         });
         this.list.className = LIST + (this.view === 'grid' ? ' grid grid-cols-4 content-start gap-1' : '');
+        this.categorySelect.hidden = this.tab !== 'library';
         if (this.tab === 'scene') this._renderScene(); else this._renderLibrary();
         if (!keepEditor || !this.editor.contains(document.activeElement)) this._renderEditor();
     }
@@ -175,7 +185,14 @@ export class MaterialPanel {
     _renderLibrary() {
         this.root.querySelector('[data-act="merge"]').hidden = true;
         const frag = document.createDocumentFragment();
-        for (const cat of PRESET_CATEGORIES) {
+        // category filter (right of the tabs): all, or one category – only categories that have presets
+        const used = PRESET_CATEGORIES.filter(cat => MATERIAL_PRESETS.some(p => p.category === cat));
+        if (this.category && !used.includes(this.category)) this.category = '';
+        const options = [new Option(t('materials.panel.allCategories'), '', false, !this.category),
+            ...used.map(cat => new Option(presetCategoryLabel(cat), cat, false, cat === this.category))];
+        this.categorySelect.replaceChildren(...options);
+        for (const cat of used) {
+            if (this.category && cat !== this.category) continue;
             frag.append(el('div', 'col-span-full px-2 pt-1.5 pb-0.5 text-[10px] uppercase tracking-wide text-white/40', presetCategoryLabel(cat)));
             for (const p of MATERIAL_PRESETS.filter(p => p.category === cat)) {
                 const row = this._row(presetName(p.libraryId), p.params, JSON.stringify({ libraryId: p.libraryId }), this._libraryThumb(p));
