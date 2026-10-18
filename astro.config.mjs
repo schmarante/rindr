@@ -127,6 +127,35 @@ function pathTracerPerfPatch() {
   };
 }
 
+// Texture atlas of three-gpu-pathtracer (AtlasTexture.js): the table of texture placements (textureInfo) goes to the
+// shader as a uniform array whose size three.js fixes when the pipeline is built (setScene). Textures added later
+// (assigning a material with new maps, node graph maps baked afterwards) had no slot in the buffer – materials read
+// stale/empty placements, i.e. the wrong part of the atlas (tiles swapped, black/white stripes of another map; user
+// report Oct. 2026, HQ only). The table is padded to a fixed capacity (256, grows in powers of two); pathtracer.js
+// rebuilds the scene if it ever grows beyond what the pipeline was built with.
+function atlasCapacityPatch() {
+  return {
+    name: 'rindr-atlas-capacity',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.replace(/\\/g, '/').split('?')[0];
+      if (!file.endsWith('three-gpu-pathtracer/src/webgpu/AtlasTexture.js')) return null;
+      const from = `\t\tif ( info.length === 0 ) {
+
+\t\t\tinfo.push( new Vector4( 0, 0, 0, 0 ) );
+
+\t\t}`;
+      if (code.split(from).length !== 2) this.error('rindr-atlas-capacity: textureInfo padding not found exactly once in AtlasTexture.js (three-gpu-pathtracer changed?)');
+      return {
+        code: code.replace(from, () => `\t\t// RINDR: fixed capacity (uniform array size is fixed when the pipeline is built)
+\t\tthis.capacity = Math.max( this.capacity || 256, 2 ** Math.ceil( Math.log2( Math.max( info.length, 1 ) ) ) );
+\t\twhile ( info.length < this.capacity ) info.push( new Vector4( 0, 0, 0, 0 ) );`),
+        map: null,
+      };
+    },
+  };
+}
+
 // Material stand-ins in three-gpu-pathtracer (src/scripts/pt-stand-in.js, RindrMaterial in toon.js – fails loudly if
 // the library changed, check on every update): the material packing reads userData.ptStandIn over each material.
 // - subsurface look: translucent share as rough transmission, gloss as clearcoat, colour absorbed over the
@@ -471,7 +500,7 @@ export default defineConfig({
     headers: isolationHeaders,
   },
   vite: {
-    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), ptStandInPatch(), glassBouncesPatch(), cloudPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch()],
+    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), ptStandInPatch(), glassBouncesPatch(), cloudPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch()],
     server: { headers: isolationHeaders },
     preview: { headers: isolationHeaders },
     worker: { format: 'es' },
