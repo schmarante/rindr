@@ -1,0 +1,70 @@
+{
+  "de_de": {
+    "materials": {
+      "presets": {
+        "stone-marble-white": "Marmor weiß poliert",
+        "stone-marble-black": "Marmor schwarz poliert",
+        "stone-marble-green": "Marmor grün poliert",
+        "stone-marble-beige": "Marmor beige poliert",
+        "stone-granite-grey": "Granit grau poliert",
+        "stone-granite-black": "Granit schwarz poliert",
+        "stone-granite-red": "Granit rot poliert",
+        "stone-onyx-honey": "Onyx honigfarben",
+        "stone-travertine": "Travertin geschliffen",
+        "stone-limestone": "Kalkstein geschliffen",
+        "stone-sandstone": "Sandstein",
+        "stone-slate": "Schiefer gespalten",
+        "stone-soapstone": "Speckstein",
+        "brick-running-red": "Ziegel Läuferverband rot",
+        "brick-clinker-dark": "Klinker dunkel",
+        "brick-english-red": "Ziegel Blockverband rot",
+        "brick-flemish-yellow": "Ziegel Flämischer Verband gelb",
+        "brick-glazed-white": "Glasurziegel weiß",
+        "brick-herringbone": "Ziegel Fischgrät",
+        "brick-basket-weave": "Ziegel Flechtverband",
+        "masonry-block-grey": "Betonstein grau",
+        "masonry-block-split-face": "Betonstein gespalten",
+        "masonry-block-ribbed": "Betonstein gerippt",
+        "masonry-ashlar": "Quadermauerwerk",
+        "masonry-rustication": "Bossenquader",
+        "masonry-dry-stone": "Trockenmauer",
+        "masonry-rubble": "Bruchsteinmauer",
+        "masonry-river-stone": "Flusssteinmauer"
+      }
+    }
+  },
+  "en_us": {
+    "materials": {
+      "presets": {
+        "stone-marble-white": "Marble white polished",
+        "stone-marble-black": "Marble black polished",
+        "stone-marble-green": "Marble green polished",
+        "stone-marble-beige": "Marble beige polished",
+        "stone-granite-grey": "Granite grey polished",
+        "stone-granite-black": "Granite black polished",
+        "stone-granite-red": "Granite red polished",
+        "stone-onyx-honey": "Onyx honey",
+        "stone-travertine": "Travertine honed",
+        "stone-limestone": "Limestone honed",
+        "stone-sandstone": "Sandstone",
+        "stone-slate": "Slate riven",
+        "stone-soapstone": "Soapstone",
+        "brick-running-red": "Brick stretcher bond red",
+        "brick-clinker-dark": "Engineering brick dark",
+        "brick-english-red": "Brick English bond red",
+        "brick-flemish-yellow": "Brick Flemish bond buff",
+        "brick-glazed-white": "Glazed brick white",
+        "brick-herringbone": "Brick herringbone",
+        "brick-basket-weave": "Brick basket weave",
+        "masonry-block-grey": "Concrete block grey",
+        "masonry-block-split-face": "Concrete block split-face",
+        "masonry-block-ribbed": "Concrete block ribbed",
+        "masonry-ashlar": "Ashlar masonry",
+        "masonry-rustication": "Rusticated ashlar",
+        "masonry-dry-stone": "Dry stone wall",
+        "masonry-rubble": "Rubble stone wall",
+        "masonry-river-stone": "River stone wall"
+      }
+    }
+  }
+}
