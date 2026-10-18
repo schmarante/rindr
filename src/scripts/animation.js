@@ -4,7 +4,7 @@
 // files it keeps the loader's source object as a "puppet": three.js' AnimationMixer drives it.
 //   - rigid parts (node animation): every frame our mesh matrix = scale (→ mm) · puppet world matrix
 //   - deformed parts (skinning/morph targets): while playing/scrubbing the puppet's own SkinnedMesh is shown
-//     (GPU skinning like Sketchfab – vertex shader with the bone matrices) with our material, our baked
+//     (GPU skinning – vertex shader with the bone matrices) with our material, our baked
 //     mesh is hidden. Only when it stops (settle) the current pose is copied once into our mesh on the CPU
 //     (positions + normals) – for the path tracer, picking and the section caps. Previously every frame was
 //     skinned on the CPU and uploaded completely → very jerky.

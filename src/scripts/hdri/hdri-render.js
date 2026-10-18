@@ -4,7 +4,7 @@
 //
 // Order: background (colour / gradient over the elevation / sun & sky), then the pins in list order
 // ('add' adds light, 'normal' covers). Pins live in local angular coordinates around their centre (undistorted on
-// the sphere, stretched towards the poles on the equirect canvas – like KeyShot).
+// the sphere, stretched towards the poles on the equirect canvas).
 import { hexToLinear, direction } from './hdri-model.js';
 
 const DEG = Math.PI / 180;

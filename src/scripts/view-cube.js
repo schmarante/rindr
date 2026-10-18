@@ -1,4 +1,4 @@
-// View cube (like Blender/CAD): floats in a corner, turns with the camera; faces, edges and corners can be
+// View cube (like common 3D/CAD programs): floats in a corner, turns with the camera; faces, edges and corners can be
 // clicked – the camera flies to that view (viewer.js: flyToDirection). Dragging on the cube orbits.
 //
 // Plain CSS 3D (divs with matrix3d, preserve-3d) instead of a second WebGPU view: always sharp, no extra render

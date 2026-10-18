@@ -190,7 +190,7 @@ const HARMLESS_MODIFIERS = new Set([CLASS.smooth, CLASS.uvwMap, CLASS.optimize])
 // not seen in a test file yet (class id unknown) – recognised by their English names: same shape with finer faces
 // (Subdivide; Tessellate rounds slightly when its tension is set → approximated), Cap Holes rebuilt
 const BY_NAME = { Subdivide: { type: 'none' }, Tessellate: { type: 'none', approx: true }, 'Cap Holes': { type: 'capholes' }, 'Unwrap UVW': { type: 'none' }, 'UVW Xform': { type: 'none' } };
-// geometry classes that render nothing of their own: camera/light targets, V-Ray's infinite plane (our ground)
+// geometry classes that render nothing of their own: camera/light targets, a render plugin's infinite plane (our ground)
 const NOT_RENDERED = new Set([cid(0x10, 0x1020), cid(0x10, 0x628140f6, 0x3bdb0e0c)]);
 const SUPER = { geometry: 0x10, shape: 0x40, helper: 0x50, light: 0x30, camera: 0x20, modifier: 0x810 };
 
@@ -444,7 +444,7 @@ export async function describeMax(buffer, gunzip) {
             m.cutoutMap = map(0x85);
         }
         m.preview = swatch(c);   // colour of MAX' material preview (shows the look with its maps)
-        if (!m.color) m.color = m.preview;   // other materials (Standard, V-Ray …)
+        if (!m.color) m.color = m.preview;   // other materials (Standard, plugin materials …)
         return index;
     };
 

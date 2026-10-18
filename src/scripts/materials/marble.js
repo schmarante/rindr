@@ -1,5 +1,5 @@
 // Glowing marble (material param `marble`, toon.js): light veins deep inside the object – own implementation,
-// inspired by volumetric fractal shaders on Shadertoy (no code taken over, see docs/materials.md). From the
+// inspired by volumetric fractal shaders found online (no code taken over, see docs/materials.md). From the
 // surface point the view ray is marched into the object (object space, so the pattern sticks to the part); at
 // each step a Kaliset fractal (p → |p| / p² − fold, a classic formula) gives a density – high where successive
 // iterates keep their length (thin filaments) – and the glow accumulates with a slow decay (deeper veins
