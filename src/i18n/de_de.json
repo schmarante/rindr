@@ -92,10 +92,7 @@
             "merge": "Gleiche zusammenfassen",
             "mergeTitle": "Identische Materialien (gleicher Name, gleiche Einstellungen und Texturen – z.B. dasselbe Modell zweimal geladen) zu je einem zusammenfassen",
             "allCategories": "Alle Kategorien",
-            "categoryTitle": "Bibliothek nach Kategorie filtern",
-            "resolution": "Textur-Auflösung",
-            "resolutionAuto": "Automatisch (1024)",
-            "resolutionTitle": "Auflösung der gebackenen Texturen dieses Materials – höher ist aus der Nähe schärfer, braucht aber mehr Grafikspeicher und Rechenzeit"
+            "categoryTitle": "Bibliothek nach Kategorie filtern"
         },
         "maps": {
             "map": "Farbe",
