@@ -1332,6 +1332,8 @@ const materialPanel = new MaterialPanel(document.getElementById('materials'), ma
         materialPanel.setSelection(selection.object);
     },
     onOpenNodeEditor: id => openNodeEditor?.(id),
+    // an open node editor follows the material opened in the panel
+    onCurrentChange: id => followNodeEditor(id),
     onMergeDuplicates: () => mergeDuplicateMaterials(),
     graphApplier,
     // rendered previews under the current environment, as bright as in the scene (switched off: the studio)
@@ -1349,10 +1351,16 @@ const materialPanel = new MaterialPanel(document.getElementById('materials'), ma
         if (meshes.length) sceneGraph.selectMeshes(meshes, t('viewer.objectsWithMaterial', { name: entry.def.name }));
     },
 });
-const nodeEditor = new NodeEditor(document.getElementById('node-editor'), materialManager);
+// node previews: one output baked small in the bake queue; output node = the material's sphere from the panel
+const nodeEditor = new NodeEditor(document.getElementById('node-editor'), materialManager, {
+    preview: (def, nodeId, port, size) => graphApplier.previewNode(def, nodeId, port, size),
+    materialThumb: (id, size) => materialPanel.thumbUrl(id, size),
+    onThumbReady: cb => materialPanel.thumbs?.addEventListener('ready', cb),
+});
 function openNodeEditor(id) { nodeEditor.open(id); }
+function followNodeEditor(id) { if (nodeEditor.isOpen) nodeEditor.open(id); }
 
-// --- HDRI editor (hdri/hdri-editor.js): own procedural HDRIs, docked at the bottom or as a free window ---
+// --- HDRI editor (hdri/hdri-editor.js): own procedural HDRIs, free window ---
 const hdriEditor = new HdriEditor(document.getElementById('hdri-editor'), {
     service: hdriService,
     // rendered image of a description: shown if that HDRI is (still) the environment

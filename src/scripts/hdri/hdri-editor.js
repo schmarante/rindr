@@ -12,6 +12,7 @@ import { LatestRender, makeEnvTexture } from './hdri-service.js';
 import { gradientEditor } from './gradient-editor.js';
 import { encodeHdr, encodeExr, saveFile } from './hdri-export.js';
 import { draggable, fmt, INPUT, SELECT, RANGE, CHECKBOX, colorField } from '../ui-controls.js';
+import { floatWindow } from '../float-window.js';
 
 const D = Math.PI / 180;
 const CW = 1024, CH = 512;            // canvas resolution (preview image, overlay coordinates)
@@ -36,7 +37,6 @@ export class HdriEditor {
         this._baseline = null;    // JSON of the last committed state (undo)
         this._drag = null;
         this._dragging = false;   // a live change is running (slider, handle)
-        this.win = loadWindowState();   // position/size of the window
 
         root.hidden = true;
         root.innerHTML = `
@@ -86,6 +86,7 @@ export class HdriEditor {
             this._setStatus('');
         });
 
+        this.window = floatWindow(root, this.$('[data-head]'), { storeKey: STORE_KEY, width: 1040, height: 620 });
         this._setupHeader();
         this._setupCanvas();
         this._setupKeys();
@@ -169,44 +170,13 @@ export class HdriEditor {
         this.$('[data-duplicate]').onclick = () => this.hooks.onDuplicate(cloneHdri(this.doc, { keepIds: true }));
         this.$('[data-delete]').onclick = () => this.hooks.onDelete(this.doc);
         this.$('[data-close]').onclick = () => this.close();
-        // move by the header
-        const head = this.$('[data-head]');
-        head.addEventListener('pointerdown', e => {
-            if (e.target.closest('input, select, button')) return;
-            const r = this.root.getBoundingClientRect(), sx = e.clientX, sy = e.clientY;
-            head.setPointerCapture(e.pointerId);
-            const move = ev => {
-                this.win.left = Math.min(Math.max(r.left + ev.clientX - sx, 0), window.innerWidth - 80);
-                this.win.top = Math.min(Math.max(r.top + ev.clientY - sy, 0), window.innerHeight - 40);
-                this.root.style.left = `${this.win.left}px`; this.root.style.top = `${this.win.top}px`;
-            };
-            const up = () => { head.removeEventListener('pointermove', move); head.removeEventListener('pointerup', up); this._saveWindow(); };
-            head.addEventListener('pointermove', move);
-            head.addEventListener('pointerup', up);
-        });
-        // size from the CSS resize corner
-        new ResizeObserver(() => {
-            if (this.root.hidden) return;
-            const r = this.root.getBoundingClientRect();
-            if (r.width && r.height) { this.win.width = r.width; this.win.height = r.height; this._saveWindowSoon(); }
-        }).observe(this.root);
     }
 
-    // free window: last position/size (kept inside the browser window), centred the first time
+    // free window (float-window.js)
     _applyWindow() {
-        const r = this.root;
-        r.className = 'fixed z-30 flex flex-col overflow-hidden rounded-lg bg-black/60 text-xs text-white/90 shadow-2xl ring-1 ring-white/10 backdrop-blur-sm';
-        r.dataset.ui = 'float';   // hides with "hide UI"
-        const w = Math.min(this.win.width || 1040, window.innerWidth - 20), h = Math.min(this.win.height || 620, window.innerHeight - 20);
-        const left = this.win.left ?? Math.max(10, (window.innerWidth - w) / 2), top = this.win.top ?? Math.max(10, (window.innerHeight - h) / 2);
-        r.style.cssText = `left:${Math.min(left, window.innerWidth - 80)}px;top:${Math.min(top, window.innerHeight - 40)}px;width:${w}px;height:${h}px;resize:both;min-width:520px;min-height:300px;`;
+        this.window.apply();
         this._fitStage();
     }
-
-    _saveWindow() {
-        try { localStorage.setItem(STORE_KEY, JSON.stringify(this.win)); } catch { /* storage blocked */ }
-    }
-    _saveWindowSoon() { clearTimeout(this._saveTimer); this._saveTimer = setTimeout(() => this._saveWindow(), 300); }
 
     // canvas 2:1, as large as the area allows
     _fitStage() {
@@ -647,14 +617,6 @@ function writePath(doc, path, selId, value) {
     let o = parts[0] === 'pin' ? doc.pins.find(p => p.id === selId) : doc[parts[0]];
     for (const p of parts.slice(1, -1)) o = o?.[p];
     if (o) o[parts[parts.length - 1]] = value;
-}
-
-function loadWindowState() {
-    try {
-        const s = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
-        if (s && typeof s === 'object') return s;
-    } catch { /* storage blocked */ }
-    return {};
 }
 
 function el(tag, className, text) {

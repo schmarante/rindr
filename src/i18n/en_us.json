@@ -92,7 +92,9 @@
             "merge": "Merge identical",
             "mergeTitle": "Merge identical materials (same name, settings and textures – e.g. the same model loaded twice) into one each",
             "allCategories": "All categories",
-            "categoryTitle": "Filter the library by category"
+            "categoryTitle": "Filter the library by category",
+            "type": "Type",
+            "typeTitle": "Material type – Standard or one special effect; the type decides which values there are (special effects exclude each other)"
         },
         "maps": {
             "map": "Colour",
@@ -159,6 +161,15 @@
             "soapScale": "Swirl size",
             "edgeRadius": "Edge radius",
             "edgeConcave": "Inner edges"
+        },
+        "types": {
+            "standard": "Standard",
+            "toon": "Toon",
+            "cloud": "Cloud",
+            "wool": "Wool",
+            "grass": "Grass",
+            "soap": "Soap film",
+            "marble": "Glowing marble"
         },
         "paramGroups": {
             "base": "Base",
@@ -419,6 +430,7 @@
         },
         "undo": {
             "create": "Create material",
+            "type": "Change material type",
             "delete": "Delete material",
             "edit": "Edit material",
             "editGraph": "Edit node graph",
@@ -439,10 +451,10 @@
     },
     "nodeEditor": {
         "title": "Node editor – {name}",
-        "close": "Close",
         "closeTitle": "Close (Esc)",
-        "addNode": "+ {label}",
         "deleteNode": "Delete node",
+        "showPreview": "Show preview",
+        "hidePreview": "Hide preview",
         "portTypes": {
             "color": "Colour",
             "float": "Value",

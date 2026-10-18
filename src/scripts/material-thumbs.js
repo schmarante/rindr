@@ -19,9 +19,9 @@ import * as THREE from 'three/webgpu';
 import { compileAsync } from './shader-compile.js';
 import { uvCheckerTexture, sampleUvChecker } from './uv-checker.js';
 
-export const THUMB_SIZE = 96;               // output pixels (tile sphere 56 CSS px, sharp up to ~1.7× HiDPI)
-const RENDER_SIZE = THUMB_SIZE * 2;         // rendered at twice the size, box-filtered down (anti-aliasing)
-const THUMB_VERSION = 26;                   // raise when the look changes (old images are not used any more)
+export const THUMB_SIZE = 64;               // output pixels of the material browser (tile sphere 56 CSS px; user's choice, was 96)
+// rendered at twice the output size, box-filtered down (anti-aliasing); a request may ask for another size
+const THUMB_VERSION = 27;                   // raise when the look changes (old images are not used any more)
 const RADIUS = 25;                          // scene units (mm for CAD) – subsurface radius, marble scale etc. fit
 const SOAP_PREVIEW_CELL = 0.5;              // soap film: swirl cell × radius (a few bands across the sphere)
 const FOV = 30;
@@ -111,16 +111,17 @@ export class MaterialThumbs extends EventTarget {
      * @param {() => THREE.Material | Promise<THREE.Material>} material  the material to render (called only if the
      *                         image is not stored; async e.g. to bake its node graph first)
      * @param {object} [opts]  persist: keep in IndexedDB (library presets only); dispose: dispose the material
-     *                         afterwards (own instance), release(material) before that (e.g. its baked maps).
+     *                         afterwards (own instance), release(material) before that (e.g. its baked maps),
+     *                         size: output pixels (default THUMB_SIZE; e.g. the node editor's output node).
      *                         Memory-only keys must be unique to their group.
      */
-    request(key, group, material, { persist = false, dispose = false, release = null } = {}) {
+    request(key, group, material, { persist = false, dispose = false, release = null, size = THUMB_SIZE } = {}) {
         if (this.has(key)) { this._release(group, { key, persist }); return; }
         if (this.pending.has(key) && !this.jobs.has(group)) return;   // being rendered
         const old = this.jobs.get(group);
         if (old?.key === key) return;
         if (old) this.pending.delete(old.key);
-        this.jobs.set(group, { key, material, persist, dispose, release });
+        this.jobs.set(group, { key, material, persist, dispose, release, size });
         this.pending.add(key);
         this._run();
     }
@@ -180,6 +181,8 @@ export class MaterialThumbs extends EventTarget {
     async _render(job, generation) {
         const s = this._setup ??= this._createSetup();
         const material = await job.material();   // may bake node maps first (preset with a graph)
+        const n = 2 * (job.size || THUMB_SIZE);
+        if (s.target.width !== n) s.target.setSize(n, n);
         const special = this.special?.(material, RADIUS) ?? null;
         try {
             const r = this.renderer;
@@ -209,17 +212,17 @@ export class MaterialThumbs extends EventTarget {
             // render first, thrown away
             if (special || (material.transmission > 0 && material.side === THREE.DoubleSide)) {
                 s.backdrop.material = walls[0];
-                await this._renderOnce(s, material, special?.userData);
+                await this._renderOnce(s, material, special?.userData, n);
             }
             for (const wall of walls) {
                 s.backdrop.material = wall;
-                images.push(await this._renderOnce(s, material, special?.userData));
+                images.push(await this._renderOnce(s, material, special?.userData, n));
             }
             const bottomUp = !!r.backend.isWebGLBackend;
             const rgb = traced
-                ? composeRefraction(linear(images[0], bottomUp), linear(images[1], bottomUp), material)
-                : linear(images[0], bottomUp);
-            const canvas = toCanvas(rgb, material.userData.contour, !this.checker);
+                ? composeRefraction(linear(images[0], bottomUp, n), linear(images[1], bottomUp, n), material, n)
+                : linear(images[0], bottomUp, n);
+            const canvas = toCanvas(rgb, material.userData.contour, !this.checker, n);
             const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', 0.85));
             if (!blob) return null;
             if (job.persist && generation === this.generation) this._db.then(db => db && dbPut(db, job.key, blob));
@@ -236,7 +239,7 @@ export class MaterialThumbs extends EventTarget {
     // tinted, the diameter turned tinted glass black). Only around the synchronous render: the scene's own material
     // must not show it in the viewport (a uniform, no recompile)
     // hooks: beforeRender/afterRender of a special mesh (cloud preview: its own light), only around this render
-    async _renderOnce(s, material, hooks = null) {
+    async _renderOnce(s, material, hooks, n) {
         const r = this.renderer, saved = save(r), thickness = material.thickness;
         // baked node maps of a scene material repeat in mm (UV_TILE / size): on the sphere's 0..1 UVs one tile across
         // the visible half instead, like the library presets (graph-apply.js) – only around the synchronous render
@@ -254,7 +257,7 @@ export class MaterialThumbs extends EventTarget {
             maps.forEach((m, i) => m.repeat.copy(repeats[i]));
             restore(r, saved);
         }
-        return r.readRenderTargetPixelsAsync(s.target, 0, 0, RENDER_SIZE, RENDER_SIZE);
+        return r.readRenderTargetPixelsAsync(s.target, 0, 0, n, n);
     }
 
     _createSetup() {
@@ -276,7 +279,7 @@ export class MaterialThumbs extends EventTarget {
         const camera = new THREE.PerspectiveCamera(FOV, 1, 1, 1000);
         camera.position.set(0, 0, cameraDistance());
         // stencil like the canvas: the cloud volume copies the depth (clouds.js, formats must match)
-        const target = new THREE.RenderTarget(RENDER_SIZE, RENDER_SIZE, { type: THREE.HalfFloatType, depthBuffer: true, stencilBuffer: true });
+        const target = new THREE.RenderTarget(2 * THUMB_SIZE, 2 * THUMB_SIZE, { type: THREE.HalfFloatType, depthBuffer: true, stencilBuffer: true });
         return { scene, mesh, camera, target, backdrop, checker, plain, black, white };
     }
 }
@@ -311,10 +314,10 @@ function restore(r, s) {
     r.outputColorSpace = s.outputColorSpace;
 }
 
-// read-back RGBA (half float) → linear RGB, rows top → bottom
-function linear(pixels, bottomUp) {
+// read-back RGBA (half float, n²) → linear RGB, rows top → bottom
+function linear(pixels, bottomUp, n) {
     const value = pixels instanceof Uint16Array ? v => THREE.DataUtils.fromHalfFloat(v) : v => v;
-    const n = RENDER_SIZE, rgb = new Float32Array(n * n * 3);
+    const rgb = new Float32Array(n * n * 3);
     for (let y = 0; y < n; y++) {
         const row = bottomUp ? n - 1 - y : y;
         for (let x = 0; x < n; x++) {
@@ -333,8 +336,8 @@ function linear(pixels, bottomUp) {
 // pixel and channel (Fresnel, tint, absorption, transmission < 1). Result = black + (white − black) × traced cell.
 // 8 rays per pixel (sub-pixel offsets – the squeezed cells at the rim flickered with one); rough glass: the
 // outgoing direction jittered too (spread roughness² / 4 rad – the full roughness² blurred frosted glass to grey).
-function composeRefraction(black, white, material) {
-    const n = RENDER_SIZE, out = new Float32Array(black.length);
+function composeRefraction(black, white, material, n) {
+    const out = new Float32Array(black.length);
     const ior = Math.max(material.ior || 1.5, 1.0001);
     const spread = (material.roughness || 0) ** 2 / 4;
     const samples = JITTER.length;
@@ -417,9 +420,9 @@ function refract(ix, iy, iz, nx, ny, nz, eta) {
     return [eta * ix + f * nx, eta * iy + f * ny, eta * iz + f * nz];
 }
 
-// linear RGB (RENDER_SIZE²) → 2 × 2 box filter, ACES fit + sRGB, optionally cut out round (+ contour ring)
-function toCanvas(rgb, contour, round) {
-    const n = THUMB_SIZE, canvas = document.createElement('canvas');
+// linear RGB (rendered² = (2 × n)²) → 2 × 2 box filter to n², ACES fit + sRGB, optionally cut out round (+ contour ring)
+function toCanvas(rgb, contour, round, rendered) {
+    const n = rendered / 2, canvas = document.createElement('canvas');
     canvas.width = canvas.height = n;
     const ctx = canvas.getContext('2d'), out = ctx.createImageData(n, n);
     const radius = FILL * n / 2, c = n / 2;
@@ -431,7 +434,7 @@ function toCanvas(rgb, contour, round) {
             for (let ch = 0; ch < 3; ch++) {
                 let sum = 0;
                 for (let sy = 0; sy < 2; sy++) {
-                    for (let sx = 0; sx < 2; sx++) sum += rgb[((2 * y + sy) * RENDER_SIZE + 2 * x + sx) * 3 + ch];
+                    for (let sx = 0; sx < 2; sx++) sum += rgb[((2 * y + sy) * rendered + 2 * x + sx) * 3 + ch];
                 }
                 out.data[o + ch] = toneMap(sum / 4 * EXPOSURE);
             }

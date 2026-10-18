@@ -11,6 +11,7 @@ import { MATERIAL_PRESETS, presetName } from './material-presets.js';
 import { createImportGraph, IMPORT_SLOTS } from './material-graph.js';
 import { t } from './i18n.js';
 import { RindrMaterial } from './materials/toon.js';
+import { normalizeType, paramsForType, typeAllowsGraph } from './material-types.js';
 
 // Parameter description (also for the editor panel). Labels: materials.params.<key>,
 // group labels: materials.paramGroups.<group> (group = id, also used for the collapse state)
@@ -106,7 +107,7 @@ export class MaterialManager extends EventTarget {
             name: def.name || t('materials.defaultNames.material'),
             source: def.source || 'custom',
             libraryId: def.libraryId || null,
-            params: { ...def.params },
+            params: normalizeType({ ...def.params }),   // one material type (material-types.js)
             graph: def.graph ? structuredClone(def.graph) : null,
             render: def.render || null,   // { maps, side, alphaTest, transparent, normalScale, ... } (import)
             origin: def.origin || null,   // origin for step/import (STEP color or material index in the file)
@@ -188,6 +189,19 @@ export class MaterialManager extends EventTarget {
         this._apply(e);
         this._emit('update', { id });
         this._recordEdit(id, t('materials.undo.edit'), before, `params:${id}:${Object.keys(params).join()}`);
+    }
+
+    /** Switch the material type (material-types.js) – one undo step; types without node editor drop the graph */
+    setType(id, type) {
+        const e = this.get(id);
+        if (!e || e.def.params.type === type) return;
+        const before = snapshot(e);
+        e.def.params = paramsForType(e.def.params, type, defaults());
+        if (!typeAllowsGraph(type)) e.def.graph = null;
+        e.def.modified = true;
+        this._apply(e);
+        this._emit('update', { id });
+        this._recordEdit(id, t('materials.undo.type'), before);
     }
 
     /**
@@ -327,7 +341,7 @@ export class MaterialManager extends EventTarget {
             if (existing) {
                 changed.push([existing.def.id, snapshot(existing)]);
                 existing.def.name = m.name || existing.def.name;
-                existing.def.params = { ...m.params };
+                existing.def.params = normalizeType({ ...m.params });
                 existing.def.graph = m.graph ? structuredClone(m.graph) : null;
                 existing.material.name = existing.def.name;
                 this._apply(existing);

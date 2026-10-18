@@ -73,11 +73,11 @@ export const PATHTRACING = {
                                     // ~110 KB: synchronous ~4 s without shader cache, the page froze meanwhile)
 };
 
-// Materials: editing (parameters, node editor, rename, new, copy) hidden for now –
-// list (scene/library), drag & drop, assign, select objects, delete and import/export remain.
+// Materials: editing (parameters, node editor, rename, new, copy) – false hides it:
+// then only the list (scene/library), drag & drop, assign, select objects, delete and import/export remain.
 // Existing node graphs (e.g. from imported materials or scenes) are still applied.
 export const MATERIALS = {
-    editing: false,
+    editing: true,
     importExport: false,   // JSON import/export buttons in the material panel (comes back later)
 };
 
