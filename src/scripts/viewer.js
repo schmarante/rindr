@@ -20,6 +20,7 @@ import { CloudSystem } from './materials/clouds.js';
 import { WoolSystem } from './materials/wool.js';
 import { setSoapSceneSize } from './materials/soap.js';
 import { GrassSystem } from './materials/grass.js';
+import { EdgeSystem } from './materials/edges.js';
 import { GraphApplier } from './graph-apply.js';
 import { NodeEditor } from './node-editor.js';
 import { createStudioEnvironment, renderStudioEnvironment, loadHdri, listHdris, VignetteBackground } from './environment.js';
@@ -488,6 +489,13 @@ grass.onMove = () => { pathTracing.updateTransforms(); markShadowsDirty(); };
 grass.onGeometry = () => { invalidatePathTracing(); updatePathTracingScene(); markShadowsDirty(); };
 // the blades block the sun in the light shafts' depth passes (volume-shafts.js) like any mesh
 grass.attach(renderer, () => { try { return [clayMaterial, lens.volume.sunDepthMaterial, lens.volume.camDepthMaterial]; } catch { return null; } });
+// rounded edges (edges.js): per-geometry edge data (worker) for materials with an edge radius – new data = new
+// material buffers; rotated triangle corners (first build of a geometry) = new path tracer scene
+const edges = new EdgeSystem(() => [rootGroup, ...extraModels.map(x => x.root)]);
+edges.onChange = rebuild => {
+    if (rebuild) { invalidatePathTracing(); updatePathTracingScene(); }
+    else { pathTracing.updateMaterials(); pathTracing.reset(); }
+};
 // growing blades (worker): progress bottom left – unless a load or another task already shows its own
 let grassProgress = false;
 grass.onProgress = fraction => {
@@ -1281,8 +1289,8 @@ const graphApplier = new GraphApplier(renderer, { onBaked: () => pathTracing.upd
 materialManager.onApply = entry => graphApplier.apply(entry);
 materialManager.addEventListener('change', () => pathTracing.updateMaterials());
 materialManager.addEventListener('update', () => pathTracing.updateMaterials());
-materialManager.addEventListener('change', () => { clouds.invalidate(); wool.invalidate(); grass.invalidate(); });
-materialManager.addEventListener('update', () => { clouds.invalidate(); wool.invalidate(); grass.invalidate(); });
+materialManager.addEventListener('change', () => { clouds.invalidate(); wool.invalidate(); grass.invalidate(); edges.invalidate(); });
+materialManager.addEventListener('update', () => { clouds.invalidate(); wool.invalidate(); grass.invalidate(); edges.invalidate(); });
 // edited material (alpha map, side …) can change the shadow; assignments are seen by the batcher's comparison
 materialManager.addEventListener('update', () => markShadowsDirty());
 const isModelEntry = e => e && (e.kind === 'node' || e.kind === 'model' || e.kind === 'surface' || e.kind === 'selection');
@@ -4435,7 +4443,7 @@ if (new URLSearchParams(location.search).has('debug')) {
         // material node graphs: bake an input into a PNG / render a description on the thumbnail sphere (debug-graph.js)
         bakeGraph: (graph, opts) => import('./debug-graph.js').then(m => m.bakeGraphImage(graphApplier, graph, opts)),
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel.thumbs, def)),
-        clouds, grass, getSplats: () => splatMesh, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+        clouds, grass, edges, getSplats: () => splatMesh, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 }
 
 // --- Resize ---
@@ -4565,6 +4573,7 @@ renderer.setAnimationLoop(() => {
     clouds.update(camera);
     wool.update();
     grass.update();
+    edges.update();
     if (grass.fading) { loadRender.dirty = true; markShadowsDirty(); }   // blades fading in: frames, their shadow
     controls.update();
     applyCameraRoll();

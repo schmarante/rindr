@@ -28,6 +28,7 @@ import { uniform, globalId, textureStore } from 'three/tsl';
 import { proxy, proxyFn, wgslTagFn, rayStruct, ndcToCameraRay } from 'three-mesh-bvh/webgpu';
 import { offsetRayOriginFunc } from 'three-gpu-pathtracer/src/webgpu/nodes/utils.wgsl.js';
 import { FISHEYE_RAY } from './fisheye.js';
+import { EDGE_WGSL } from './materials/edges.js';
 import { WOOL_PT } from './materials/wool-pt.js';
 
 // 4 uniform random numbers per pixel (pcg4d, Jarzynski & Olano 2020) – rotation of the sample sequence
@@ -202,6 +203,14 @@ export class GuideKernel {
                         materialInfo.opacity *= objectInfo.color.a;
 
                         var vertexData = ${ sampleTrianglePoint }( hit.barycoord, hit.indices.xyz );
+                        // rounded edges (edges.js): the same bent normal as the megakernel (rindr-edges)
+                        if ( materialInfo.anisotropyRotation != 0.0 && materialInfo.anisotropy == 0.0 ) {
+
+                            let edScale = ( length( objectInfo.matrixWorld[ 0 ].xyz ) + length( objectInfo.matrixWorld[ 1 ].xyz ) + length( objectInfo.matrixWorld[ 2 ].xyz ) ) / 3.0;
+                            vertexData.normal = vec4f( ${ EDGE_WGSL }( vertexData.position.xyz, vertexData.normal.xyz, hit.indices.x - objectInfo._alignment1, objectInfo._alignment0, materialInfo.anisotropyRotation / max( edScale, 1e-30 ) ), 0.0 );
+                            materialInfo.anisotropyRotation = 0.0;
+
+                        }
                         vertexData.normal = normalize( transpose( objectInfo.inverseMatrixWorld ) * vertexData.normal );
                         vertexData.tangent = vec4f( ( objectInfo.matrixWorld * vec4f( vertexData.tangent.xyz, 0.0 ) ).xyz, vertexData.tangent.w );
                         vertexData.position = objectInfo.matrixWorld * vertexData.position;

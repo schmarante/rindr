@@ -21,6 +21,7 @@ import { marbleGlow } from './marble.js';
 import { WOOL_SHADE } from './wool.js';
 import { GRASS_SHADE } from './grass-field.js';
 import { SOAP_IOR, soapThicknessNode, soapSceneCell } from './soap.js';
+import { edgeNormalView } from './edges.js';
 
 // brightness of the lit colour relative to the base colour → tone (thresholds, tones as share of the base colour)
 const TOON_STEPS = { shadow: 0.55, mid: 1.1 };
@@ -76,6 +77,34 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         this._marbleColor = uniform(new THREE.Color(0.2, 1, 0.45));
         this._marbleScale = uniform(10);
         this._marbleIntensity = uniform(1);
+        this.edges = false;    // cache key (normal node); radius as a uniform
+        this._edgeRadius = uniform(0);
+    }
+
+    /**
+     * Rounded edges (edges.js): radius in scene units (mm for CAD; 0 = off), concave (> 0) = inner edges too. Shading
+     * only – the normal turns towards the neighbouring face within the radius. Raster: setupNormal; path tracer:
+     * the signed radius in the stand-in's anisotropyRotation (anisotropy stays 0, so the library ignores it).
+     */
+    setEdges(radius, concave) {
+        const on = radius > 0;
+        this._edgeRadius.value = on ? (concave > 0 ? radius : -radius) : 0;
+        if (on) this.userData.edges = { radius, concave: concave > 0 };
+        else delete this.userData.edges;
+        if (on !== this.edges) {
+            this.edges = on;
+            this.needsUpdate = true;
+        }
+        const pt = this.userData.ptStandIn ?? {};
+        delete pt.anisotropyRotation;
+        if (on) Object.assign(pt, { anisotropy: 0, anisotropyRotation: this._edgeRadius.value });
+        else delete pt.anisotropy;
+        if (Object.keys(pt).length) this.userData.ptStandIn = pt; else delete this.userData.ptStandIn;
+    }
+
+    setupNormal(builder) {
+        const normal = super.setupNormal(builder);
+        return this.edges ? edgeNormalView(normal, this._edgeRadius) : normal;
     }
 
     /**
@@ -267,6 +296,7 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         this.soap = false;
         const s = source._soap;
         this.setSoap(source.soap ? 1 : 0, s.film.value, s.swirl.value, s.scale.value);
+        this.setEdges(source.userData.edges?.radius ?? 0, source.userData.edges?.concave ? 1 : 0);
         return this;
     }
 }
