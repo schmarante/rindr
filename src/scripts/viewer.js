@@ -1295,6 +1295,7 @@ const materialPanel = new MaterialPanel(document.getElementById('materials'), ma
     },
     onOpenNodeEditor: id => openNodeEditor?.(id),
     onMergeDuplicates: () => mergeDuplicateMaterials(),
+    graphApplier,
     // rendered previews under the current environment, as bright as in the scene (switched off: the studio)
     thumbs: new MaterialThumbs(renderer, () => (environment.on
         ? { texture: environment.texture, intensity: environment.intensity * environment.lightBoost, rotation: scene.environmentRotation.y }
@@ -4430,7 +4431,11 @@ if (MODEL_FILE && !(crashed?.url && crashed.name === MODEL_FILE)) {
 
 // Debug access for automated tests + fps/memory/polygon display (only with ?debug in the URL)
 if (new URLSearchParams(location.search).has('debug')) {
-    globalThis.__viewer = { clouds, grass, getSplats: () => splatMesh, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+    globalThis.__viewer = {
+        // material node graphs: bake an input into a PNG / render a description on the thumbnail sphere (debug-graph.js)
+        bakeGraph: (graph, opts) => import('./debug-graph.js').then(m => m.bakeGraphImage(graphApplier, graph, opts)),
+        previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel.thumbs, def)),
+        clouds, grass, getSplats: () => splatMesh, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 }
 
 // --- Resize ---

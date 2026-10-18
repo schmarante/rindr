@@ -409,6 +409,8 @@ export default defineConfig({
   // Sub directory on the server: BASE_PATH=/rindr/ npm run build (default: domain root).
   // All runtime paths use import.meta.env.BASE_URL or are relative.
   base: process.env.BASE_PATH || '/',
+  // parallel test builds (e.g. OUT_DIR=dist/agents/x BASE_PATH=/agents/x/): output folder, default dist/
+  outDir: process.env.OUT_DIR || './dist',
   // Public origin for absolute og:image / og:url links: SITE_URL in .env or the shell
   // (without it the social-preview tags use relative paths, which most crawlers ignore).
   site: process.env.SITE_URL || fileEnv.SITE_URL || undefined,

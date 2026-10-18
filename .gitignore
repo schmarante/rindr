@@ -6,3 +6,5 @@ storage/
 /public/models
 # testing
 tests/
+# parallel worktrees (agents)
+.worktrees/

@@ -4,9 +4,12 @@
 //  - import texture directly at the matching input -> original texture as map (parameter = factor)
 // If an imported material has a graph, the graph alone decides about the maps of these slots:
 // unconnected inputs have no map (applyRender does not set them then).
+// Baked maps repeat UV_TILE / size times per UV unit (output node `size` = mm per baked tile); a preview entry
+// (entry.preview, material thumbnails on a sphere with 0..1 UVs) shows one tile across the visible half instead.
 import * as THREE from 'three/webgpu';
 import { evaluateGraph, GraphBaker, loadImageTexture } from './material-graph.js';
 import { PARAMS } from './material-manager.js';
+import { UV_TILE } from './step-importer.js';
 
 const defaultParams = () => Object.fromEntries(PARAMS.map(p => [p.key, p.default]));
 
@@ -23,6 +26,7 @@ const SLOTS = {
     ao: { map: 'aoMap' },
     normal: { map: 'normalMap' },
     height: { map: 'normalMap' },   // after 'normal': relief takes precedence
+    alpha: { map: 'alphaMap' },     // cutout: alpha test at 0.5
 };
 
 export class GraphApplier {
@@ -41,6 +45,7 @@ export class GraphApplier {
         const maps = material.userData.graphMaps ||= {};
         if (!graph?.nodes?.length) {
             this._clearMaps(material, Object.keys(maps));
+            material.alphaTest = def.render?.alphaTest || 0;
             return;
         }
         // images not loaded yet count as constant grey for now -> load, then evaluate again
@@ -80,8 +85,30 @@ export class GraphApplier {
             }
         }
         if (result.height?.kind === 'tsl') material.normalScale.setScalar(1);
+        material.alphaTest = result.alpha?.kind === 'tsl' ? 0.5 : def.render?.alphaTest || 0;
+        material.userData.graphRepeat = repeatOf(entry, result.size);
+        for (const tex of Object.values(maps)) tex.repeat.copy(material.userData.graphRepeat);
         material.needsUpdate = true;
         if (textured.length) this._schedule(entry);
+    }
+
+    /**
+     * Apply and bake right away (no delay); resolves when the maps are there – material thumbnails of library
+     * presets (entry = { material, def, preview: true }, not registered). Free the maps with release().
+     */
+    async applyNow(entry) {
+        this.apply(entry);
+        clearTimeout(this.pending.get(entry.def.id));
+        this.pending.delete(entry.def.id);
+        const run = this.queue.then(() => this._bake(entry));
+        this.queue = run.catch(() => {});
+        await run;
+    }
+
+    /** dispose the baked maps of a material that is thrown away (thumbnail of a preset) */
+    release(material) {
+        for (const tex of Object.values(material.userData.graphMaps || {})) tex.dispose();
+        material.userData.graphMaps = {};
     }
 
     _schedule(entry) {
@@ -117,6 +144,7 @@ export class GraphApplier {
                 : await this.baker.bake(r.node, r.type, { srgb: !!slot.srgb, size: r.size });
             if (entry.def.graph !== graph) { tex.dispose(); return; }   // changed in the meantime
             maps[key]?.dispose();
+            tex.repeat.copy(repeatOf(entry, result.size));
             maps[key] = tex;
             sigs[key] = sig;
             material[slot.map] = tex;
@@ -179,6 +207,12 @@ export class GraphApplier {
 const WHITE = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
 WHITE.colorSpace = THREE.SRGBColorSpace;
 WHITE.needsUpdate = true;
+
+// repeat of the baked maps: UV_TILE mm per UV unit (box UVs) / mm per baked tile; preview sphere (0..1 UVs around
+// and from pole to pole): one tile across the visible half, square
+function repeatOf(entry, size = 100) {
+    return entry.preview ? new THREE.Vector2(2, 1) : new THREE.Vector2(UV_TILE / size, UV_TILE / size);
+}
 
 function setMap(material, key, texture) {
     if (!texture && key === 'map' && material.map) texture = WHITE;

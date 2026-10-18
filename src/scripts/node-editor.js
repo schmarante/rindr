@@ -12,7 +12,7 @@ import { t } from './i18n.js';
 import { colorField } from './ui-controls.js';
 
 
-const PORT_COLORS = { float: 'bg-violet-300', color: 'bg-amber-300' };
+const PORT_COLORS = { float: 'bg-violet-300', color: 'bg-amber-300', vector: 'bg-teal-300' };
 const INPUT = 'w-14 flex-none rounded bg-white/10 px-1 py-0.5 text-right tabular-nums text-white outline-none focus:bg-white/20';
 
 export class NodeEditor {
@@ -211,7 +211,7 @@ export class NodeEditor {
         dot.dataset.dir = dir;
         dot.dataset.portNode = node;
         dot.dataset.type = type;
-        dot.title = type === 'color' ? t('nodeEditor.portTypes.color') : t('nodeEditor.portTypes.float');
+        dot.title = t(`nodeEditor.portTypes.${type}`);
         return dot;
     }
 

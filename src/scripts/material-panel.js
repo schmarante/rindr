@@ -35,7 +35,8 @@ export class MaterialPanel {
     /**
      * @param {HTMLElement} root
      * @param {import('./material-manager.js').MaterialManager} manager
-     * @param {object} hooks  { getSelectionObject(), onAssignToSelection(id), onOpenNodeEditor(id), thumbs }
+     * @param {object} hooks  { getSelectionObject(), onAssignToSelection(id), onOpenNodeEditor(id), thumbs,
+     *                          graphApplier (bakes the node graph of a preset for its thumbnail) }
      */
     constructor(root, manager, hooks = {}) {
         this.root = root;
@@ -189,11 +190,21 @@ export class MaterialPanel {
 
     // --- Previews ---
 
-    // library preset: stored per browser; an unmodified scene copy shares its image
+    // library preset: stored per browser; an unmodified scene copy shares its image. A preset with a node graph is
+    // baked first (preview tiling: one tile across the sphere), its maps are freed with the material
     _libraryThumb(preset) {
+        const applier = this.hooks.graphApplier;
         return {
-            key: thumbKey({ params: preset.params }), group: `lib:${preset.libraryId}`, persist: true, dispose: true,
-            material: () => buildMaterial(preset.params),
+            key: thumbKey(preset.graph ? { params: preset.params, graph: preset.graph } : { params: preset.params }),
+            group: `lib:${preset.libraryId}`, persist: true, dispose: true,
+            material: async () => {
+                const material = buildMaterial(preset.params);
+                if (preset.graph && applier) {
+                    await applier.applyNow({ material, preview: true, def: { id: `thumb:${preset.libraryId}`, params: preset.params, graph: preset.graph } });
+                }
+                return material;
+            },
+            release: material => applier?.release(material),
         };
     }
 
