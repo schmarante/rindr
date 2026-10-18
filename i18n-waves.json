@@ -1,0 +1,36 @@
+{
+  "de_de": { "nodes": { "types": { "waves": {
+    "label": "Wellen & Streifen",
+    "inputs": { "uv": "UV", "a": "Farbe Tal", "b": "Farbe Kamm" },
+    "outputs": { "value": "Höhe", "color": "Farbe", "random": "Zufall je Streifen", "uv": "UV je Streifen" },
+    "params": {
+      "profile": "Profil", "count": "Anzahl", "axis": "Richtung", "width": "Breite (erhaben)",
+      "slope": "Flanke", "softness": "Weichheit", "distortion": "Verzerrung", "centres": "Zentren je Zelle",
+      "wavelength": "Wellenlänge", "variation": "Farbvariation", "seed": "Zufallswert",
+      "a": "Farbe Tal", "b": "Farbe Kamm"
+    },
+    "options": {
+      "profile": { "sine": "Sinus (Wellblech)", "triangle": "Dreieck", "square": "Rechteck (Latten, Streifen)",
+        "trapezoid": "Trapez (Trapezblech)", "seam": "Falz (Stehfalz)", "sawtooth": "Sägezahn (Stülpschalung)",
+        "ripples": "Wasserringe" },
+      "axis": { "u": "U", "v": "V" }
+    }
+  } } } },
+  "en_us": { "nodes": { "types": { "waves": {
+    "label": "Waves & Stripes",
+    "inputs": { "uv": "UV", "a": "Valley color", "b": "Crest color" },
+    "outputs": { "value": "Height", "color": "Color", "random": "Random per stripe", "uv": "UV per stripe" },
+    "params": {
+      "profile": "Profile", "count": "Count", "axis": "Direction", "width": "Width (raised)",
+      "slope": "Flank", "softness": "Softness", "distortion": "Distortion", "centres": "Centres per cell",
+      "wavelength": "Wavelength", "variation": "Color variation", "seed": "Seed",
+      "a": "Valley color", "b": "Crest color"
+    },
+    "options": {
+      "profile": { "sine": "Sine (corrugated)", "triangle": "Triangle", "square": "Square (slats, stripes)",
+        "trapezoid": "Trapezoid (trapezoidal sheet)", "seam": "Seam (standing seam)", "sawtooth": "Sawtooth (lap siding)",
+        "ripples": "Water ripples" },
+      "axis": { "u": "U", "v": "V" }
+    }
+  } } } }
+}
