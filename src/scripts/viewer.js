@@ -1957,7 +1957,7 @@ const _flightDir = new THREE.Vector3();
 // a rotation along the great circle (slerp) reached top/bottom with the azimuth of the start and swung it
 // around to the top view's in the last frames (right → top: a 90° jump). Top/bottom: OrbitControls needs an
 // azimuth → tilted minimally towards the front, so the front is at the bottom of the top view (at the top of
-// the bottom view), like Blender.
+// the bottom view), the usual convention.
 function flyToDirection(dir) {
     streamFit.active = false;
     cancelFlight();

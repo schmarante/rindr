@@ -1,5 +1,5 @@
 // Normals from the geometry alone: smooth across corners at the same position, edges sharper than the crease angle
-// (30° like Blender) stay hard. Each face counts with its corner angle (Thürmer/Wüthrich), so the result does not
+// (30°) stay hard. Each face counts with its corner angle (Thürmer/Wüthrich), so the result does not
 // depend on the triangulation – unweighted averaging (three's toCreasedNormals) let fans of long thin triangles on
 // flat CAD faces pull the normals askew. 60° also smoothed flat faces into neighbouring chamfers (shading gradient).
 // Used for meshes without normals (FBX/glTF/STL, mesh-importer.js) and for MAX meshes (max/max-parse.js).

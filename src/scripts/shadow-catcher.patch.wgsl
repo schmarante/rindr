@@ -5,7 +5,7 @@
 						// chosen by its share of the unshadowed irradiance), one shadow ray, result 0 or 1 – the
 						// mean over the samples is exactly (irradiance with occluders) / (irradiance without).
 						// Seen in reflections (bounce > 0) it shows the dome floor (environment colour via
-						// domeDirection) with the shadow – like the geometry dome in Blender. Without MIS: next
+						// domeDirection) with the shadow – like a geometry dome. Without MIS: next
 						// event estimation never reaches it (its shadow rays are blocked by the catcher), so the
 						// light from below comes only through these hits.
 						if ( materialInfo.matte != 0 ) {

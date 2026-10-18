@@ -13,7 +13,7 @@
 //
 // - Bloom: BloomNode (three/addons) on the HDR image – threshold in linear luminance, i.e.
 //   values above 1 (highlights, emissive surfaces, sun in the HDRI) bloom.
-// - Glare (streaks, star rays like in KeyShot): filter out bright spots (threshold) at ¼ resolution
+// - Glare (streaks, star rays): filter out bright spots (threshold) at ¼ resolution
 //   (4 bilinear taps = 4×4 average, so small highlights are not lost),
 //   then per ray a short box and one long pass (64 taps along the direction, additive into an accumulation target)
 //   with an rgb weight per tap, computed on the CPU when a setting changes (_glareKernel): white profile = the former

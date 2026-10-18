@@ -9,14 +9,14 @@
 //     a sharp, strong water mirror and dark ground; around them damp ground – darker, a weak blurred reflection
 //   - all of it fades out towards the edge like the ground shadow (size/softness in the panel)
 // Composition: background × shadow × (1 − r) × d + reflection × r; the path continues as reflection ray (glossy
-// around the mirror direction) with weight r. HDRI background hidden: only the model is mirrored (KeyShot style).
+// around the mirror direction) with weight r. HDRI background hidden: only the model is mirrored (studio style).
 import * as THREE from 'three/webgpu';
 import { uniform } from 'three/tsl';
 import { wgslTagFn } from 'three-mesh-bvh/webgpu';
 
 // x = reflection strength (0 = off), y = blur 0…1, z = bad weather 0/1, w = puddle coverage 0…1
 // params2: x = puddle size (world units), y/z = centre of the ground (world xz), w = 1: the environment is reflected
-//   too (HDRI background visible), 0: only the model (like KeyShot's ground reflections – misses keep the background)
+//   too (HDRI background visible), 0: only the model (studio-style ground reflections – misses keep the background)
 export const GROUND_SURFACE = {
     params: uniform(new THREE.Vector4(0, 0.2, 0, 0.4)),
     params2: uniform(new THREE.Vector4(1, 0, 0, 0)),

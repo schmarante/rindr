@@ -189,7 +189,7 @@ async function prepare(source, onStatus) {
 // conversion those models lay on their back. The exporting program is in the header
 // (FILE_NAME: preprocessor_version, originating_system); for these systems all instance matrices are
 // rotated by −90° about X (x, y, z) → (x, z, −y). Others (SolidWorks, Inventor, Creo) stay.
-// Converters (HOOPS Exchange, …) hide the original program: then the beginning of the data is searched
+// Converters hide the original program: then the beginning of the data is searched
 // for CATIA traces (CATPart/CATProduct names, e.g. 'Product1_AllCATPart').
 // Test/override: ?upAxis=z|y.
 // FreeCAD: Z up by convention (3D printing test models lay on their side before)

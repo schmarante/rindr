@@ -502,7 +502,7 @@ async function convertLeanFbx({ scene, geometries: parts }, source, materialMana
             const emissive = srgb(p.Emissive) || srgb(p.EmissiveColor);
             if (emissive) params.emissive = emissive;
             if (p.EmissiveFactor !== undefined) params.emissiveIntensity = Number(p.EmissiveFactor);
-            // transparency like FBXLoader / Blender: 1 − TransparencyFactor, else Opacity, else opaque
+            // transparency like FBXLoader: 1 − TransparencyFactor, else Opacity, else opaque
             let opacity = 1 - (p.TransparencyFactor !== undefined ? Number(p.TransparencyFactor) : 0);
             if (opacity === 1 || opacity === 0) opacity = p.Opacity !== undefined ? Number(p.Opacity) : 1;
             params.opacity = opacity;
@@ -648,7 +648,7 @@ async function convertMax({ scene, geometries: parts }, source, materialManager)
                 if (rough && !m.roughnessInverted) params.roughnessMap = rough;
                 mat = new THREE.MeshPhysicalMaterial(params);
             } else {
-                // Standard, V-Ray … : the colour of the material preview
+                // Standard, plugin materials … : the colour of the material preview
                 mat = new THREE.MeshStandardMaterial({ color: m.color ? srgb(m.color) : new THREE.Color(0.7, 0.7, 0.7), roughness: 0.5, metalness: 0 });
             }
             mat.name = m.name;
@@ -861,7 +861,7 @@ function computeNormals(positions, index, normals) {
     }
 }
 
-// glTF KHR_materials_unlit (typical for Sketchfab exports with baked lighting): GLTFLoader creates a
+// glTF KHR_materials_unlit (typical for exports with baked lighting): GLTFLoader creates a
 // MeshBasicMaterial and drops the emissive texture – often the base colour is black and the picture is
 // only in the emissive texture. Remember emissive texture/colour/strength from the JSON for convertMaterial.
 async function collectUnlit(gltf, object) {

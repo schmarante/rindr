@@ -1,7 +1,7 @@
 # RINDR
 
 ## Grundsätzliches ZIELE
-Ein performater 3D Viewer im Browser der Qualitativ mit Keyshot oder Vray mithalten kann.
+Ein performater 3D Viewer im Browser der qualitativ mit professionellen Offline-Renderern mithalten kann.
 ### Anzeigemodus:
 [X] Beim Drehen ist die Anzeige in einem Preview-Modus und sobald die Kamera stillsteht geht der Pathtracing Modus los
 
@@ -44,7 +44,8 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 - Oberflächentexte nur über `src/i18n/de_de.json` + `en_us.json` (`t()` aus `i18n.js`), neue Schlüssel immer in beiden Dateien – Details: `docs/i18n.md`.
 - Neues Dateiformat = in allen Format-Texten nennen (Wunsch des Nutzers): `status.dropFormats` (Start-Hinweis), `page.drop.hint` (Drop-Fläche), `about.description` – de_de + en_us; neue Bibliotheken in `src/scripts/libraries.js` eintragen (+ `about.libs.<id>` in beiden Sprachdateien) – daraus entstehen „Über“ in der App und „Built with“ in der README (`scripts/sync-readme.mjs`, läuft automatisch vor jedem `npm run build`; README danach mit committen).
 - Eingaben einheitlich (Wunsch des Nutzers): Zahlenfelder, Regler, Farbfelder, Auswahlen, Checkboxen immer mit den Klassen/Helfern aus `src/scripts/ui-controls.js` (`INPUT`, `SELECT`, `RANGE`, `CHECKBOX`, `draggable` – Zahlenfelder seitlich mit der Maus ziehbar, Shift schneller, Alt feiner; Farben immer `colorField` – eigener Farbwähler im Panel-Stil statt des nativen Dialogs, kein `<input type=color>`); neue Fenster im Stil der Panels (`bg-black/60` + Blur).
-- Lizenz: PolyForm Noncommercial 1.0.0 (`LICENSE.md`). Fremden Code (z.B. Shadertoy) nur als Inspiration nehmen, Lizenz prüfen, eigene Umsetzung – keine Rechte verletzen (Wunsch des Nutzers).
+- Lizenz: PolyForm Noncommercial 1.0.0 (`LICENSE.md`). Fremden Code (z.B. Shader-Beispiele aus dem Netz) nur als Inspiration nehmen, Lizenz prüfen, eigene Umsetzung – keine Rechte verletzen (Wunsch des Nutzers).
+- **Keine Markennamen, keine fremden Inhalte (wichtig, Wunsch des Nutzers):** Markennamen nirgends übernehmen – weder in Material-, Farb- oder Preset-Namen noch in Oberflächentexten, Doku, Kommentaren oder Commits (z.B. „MAX“ statt des Produkt-/Herstellernamens; keine Farbsystem- oder Herstellerbezeichnungen; auch keine Vergleiche „wie bei <Produkt>“). Ausnahme nur, wo technisch nötig: Erkennung des exportierenden Programms im Datei-Header samt zugehöriger Kommentare (STEP/STL/IFC), Eigenschaftsnamen eines Dateiformats, tatsächlich angebundene Dienste (KI-Anbieter), Testumgebung (Browser, Hardware). Keine Texturen, Bilder, Materialbibliotheken oder sonstigen Inhalte Dritter ausliefern – fremde Vorlagen (z.B. `tests/MatLibs`, `tests/maps`) nur als Orientierung, eigene Werte und Namen, Optik höchstens prozedural nachbauen.
 - Große Modelle in `public/models/` und HDRIs in `public/hdr/` nicht committen (beide in .gitignore).
 - **Dokumentation:** Diese Datei ist Übersicht, Regeln und Ziele. Die Details stehen in `docs/` (Karte unten). Vor Arbeit an einem Bereich die passende Datei lesen; nach Änderungen dort nachtragen (Verhalten, Entscheidungen des Nutzers, verworfene Wege, Fallstricke, Prüfskripte) – hier nur, wenn es übergreifend ist.
 
@@ -98,7 +99,7 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 - **Geplant (Nutzer, Okt. 2026):**
   - HDRI per Drag & Drop: `.hdr`/`.exr` ins Fenster ziehen → wird geladen und sofort als Umgebung gewählt (heute nur `public/hdr/` per Build-Liste bzw. `?hdr=`; Laden über `environment.selectFile` gibt es schon – beim Relink genutzt). Drop-Logik: HDRI-Datei allein = Umgebung, kein Modell-Ersetzen/Hinzufügen; Szenen-Zustand/Asset-Fenster müssen die Datei als Asset führen. Format-Texte ergänzen.
   - Texturen auf Flächen ziehen (Decals/Aufkleber): Bilddatei auf ein Objekt im 3D-Fenster ziehen → als Decal an der Trefferstelle projiziert (Position/Größe/Drehung danach einstellbar), Raster + Pathtracer; offene Fragen: eigene Decal-Geometrie (DecalGeometry) vs. Textur-Projektion im Material, Verhalten auf gekrümmten Flächen, Speichern im Szenen-Zustand (Bild als Asset). Heute löst ein Bild-Drag nur „Fehlende Dateien verknüpfen“ aus (`isAssetDrag`) – Abgrenzung nötig.
-- Import-Materialien: Texturen gehen beim JSON-Export verloren (Graph verweist nur auf den Map-Schlüssel); Mischen von Materialien per Maske (KeyShot-Stil) geplant; Vertex-Farben, Lichter/Kameras aus glTF/FBX werden ignoriert; FBX-Phong → Rauheit aus Shininess geschätzt. glTF/FBX nur mit selbst erzeugten Testdateien geprüft (Scratchpad `gen.py`).
+- Import-Materialien: Texturen gehen beim JSON-Export verloren (Graph verweist nur auf den Map-Schlüssel); Mischen von Materialien per Maske geplant; Vertex-Farben, Lichter/Kameras aus glTF/FBX werden ignoriert; FBX-Phong → Rauheit aus Shininess geschätzt. glTF/FBX nur mit selbst erzeugten Testdateien geprüft (Scratchpad `gen.py`).
 - Node-Editor: kein Zoom; Box-UVs haben Nähte auf gekrümmten Flächen; importierte Materialien landen in der Szene, nicht dauerhaft in der Bibliothek.
 - Ungenutzte STEP-Dummy-Materialien werden beim Neu-Tessellieren entfernt.
 - Sehr große STEP-Dateien (~400 MB, ~6 Mio. Dreiecke) laden im Headless-Chrome in ~30 s; Dateien ≥ 1 GB kaum getestet. Weitere Hebel: Worker-Zahl an Dateigröße koppeln, Tangenten nur bei Normal-Maps, CPU-Kopien nach GPU-Upload freigeben.
@@ -121,7 +122,7 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 ### STIL-MATERIALIEN
 [X] Toon (farbig), „Weiß, Kontur schwarz“, „Schwarz, Kontur weiß“ (flache Fläche ohne Abstufung + Gegenkontur, 2 px, Konturen auch über HQ) und Neon-Grün leuchtend in der Bibliothek (Details: `docs/materials.md`, `docs/rendering.md`)
 [X] Gelee, Wachs und Schleim mit Subsurface Scattering (schnelle Näherung nach Barré-Brisebois, Raster + HQ; Details: `docs/materials.md`)
-[X] Leuchtmarmor (grün, blau, bernstein): leuchtende Fraktal-Adern in der Tiefe, Raster + HQ gleich (eigene Umsetzung, Shadertoy nur als Inspiration)
+[X] Leuchtmarmor (grün, blau, bernstein): leuchtende Fraktal-Adern in der Tiefe, Raster + HQ gleich (eigene Umsetzung, fremder Shader nur als Inspiration)
 
 ### SPEZIAL-MATERIALIEN
 [X] Wolke: das Objekt als fluffige Wolke – quillt über die Form, Raster per Raymarching, HQ als echtes Volumen (Details: `docs/materials.md`)
@@ -133,7 +134,7 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 [X] Bodenspiegelung (Stärke, Unschärfe) und Regenwetter mit prozeduralen Pfützen – nur in HQ (Details: `docs/environment.md`)
 
 ### VIEW-CUBE
-[X] Perspektiven-Würfel wie bei Blender, floatet unten rechts; Flächen (oben, links, hinten …), Kanten und Ecken anklickbar → Kamera fliegt in diese Ansicht; Ziehen dreht (Details: `docs/ui.md`)
+[X] Perspektiven-Würfel wie in gängigen 3D-Programmen, floatet unten rechts; Flächen (oben, links, hinten …), Kanten und Ecken anklickbar → Kamera fliegt in diese Ansicht; Ziehen dreht (Details: `docs/ui.md`)
 
 ### KI RENDERING
 [X] Neben dem HQ-Button soll noch ein KI-Button rein der das aktuelle HQ-Bild an eine Bildgenerierung-KI schickt.
