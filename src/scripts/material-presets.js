@@ -85,3 +85,9 @@ export const MATERIAL_PRESETS = [
     { libraryId: 'emissive-white', category: 'other', params: { color: '#ffffff', metalness: 0, roughness: 0.5, emissive: '#ffffff', emissiveIntensity: 5 } },
     { libraryId: 'emissive-neon-green', category: 'other', params: { color: '#39ff14', metalness: 0, roughness: 0.5, emissive: '#39ff14', emissiveIntensity: 5 } },
 ];
+
+// further presets per category in presets/<category>.js (default export: array like above, optionally with a node
+// graph – presets/graph.js builds it); they register themselves here (Vite glob)
+for (const mod of Object.values(import.meta.glob('./presets/*.js', { eager: true }))) {
+    if (Array.isArray(mod.default)) MATERIAL_PRESETS.push(...mod.default);
+}
