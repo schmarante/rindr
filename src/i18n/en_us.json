@@ -239,7 +239,8 @@
             "wool-red": "Wool red",
             "grass-lawn": "Lawn",
             "grass-meadow": "Meadow",
-            "soap-bubble": "Soap bubble"
+            "soap-bubble": "Soap bubble",
+            "plastic-blue-rounded": "Blue plastic, rounded edges"
         },
         "defaultNames": {
             "material": "Material",
@@ -1152,11 +1153,6 @@
                 "saturation": "Saturation",
                 "reset": "Reset image"
             }
-        },
-        "round": {
-            "label": "Round edges",
-            "title": "Rounding radius in mm (0 = off) – rounds the edges as real geometry; identical parts are rounded too",
-            "fillet": "Fillet inner edges"
         }
     },
     "sceneState": {
@@ -1377,8 +1373,7 @@
             "one": "The element of this issue is not in the loaded IFC models",
             "other": "The {count} elements of this issue are not in the loaded IFC models"
         },
-        "renderingHdri": "Rendering HDRI…",
-        "roundingEdges": "Rounding edges …"
+        "renderingHdri": "Rendering HDRI…"
     },
     "viewCube": {
         "title": "Choose a view: click a face, edge or corner – drag to orbit the camera. Keys: T top, F front, B back, D bottom, L left, R right",
@@ -1560,8 +1555,7 @@
                 "other": "Delete {count} views"
             },
             "morph": "Morph target “{name}”",
-            "morphReset": "Reset morph targets",
-            "roundEdges": "Round edges"
+            "morphReset": "Reset morph targets"
         },
         "objectsWithMaterial": "Objects with “{name}”",
         "ki": {
