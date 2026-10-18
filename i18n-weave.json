@@ -1,0 +1,66 @@
+{
+  "de_de": {
+    "nodes": {
+      "types": {
+        "weave": {
+          "label": "Gewebe",
+          "inputs": { "uv": "Koordinate", "a": "Kette", "b": "Schuss" },
+          "outputs": { "color": "Farbe", "value": "Höhe", "mask": "Kette oben", "random": "Zufall" },
+          "params": {
+            "pattern": "Bindung",
+            "count": "Fäden",
+            "gap": "Abstand",
+            "fuzz": "Flaum",
+            "variation": "Unregelmäßigkeit",
+            "a": "Kette",
+            "b": "Schuss"
+          },
+          "options": {
+            "pattern": {
+              "plain": "Leinwand",
+              "twill": "Köper 2/2",
+              "denim": "Köper 3/1 (Denim)",
+              "satin": "Satin",
+              "basket": "Panama (2×2)",
+              "herringbone": "Fischgrat",
+              "loop": "Schlinge (Berber)",
+              "cut": "Velours"
+            }
+          }
+        }
+      }
+    }
+  },
+  "en_us": {
+    "nodes": {
+      "types": {
+        "weave": {
+          "label": "Weave",
+          "inputs": { "uv": "Coordinate", "a": "Warp", "b": "Weft" },
+          "outputs": { "color": "Colour", "value": "Height", "mask": "Warp on top", "random": "Random" },
+          "params": {
+            "pattern": "Pattern",
+            "count": "Threads",
+            "gap": "Gap",
+            "fuzz": "Fuzz",
+            "variation": "Variation",
+            "a": "Warp",
+            "b": "Weft"
+          },
+          "options": {
+            "pattern": {
+              "plain": "Plain",
+              "twill": "Twill 2/2",
+              "denim": "Twill 3/1 (denim)",
+              "satin": "Satin",
+              "basket": "Basket (2×2)",
+              "herringbone": "Herringbone",
+              "loop": "Loop pile (berber)",
+              "cut": "Cut pile (velours)"
+            }
+          }
+        }
+      }
+    }
+  }
+}
