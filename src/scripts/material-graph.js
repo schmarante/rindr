@@ -23,6 +23,9 @@ import { float, vec3, vec4, uv, texture, mat3, fract, floor, dot, mix, mod, clam
 import { LUMA, linear, C, T, tsl, convert, input } from './node-lib.js';
 
 export const BAKE_SIZE = 1024;
+export const BAKE_RESOLUTIONS = ['auto', '512', '1024', '2048', '4096'];
+/** bake edge length of a resolution setting ('auto' or a number as string); null = auto */
+export const bakeResolution = res => (res && res !== 'auto' ? Math.min(MAX_BAKE_SIZE, Math.max(64, Number(res) || BAKE_SIZE)) : null);
 const MAX_BAKE_SIZE = 4096;
 
 // --- Node types ---
@@ -52,6 +55,9 @@ export const NODE_TYPES = {
             { key: 'reliefStrength', kind: 'number', min: 0, max: 5, step: 0.05, default: 1 },
             // edge length of the baked tile on the model in mm (UV_TILE = one UV unit of the box UVs)
             { key: 'size', kind: 'number', min: 10, max: 10000, step: 10, default: 100 },
+            // resolution of the baked maps of this material (wish of the user: per material); auto = BAKE_SIZE, imported
+            // textures at their own size
+            { key: 'resolution', kind: 'select', options: BAKE_RESOLUTIONS, default: 'auto' },
         ],
     },
     value: {
@@ -227,7 +233,9 @@ export function defaultParams(type) {
  *           | { kind: 'tsl', node, type, sig, size } }}
  */
 export function evaluateGraph(graph, textures, importMaps = {}) {
-    const ctx = { textures, importMaps };
+    // bakeSize: texels across the tile – nodes that smooth edges over about one texel need it
+    const fixed = bakeResolution(graph.nodes.find(n => n.type === 'output')?.params?.resolution);
+    const ctx = { textures, importMaps, bakeSize: fixed || BAKE_SIZE };
     const nodes = new Map(graph.nodes.map(n => [n.id, n]));
     const linkTo = new Map(graph.links.map(l => [l.to.node + ':' + l.to.port, l.from]));
     const cache = new Map();
@@ -294,14 +302,15 @@ export function evaluateGraph(graph, textures, importMaps = {}) {
         const r = convert(outputOf(from.node, from.port), input.type);
         result[input.key] = r.isConst
             ? { kind: 'const', value: r.value }
-            : { kind: 'tsl', node: r.node, type: input.type, sig: signature(from.node, from.port), size: bakeSize(from.node) };
+            : { kind: 'tsl', node: r.node, type: input.type, sig: signature(from.node, from.port), size: fixed || bakeSize(from.node) };
     }
     result.reliefStrength = out.params?.reliefStrength ?? 1;
     result.size = out.params?.size ?? 100;
     return result;
 }
 
-function evalNode(n, port, get, { textures, importMaps }) {
+function evalNode(n, port, get, ctx) {
+    const { textures, importMaps } = ctx;
     const p = { ...defaultParams(n.type), ...n.params };
     switch (n.type) {
         case 'value': return C(p.value);
@@ -370,7 +379,7 @@ function evalNode(n, port, get, { textures, importMaps }) {
         }
     }
     const def = NODE_TYPES[n.type];
-    if (def?.evaluate) return def.evaluate(port, p, get, { textures, importMaps });
+    if (def?.evaluate) return def.evaluate(port, p, get, ctx);
     return C(0);
 }
 

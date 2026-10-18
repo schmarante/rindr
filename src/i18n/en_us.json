@@ -92,7 +92,10 @@
             "merge": "Merge identical",
             "mergeTitle": "Merge identical materials (same name, settings and textures – e.g. the same model loaded twice) into one each",
             "allCategories": "All categories",
-            "categoryTitle": "Filter the library by category"
+            "categoryTitle": "Filter the library by category",
+            "resolution": "Texture resolution",
+            "resolutionAuto": "Automatic (1024)",
+            "resolutionTitle": "Resolution of this material's baked textures – higher is sharper up close but needs more GPU memory and baking time"
         },
         "maps": {
             "map": "Colour",
@@ -479,7 +482,17 @@
                 },
                 "params": {
                     "reliefStrength": "Bump strength",
-                    "size": "Tile (mm)"
+                    "size": "Tile (mm)",
+                    "resolution": "Resolution"
+                },
+                "options": {
+                    "resolution": {
+                        "auto": "Automatic",
+                        "512": "512",
+                        "1024": "1024",
+                        "2048": "2048",
+                        "4096": "4096"
+                    }
                 }
             },
             "value": {
