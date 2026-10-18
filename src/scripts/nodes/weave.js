@@ -14,8 +14,9 @@
 import { float, vec2, vec3, floor, fract, abs, sqrt, max, min, mix, clamp, step, smoothstep, select, length, pow } from 'three/tsl';
 import { T, tsl, coord, input, wrap, hash2, hash33, periodicNoise, worley, vary } from '../node-lib.js';
 
-/** modulo of an integer-valued index (robust against inexact GPU division: wrap() at the cell centre) */
-const imod = (i, period) => wrap(i.add(0.5), period).sub(0.5);
+/** modulo of an integer-valued index (wrap() itself is robust against inexact GPU division – it rounds at the cell
+ *  centre; adding ½ here as well turned imod(1, 2) into −1: plain weave showed only warp) */
+const imod = (i, period) => wrap(i, period);
 
 // pattern -> repeat (threads) and "warp on top" at crossing (i, j) (integer-valued TSL floats, 1 = warp up)
 const PATTERNS = {
