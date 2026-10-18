@@ -65,6 +65,7 @@ export class PropertiesPanel {
         if ((entry.kind === 'model' || entry.kind === 'node') && this.ctx.morphs?.list(entry).length) parts.push(...this._morphSection(entry));
         const bim = (entry.kind === 'node' || entry.kind === 'model') && this.ctx.bim?.(entry);
         if (bim) parts.push(this._bimSection(entry, bim));
+        if ((entry.kind === 'node' || entry.kind === 'model') && !splats && this.ctx.edgeRounding) parts.push(...this._roundRows(entry));
         if (this.ctx.partQuality?.available(entry)) parts.push(this._qualityRow(entry));
         else if (entry.kind === 'light') parts.push(...this._lightSection(entry.object));
         else if (entry.kind === 'environment') parts.push(...this._environmentSection());
@@ -211,6 +212,26 @@ export class PropertiesPanel {
         reset.onclick = () => { api.reset(entry); this.show(this.entry); };
         rows.push(reset);
         return rows;
+    }
+
+    // Rounded edges (real geometry, edge-rounding.js): radius in mm (0 = off) + whether inner edges get a fillet;
+    // applied on change (takes a moment – progress bottom left)
+    _roundRows(entry) {
+        const api = this.ctx.edgeRounding;
+        const value = api.get(entry);
+        const num = el('input', INPUT);
+        num.type = 'number';
+        Object.assign(num, { min: 0, max: 100, step: 0.5, value: fmt(value.radius) });
+        num.title = t('properties.round.title');
+        num.onchange = () => api.set(entry, { radius: Math.max(0, Number(num.value) || 0), fillet: api.get(entry).fillet });
+        const unit = el('span', 'shrink-0 text-white/40', 'mm');
+        return [
+            this._row(t('properties.round.label'), num, unit),
+            this._checkRow('', t('properties.round.fillet'), value.fillet, on => {
+                const v = api.get(entry);
+                if (v.radius > 0) api.set(entry, { radius: v.radius, fillet: on }); else api.remember(entry, { fillet: on });
+            }),
+        ];
     }
 
     // Tessellation quality of the part (STEP); empty = as parent or global

@@ -1149,6 +1149,11 @@
                 "saturation": "Sättigung",
                 "reset": "Bild zurücksetzen"
             }
+        },
+        "round": {
+            "label": "Kanten abrunden",
+            "title": "Radius der Rundung in mm (0 = aus) – rundet die Kanten als echte Geometrie; gleiche Bauteile werden mitgerundet",
+            "fillet": "Innenkanten ausrunden (Hohlkehle)"
         }
     },
     "sceneState": {
@@ -1369,7 +1374,8 @@
             "one": "Das Bauteil des Tickets ist in den geladenen IFC-Modellen nicht vorhanden",
             "other": "Die {count} Bauteile des Tickets sind in den geladenen IFC-Modellen nicht vorhanden"
         },
-        "renderingHdri": "Berechne HDRI…"
+        "renderingHdri": "Berechne HDRI…",
+        "roundingEdges": "Kanten werden abgerundet …"
     },
     "viewCube": {
         "title": "Ansicht wählen: Fläche, Kante oder Ecke anklicken – ziehen dreht die Kamera. Tasten: T oben, F vorne, B hinten, D unten, L links, R rechts",
@@ -1551,7 +1557,8 @@
                 "other": "{count} Ansichten löschen"
             },
             "morph": "Morph Target „{name}“",
-            "morphReset": "Morph Targets zurücksetzen"
+            "morphReset": "Morph Targets zurücksetzen",
+            "roundEdges": "Kanten abrunden"
         },
         "objectsWithMaterial": "Objekte mit „{name}“",
         "ki": {
