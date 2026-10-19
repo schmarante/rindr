@@ -117,9 +117,10 @@ export const EDGE_WGSL = wgslTagFn/* wgsl */`
 const RECORDS = new WeakMap();   // geometry → { data, built, base, rotated, pending }
 let packed = [];                 // geometries in EDGE_DATA
 
-/** block start of a geometry in EDGE_DATA (EDGE_NONE: no data) – raster uniform, path tracer transform field */
+/** block start of a geometry in EDGE_DATA (EDGE_NONE: no data) – raster uniform, path tracer transform field. A cluster
+ *  LOD cut (lod/lod-store.js) indexes the vertices of its source → the source's block */
 export function edgeBase(geometry) {
-    const rec = geometry && RECORDS.get(geometry);
+    const rec = geometry && RECORDS.get(geometry.userData?.lodSource ?? geometry);
     return rec && rec.base >= 0 ? rec.base : EDGE_NONE;
 }
 

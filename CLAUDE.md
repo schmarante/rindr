@@ -59,7 +59,7 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 | `docs/bim.md` | IFC / BIM und BCF – `src/scripts/ifc/`, `src/scripts/bcf/`. |
 | `docs/splats.md` | Gaussian Splats – `src/scripts/splat/`. |
 | `docs/animation.md` | Animation und Morph Targets – `src/scripts/animation.js`. |
-| `docs/rendering.md` | Raster-Darstellung – Darstellungsarten, Batcher (`render-batcher.js`), Schatten, Einblenden, Hervorhebung, Schnittebene, eigene Render-Durchgänge. |
+| `docs/rendering.md` | Raster-Darstellung – Darstellungsarten, Batcher (`render-batcher.js`), Cluster-LOD großer Modelle (`lod/`), Schatten, Einblenden, Hervorhebung, Schnittebene, eigene Render-Durchgänge. |
 | `docs/pathtracer.md` | Pathtracer (HQ) – `src/scripts/pathtracer.js` (three-gpu-pathtracer WebGPU, Vite-Patches in astro.config.mjs). |
 | `docs/camera-lens.md` | Kamera, Tiefenschärfe, Fisheye, Objektiv-Effekte – `dof.js`, `fisheye.js`, `lens-effects.js`, `volume-shafts.js`, Kamera-Teile von `viewer.js`/`properties.js`. |
 | `docs/hdri-editor.md` | HDRI-Editor – eigene prozedurale HDRIs (`src/scripts/hdri/`): Modell, Generator, Pins, Sonne & Himmel, Export, Fenster. |

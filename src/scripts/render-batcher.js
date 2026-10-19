@@ -27,17 +27,36 @@
 //     shadow maps then (onChange) – they were redrawn every frame (two passes over the whole model).
 //   - one scene.updateMatrixWorld() per frame: three.js runs it in every renderer.render(scene) (main image,
 //     every shadow map, highlight mask …) – a full pass over all objects each time.
+//
+// Cluster LOD (lod/lod-store.js): for large models the geometries of the batches get a cluster LOD in the
+// background. A batch whose LOD is ready draws the coarsest cut of its geometry that is still fine enough for its
+// nearest instance: error below `lod.threshold` px at the nearest point of the instance's bounding sphere (outside
+// the view LOD.outsideFactor coarser – only its shadow can be seen). The cut shares the source's vertex buffers →
+// same shader, only the batch mesh's geometry is swapped. One cut per batch, not per instance: splitting a batch
+// by distance added draw calls, and on a fast GPU the draw calls are the limit, not the triangles (huge assembly,
+// 118 M triangles: 41 fps without LOD, 32 fps with one InstancedMesh per cut). Single meshes (drawn individually)
+// get their cut only while the scene is rasterized: the render wrapper swaps mesh.geometry and restores it right
+// after – picking (BVH), path tracer, bounds always see the source. (Putting them into batches of their own cost a
+// node build per mesh – three.js builds every InstancedMesh anew – and delayed the first grouping by ~30 s.)
+// Shadow maps reuse the camera's choice.
 import * as THREE from 'three/webgpu';
+import { uniform } from 'three/tsl';
 import { compileAsync } from './shader-compile.js';
+import { LOD } from './config.js';
+
+const TINT_STEPS = 8;   // debug colours: share of triangles kept, one colour per halving (lod-debug.js)
 
 export const BATCH_LAYER = 30;
 
 export class RenderBatcher {
     /**
-     * @param {{ renderer, scene, parent: THREE.Object3D, roots: () => THREE.Object3D[], minInstances?: number, delay?: number }} options
-     *   parent = where the InstancedMeshes hang while drawing (section ClippingGroup), roots = model roots
+     * @param {{ renderer, scene, parent: THREE.Object3D, roots: () => THREE.Object3D[], minInstances?: number, delay?: number,
+     *   lods?: import('./lod/lod-store.js').ClusterLods, lodCamera?: () => THREE.Camera, lodAllVisible?: () => boolean }} options
+     *   parent = where the InstancedMeshes hang while drawing (section ClippingGroup), roots = model roots,
+     *   lods = cluster LOD store (null: no LOD), lodCamera = the camera the LOD follows (default: the syncing render's),
+     *   lodAllVisible = the image shows more than the camera frustum (fisheye) → no coarser LOD outside it
      */
-    constructor({ renderer, scene, parent, roots, minInstances = 2, delay = 500 }) {
+    constructor({ renderer, scene, parent, roots, minInstances = 2, delay = 500, lods = null, lodCamera = null, lodAllVisible = null }) {
         this.renderer = renderer;
         this.scene = scene;
         this.parent = parent;
@@ -64,6 +83,16 @@ export class RenderBatcher {
         this.staging.name = 'RenderBatchesStaging';
         this.staging.matrixAutoUpdate = false;
         this._staged = null;             // { at, ready, batches: Map key -> batch }
+        // cluster LOD: enabled/threshold changeable at runtime (debug panel); model = the models are large enough
+        this.lods = lods;
+        this.lodCamera = lodCamera;
+        this.lodAllVisible = lodAllVisible;
+        // tint: debug colours on the real drawing (lod-debug.js) – each mesh by the share of triangles its cut keeps
+        this.lod = { enabled: !!lods && LOD.enabled, threshold: LOD.threshold, model: false, eligible: new Set(), selectMs: 0, tint: false };
+        this._view = null;               // camera of the LOD choice (this sync): position, scale, frustum, key
+        this.singles = [];               // individually drawn meshes with an LOD-eligible geometry: { mesh, source, bucket, cut, viewKey }
+        this._lodNew = true;             // the store has new entries – batches without one look again
+        if (lods) lods.onReady = () => { this._lodNew = true; };
 
         const render = renderer.render.bind(renderer);
         // timing (debug display): CPU time of all renders of `scene` per frame, nested ones = shadow maps
@@ -74,15 +103,20 @@ export class RenderBatcher {
             const t0 = performance.now();
             const outer = this._depth++ === 0;
             const auto = s.matrixWorldAutoUpdate;
+            let swapped = null, tinted = null;
             if (outer && this.enabled) {
                 // world matrices once per frame (sync does it), all renders of this frame use them
                 if (this._matrixFrame !== this.frame) { this._matrixFrame = this.frame; s.updateMatrixWorld(); }
                 this._attach(camera);
                 s.matrixWorldAutoUpdate = false;
+                swapped = this._swapSingles();
+                if (this.lod.tint) tinted = this._tint();
             }
             try {
                 return render(s, camera);
             } finally {
+                if (tinted) for (const [o, m] of tinted) o.material = m;
+                if (swapped) this._restoreSingles(swapped);
                 if (outer) s.matrixWorldAutoUpdate = auto;
                 if (--this._depth === 0) this._detach();
                 this.timing[outer ? 'render' : 'nested'] += performance.now() - t0;
@@ -174,6 +208,10 @@ export class RenderBatcher {
         const now = performance.now();
         const frame = this.frame;
         this._changed = false;
+        const lodCamera = this.lodCamera?.() || camera;
+        if (this.lod.enabled && this.lods && lodCamera) this._view = this._viewOf(lodCamera);
+        else if (!this.lod.enabled) this._view = null;
+        this.lod.selectMs = 0;
         let sum = 0, xor = 0;
 
         // 1. visible meshes of the models (three's rule: invisible parent = whole subtree not drawn)
@@ -194,6 +232,12 @@ export class RenderBatcher {
         //    (before 3., so the batches draw this frame). Changed again during compiling → stage anew.
         if (this._changedAt !== null && now - this._changedAt > this.delay) {
             const staged = this._staged;
+            // second compile round of the staging (see _stage), started from inside a real draw
+            if (staged?.next && camera) {
+                const next = staged.next;
+                staged.next = null;
+                this._compileStaged(camera, staged.rest).then(next, next);
+            }
             if (!camera) this.rebuild();
             else if (!staged) this._stage(camera);
             else if (staged.ready && staged.at >= this._changedAt) this.rebuild();
@@ -202,6 +246,9 @@ export class RenderBatcher {
 
         // 3. instance data
         for (const batch of this.batches) this._update(batch, frame, now);
+        for (const single of this.singles) this._updateSingle(single, frame);
+        this._lodNew = false;
+        this.lods?.trim(frame);
 
         this.changed = this._changed;
         if (this.changed) this.onChange?.();
@@ -279,8 +326,16 @@ export class RenderBatcher {
             }
             n++;
         }
-        if (n !== im.count) { im.count = n; slots.length = n; dirty = true; }
+        if (n !== slots.length) { slots.length = n; dirty = true; }
+        if (n !== im.count) { im.count = n; dirty = true; }
         im.visible = n > 0;
+        const lod = this._lodOf(batch);
+        if (lod) {
+            this._chooseCut(batch, lod, n, dirty, frame);
+        } else if (im.geometry !== batch.source) {
+            im.geometry = batch.source;
+            batch.bucket = batch.viewKey = undefined;
+        }
         if (dirty) {
             im.instanceMatrix.needsUpdate = true;
             im.boundingSphere = null;   // frustum culling recomputes it from the instances
@@ -307,12 +362,13 @@ export class RenderBatcher {
             for (const c of o.children) visit(c);
         };
         for (const root of this.roots()) if (root) visit(root);
+        this._lodPlan(byKey, true);
 
         const old = new Map(this.batches.map(b => [b.key, b]));
         const batches = [];
         let instances = 0, created = 0;
         for (const [key, members] of byKey) {
-            if (members.length < this.minInstances) {
+            if (!this._batchable(members)) {
                 for (const m of members) { const st = m[STATE]; if (st.batch) this._leave(m, st); }
                 continue;
             }
@@ -329,9 +385,7 @@ export class RenderBatcher {
                 const st = this._state(m);
                 if (st?.batch === batch) this._leave(m, st);
             }
-            batch.alive = false;
-            batch.mesh.dispose();   // frees its render objects + instance buffer (geometry/material are shared)
-            this.group.remove(batch.mesh);
+            this._dispose(batch, this.group);
         }
         this.batches = batches;
         this._dropStaged();
@@ -343,13 +397,18 @@ export class RenderBatcher {
     // Compile the shaders of the next grouping before switching to it: its new InstancedMeshes (filled, not drawn
     // otherwise) hang in `staging` – same parent, camera and render target as the draw – only while compileAsync
     // (shader-compile.js) collects the scene, i.e. the same render objects as later. Called inside the draw
-    // (renderer state = this render's). Current batches are detached meanwhile, their members are not on the
-    // camera layer → compiled are the staged meshes plus individually drawn ones (already compiled, cheap).
+    // (renderer state = this render's). Current batches are detached meanwhile and the model roots hidden during the
+    // (synchronous) collection → only the staged meshes are compiled. three.js yields to the main thread after every
+    // object, also already compiled ones: with ~7700 individually drawn meshes at 13 fps the first grouping of a
+    // huge model took minutes. Two rounds: first one staged mesh per shader variant (material, shadow flags, vertex
+    // attributes) – these wait for their GPU pipelines –, then all the others: three.js builds the nodes of every
+    // InstancedMesh anew (its uuid is part of the cache key) but finds the pipelines in its cache. Skipping the second
+    // round (drawing them uncompiled) blocked the first frame of the new grouping for seconds (large assembly: 4.7 s).
     _stage(camera) {
         const old = new Map(this.batches.map(b => [b.key, b]));
         const staged = this._staged = { at: performance.now(), ready: false, batches: new Map() };
         for (const [key, members] of this._plan()) {
-            if (members.length < this.minInstances) continue;
+            if (!this._batchable(members)) continue;
             const batch = old.get(key);
             if (batch && sameMembers(batch.members, members)) continue;
             const b = this._create(key, members, this.staging);
@@ -360,16 +419,37 @@ export class RenderBatcher {
             staged.batches.set(key, b);
         }
         if (!staged.batches.size) { staged.ready = true; return; }
-        let job;
+        const variants = new Set(), first = [], rest = [];
+        for (const b of staged.batches.values()) {
+            const m = b.mesh, variant = `${m.material.id}/${m.castShadow ? 1 : 0}${m.receiveShadow ? 1 : 0}/${Object.keys(m.geometry.attributes).sort().join()}`;
+            if (variants.has(variant)) rest.push(m); else { variants.add(variant); first.push(m); }
+        }
+        // same render target/camera/parent as this draw – the second round starts from inside the next real draw
+        // (renderer state of the call, shader-compile.js)
+        staged.rest = rest;
+        this._compileStaged(camera, first).then(() => {
+            if (this._staged !== staged || !rest.length) return;
+            return new Promise(resolve => { staged.next = resolve; });
+        }).catch(err => console.warn('[Batches] shader precompile failed:', err)).finally(() => { staged.ready = true; });
+    }
+
+    // compileAsync with only `meshes` of the staging group visible (model roots hidden while three collects)
+    _compileStaged(camera, meshes) {
+        const show = new Set(meshes);
+        const hidden = this.staging.children.filter(m => m.visible && !show.has(m));
+        for (const m of hidden) m.visible = false;
+        const roots = this.roots().filter(r => r?.visible);
+        for (const r of roots) r.visible = false;
         this._hang(this.staging);
         try {
-            job = compileAsync(this.renderer, this.scene, camera);
+            return compileAsync(this.renderer, this.scene, camera);
         } catch (err) {
-            job = Promise.reject(err);
+            return Promise.reject(err);
         } finally {
+            for (const r of roots) r.visible = true;
+            for (const m of hidden) m.visible = true;
             this.staging.removeFromParent();
         }
-        job.catch(err => console.warn('[Batches] shader precompile failed:', err)).finally(() => { staged.ready = true; });
     }
 
     // grouping as rebuild() would do it – without touching the mesh states
@@ -386,6 +466,7 @@ export class RenderBatcher {
             for (const c of o.children) visit(c);
         };
         for (const root of this.roots()) if (root) visit(root);
+        this._lodPlan(byKey, false);
         return byKey;
     }
 
@@ -403,11 +484,7 @@ export class RenderBatcher {
 
     _dropStaged() {
         if (!this._staged) return;
-        for (const batch of this._staged.batches.values()) {
-            batch.alive = false;
-            batch.mesh.dispose();
-            this.staging.remove(batch.mesh);
-        }
+        for (const batch of this._staged.batches.values()) this._dispose(batch, this.staging);
         this._staged = null;
     }
 
@@ -437,7 +514,7 @@ export class RenderBatcher {
             im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
         }
         parent.add(im);
-        return { key, mesh: im, members, slots: [], alive: true };
+        return { key, mesh: im, members, slots: [], alive: true, source: first.geometry };
     }
 
     _clear() {
@@ -446,13 +523,211 @@ export class RenderBatcher {
                 const st = this._state(m);
                 if (st?.batch === batch) this._leave(m, st);
             }
-            batch.alive = false;
-            batch.mesh.dispose();
-            this.group.remove(batch.mesh);
+            this._dispose(batch, this.group);
         }
         this.batches = [];
         this._dropStaged();
         this.token = {};   // all mesh states invalid
+    }
+
+    // frees the batch's render objects + instance buffers (geometry/material are shared, cuts belong to the store)
+    _dispose(batch, parent) {
+        batch.alive = false;
+        batch.mesh.dispose();
+        parent.remove(batch.mesh);
+    }
+
+    _batchable(members) {
+        return members.length >= this.minInstances;
+    }
+
+    // Large enough for the cluster LOD? (drawn triangles of all batchable meshes ≥ LOD.minTriangles) → eligible =
+    // geometries big enough, within the memory share; request = queue their builds (rebuild, not the staging plan)
+    _lodPlan(byKey, request) {
+        const lod = this.lod;
+        lod.eligible = new Set();
+        if (!this.lods || !lod.enabled) { lod.model = false; return; }
+        let total = 0;
+        for (const members of byKey.values()) {
+            const g = members[0].geometry;
+            total += members.length * (g.index ? g.index.count : g.getAttribute('position')?.count || 0) / 3;
+        }
+        lod.model = total >= LOD.minTriangles;
+        if (!lod.model) return;
+        let wanted = 0;
+        for (const members of byKey.values()) {
+            const g = members[0].geometry;
+            if (!g.index || g.index.count / 3 < LOD.minPartTriangles) continue;
+            if (!this.lods.get(g) && !this.lods.queued.has(g)) {
+                if (!this.lods.fits(wanted + g.index.count / 3)) continue;   // over the memory share: stays full
+                wanted += g.index.count / 3;
+            }
+            lod.eligible.add(g);
+        }
+        if (!request) return;
+        for (const g of lod.eligible) this.lods.want(g);
+        this.singles = [];
+        for (const members of byKey.values()) {
+            if (members.length < this.minInstances && lod.eligible.has(members[0].geometry)) {
+                for (const mesh of members) this.singles.push({ mesh, source: mesh.geometry, bucket: undefined, cut: null, viewKey: null });
+            }
+        }
+    }
+
+    // cut of an individually drawn mesh (camera or its matrix changed)
+    _updateSingle(single, frame) {
+        const st = this._state(single.mesh);
+        const entry = this._view && this.lod.model && st && st.seen === frame && !st.batch && st.geometry === single.source
+            && lodAllowed(single.mesh.material) ? this.lods.get(single.source) : null;
+        if (!entry) { single.cut = null; single.bucket = single.viewKey = undefined; return; }
+        if (!st.moved && single.viewKey === this._view.key) {
+            if (single.bucket !== undefined) this.lods.cut(entry, single.bucket, frame);   // still in use (trim)
+            return;
+        }
+        const t0 = performance.now();
+        single.viewKey = this._view.key;
+        let b = this._bucketOf(entry, st.matrix);
+        if (single.bucket !== undefined && b === single.bucket + 1) b = single.bucket;
+        single.bucket = b;
+        const g = this.lods.cut(entry, b, frame);
+        single.cut = g === single.source ? null : g;
+        this.lod.selectMs += performance.now() - t0;
+    }
+
+    // during the raster render: the chosen cuts in place of the source geometries
+    _swapSingles() {
+        let out = null;
+        for (const single of this.singles) {
+            if (!single.cut || single.mesh.geometry !== single.source) continue;
+            (out ??= []).push(single);
+            single.mesh.geometry = single.cut;
+        }
+        return out;
+    }
+
+    _restoreSingles(list) {
+        for (const single of list) single.mesh.geometry = single.source;
+    }
+
+    /** Debug colours on/off (lod-debug.js) – switched on once the debug shaders are compiled (no freeze) */
+    async setTint(on) {
+        const token = this._tintToken = {};
+        if (!on) { this.lod.tint = false; return; }
+        const camera = this.lodCamera?.();
+        if (camera && this.enabled && this._depth === 0) {
+            // only the batches: every InstancedMesh needs its own node build; individually drawn meshes share one
+            // (same material, no uuid in three's cache key) – collected with the model roots hidden
+            this._hang(this.group);
+            const tinted = this._tint();
+            const roots = this.roots().filter(r => r?.visible);
+            for (const r of roots) r.visible = false;
+            let job;
+            try {
+                job = compileAsync(this.renderer, this.scene, camera);
+            } catch (err) {
+                job = Promise.reject(err);
+            } finally {
+                for (const r of roots) r.visible = true;
+                for (const [o, m] of tinted) o.material = m;
+                this._detach();
+            }
+            await job.catch(err => console.warn('[LOD] debug colours: precompile failed:', err));
+        }
+        if (this._tintToken === token) this.lod.tint = true;   // not switched off meanwhile
+    }
+
+    // Debug colours on what is really drawn (during the raster render, materials restored after): batches and single
+    // meshes with an LOD by the share of triangles their current cut keeps – red = all, then yellow, green, cyan,
+    // blue = 1/128 or less (one colour per halving) –, everything else grey. One material, the colour per object
+    // (userData.lodTint, uniform) – one shader variant; nine materials froze the page ~11 s on first use.
+    _tint() {
+        if (!this._tintMaterial) {
+            const m = this._tintMaterial = new THREE.MeshStandardNodeMaterial({ roughness: 0.6, metalness: 0 });
+            m.colorNode = uniform(new THREE.Color()).onObjectUpdate(({ object }) => object.userData.lodTint);
+            this._tintColors = [...Array(TINT_STEPS).keys()].map(i => new THREE.Color().setHSL(i / (TINT_STEPS - 1) * 2 / 3, 0.85, 0.5))
+                .concat(new THREE.Color(0x8a8a8a));
+        }
+        const mat = this._tintMaterial, colors = this._tintColors, grey = colors[TINT_STEPS];
+        const step = (g, source) => {
+            const full = source.index?.count || 1, now = g.index?.count || full;
+            return colors[Math.min(TINT_STEPS - 1, Math.max(0, Math.floor(-Math.log2(now / full))))];
+        };
+        const out = [];
+        const set = (o, color) => { out.push([o, o.material]); o.userData.lodTint = color; o.material = mat; };
+        for (const b of this.batches) set(b.mesh, this._lodOf(b) ? step(b.mesh.geometry, b.source) : grey);
+        const single = new Map(this.singles.map(x => [x.mesh, x]));
+        const visit = o => {
+            if (!o.visible) return;
+            if (o.isMesh && !o.isSplat && o.layers.isEnabled(0) && !Array.isArray(o.material)) {
+                const x = single.get(o);
+                set(o, x && this.lods.get(x.source) && lodAllowed(o.material) ? step(o.geometry, x.source) : grey);
+            }
+            for (const c of o.children) visit(c);
+        };
+        for (const root of this.roots()) if (root) visit(root);
+        return out;
+    }
+
+    // LOD entry of a batch (looked up again when the store has new ones) – null: drawn in full
+    _lodOf(batch) {
+        if (!this._view || !this.lod.model || !lodAllowed(batch.mesh.material)) return null;
+        if (batch.lod === undefined || (!batch.lod && this._lodNew) || (batch.lod && !this.lods.fresh(batch.lod))) batch.lod = this.lods.get(batch.source) || null;
+        return batch.lod;
+    }
+
+    _viewOf(camera) {
+        camera.updateMatrixWorld();
+        const height = this.renderer.getDrawingBufferSize(this._size ??= new THREE.Vector2()).y;
+        const ortho = !!camera.isOrthographicCamera;
+        // px per unit at distance 1 (perspective) / per unit (orthographic)
+        const scale = ortho ? height / ((camera.top - camera.bottom) / camera.zoom) : height / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov ?? 50) / 2));
+        const e = camera.matrixWorld.elements, p = camera.projectionMatrix.elements;
+        const all = !!this.lodAllVisible?.();
+        const key = `${e.join()},${p.join()},${height},${this.lod.threshold},${all}`;
+        if (this._view?.key === key) return this._view;
+        const frustum = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
+        return { key, x: e[12], y: e[13], z: e[14], ortho, scale, tau: this.lod.threshold, all, planes: frustum.planes.map(pl => [pl.normal.x, pl.normal.y, pl.normal.z, pl.constant]) };
+    }
+
+    // cut of the batch: the finest one any of its instances needs (camera or instances changed). Hysteresis: finer at
+    // once, coarser only by more than one bucket (a new cut costs an index upload + render object update)
+    _chooseCut(batch, entry, n, dirty, frame) {
+        const view = this._view, im = batch.mesh;
+        if (!dirty && batch.viewKey === view.key) {
+            if (batch.bucket !== undefined) this.lods.cut(entry, batch.bucket, frame);   // still in use (trim)
+            return;
+        }
+        if (!n) return;
+        const t0 = performance.now();
+        batch.viewKey = view.key;
+        let b = Infinity;
+        for (let k = 0; k < n && b > entry.sourceBucket; k++) b = Math.min(b, this._bucketOf(entry, batch.slots[k][STATE].matrix));
+        if (batch.bucket !== undefined && b === batch.bucket + 1) b = batch.bucket;
+        batch.bucket = b;
+        const g = this.lods.cut(entry, b, frame);
+        if (im.geometry !== g) im.geometry = g;
+        this.lod.selectMs += performance.now() - t0;
+    }
+
+    // LOD bucket for one placement (world matrix e): error below the threshold at the nearest point of its bounding
+    // sphere; outside the view LOD.outsideFactor coarser
+    _bucketOf(entry, e) {
+        const { center, radius } = entry.geometry.boundingSphere;
+        const { planes, ortho, scale, tau, all } = this._view;
+        const s = Math.sqrt(Math.max(e[0] * e[0] + e[1] * e[1] + e[2] * e[2], e[4] * e[4] + e[5] * e[5] + e[6] * e[6], e[8] * e[8] + e[9] * e[9] + e[10] * e[10]));
+        const x = e[0] * center.x + e[4] * center.y + e[8] * center.z + e[12];
+        const y = e[1] * center.x + e[5] * center.y + e[9] * center.z + e[13];
+        const z = e[2] * center.x + e[6] * center.y + e[10] * center.z + e[14];
+        const r = radius * s;
+        let factor = tau;
+        if (!all) for (let p = 0; p < 6; p++) if (planes[p][0] * x + planes[p][1] * y + planes[p][2] * z + planes[p][3] < -r) { factor *= LOD.outsideFactor; break; }
+        let E;
+        if (ortho) E = factor / scale / s;
+        else {
+            const d = Math.hypot(x - this._view.x, y - this._view.y, z - this._view.z) - r;
+            E = d > 0 ? factor * d / scale / s : 0;
+        }
+        return this.lods.bucket(entry, E);
     }
 
     _state(mesh) {
@@ -473,6 +748,13 @@ export class RenderBatcher {
 }
 
 const STATE = Symbol('renderBatch');
+
+// special materials keep their full geometry: wool shells and grass blades are made from it, clouds are volumes
+// around it (glowing marble and toon contours are never batched – noBatch – and never get here as batches)
+function lodAllowed(material) {
+    const u = material?.userData;
+    return !!u && !u.wool && !u.grass && !u.cloud && !u.noBatch;
+}
 
 // inputs of _keyOf besides geometry/material identity – compared per frame instead of building the key
 function flagsOf(mesh) {
