@@ -3,7 +3,8 @@
 //   nodes      – object tree ({ name, parent }, children after parents)
 //   geometries – own buffers per geometry (positions/normals/uvs/index), BVH + tangents in the worker pool
 //   meshes     – instances with absolute matrix, node and material
-// Units are converted to mm (like STEP): glTF is in metres, FBX in cm × UnitScaleFactor, MAX in its system unit.
+// Units are converted to mm (like STEP): glTF is in metres, FBX in cm × UnitScaleFactor, MAX in its system unit,
+// 3MF in the unit of its model part.
 // Materials become separate entries (source 'import') in the MaterialManager, textures are kept.
 import * as THREE from 'three/webgpu';
 import { boxUVs, buildGeometryBVHs, orientTrianglesIsolated, UV_TILE } from './step-importer.js';
@@ -15,7 +16,7 @@ import { t } from './i18n.js';
 import { debugLog } from './log.js';
 
 // IFC (BIM) goes the same way but has its own importer (ifc/ifc-importer.js, web-ifc – loaded on demand)
-export const MESH_EXTENSIONS = ['glb', 'gltf', 'fbx', 'max', 'stl', 'ifc', 'ifczip'];
+export const MESH_EXTENSIONS = ['glb', 'gltf', 'fbx', 'max', '3mf', 'stl', 'ifc', 'ifczip'];
 
 // The loaders are loaded only with the first glTF/FBX (~170 KB that a STEP-only session never needs).
 // Draco/Basis decoders: three.js references them itself (new URL(…, import.meta.url)) – Vite ships them
@@ -70,6 +71,13 @@ export async function importMeshFile(source, { renderer, materialManager, onStat
         if (!isCompoundFile(data)) throw new Error(t('import.max.notMax'));
         const lean = await readMaxLean(data, { onStatus });
         ({ result, missing } = await convertMax(lean, source, materialManager));
+    }
+    // 3MF: own reader in a worker (3mf/3mf-parse.js)
+    if (ext === '3mf') {
+        const data = await source.main.arrayBuffer();
+        if (data.byteLength < 4 || new DataView(data).getUint32(0, true) !== 0x04034b50) throw new Error(t('import.3mf.not3mf'));
+        const scene = await read3mfLean(data, { onStatus });
+        ({ result, missing } = await convert3mf(scene, source, materialManager));
     }
     if (ext === 'fbx') {
         buffer = await source.main.arrayBuffer();
@@ -724,6 +732,94 @@ async function convertMax({ scene, geometries: parts }, source, materialManager)
     } finally {
         release();
     }
+}
+
+// --- 3MF (3mf/3mf-parse.js in a worker) ---
+
+function read3mfLean(buffer, { onStatus }) {
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(new URL('./3mf/3mf-worker.js', import.meta.url), { type: 'module', name: '3mf' });
+        worker.onmessage = ({ data }) => {
+            if (data.type === 'progress') { onStatus(t('import.mesh.buildingGeometries'), data.done / data.total); return; }
+            worker.terminate();
+            if (data.type === 'error') reject(new Error(data.message));
+            else resolve(data.scene);
+        };
+        worker.onerror = e => { worker.terminate(); reject(new Error(e.message || '3MF worker failed')); };
+        worker.postMessage({ buffer }, [buffer]);
+    });
+}
+
+// 3MF transform (3×4, row vectors: x' = x·m00 + y·m10 + z·m20 + m30) → Matrix4
+const threeMfMatrix = v => (v ? new THREE.Matrix4().set(v[0], v[3], v[6], v[9], v[1], v[4], v[7], v[10], v[2], v[5], v[8], v[11], 0, 0, 0, 1) : new THREE.Matrix4());
+const TILE_3MF = { wrap: THREE.RepeatWrapping, mirror: THREE.MirroredRepeatWrapping, clamp: THREE.ClampToEdgeWrapping, none: THREE.ClampToEdgeWrapping };
+
+/**
+ * 3MF scene → { nodes, geometries, meshes } like convert(): one node per build item and component, objects placed
+ * several times share their geometry (instances); base materials / colours / textures as import materials.
+ */
+async function convert3mf(scene, source, materialManager) {
+    const scale = scene.unitMm;
+    const toMm = new THREE.Matrix4().makeScale(scale, scale, scale);
+    const up = new THREE.Matrix4().makeRotationX(-Math.PI / 2);   // Z up (build plate) → Y up
+    // textures from the package (a broken image keeps the material's colour)
+    const textures = await Promise.all(scene.textures.map(async tex => {
+        const url = URL.createObjectURL(new Blob([tex.bytes], tex.type ? { type: tex.type } : {}));
+        try {
+            const texture = await new THREE.TextureLoader().loadAsync(url);
+            texture.name = tex.name;
+            texture.colorSpace = THREE.SRGBColorSpace;
+            texture.wrapS = TILE_3MF[tex.tileu] ?? THREE.RepeatWrapping;
+            texture.wrapT = TILE_3MF[tex.tilev] ?? THREE.RepeatWrapping;
+            return texture;
+        } catch {
+            console.warn('[Import] 3MF: texture could not be read:', tex.path);
+            return null;
+        } finally {
+            URL.revokeObjectURL(url);
+        }
+    }));
+    const srgb = c => THREE.ColorManagement.colorSpaceToWorking(new THREE.Color(c[0], c[1], c[2]), THREE.SRGBColorSpace);
+    // printed parts: plastic look (3MF only carries a display colour)
+    const mats = scene.materials.map(m => {
+        const map = m.texture >= 0 ? textures[m.texture] : null;
+        const mat = new THREE.MeshStandardMaterial({ name: m.name, color: map ? new THREE.Color(1, 1, 1) : srgb(m.color), roughness: 0.5, metalness: 0, map });
+        if (m.color[3] < 1) { mat.transparent = true; mat.opacity = m.color[3]; }
+        return mat;
+    });
+    const materialId = materialIdFactory(materialManager, scale, source.name);
+
+    const nodes = [], geometries = [], meshes = [];
+    const base = scene.build.length > 1 ? (nodes.push({ name: scene.title || '', parent: -1 }), 1) : 0;
+    const cache = new Map();   // 3MF mesh object → our geometry indices (placed several times = instances)
+    let instance = 0;
+    const visit = (oi, matrix, parent, depth) => {
+        const o = scene.objects[oi];
+        if (depth > 32) return;   // components referencing each other in a loop (invalid file)
+        const node = nodes.length;
+        nodes.push({ name: o.name || t('import.mesh.unnamedMesh'), parent });
+        const parts = o.geometry >= 0 ? scene.geometries[o.geometry] : null;
+        if (parts?.length) {
+            let gis = cache.get(o.geometry);
+            if (!gis) {
+                const worldScale = matrix.getMaxScaleOnAxis() * scale;
+                gis = parts.map(part => {
+                    const uvs = part.uvs || boxUVs(part.positions, part.normals, UV_TILE / Math.max(worldScale, 1e-12));
+                    return { gi: geometries.push({ positions: part.positions, normals: part.normals, index: part.index, uvs, name: o.name }) - 1, material: part.material };
+                });
+                cache.set(o.geometry, gis);
+            }
+            const m = new THREE.Matrix4().multiplyMatrices(toMm, matrix).toArray();
+            for (const { gi, material } of gis) {
+                meshes.push({ geometry: gi, matrix: m, materialId: materialId(material >= 0 ? mats[material] : null), name: nodes[node].name, node, instance, key: `${instance}/${material}` });
+            }
+            instance++;
+        }
+        for (const c of o.components) visit(c.object, matrix.clone().multiply(threeMfMatrix(c.transform)), node, depth + 1);
+    };
+    for (const b of scene.build) visit(b.object, up.clone().multiply(threeMfMatrix(b.transform)), base ? 0 : -1, 0);
+    if (scene.unsupported.length) console.warn('[Import] 3MF: not read:', scene.unsupported);
+    return { result: { nodes, geometries, meshes, animation: null }, missing: new Set() };
 }
 
 const hasMorphs = mesh => !!mesh.geometry?.morphAttributes?.position?.length && !!mesh.morphTargetDictionary;
