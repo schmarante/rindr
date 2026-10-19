@@ -24,6 +24,9 @@
             },
             "estimating": "Estimating model size …"
         },
+        "3mf": {
+            "not3mf": "Not a valid 3MF file"
+        },
         "max": {
             "notMax": "Not a valid MAX file",
             "skipped": {
@@ -1572,7 +1575,7 @@
         "notSceneOrMaterials": "{name}: neither a scene nor materials",
         "unsupportedFormat": "Format not supported ({extensions})",
         "dropHint": "Drag a file into the window",
-        "dropFormats": "STEP (.stp/.step) · glTF/GLB · FBX · MAX (.max) · STL · PLY · BIM (.ifc/.ifczip) · BCF issues (.bcfzip) · Gaussian splats (.ply/.sog)",
+        "dropFormats": "STEP (.stp/.step) · glTF/GLB · FBX · MAX (.max) · 3MF · STL · PLY · BIM (.ifc/.ifczip) · BCF issues (.bcfzip) · Gaussian splats (.ply/.sog)",
         "qualityReduced": "Large model (≈ {triangles} triangles at “{from}”) – quality automatically reduced to “{to}”",
         "modelTooLarge": "Model too large: ≈ {triangles} triangles at “{quality}” (limit {limit}) – loading cancelled",
         "qualityTooFine": "“{quality}” is too fine for this model (≈ {triangles} triangles, limit {limit}) – quality stays “{previous}”",
@@ -1825,13 +1828,13 @@
     },
     "page": {
         "title": "RINDR – 3D viewer with path tracing in the browser",
-        "description": "Open STEP, glTF, FBX, MAX, STL, BIM (IFC, BCF) and Gaussian splats right in the browser – local, no upload, with material library and real-time path tracing.",
+        "description": "Open STEP, glTF, FBX, MAX, 3MF, STL, BIM (IFC, BCF) and Gaussian splats right in the browser – local, no upload, with material library and real-time path tracing.",
         "ogImageAlt": "RINDR logo (cow head) with the caption “3D viewer in the browser”",
         "loading": "Starting RINDR …",
         "sceneGraph": "Scene Graph",
         "drop": {
             "title": "Drop file here",
-            "hint": "STEP (.stp/.step), glTF/GLB, FBX, MAX (.max), STL, PLY, BIM (.ifc/.ifczip), BCF issues (.bcfzip), Gaussian splats (.ply/.sog) – just drop textures and .bin files along with it",
+            "hint": "STEP (.stp/.step), glTF/GLB, FBX, MAX (.max), 3MF, STL, PLY, BIM (.ifc/.ifczip), BCF issues (.bcfzip), Gaussian splats (.ply/.sog) – just drop textures and .bin files along with it",
             "addHint": "Several models: drop them together or one after another – they appear side by side",
             "replaceTitle": "Replace models",
             "replaceHint": "The loaded models are removed and replaced by the new file",
@@ -1847,7 +1850,7 @@
     },
     "about": {
         "title": "About",
-        "description": "Your Local 3D-File Viewer – STEP, glTF, FBX, MAX, STL, BIM (IFC, BCF) and Gaussian splats right in the browser, with real-time path tracing.",
+        "description": "Your Local 3D-File Viewer – STEP, glTF, FBX, MAX, 3MF, STL, BIM (IFC, BCF) and Gaussian splats right in the browser, with real-time path tracing.",
         "author": "Author",
         "email": "Email",
         "version": "Version",
