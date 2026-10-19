@@ -4,7 +4,11 @@
 //  - Every row is draggable (dataTransfer MATERIAL_MIME = { id } or { libraryId })
 //  - Both lists as rows or tiles (toggle top right, remembered per browser)
 //  - Previews: rendered spheres (material-thumbs.js, hooks.thumbs) with a spinner per material while its image is
-//    made; reload button top right makes all anew (current environment); CSS sphere if rendering failed
+//    made (only the one being rendered – they are made one after another; waiting ones stay quiet); reload button
+//    top right makes all anew (current environment); CSS sphere if rendering failed.
+//    Only swatches in view of the list (+ one row) are rendered, a queued one that scrolls away is dropped again –
+//    the library's 200+ presets were all queued on its first opening, each a shader compile that blocks the GPU
+//    process (the whole browser window froze now and then)
 import { messageDialog } from './dialog.js';
 import { PARAMS, buildMaterial } from './material-manager.js';
 import { thumbKey } from './material-thumbs.js';
@@ -82,6 +86,9 @@ export class MaterialPanel {
             <input data-file type="file" accept="application/json,.json" hidden>
         `;
         this.list = root.querySelector('[data-list]');
+        this.thumbObserver = typeof IntersectionObserver === 'function'
+            ? new IntersectionObserver(entries => this._onSwatchView(entries), { root: this.list, rootMargin: '64px 0px' })
+            : null;
         this.editor = root.querySelector('[data-editor]');
         this.file = root.querySelector('[data-file]');
 
@@ -137,6 +144,7 @@ export class MaterialPanel {
         };
         window.addEventListener('pointerup', release, true);
         window.addEventListener('pointercancel', release, true);
+        this.thumbs?.addEventListener('start', e => this._onThumbStart(e.detail));
         this.thumbs?.addEventListener('ready', e => this._onThumb(e.detail));
         this.thumbs?.addEventListener('reload', () => this.render({ keepEditor: true }));
         this.render();
@@ -194,6 +202,7 @@ export class MaterialPanel {
         if (this.listPressed) { this.listStale = true; if (!keepEditor || !this.editor.contains(document.activeElement)) this._renderEditor(); return; }
         this.categorySelect.hidden = this.tab !== 'library';
         if (this.newButton) this.newButton.hidden = this.tab === 'library';
+        this.thumbObserver?.disconnect();   // the rows are built anew
         if (this.tab === 'scene') this._renderScene(); else this._renderLibrary();
         if (!keepEditor || !this.editor.contains(document.activeElement)) this._renderEditor();
     }
@@ -317,15 +326,16 @@ export class MaterialPanel {
     }
 
     // swatch of a material: rendered image when there; while it is made a spinner over the previous image (reload) or
-    // an empty tile (new); editing keeps the material's last image without a spinner; failed: the CSS sphere.
+    // an empty tile (new) – only on the one being rendered right now, the waiting ones without; editing keeps the
+    // material's last image without a spinner; failed: the CSS sphere.
     // animate (an image just arrived): the new image fades in over the old one, the spinner fades out
     _paint(sw, thumb, params, animate = false) {
         if (!this.thumbs || !thumb) { sw.style.background = swatch(params); sw.classList.add('ring-1'); return; }
         const { key, group } = thumb;
-        if (!this.thumbs.has(key)) this._requestThumb(thumb);
+        if (!this.thumbs.has(key)) this._thumbWhenVisible(sw, thumb);
         const fresh = this.thumbs.has(key), url = this.thumbs.url(key);
         const image = url ?? (fresh ? null : thumb.previous ?? null);
-        const busy = !fresh && (!!url || !thumb.previous);
+        const busy = !fresh && (!!url || !thumb.previous) && this.thumbs.active === key;
         if (fresh && url && !group.startsWith('lib:')) this.lastThumb.set(group, key);
         const background = image ? `url(${image}) center/cover no-repeat` : fresh ? swatch(params) : '';
         if (animate && background && sw.dataset.bg !== background) fadeIn(sw, background);
@@ -341,6 +351,36 @@ export class MaterialPanel {
             sw.append(spin);
         } else if (!busy && spinner) {
             if (animate) fadeOut(spinner); else spinner.remove();
+        }
+    }
+
+    // request the swatch's image once it is in view of the list (without IntersectionObserver: right away)
+    _thumbWhenVisible(sw, thumb) {
+        if (!this.thumbObserver) { this._requestThumb(thumb); return; }
+        if (thumb.material) sw.thumbRequest = thumb;   // a repaint after 'ready' passes only key + group
+        if (sw.inView && sw.thumbRequest) this._requestThumb(sw.thumbRequest);
+        else this.thumbObserver.observe(sw);
+    }
+
+    _onSwatchView(entries) {
+        for (const { target: sw, isIntersecting } of entries) {
+            sw.inView = isIntersecting;
+            const thumb = sw.thumbRequest;
+            if (!thumb || this.thumbs.has(thumb.key)) continue;
+            if (isIntersecting) this._requestThumb(thumb);
+            else this.thumbs.cancel(thumb.group, thumb.key);
+        }
+    }
+
+    // the spinner moves to the swatch(es) whose image is being rendered now
+    _onThumbStart({ key, previous }) {
+        for (const k of [previous, key]) {
+            if (!k) continue;
+            for (const sw of this.list.querySelectorAll(`[data-thumb="${k}"]`)) {
+                // the full request keeps the previous image under the spinner (edited material)
+                const thumb = sw.thumbRequest?.key === k ? sw.thumbRequest : { key: k, group: sw.dataset.group };
+                this._paint(sw, thumb, JSON.parse(sw.dataset.params));
+            }
         }
     }
 

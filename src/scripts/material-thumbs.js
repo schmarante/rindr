@@ -50,7 +50,8 @@ export function thumbKey(description) {
 
 export class MaterialThumbs extends EventTarget {
     /**
-     * Events: 'ready' (detail: { key, url } – url null if rendering failed), 'reload' (all images are stale)
+     * Events: 'start' (detail: { key } – its render begins; `active` = that key), 'ready' (detail: { key, url } – url
+     * null if rendering failed), 'reload' (all images are stale)
      * @param {THREE.WebGPURenderer} renderer
      * @param {() => { texture: THREE.Texture, intensity: number, rotation: number }} getEnvironment  current one
      * @param {(material, radius) => THREE.Mesh | null} [special]  a mesh to show instead of the sphere (cloud volume)
@@ -67,6 +68,7 @@ export class MaterialThumbs extends EventTarget {
         this.jobs = new Map();      // group -> { key, material, persist, dispose }
         this.shown = new Map();     // group -> key of its last memory-only image (released when replaced)
         this.pending = new Set();   // keys requested and not ready yet
+        this.active = null;         // key being rendered right now (one at a time)
         this._running = false;
         this._setup = null;
         this._db = openDb();
@@ -126,6 +128,13 @@ export class MaterialThumbs extends EventTarget {
         this._run();
     }
 
+    /** drop the queued request of `group` for `key` (its swatch left the view); a render already running finishes */
+    cancel(group, key) {
+        if (this.jobs.get(group)?.key !== key) return;
+        this.jobs.delete(group);
+        this.pending.delete(key);
+    }
+
     async _run() {
         if (this._running) return;
         this._running = true;
@@ -137,6 +146,7 @@ export class MaterialThumbs extends EventTarget {
                 let url = await this._stored(job);
                 if (url === undefined) {
                     await new Promise(requestAnimationFrame);   // one render per frame
+                    this._setActive(job.key);
                     url = await this._render(job, generation).catch(err => { console.warn('Material thumbnail failed:', err); return null; });
                 }
                 if (generation !== this.generation) {
@@ -153,9 +163,17 @@ export class MaterialThumbs extends EventTarget {
                 this.dispatchEvent(new CustomEvent('ready', { detail: { key: job.key, url } }));
             }
         } finally {
+            this._setActive(null);
             this._running = false;
             this._setup?.mesh.dispatchEvent({ type: 'dispose' });   // drop the render objects of the materials shown
         }
+    }
+
+    // the key being rendered changes: 'start' for the new one (the panel moves its spinner there)
+    _setActive(key) {
+        const previous = this.active;
+        this.active = key;
+        if (key !== previous) this.dispatchEvent(new CustomEvent('start', { detail: { key, previous } }));
     }
 
     // memory-only images: the group's previous one is not needed any more
