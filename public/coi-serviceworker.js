@@ -1,6 +1,8 @@
 /*! coi-serviceworker v0.1.7 - Guido Zuidhof and contributors, licensed under MIT */
 // Modified for RINDR: also sets the security headers that GitHub Pages cannot send (SECURITY_HEADERS below –
-// same values as public/.htaccess for the own server, keep both in sync). Otherwise unchanged.
+// same values as public/.htaccess for the own server, keep both in sync); a failed fetch is retried once for page
+// loads and otherwise rejected (was: undefined → "Failed to convert value to 'Response'"); after an update the page
+// reloads only once the new worker is active (was: right at updatefound, while it was still installing).
 const SECURITY_HEADERS = {
     "Content-Security-Policy": "frame-ancestors 'none'",
     "X-Frame-Options": "DENY",
@@ -67,7 +69,12 @@ if (typeof window === 'undefined') {
                         headers: newHeaders,
                     });
                 })
-                .catch((e) => console.error(e))
+                // RINDR: a page load whose fetch failed (e.g. cancelled while the worker was replaced) is tried once
+                // more unchanged; otherwise reject so the browser reports the network error itself.
+                .catch((e) => {
+                    if (r.mode === "navigate") return fetch(r);
+                    throw e;
+                })
         );
     });
 
@@ -111,9 +118,15 @@ if (typeof window === 'undefined') {
                 (registration) => {
                     !coi.quiet && console.log("COOP/COEP Service Worker registered", registration.scope);
 
+                    // RINDR: reload once the new worker is active, not while it is still installing.
                     registration.addEventListener("updatefound", () => {
-                        !coi.quiet && console.log("Reloading page to make use of updated COOP/COEP Service Worker.");
-                        coi.doReload();
+                        const worker = registration.installing;
+                        if (!worker) return;
+                        worker.addEventListener("statechange", () => {
+                            if (worker.state !== "activated") return;
+                            !coi.quiet && console.log("Reloading page to make use of updated COOP/COEP Service Worker.");
+                            coi.doReload();
+                        });
                     });
 
                     // If the registration is active, but it's not controlling the page
