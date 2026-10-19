@@ -10,7 +10,7 @@ import { HdriRenderService } from './hdri/hdri-service.js';
 import { studioPreset, cloneHdri } from './hdri/hdri-model.js';
 import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
 import { TESS_PRESETS, normalizeQuality, abortStepImport, buildBVHIsolated, fetchStepFile, readStepFile, releaseStepFile, tessellateStep, ImportLimitError } from './step-importer.js';
-import { IMPORT, KI, SPLATS, RASTER, SCENE, TRANSITION } from './config.js';
+import { IMPORT, KI, SPLATS, RASTER, SCENE, TRANSITION, LOD } from './config.js';
 import { importMeshFile, MissingFilesError, MESH_EXTENSIONS } from './mesh-importer.js';
 import { MaterialManager, FADE_MASK } from './material-manager.js';
 import { MaterialPanel, MATERIAL_MIME } from './material-panel.js';
@@ -48,6 +48,7 @@ import { setFisheye, RasterFisheye, patchRaycaster, viewAngle, setViewAngle, fis
 import { PropertiesPanel } from './properties.js';
 import { Slicer, isClosedGeometry } from './slicer.js';
 import { RenderBatcher, BATCH_LAYER } from './render-batcher.js';
+import { ClusterLods } from './lod/lod-store.js';
 import { GroundProjection } from './ground.js';
 import { GROUND_SURFACE } from './ground-reflection.js';
 import { BackgroundDome } from './background-dome.js';
@@ -258,11 +259,17 @@ const slicer = new Slicer();
 scene.add(slicer.group, slicer.object);
 
 // Raster: meshes with the same geometry + material drawn as one InstancedMesh (render-batcher.js) – the
-// individual meshes stay for everything else; picking raycasters therefore also test BATCH_LAYER
+// individual meshes stay for everything else; picking raycasters therefore also test BATCH_LAYER.
+// Large models: distant instances with fewer triangles (cluster LOD, lod/lod-store.js – built in the background)
+const lodParam = new URLSearchParams(location.search).get('lod');
 const batcher = new RenderBatcher({
     renderer, scene, parent: slicer.group,
     roots: () => [rootGroup, ...extraModels.map(x => x.root)],
+    lods: lodParam === '0' || (lodParam === null && !LOD.enabled) ? null : new ClusterLods(),
+    lodCamera: () => camera,
+    lodAllVisible: () => fisheyeEnabled(),   // the fisheye shows more than the camera frustum
 });
+if (Number(lodParam) > 0) batcher.lod.threshold = Number(lodParam);
 const batchingParam = new URLSearchParams(location.search).get('batching');
 batcher.setEnabled(batchingParam !== null ? batchingParam !== '0' : RASTER.batching);
 slicer.capBatches = () => batcher.meshes;
@@ -4601,6 +4608,8 @@ const debugStats = new URLSearchParams(location.search).has('debug')
         getTiming: () => batcher.timing,
     })
     : null;
+// debug: cluster LOD section in the debug display (threshold, on/off, colours by the share of triangles drawn)
+if (debugStats && batcher.lods) import('./lod/lod-debug.js').then(m => m.attachLodDebug(debugStats.root, { batcher }));
 renderer.setAnimationLoop(() => {
     const frameStart = performance.now();
     batcher.newFrame();

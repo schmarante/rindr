@@ -1462,6 +1462,22 @@
         "openSettings": "Einstellungen öffnen"
     },
     "debugStats": {
+        "lod": {
+            "enabled": "LOD an",
+            "threshold": "Fehler px",
+            "colors": "Farben",
+            "color": {
+                "material": "Material",
+                "share": "Anteil je Teil"
+            },
+            "inactive": "LOD      aus (Modell unter {min} Mio. Dreiecken)",
+            "status": "LOD      {built}/{total} Geometrien · {triangles} Mio. Dreiecke · {seconds} s",
+            "building": " · baut …",
+            "select": "         {cuts} Stufen · Auswahl {ms} ms",
+            "legendFull": "alle",
+            "legendCoarse": "≤ 1/128 Dreiecke · grau = ohne LOD",
+            "preparing": "Farben werden vorbereitet … (Shader, ohne Einfrieren)"
+        },
         "scan": {
             "button": "Duplikate messen",
             "noModel": "Kein Modell geladen (oder Laden läuft noch)",

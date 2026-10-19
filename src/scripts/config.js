@@ -113,6 +113,18 @@ export const RASTER = {
     batching: true,
 };
 
+// Cluster LOD (lod/lod-store.js, render-batcher.js): distant instances drawn with fewer triangles in Basic/Default
+// (HQ always draws the full model). Built in the background after loading. Test: ?lod=0 (off), ?lod=<px> (threshold)
+export const LOD = {
+    enabled: true,
+    threshold: 2,              // allowed error on screen (px) – 1 looks identical, 2 still does (user, Oct. 2026)
+    minTriangles: 1_000_000,   // only models drawing at least this many triangles (counted per instance)
+    minPartTriangles: 512,     // smaller geometries have nothing to gain
+    memoryShare: 0.25,         // share of the memory budget (memory-budget.js) the LOD data may take
+    maxWorkers: 6,             // background build: at most this many workers (and half the cores)
+    outsideFactor: 4,          // instances outside the view (only their shadows can be seen): coarser
+};
+
 // Gaussian splats (.ply / .sog, splat/): memory protection for the spherical harmonics (view-dependent
 // colour). Degree 3 costs 48 bytes per splat on the GPU – large scenes are reduced to a lower degree so that
 // the SH data stays within the budget (13 M splats: degree 2). Positions/shape/colour: 32 bytes per splat.
