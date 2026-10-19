@@ -169,7 +169,7 @@ export class GraphApplier {
     }
 
     /**
-     * Preview of one node output for the node editor (graph of `def`): { size, pixels } (RGBA, sRGB) or
+     * Preview of one node output for the node editor (graph of `def`): { size, pixels } (RGBA, sRGB, top row first) or
      * { color: [r, g, b] } (sRGB 0..1) for a constant; null if there is nothing. Baked in the queue with the maps;
      * the last results are kept by signature (unchanged nodes come back at once).
      */
@@ -186,7 +186,10 @@ export class GraphApplier {
                 return { color: c.map(v => Math.min(Math.max(v, 0), 1)) };
             }
             // values as plain grey (0.5 = middle grey), colours sRGB-encoded like the colour maps
-            return { size, pixels: await this.baker.bakePixels(r.node, r.type, { srgb: r.type === 'color', size }) };
+            // the bake starts at v = 0 (texture order, bottom row first) – flipped for the canvas (top row first),
+            // otherwise pictures stood on their head in the node while the material showed them upright
+            const pixels = await this.baker.bakePixels(r.node, r.type, { srgb: r.type === 'color', size });
+            return { size, pixels: flipRows(pixels, size) };
         };
         const job = this.queue.then(run);
         this.queue = job.catch(() => {});
@@ -274,6 +277,13 @@ function place(tex, entry, result) {
         tex.repeat.copy(entry.preview ? new THREE.Vector2(2, 1) : new THREE.Vector2(UV_TILE / result.size, UV_TILE / result.size));
         tex.offset.set(0, 0);
     }
+}
+
+// RGBA pixels (size², bottom row first) -> top row first
+function flipRows(pixels, size) {
+    const row = size * 4, out = new Uint8Array(pixels.length);
+    for (let y = 0; y < size; y++) out.set(pixels.subarray(y * row, (y + 1) * row), (size - 1 - y) * row);
+    return out;
 }
 
 function setMap(material, key, texture) {
