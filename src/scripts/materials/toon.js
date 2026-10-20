@@ -8,15 +8,20 @@
 // Subsurface scattering (`subsurface`, setSubsurface) – fast approximation as the user chose (Barré-Brisebois,
 // GDC 2011, "Approximating Translucency for a Fast, Cheap and Convincing Subsurface Scattering Look"):
 //   raster: light wrapping past the terminator, light from behind shining through (light direction bent by the
-//     normal, power, scale – the translucency term of three.js' MeshSSSNodeMaterial; no thickness map, constant)
-//     and a little environment light bleeding through, all tinted with the scatter colour
+//     normal, power, scale – the translucency term of three.js' MeshSSSNodeMaterial) and a little environment light
+//     bleeding through, all tinted with the scatter colour. Thickness from a signed distance field of the geometry
+//     (sss-field.js, generated on the GPU): light through × colour^(thickness along the light / scatter radius) (the
+//     path tracer's absorption), the environment share likewise with the thickness behind the surface – thin parts
+//     glow, thick ones turn deep and dark like in the path tracer; until the field is there the constant approximation
 //   path tracer: stand-in fields (pt-stand-in.js) – a translucent share as rough (diffuse-like) transmission,
 //     the gloss as clearcoat and the scatter colour absorbed over the distance travelled inside: the exact
 //     thickness of the method, thin parts glow, thick ones stay dense. A real random walk (Oct. 2026) took 2–5× the
 //     render time of plastic and came out too dark – dropped.
 import * as THREE from 'three/webgpu';
 import { diffuseColor, materialEmissive, luminance, select, float, vec4, uniform, normalView, positionViewDirection,
-    positionGeometry, positionWorld, cameraPosition, modelWorldMatrixInverse, materialColor } from 'three/tsl';
+    positionGeometry, positionWorld, cameraPosition, modelWorldMatrixInverse, materialColor, positionLocal, cameraWorldMatrix,
+    modelWorldMatrix, normalize, length, exp, mix, log, vec3 } from 'three/tsl';
+import { fieldThickness, fieldReady } from './sss-field.js';
 import { marbleGlow } from './marble.js';
 import { WOOL_SHADE } from './wool.js';
 import { GRASS_SHADE } from './grass-field.js';
@@ -33,26 +38,56 @@ const SSS_DISTORTION = 0.3;      // translucency: light direction bent towards t
 const SSS_POWER = 3;             // … focus of the light seen through the object
 const SSS_SCALE = 1.5;
 const SSS_AMBIENT = 0.25;        // share of the environment light bleeding through
+const SSS_FIELD_GAIN = 2;        // with a distance field: thin parts transmit more than the old constant
+const SSS_BACK = 0.8;            // … and diffuse transmission of light falling on the back
+
+// thickness (world units) through the object from this fragment along a view-space direction – distance field in the
+// geometry's space (sss-field.js), converted back with the object's scale along the path
+function thicknessAlong(viewDir, maxWorld) {
+    const world = cameraWorldMatrix.mul(vec4(viewDir, 0)).xyz;
+    const local = modelWorldMatrixInverse.mul(vec4(world, 0)).xyz;
+    const dir = normalize(local);
+    const worldPerLocal = length(modelWorldMatrix.mul(vec4(dir, 0)).xyz);
+    return fieldThickness(positionLocal, dir, maxWorld.div(worldPerLocal)).mul(worldPerLocal);
+}
 
 class SubsurfaceLightingModel extends THREE.PhysicalLightingModel {
     constructor(material, ...flags) {
         super(...flags);
         this.sssColor = material._sssColor.mul(material._sssWeight);
+        this.sssLog = log(material._sssColor.max(1e-3));
+        this.radius = material._sssRadius;
+    }
+
+    // light that gets through `thickness`, per channel like the path tracer's absorption (Beer: the scatter colour after
+    // one radius → colour^(thickness / radius) – thin parts bright and lightly tinted, thick ones deep and dark); 1
+    // without a field (the constant approximation)
+    _through(thickness) {
+        const beer = exp(this.sssLog.mul(thickness.div(this.radius.max(1e-6)))).mul(SSS_FIELD_GAIN);
+        return mix(vec3(1), beer, fieldReady);
     }
 
     direct({ lightDirection, lightColor, reflectedLight }, builder) {
         const nl = normalView.dot(lightDirection);
         const wrap = nl.add(SSS_WRAP).div(1 + SSS_WRAP).saturate().sub(nl.saturate());
         const half = lightDirection.add(normalView.mul(SSS_DISTORTION)).normalize();
-        const through = positionViewDirection.dot(half.negate()).saturate().pow(SSS_POWER).mul(SSS_SCALE);
-        reflectedLight.directDiffuse.addAssign(this.sssColor.mul(lightColor).mul(wrap.add(through)).mul(1 / Math.PI));
+        // light from behind: the path towards the light leads through the object
+        const thickness = thicknessAlong(lightDirection, this.radius.mul(8));
+        const transmitted = this._through(thickness);
+        const through = positionViewDirection.dot(half.negate()).saturate().pow(SSS_POWER).mul(SSS_SCALE).mul(transmitted);
+        // with a field also diffuse transmission: light falling on the back spreads through a thin part (the path
+        // tracer's rough transmission lit whole plates, the focused term above only the view towards the light)
+        const diffuseThrough = nl.negate().saturate().mul(SSS_BACK).mul(transmitted).mul(fieldReady);
+        reflectedLight.directDiffuse.addAssign(this.sssColor.mul(lightColor).mul(wrap.add(through).add(diffuseThrough)).mul(1 / Math.PI));
         super.direct({ lightDirection, lightColor, reflectedLight }, builder);
     }
 
     indirectDiffuse(builder) {
         super.indirectDiffuse(builder);
         const { irradiance, reflectedLight } = builder.context;
-        reflectedLight.indirectDiffuse.addAssign(irradiance.mul(this.sssColor).mul(SSS_AMBIENT / Math.PI));
+        // environment light bleeding through: the thinner the object behind the surface, the more
+        const behind = thicknessAlong(normalView.negate(), this.radius.mul(8));
+        reflectedLight.indirectDiffuse.addAssign(irradiance.mul(this.sssColor).mul(SSS_AMBIENT / Math.PI).mul(this._through(behind)));
     }
 }
 
@@ -69,6 +104,7 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         this.subsurface = false;   // cache key; strength/colour as uniforms (`_` = not in the key – no rebuild on edits)
         this._sssColor = uniform(new THREE.Color(1, 1, 1));
         this._sssWeight = uniform(0);
+        this._sssRadius = uniform(2);   // scatter radius (scene units) – the raster's thickness falloff
         this.marble = false;   // cache key (emissiveNode); colour/scale/intensity as uniforms
         this.wool = false;     // cache key (root colour, sheenNode)
         this.grass = false;    // cache key (soil shade)
@@ -179,6 +215,9 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
 
     setupDiffuseColor(builder) {
         super.setupDiffuseColor(builder);
+        // SSS with a distance field: the translucent share goes through the body instead of reflecting off the surface
+        // – like the path tracer's stand-in (PT_TRANSLUCENT of the weight as transmission)
+        if (this.subsurface) diffuseColor.rgb.mulAssign(mix(float(1), float(1).sub(this._sssWeight.mul(PT_TRANSLUCENT)), fieldReady));
         if (this.wool) diffuseColor.rgb.mulAssign(WOOL_SHADE.root);
         if (this.grass) diffuseColor.rgb.mulAssign(GRASS_SHADE.ground);
     }
@@ -207,7 +246,7 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         this._marbleIntensity.value = intensity;
         if (on !== this.marble) {
             this.marble = on;
-            this.userData.noBatch = on || undefined;
+            this.userData.noBatch = (on || this.subsurface) || undefined;
             if (on) {
                 const dirWorld = positionWorld.sub(cameraPosition).normalize();
                 const dirLocal = modelWorldMatrixInverse.mul(vec4(dirWorld, 0)).xyz.normalize();
@@ -241,6 +280,9 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         this.subsurface = weight > 0;
         this._sssWeight.value = weight;
         this._sssColor.value.set(color);
+        this._sssRadius.value = Math.max(radius, 1e-3);
+        // the thickness comes from the geometry's distance field in its own space – drawn one by one (sss-field.js)
+        this.userData.noBatch = (this.subsurface || this.marble) || undefined;
         const pt = this.userData.ptStandIn ?? {};
         for (const key of ['transmission', 'roughness', 'clearcoat', 'clearcoatRoughness', 'thickness', 'attenuationColor', 'attenuationDistance']) delete pt[key];
         if (Object.keys(pt).length) this.userData.ptStandIn = pt; else delete this.userData.ptStandIn;
@@ -286,6 +328,8 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         this.subsurface = source.subsurface;
         this._sssWeight.value = source._sssWeight.value;
         this._sssColor.value.copy(source._sssColor.value);
+        this._sssRadius.value = source._sssRadius.value;
+        if (source.userData.noBatch) this.userData.noBatch = true;
         this.marble = false;
         this.setMarble(source._marbleIntensity.value * (source.marble ? 1 : 0), '#' + source._marbleColor.value.getHexString(), source._marbleScale.value);
         const cloud = source.userData.cloud;
