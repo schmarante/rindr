@@ -35,7 +35,7 @@
 													var gsT = vec3f( 1.0 );
 													var gsTravel = 0.0;
 													var gsBlocked = false;
-													var gsCloudIn = false;   // inside a cloud box entered on this ray (its transmittance is counted)
+													var gsMedia = false;   // the volumes' transmittance along this ray is counted (volume-pt.js)
 													for ( var gsI = 0u; gsI < 16u; gsI ++ ) {
 
 														var gsHit: ${ raycastOutput };
@@ -47,46 +47,31 @@
 
 														let gsObject = transforms[ gsHit.objectIndex ];
 														let gsMaterial = ( *materials )[ gsObject.materialIndex ];
-														if ( gsMaterial.fogVolume == 3 && gsI < 15u ) {
+														if ( ( gsMaterial.fogVolume == 3 || gsMaterial.fogVolume == 6 ) && gsI < 15u ) {
 
-															// cloud volume (clouds.js): transmittance through its box – entering: from the face to where the box is
-															// left; a back face without entering: the ray started inside. Marched in 24 jittered steps (smooth shadows,
-															// no extra noise)
-															var gsA = 0.0;
-															var gsB = gsHit.dist;
-															var gsCount = ! gsCloudIn;
-															if ( gsHit.side > 0.0 ) {
+															// volumes (clouds, splats; volume-pt.js): at the first box on this ray the transmittance of every
+															// medium along the rest of it at once – from the start if it begins inside one; later box faces
+															// are only stepped over (nested boxes counted once)
+															if ( ! gsMedia ) {
 
-																gsA = gsHit.dist;
-																gsB = gsHit.dist + ${ __CLOUD.boxExit }(
-																	( gsObject.inverseMatrixWorld * vec4f( gsRay.origin + gsDir * gsHit.dist, 1.0 ) ).xyz,
-																	( gsObject.inverseMatrixWorld * vec4f( gsDir, 0.0 ) ).xyz );
-																gsCloudIn = true;
-																gsCount = true;
+																gsMedia = true;
+																let gsFrom = select( gsHit.dist, 0.0, ${ __VOL.inside }( gsRay.origin, true ) );
+																var gsTo = ${ __VOL.exit }( gsRay.origin, gsDir, true );
+																if ( gsRay.maxDist > 0.0 ) {
 
-															} else {
-
-																gsCloudIn = false;
-
-															}
-															if ( gsCount && gsB > gsA ) {
-
-																let gsScale = max( gsMaterial.clearcoat, 1e-6 );
-																let gsStep = ( gsB - gsA ) / 24.0;
-																let gsJitter = ${ rand1 }( 191u + gsI );
-																var gsTau = 0.0;
-																for ( var gsK = 0u; gsK < 24u; gsK ++ ) {
-
-																	let gsP = gsRay.origin + gsDir * ( gsA + ( f32( gsK ) + gsJitter ) * gsStep );
-																	gsTau += ${ __CLOUD.density }( ( gsObject.inverseMatrixWorld * vec4f( gsP, 1.0 ) ).xyz, gsP, gsMaterial.metalness, gsScale, gsMaterial.ior );
+																	gsTo = min( gsTo, gsRay.maxDist );
 
 																}
-																gsT *= exp( - gsTau * gsStep * gsMaterial.roughness * ${ __CLOUD.sigma }.0 / gsScale );
+																if ( gsTo > gsFrom ) {
+
+																	gsT *= ${ __VOL.transmittance }( gsRay.origin, gsDir, gsFrom, gsTo, u32( ${ rand1 }( 191u + gsI ) * 4294967040.0 ) ^ ( gsPass * 2654435761u ) );
+
+																}
 
 															}
 															gsTravel += gsHit.dist;
-															let gsCloudPos = gsRay.origin + gsRay.direction * gsHit.dist;
-															gsRay.origin = ${ offsetRayOriginFunc }( gsCloudPos, gsDir, gsHit.normal );
+															let gsBoxPos = gsRay.origin + gsRay.direction * gsHit.dist;
+															gsRay.origin = ${ offsetRayOriginFunc }( gsBoxPos, gsDir, gsHit.normal );
 															if ( gsRay.maxDist > 0.0 ) {
 
 																gsRay.maxDist = max( gsRay.maxDist - gsHit.dist, 1e-4 );

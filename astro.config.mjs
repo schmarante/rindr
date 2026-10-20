@@ -250,8 +250,8 @@ function glassShadowPatch() {
         if (n !== 1) this.error(`rindr-glass-shadow: ${from} not found exactly once in PathTracerMegaKernel.js (three-gpu-pathtracer changed?)`);
         code = code.replace(from, to);
       };
-      // markers of other patches: shadow catcher (shadow-catcher.patch.wgsl, rindr-shadow-catcher) and the cloud
-      // volumes' light samples (cloud-pt.js, rindr-cloud) – both inserted before this plugin
+      // markers of other patches: shadow catcher (shadow-catcher.patch.wgsl, rindr-shadow-catcher) and the light samples
+      // of the volume walk (volume-walk.patch.wgsl, rindr-cloud) – both inserted before this plugin
       const markers = /\n\t*\/\/@glass-shadow ([^\n]+)/g;
       if ((code.match(markers) || []).length !== 2) this.error('rindr-glass-shadow: expected 2 //@glass-shadow markers in PathTracerMegaKernel.js');
       code = code.replace(markers, (_, args) => {
@@ -281,11 +281,16 @@ function glassShadowPatch() {
 }
 
 // Cloud volumes (src/scripts/clouds.js, cloud-pt.js – fails loudly if the library changed, check on every update):
-// - megakernel: a hit on a cloud proxy (ptVolume 3) walks through the volume (CLOUD_WALK_WGSL), right after the
-//   material is read; its light samples carry a //@glass-shadow marker (rindr-glass-shadow runs after this plugin)
+// - megakernel: a hit on a volume box (cloud proxy ptVolume 3, splat volume ptVolume 6) runs the shared volume walk
+//   (volume-walk.patch.wgsl), right after the material is read; its light samples carry a //@glass-shadow marker
+//   (rindr-glass-shadow runs after this plugin)
 // - BVHComputeData: meshes with a cloud material are left out like invisible ones – the proxy stands in for them
 const CLOUD_PT_MODULE = fileURLToPath(new URL('./src/scripts/materials/cloud-pt.js', import.meta.url));
-const CLOUD_WALK_PATCH = fileURLToPath(new URL('./src/scripts/materials/cloud-walk.patch.wgsl', import.meta.url));
+// one walk for all participating media – cloud volumes (ptVolume 3) and the splat volume (ptVolume 6,
+// src/scripts/splat/splat-volume.js, splat-pt.js): src/scripts/volume-pt.js + volume-walk.patch.wgsl
+const SPLAT_PT_MODULE = fileURLToPath(new URL('./src/scripts/splat/splat-pt.js', import.meta.url));
+const VOLUME_PT_MODULE = fileURLToPath(new URL('./src/scripts/volume-pt.js', import.meta.url));
+const VOLUME_WALK_PATCH = fileURLToPath(new URL('./src/scripts/volume-walk.patch.wgsl', import.meta.url));
 function cloudPatch() {
   return {
     name: 'rindr-cloud',
@@ -299,12 +304,12 @@ function cloudPatch() {
       };
       if (file.endsWith('three-mesh-bvh/src/webgpu/BVHComputeData.js')) {
         // ptHidden: helper meshes of the raster only (wool fibre shells, wool.js; fading out grass)
-        replaceOnce('let visible = isObjectVisible( object );', () => 'let visible = isObjectVisible( object ) && ! object.material?.userData?.cloud && ! object.userData?.ptHidden;', 'BVHComputeData.js');
+        replaceOnce('let visible = isObjectVisible( object );', () => 'let visible = isObjectVisible( object ) && ! object.material?.userData?.cloud && ! object.userData?.ptHidden && ! object.isSplat;', 'BVHComputeData.js');
         return { code, map: null };
       }
       if (!file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) return null;
-      replaceOnce(/\n\t+materialInfo\.opacity \*= objectInfo\.color\.a;\n/, m => m + readFileSync(CLOUD_WALK_PATCH, 'utf8'), 'PathTracerMegaKernel.js');
-      return { code: `import { CLOUD_PT as __CLOUD } from ${JSON.stringify(CLOUD_PT_MODULE)};\n` + code, map: null };
+      replaceOnce(/\n\t+materialInfo\.opacity \*= objectInfo\.color\.a;\n/, m => m + readFileSync(VOLUME_WALK_PATCH, 'utf8'), 'PathTracerMegaKernel.js');
+      return { code: `import { CLOUD_PT as __CLOUD } from ${JSON.stringify(CLOUD_PT_MODULE)};\nimport { SPLAT_PT as __SPLAT } from ${JSON.stringify(SPLAT_PT_MODULE)};\nimport { VOLUME_PT as __VOL } from ${JSON.stringify(VOLUME_PT_MODULE)};\n` + code, map: null };
     },
   };
 }

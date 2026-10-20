@@ -13,6 +13,8 @@ import { TESS_PRESETS, normalizeQuality, abortStepImport, buildBVHIsolated, fetc
 import { IMPORT, KI, SPLATS, RASTER, SCENE, TRANSITION, LOD } from './config.js';
 import { importMeshFile, MissingFilesError, MESH_EXTENSIONS } from './mesh-importer.js';
 import { MaterialManager, FADE_MASK } from './material-manager.js';
+import { MATERIAL_PRESETS, presetName } from './material-presets.js';
+import { requestField, clearFields } from './materials/sss-field.js';
 import { MaterialPanel, MATERIAL_MIME } from './material-panel.js';
 import { MaterialThumbs } from './material-thumbs.js';
 import { uvCheckerTexture } from './uv-checker.js';
@@ -49,6 +51,11 @@ import { PropertiesPanel } from './properties.js';
 import { Slicer, isClosedGeometry } from './slicer.js';
 import { RenderBatcher, BATCH_LAYER } from './render-batcher.js';
 import { ClusterLods } from './lod/lod-store.js';
+import { SplatShadow } from './splat/splat-shadow.js';
+import { SplatComposite } from './splat/splat-composite.js';
+import { SplatOpacity } from './splat/splat-opacity.js';
+import { SplatEnvironment } from './splat/splat-environment.js';
+import { SplatVolume } from './splat/splat-volume.js';
 import { GroundProjection } from './ground.js';
 import { GROUND_SURFACE } from './ground-reflection.js';
 import { BackgroundDome } from './background-dome.js';
@@ -135,7 +142,15 @@ function showProgress(text, fraction) {
 }
 function hideProgress() {
     optimizeWait = null;
+    clearTimeout(progressFlash);
     progressEl.hidden = true;
+}
+// a finished task's result in the progress display (full bar) for a moment – unless another task takes it over
+let progressFlash = null;
+function flashProgress(text, ms = 3000) {
+    showProgress(text, 1);
+    clearTimeout(progressFlash);
+    progressFlash = setTimeout(() => { if (progressLabel.textContent === text) progressEl.hidden = true; }, ms);
 }
 // After loading: the raster view still groups the meshes (render-batcher.js, after the fade-in + 500 ms, then
 // compiles shaders) – "Optimizing display…" stays in the progress display until that is done (render loop)
@@ -273,6 +288,31 @@ if (Number(lodParam) > 0) batcher.lod.threshold = Number(lodParam);
 const batchingParam = new URLSearchParams(location.search).get('batching');
 batcher.setEnabled(batchingParam !== null ? batchingParam !== '0' : RASTER.batching);
 slicer.capBatches = () => batcher.meshes;
+// shadow of models added to a splat scene on the splats (splat-shadow.js) – drawn after a frame when something changed
+const splatShadow = new SplatShadow();
+// shadow of the splats on the models (through the main light's shadow) and the relit splats' own shadow
+const splatOpacity = new SplatOpacity(SPLATS.opacitySize);
+splatOpacity.attachTo(dirLight1);
+// scan as the models' environment: reflections + image-based light (splat-environment.js)
+const splatEnv = new SplatEnvironment(renderer, SPLATS.environment.size);
+// splats in HQ: baked into a density + colour grid, traced as a volume like the clouds (splat-volume.js)
+const splatVolume = new SplatVolume();
+// splats in the volumetric light shafts: opacity map along the shafts' sun (the HDRI's brightest point – a stand-in
+// light outside the scene gives its direction) – shadow wedges of a smoke splat in the beams (volume-shafts.js)
+const shaftOpacity = new SplatOpacity(512);
+const shaftSun = new THREE.DirectionalLight();
+shaftSun.visible = true;
+let shaftOpacitySig = '';
+// bounds of the models added to a splat scene (AO radius, environment probe) – recomputed after changes
+const splatModels = { box: new THREE.Box3(), dirty: true };
+function splatModelsBox() {
+    if (splatModels.dirty) {
+        splatModels.dirty = false;
+        splatModels.box.makeEmpty();
+        for (const x of extraModels) if (x.holder.visible) splatModels.box.union(new THREE.Box3().setFromObject(x.holder));
+    }
+    return splatModels.box;
+}
 
 // Light shadow maps only when something changed (two passes over the whole model, large assembly: ~16 ms CPU per
 // frame). The lights stand still relative to the scene – orbiting the camera changes nothing. Redrawn when:
@@ -284,6 +324,10 @@ let shadowsOn = true;   // false in Basic (setViewMode) – own flag: material e
 const shadowsWanted = () => shadowsOn;
 function markShadowsDirty() {
     lens.volume.markDirty();   // volumetric light shafts: sun depth map (also in Basic)
+    splatShadow.markDirty();   // models on a splat scene
+    splatOpacity.markDirty();  // splats on the models
+    splatEnv.markDirty();      // scan as the models' environment (captured once they rest)
+    splatModels.dirty = true;
     if (!shadowsWanted()) return;
     for (const light of [dirLight1, dirLight2]) light.shadow.needsUpdate = true;
 }
@@ -631,6 +675,7 @@ const environment = {
         else if (!this.matte) vignette.update(camera, scene);
         pathTracing.backgroundFollowsCamera = !showHdri && !this.matte;
         contactShadow.markDirty();
+        splatOpacity.markDirty();   // ground shadow of the splats (height, on/off)
         const groundWas = ground.enabled;
         ground.enabled = this.on && (this.ground || this.reflection || this.wet);
         ground.shadow = this.ground;
@@ -758,10 +803,11 @@ const isHiddenEntry = e => (!e ? false
     : e.kind === 'selection' ? !e.object.members.every(shownInScene)
     : e.kind === 'node' || e.kind === 'model' || e.kind === 'light' ? !shownInScene(e.object)
     : false);
-// Gaussian splats: no gizmo on the cloud – it was in the way of double clicking into the scene (position
-// fields in the panel stay)
+// Gaussian splats: gizmo and transform like any model (a scan aligned to the models, an object splat placed among
+// them); no explosion (one cloud without parts). A scan around the camera (room, outdoor capture) is not selected by
+// clicking into the viewport (pickSelectable) – the gizmo in its middle was in the way of double clicking into it
+const holdsSplat = o => { let found = false; o?.traverse?.(c => { if (c.isSplat) found = true; }); return found; };
 const gizmoTarget = entry => (isHiddenEntry(entry) ? null
-    : ['model', 'node', 'selection'].includes(entry?.kind) && splatMesh ? null
     : entry?.kind === 'selection'
     ? (entry.object.members.every(m => !m.isMesh) ? entry.object : null)
     : entry?.kind === 'surface' ? null   // a sub-surface belongs to the solid, cannot be moved on its own
@@ -786,7 +832,12 @@ function objectResolver(object, kind) {
 }
 const properties = new PropertiesPanel(document.getElementById('properties'), {
     transformer, scene, camera, slicer,
-    splats: () => !!splatMesh,
+    splats: entry => (entry ? !!splatMesh && holdsSplat(entry.object) : !!splatMesh),
+    // relighting / override material of the splats (entry holds the splat)
+    splatLook: {
+        get: () => splatMesh?.look,
+        set: (next, options) => setSplatLook(next, options),
+    },
     // IFC element: its properties from the web-ifc worker of the owning model (cached per element)
     bim: entry => {
         const ifc = entry.object?.userData?.ifc;
@@ -1263,7 +1314,7 @@ renderer.domElement.addEventListener('pointerup', e => {
     if (moved > 4) return;   // right-dragged = camera panned
     // without a selection: select the object under the pointer (empty space: menu without selection)
     if (!isModelEntry(selection)) {
-        const mesh = pickMesh(e);
+        const mesh = pickSelectable(e);
         const entry = mesh ? sceneGraph.entryForObject(mesh) : null;
         if (entry) sceneGraph.select(entry);
     }
@@ -1330,6 +1381,25 @@ materialManager.addEventListener('change', () => { clouds.invalidate(); wool.inv
 materialManager.addEventListener('update', () => { clouds.invalidate(); wool.invalidate(); grass.invalidate(); edges.invalidate(); });
 // edited material (alpha map, side …) can change the shadow; assignments are seen by the batcher's comparison
 materialManager.addEventListener('update', () => markShadowsDirty());
+// subsurface scattering: distance field per geometry with an SSS material (sss-field.js; built on the GPU by sss-sdf.js,
+// loaded on demand – WebGPU only). Checked after material changes and loading (next frame, one pass over the meshes)
+let sssCheck = true;
+materialManager.addEventListener('change', () => { sssCheck = true; });
+materialManager.addEventListener('update', () => { sssCheck = true; });
+let sssBuilder = null;
+let sssBlock = false;   // ?debug test hook (sssClearFields): constant approximation for a comparison
+function syncSssFields() {
+    sssCheck = false;
+    if (!renderer.backend?.isWebGPUBackend) return;
+    const jobs = [];
+    for (const mesh of allModelMeshes()) if (mesh.material?.subsurface) { const job = requestField(mesh); if (job) jobs.push(job); }
+    if (!jobs.length) return;
+    sssBuilder ??= import('./materials/sss-sdf.js');
+    sssBuilder.then(({ buildField }) => {
+        for (const job of jobs) buildField(renderer, job);
+        loadRender.force = true;
+    }).catch(err => console.error('[SSS] distance field failed', err));
+}
 const isModelEntry = e => e && (e.kind === 'node' || e.kind === 'model' || e.kind === 'surface' || e.kind === 'selection');
 const materialPanel = new MaterialPanel(document.getElementById('materials'), materialManager, {
     getSelectionObject: () => (isModelEntry(selection) ? selection.object : null),
@@ -1738,14 +1808,15 @@ const extraModels = [];   // [{ id, name, root, meshes, nodeGroups, content }]
 let extraSeq = 0;
 // BCF button visibility (set once the toolbar button exists – refreshSceneGraph already runs at startup)
 const bcfUi = { update: () => {} };
+let splatMesh = null;   // Gaussian splat scene (SplatMesh) – the main model; PBR models can be added (declared before the first refreshSceneGraph)
 function refreshSceneGraph() {
+    sssCheck = true;   // new or changed meshes: SSS distance fields (syncSssFields)
     if (primaryContent) primaryContent.warn = model?.missingTextures?.length || 0;
     // morph target marker (icon in the Scene Graph)
     const morphCount = owner => animations.find(a => a.owner === owner)?.anim.morphs.size || 0;
     if (primaryContent) primaryContent.morphs = morphCount('main');
     for (const x of extraModels) if (x.content) x.content.morphs = morphCount(x.id);
-    // Gaussian splats: lights have no effect on them (baked appearance) → not listed
-    const entries = splatMesh ? sceneEntries.filter(e => e.key !== 'lights') : sceneEntries;
+    const entries = sceneEntries;
     bcfUi.update();
     sceneGraph.setContent(entries, primaryContent, extraModels.map(x => x.content), missingModels.map(m => m.name));
     assetsWindow?.refresh();
@@ -1762,6 +1833,48 @@ function materialFromDrop(e) {
     } catch { /* no material data */ }
     return null;
 }
+// override material of a splat from a dropped material: its base values (colour, metal, roughness, glow) – a library
+// material is not added to the scene for it
+function splatMaterialFromDrop(e) {
+    let data;
+    try { data = JSON.parse(e.dataTransfer.getData(MATERIAL_MIME)); } catch { return null; }
+    const source = data.id ? materialManager.get(data.id)?.def : MATERIAL_PRESETS.find(p => p.libraryId === data.libraryId);
+    if (!source) return null;
+    const p = source.params || {};
+    return { name: source.name || presetName(data.libraryId), color: p.color ?? '#808080', metalness: p.metalness ?? 0, roughness: p.roughness ?? 0.5,
+        emissive: p.emissive ?? '#000000', emissiveIntensity: p.emissiveIntensity ?? 1, detail: 1 };
+}
+// relighting / override material of the splats (properties panel, material drop) – one undo step
+// (mergeKey: slider edits of one value merge into one step; the panel is rebuilt only when its rows change)
+// splats in HQ: the volume baked (progress display meanwhile), then the path tracer gets the scene with it
+function prepareSplatVolume() {
+    if (splatVolume.ready || !splatMesh || splatMesh.loading) return;
+    showProgress(t('status.splatVolume'), 0);   // progress display bottom left, the worker reports the share done
+    splatVolume.ensure(renderer, f => showProgress(t('status.splatVolume'), f)).then(ok => {
+        hideProgress();
+        if (!ok) return;
+        invalidatePathTracing();
+        updatePathTracingScene();
+    });
+}
+function setSplatLook(next, { mergeKey } = {}) {
+    if (!splatMesh) return;
+    const splat = splatMesh;
+    const before = { mode: splat.look.mode, material: splat.look.material && { ...splat.look.material } };
+    const after = { mode: next.mode ?? before.mode, material: next.material !== undefined ? next.material && { ...next.material } : before.material };
+    if (JSON.stringify(after) === JSON.stringify(before)) return;   // nothing changed: no undo step
+    const apply = (state, refresh) => {
+        splat.setLook(state);
+        splatVolume.sync();   // HQ: emitting (baked) or scattering (relit), override material
+        pathTracing.updateMaterials();
+        splatOpacity.markDirty();
+        splatEnv.markDirty();
+        loadRender.force = true;
+        if (refresh && selection) properties.show(selection);
+    };
+    apply(after, before.mode !== after.mode || !before.material !== !after.material);
+    history.record({ label: t('properties.splatLook.undo'), mergeKey, undo: () => apply(before, true), redo: () => apply(after, true) });
+}
 // Target of a material drop: if it is in the multi-selection, the drop applies to the whole selection
 // (a sub-surface stays single unless it is marked itself)
 const dropEntryFor = entry => (sceneGraph.inSelection(entry) && (entry.kind !== 'surface' || sceneGraph.marked.has(entry)) ? selection : entry);
@@ -1774,6 +1887,12 @@ const dropEntryForMesh = (mesh, alt) => {
 function dropOnto(entry, e, { exact = false } = {}) {
     if (!exact) entry = dropEntryFor(entry);
     if (!isModelEntry(entry)) return;
+    // Gaussian splats: the material's base values become their override material (relit) – no material slot
+    if (splatMesh && entry.kind !== 'selection' && holdsSplat(entry.object)) {
+        const def = splatMaterialFromDrop(e);
+        if (def) setSplatLook({ material: def, mode: splatMesh.look.mode === 'baked' ? splatMesh.defaultLitMode : splatMesh.look.mode });
+        return;
+    }
     // create library material + assign = one undo step
     history.transaction(t('viewer.undo.assignMaterial'), () => {
         const mat = materialFromDrop(e);
@@ -1912,6 +2031,7 @@ THREE.Mesh.prototype.raycast = acceleratedRaycast;
 const raycaster = patchRaycaster(new THREE.Raycaster());
 raycaster.firstHitOnly = true;
 raycaster.layers.enable(BATCH_LAYER);
+raycaster.layers.enable(29);   // SPLAT_LAYER: splats drawn in their own pass (scene with models)
 // shown? (a mesh hidden only because the animation shows its puppet counts as shown – picking while playing)
 const isShown = o => {
     if (o && !o.visible && !o.userData.liveHidden) return false;
@@ -1919,6 +2039,8 @@ const isShown = o => {
     return true;
 };
 const pickMesh = event => pickHit(event)?.object ?? null;
+// what a click into the viewport selects – not a splat scan the camera stands in (selected in the Scene Graph)
+const pickSelectable = event => { const mesh = pickMesh(event); return mesh?.userData.environment ? null : mesh; };
 function pickHit(event) {
     if (!rootGroup) return null;
     const rect = renderer.domElement.getBoundingClientRect();
@@ -2064,8 +2186,8 @@ function flyToPoint(point) {
 renderer.domElement.addEventListener('dblclick', e => {
     if (splatMesh) {
         const hit = pickHit(e);
-        if (hit) flyToPoint(hit.point);
-        return;
+        if (hit?.object.isSplat) { flyToPoint(hit.point); return; }
+        if (!hit) return;
     }
     const mesh = pickMesh(e);
     const entry = mesh && sceneGraph.entryForObject(mesh);
@@ -2092,7 +2214,7 @@ renderer.domElement.addEventListener('pointerup', e => {
         properties.show(selection);
         return;
     }
-    const mesh = pickMesh(e);
+    const mesh = pickSelectable(e);
     const entry = mesh ? sceneGraph.entryForObject(mesh) : null;
     if (e.shiftKey) { if (entry) sceneGraph.toggleSelect(entry); }   // multi-selection
     else sceneGraph.select(entry);
@@ -2100,20 +2222,68 @@ renderer.domElement.addEventListener('pointerup', e => {
 
 // Current model: { name, type: 'step', url|file, content? } or { name, type: 'mesh', main, files, baseUrl? }
 let model = null;
-let splatMesh = null;                 // Gaussian splat scene (SplatMesh) – always alone, no further models
-// UI for a splat scene: hidden what has no effect on splats – materials + node editor, explosion, view modes
-// (Basic shows them unchanged, HQ cannot trace them), lights, depth of field (HQ only); environment stays
-// (background). Called when a splat scene is shown or removed.
+// UI for a splat scene alone: hidden what has no effect on splats – the explosion. View modes (HQ traces them as a
+// volume), lights and the material list stay (relit splats, override material by drag & drop). Called when a splat
+// scene is shown or removed and when models are added/removed (updateSplatMix).
+function splatsOnly() { return !!splatMesh && !extraModels.length; }
 function applySplatUi() {
-    const on = !!splatMesh;
-    document.getElementById('materials').hidden = on;
-    if (on && nodeEditor.isOpen) nodeEditor.close();
-    viewModeBar.setHidden({ modes: on, groups: on ? ['start'] : [] });   // 'start' = explosion
-    if (on && selection && (selection.key === 'lights' || selection.kind === 'light')) sceneGraph.select(null);
+    const on = splatsOnly();
+    viewModeBar.setHidden({ modes: false, groups: on ? ['start'] : [] });   // 'start' = explosion
     refreshSceneGraph();
     properties.show(selection);
 }
 let toneMappingBeforeSplats = null;   // splats switch tone mapping off; restored when they are removed
+let splatToneSet = null;              // the curve the splat scene set (restored only if still that one)
+// Splat scene + PBR models: the models get their tone curve back – the splats bypass it in a pass of their own
+// (splatComposite in the render loop); alone again: no curve.
+function updateSplatMix() {
+    if (!splatMesh) return;
+    const mixed = extraModels.length > 0;
+    if (mixed && renderer.toneMapping === THREE.NoToneMapping && splatToneSet === THREE.NoToneMapping) {
+        renderer.toneMapping = splatToneSet = toneMappingBeforeSplats ?? THREE.ACESFilmicToneMapping;
+    } else if (!mixed && renderer.toneMapping === splatToneSet && splatToneSet !== THREE.NoToneMapping) {
+        renderer.toneMapping = splatToneSet = THREE.NoToneMapping;
+    }
+    markShadowsDirty();   // splat shadow maps, environment, models' bounds
+    if (!mixed) splatEnv.reset();
+    applySplatUi();
+}
+// The splats: the frame without them into an HDR target, the splats composited per pixel in display space (like the
+// reference implementation – blending linear light looked paler) and, with models, turned back through the inverse
+// tone curve – the scan keeps its trained colours, the models their curve (splat-composite.js). Not with the fisheye
+// (its cube faces take the camera's layers – the splats are drawn in the frame there, linear blending, tone-mapped
+// with models) and not in the wireframe view.
+const SPLAT_LAYER = 29;
+// three.js takes a ClippingGroup's planes only when the group itself is on the camera's layers – the splat pass draws
+// with the splat layer alone, the splats inside were drawn uncut (section plane without effect on splats)
+slicer.group.layers.enable(SPLAT_LAYER);
+const _aoSphere = new THREE.Sphere();
+const splatComposite = new SplatComposite(renderer);
+lens.volume.attachSplats({ transmittance: world => shaftOpacity.transmittance(world), depth: splatComposite.splats.textures[1] });
+// where a model of bounds `box` goes into the scan: x/z in front of the first scanned point along camera → orbit centre
+// beyond the first 40 % of the way (a camera standing in tall grass hit the blades right in front of the lens – the
+// model landed at the scan's rim), backed off towards the camera by half the model's footprint, y = scanned floor below
+// (rays against the splats' pick sample; nothing hit: orbit centre / robust bottom)
+function scanSpotFor(box) {
+    splatMesh.updateWorldMatrix(true, false);
+    const ray = (origin, dir, far = Infinity) => {
+        const hits = [];
+        splatMesh.raycast(new THREE.Raycaster(origin, dir, 0, far), hits);
+        return hits[0]?.point ?? null;
+    };
+    const toTarget = controls.target.clone().sub(camera.position);
+    const distance = toTarget.length();
+    const dir = toTarget.normalize();
+    const skip = distance * 0.4;
+    const hit = ray(camera.position.clone().addScaledVector(dir, skip), dir.clone(), distance * 1.1);
+    const along = hit ? hit.distanceTo(camera.position) : distance;
+    const size = box.getSize(new THREE.Vector3());
+    const back = Math.min(Math.hypot(size.x, size.z) * 0.55, along * 0.8);
+    const spot = camera.position.clone().addScaledVector(dir, along - back);
+    const floor = ray(spot.clone(), new THREE.Vector3(0, -1, 0));
+    spot.y = floor ? floor.y : environment.groundY;
+    return spot;
+}
 let rootGroup = null;
 let currentMeshes = [];       // meshes in import order (for re-tessellation)
 let currentNodeGroups = [];   // groups per import node
@@ -2967,7 +3137,7 @@ const setFullTool = viewModeBar.addTool({
 });
 // Exploded view (key X, button in the bar, strength in the model panel). Raster preview during the
 // animation, then update the path tracing scene once (rebuilding it every frame would be too expensive).
-const exploder = new Exploder(() => [...currentNodeGroups, ...extraModels.flatMap(x => x.nodeGroups)].filter(g => g.children.some(c => c.isMesh)));
+const exploder = new Exploder(() => [...currentNodeGroups, ...extraModels.flatMap(x => x.nodeGroups)].filter(g => g.children.some(c => c.isMesh && !c.isSplat)));
 const ICON_EXPLODE = '<svg viewBox="0 0 16 16" class="size-4 fill-none stroke-current" stroke-width="1.4"><rect x="6" y="6" width="4" height="4" rx="0.5"/><path d="M4.5 4.5L2 2m0 0h2.5M2 2v2.5M11.5 4.5L14 2m0 0h-2.5M14 2v2.5M4.5 11.5L2 14m0 0h2.5M2 14v-2.5M11.5 11.5L14 14m0 0h-2.5M14 14v-2.5"/></svg>';
 const setExplodeTool = viewModeBar.addTool({ icon: ICON_EXPLODE, label: t('toolbar.explodeLabel'), title: t('toolbar.explode'), onClick: () => toggleExplode(), start: true });
 // Undo/redo far left (start group created later = further left)
@@ -3055,8 +3225,12 @@ function setViewMode(mode) {
         mode = 'default';
     }
     smoothChange();
-    // the path tracer cannot trace Gaussian splats – they are shown rasterised (that is their final look)
-    if (mode === 'hq' && splatMesh) mode = 'default';
+    // Gaussian splats in HQ: traced as a volume – baked on first use (worker, ~1 s), then the scene is handed over again;
+    // the HDRI is the environment again (the scan's cube map is a raster thing, the render loop sets it per frame)
+    if (mode === 'hq' && splatMesh) {
+        prepareSplatVolume();
+        if (environment.on) scene.environment = environment.texture;
+    }
     // HQ while playing: pause first (the path tracer shows the paused frame); another mode chosen during
     // playing: no automatic return to HQ
     if (animPlaying && clipAnims().length) { hqBeforePlay = false; if (mode === 'hq') setAnimPlaying(false); }
@@ -3077,7 +3251,7 @@ function setViewMode(mode) {
     pathTracing.setEnabled(mode === 'hq');
     if (mode === 'hq') checkPathTracingScene();
     updatePathTracingScene();
-    viewModeBar.set(mode, { disabled: splatMesh ? ['hq'] : [], unavailable: pathTracing.supported ? [] : ['hq'] });
+    viewModeBar.set(mode, { unavailable: pathTracing.supported ? [] : ['hq'] });
     setup.refresh();   // "Active" checkbox in the path tracing folder
     loadRender.force = true;
     // first Basic/Default with these batches: compiles their shader variants → "taking over scene" first
@@ -3187,15 +3361,17 @@ function disposeRoot(root) {
     root.removeFromParent();
 }
 function clearModel() {
+    clearFields();   // SSS distance fields belong to the old geometries
     splatSpin.active = false;
     fading.clear();
     removeAnimations();
     removeExtraModels();
     if (splatMesh) {
         splatMesh = null;
+        splatVolume.attach(null);
         // tone mapping switched off for the splats: back to the previous curve (unless changed meanwhile)
-        if (toneMappingBeforeSplats !== null && renderer.toneMapping === THREE.NoToneMapping) renderer.toneMapping = toneMappingBeforeSplats;
-        toneMappingBeforeSplats = null;
+        if (toneMappingBeforeSplats !== null && renderer.toneMapping === splatToneSet) renderer.toneMapping = toneMappingBeforeSplats;
+        toneMappingBeforeSplats = splatToneSet = null;
         applySplatUi();
         viewModeBar.set(viewMode, { unavailable: pathTracing.supported ? [] : ['hq'] });   // HQ possible again
     }
@@ -3297,7 +3473,8 @@ controls.addEventListener('start', () => { streamFit.active = false; splatSpin.a
 // takes over – around an object, or panning on the spot inside a room (centre right in front of the camera)
 const splatSpin = { active: false, period: 40, last: 0 };
 function updateSplatSpin(now) {
-    if (!splatSpin.active || flight) { splatSpin.last = 0; return; }
+    // not in HQ: every turn restarted the path tracer – the image never finished (a splat opened while in HQ)
+    if (!splatSpin.active || flight || viewMode === 'hq') { splatSpin.last = 0; return; }
     const dt = splatSpin.last ? Math.min(now - splatSpin.last, 100) / 1000 : 0;
     splatSpin.last = now;
     if (!dt) return;
@@ -3659,6 +3836,7 @@ async function loadSplatScene() {
             if (maxBinding && data.count * 16 > maxBinding) throw new Error(t('status.splatsTooMany', { count: formatCount(data.count) }));
             splat = new SplatMesh(data, { onSorted: () => { loadRender.force = true; } });
             splat.name = name;
+            splat.setOpacity(splatOpacity);
             splat.scale.setScalar(SPLATS.unitScale);
             splat.rotation.x = Math.PI;   // y down → y up
             splat.updateMatrix();
@@ -3689,7 +3867,9 @@ async function loadSplatScene() {
                 toneMappingBeforeSplats = renderer.toneMapping;
                 renderer.toneMapping = THREE.NoToneMapping;
             }
-            setViewMode(viewMode);   // HQ → Default, HQ button disabled
+            splatToneSet = THREE.NoToneMapping;
+            splatVolume.attach(splat);
+            setViewMode(viewMode);
             model.missingTextures = [];
             primaryContent = { name, importNodes: [{ name, parent: -1 }], groups: [group], partCounts: [1], root };
             applySplatUi();   // includes refreshSceneGraph
@@ -3717,8 +3897,25 @@ async function loadSplatScene() {
         environment.groundY = bbox.min.y + root.position.y;
         updateSceneExtent();
         // camera: inside a room → on the free spot in it, otherwise fit (bounds were an estimate while
-        // loading) – only if the user did not take the camera meanwhile; then circle slowly
-        const room = streamFit.active ? analyzeSplatScene(splat) : null;
+        // loading) – only if the user did not take the camera meanwhile; then circle slowly.
+        // A scan around the camera (room, outdoor capture) is the environment: not selected by clicks, added models
+        // are placed into it (scanSpotFor)
+        const analysis = analyzeSplatScene(splat);
+        splat.userData.environment = !!(analysis.indoor || splat.data.unbounded);
+        // object splats (smoke, a figure) relit as a volume from the start – lights and HDRI act on them (user, Oct. 2026);
+        // scans of rooms / outdoor captures keep their captured light
+        if (!splat.userData.environment) {
+            splat.setLook({ mode: 'volume' });
+            splatOpacity.markDirty();
+            // the ground where the splats start from below: the robust box leaves out the lowest 0.5 % – a smoke splat's
+            // thin funnel reached 60 cm through the floor (a scanned room keeps its own floor)
+            const lowest = splat.lowestVisible();
+            if (lowest !== null) {
+                environment.groundY = lowest;
+                updateSceneExtent();
+            }
+        }
+        const room = streamFit.active ? analysis : null;
         if (room?.indoor) {
             const lookAt = room.eye.clone().addScaledVector(room.direction, Math.max(room.clearance * 0.3, room.size * 0.002));
             if (viewAngle(camera) < 70) setViewAngle(camera, 70);   // inside a room: wider view
@@ -3733,11 +3930,14 @@ async function loadSplatScene() {
         if (period > 0) Object.assign(splatSpin, { active: true, period, last: 0 });
         streamFit.active = false;
         hideProgress();
+        // opened while in HQ: the volume could not be baked during the streaming load (setViewMode came too early) –
+        // without it the path traced image had no splats and the raster overlay stopped once the image was done
+        if (viewMode === 'hq') prepareSplatVolume();
         setupGUI();
         qualityController.enable(false);
         assetsWindow.refresh();
         debugLog(`[Splats] ${model.name}: ${data.count} splats (${data.format}), SH coefficients ${data.shCoeffs}/${data.fileShCoeffs}`);
-        flashStatus(t('status.splatsLoaded', { count: formatCount(data.count) }), 3000);
+        flashProgress(t('status.splatsLoaded', { count: formatCount(data.count) }), 4000);   // progress display bottom left
     } catch (err) {
         streamFit.active = false;
         hideProgress();
@@ -3901,8 +4101,9 @@ const reloadModel = () => runLoad('reload');
 // options: { sceneIndex, placement } when opened from a scene file
 function addModel(source, options = {}) {
     if (!rootGroup && !loading) return openModel(source);   // nothing loaded yet: becomes the main model
-    // Gaussian splats are never combined with other models: they replace the scene / are replaced
-    if (source.type === 'splat' || (splatMesh && !loading)) return openModel(source);
+    // a splat scene is always the main model (dropped onto loaded models: see the drop handler); PBR models can be
+    // added to it (a CAD model in a scan)
+    if (source.type === 'splat') return openModel(source);
     addQueue.push({ source, options });
     return runLoad(null);
 }
@@ -3991,6 +4192,13 @@ async function loadExtraModel(source, { sceneIndex, placement: savedPlacement } 
         // placed exactly where they belong relative to the first IFC model instead of beside it
         const ref = root.userData.ifcOrigin && ifcReference();
         if (ref) placement.copy(ref.position).add(new THREE.Vector3(...ref.origin).sub(new THREE.Vector3(...root.userData.ifcOrigin)).multiplyScalar(1000)).sub(root.position);
+        // into a splat scene: in front of what the camera looks at – the first scanned point on the line camera → orbit
+        // centre, moved towards the camera by the model's size (the orbit centre often lies inside an object), on the
+        // scanned floor below (ray down against the splats)
+        if (splatMesh?.userData.environment && !ref) {
+            const spot = scanSpotFor(centred);
+            placement.set(spot.x, spot.y - (lowestPoint(meshList.filter((_, i) => !stray.stray.has(i)), bbox.min.y) + root.position.y), spot.z);
+        }
         if (savedPlacement) placement.fromArray(savedPlacement);   // from the scene file
         const holder = new THREE.Group();
         holder.name = 'Placement';
@@ -4009,7 +4217,8 @@ async function loadExtraModel(source, { sceneIndex, placement: savedPlacement } 
         invalidatePathTracing();
         updatePathTracingScene();
         contactShadow.markDirty();
-        frameObject(slicer.group);
+        updateSplatMix();
+        frameObject(splatMesh?.userData.environment ? holder : slicer.group);   // in a scan: the new model (framing the scan left the room)
         finishProgress();
         flashStatus(t('status.modelAdded', { name }), 3000);
     } catch (err) {
@@ -4039,6 +4248,7 @@ function removeExtraModels(id) {
         extraModels.splice(extraModels.indexOf(x), 1);
     }
     if (id === undefined) return;   // part of clearing the whole model
+    updateSplatMix();
     updateSceneExtent();
     // undo steps refer to meshes by index – after removing they would hit the wrong ones
     history.clear();
@@ -4277,7 +4487,7 @@ const dropOverlay = document.getElementById('drop-overlay');
 const dropZones = { replace: dropOverlay.querySelector('[data-drop-zone="replace"]'), add: dropOverlay.querySelector('[data-drop-zone="add"]') };
 let dropSide = 'add';
 // Gaussian splat scene loaded: only "replace" (one zone) – splats are never combined with other models
-function setDropOverlay(visible, mode = rootGroup ? (splatMesh ? 'replace' : 'split') : 'single') {
+function setDropOverlay(visible, mode = rootGroup ? 'split' : 'single') {
     dropOverlay.hidden = !visible;
     loadingEl.style.visibility = visible ? 'hidden' : '';
     if (!visible) return;
@@ -4285,7 +4495,6 @@ function setDropOverlay(visible, mode = rootGroup ? (splatMesh ? 'replace' : 'sp
     dropZones.add.hidden = mode !== 'split';
     dropOverlay.querySelector('[data-drop-single]').hidden = mode !== 'single';
     dropOverlay.querySelector('[data-drop-split]').hidden = mode !== 'split' && mode !== 'replace';
-    dropOverlay.querySelector('[data-drop-splat]').hidden = mode !== 'replace';
     dropOverlay.querySelector('[data-drop-relink]').hidden = mode !== 'relink';
     if (mode !== 'split') highlightDropZone(mode === 'relink' || mode === 'replace' ? 'replace' : null);
 }
@@ -4386,20 +4595,19 @@ window.addEventListener('drop', async e => {
         openSceneFile(state, files.filter(f => f !== jsonFile));
         return;
     }
-    // Gaussian splats (.sog, .ply with splat properties) are always alone: the first one replaces the scene,
-    // further models of the drop are ignored; a loaded splat scene is replaced by whatever is dropped
+    // Gaussian splats (.sog, .ply with splat properties): a splat scene is always the main model – one per scene
+    // (further splats of the drop are ignored). Dropped onto loaded models ("add"): the scan becomes the main model
+    // and the models are loaded again into it (prototype: their moves/material changes are not carried over);
+    // models dropped onto a splat scene are added to it.
     const typed = await Promise.all(models.map(classifyModel));
     const splat = typed.find(m => m.type === 'splat');
-    if (splat || splatMesh) {
-        closeBcf();   // splats always replace the whole scene
+    if (splat) {
+        closeBcf();
+        const keep = side !== 'replace' && rootGroup && !splatMesh ? [model, ...extraModels.map(x => x.source)].filter(Boolean) : [];
         missingModels = []; missingHdri = null; openedScene = null; sceneChunks = [];
-        if (splat) {
-            if (typed.length > 1) flashStatus(t('status.splatsAlone'), 6000);
-            openModel(splat);
-        } else {
-            openModel(typed[0]);
-            typed.slice(1).forEach(m => addModel(m));
-        }
+        if (typed.filter(m => m.type === 'splat').length > 1) flashStatus(t('status.splatsAlone'), 6000);
+        openModel(splat);
+        [...keep, ...typed.filter(m => m.type !== 'splat')].forEach(m => addModel(m));
         return;
     }
     models.splice(0, models.length, ...typed);
@@ -4488,7 +4696,7 @@ if (new URLSearchParams(location.search).has('debug')) {
         // material node graphs: bake an input into a PNG / render a description on the thumbnail sphere (debug-graph.js)
         bakeGraph: (graph, opts) => import('./debug-graph.js').then(m => m.bakeGraphImage(graphApplier, graph, opts)),
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel.thumbs, def)),
-        batcher, clouds, grass, edges, getSplats: () => splatMesh, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+        batcher, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 }
 
 // --- Resize ---
@@ -4652,6 +4860,7 @@ renderer.setAnimationLoop(() => {
         preparedModes.add(`${isAnalysis(viewMode) ? viewMode : 'default'}:${batcher.generation}`);
     }
     updateShadowMaps();
+    if (sssCheck && !sssBlock) syncSssFields();
     if (prepare.compile) {
         prepare.compile = false;
         prepare.jobs++;
@@ -4679,7 +4888,29 @@ renderer.setAnimationLoop(() => {
     // Gaussian splats: re-sort (in workers) when the camera moved; the new order arrives a few frames later.
     // Depth of field + focus line in their shader (the raster is their final look; not in AI capture / export)
     splatMesh?.update(camera, { fisheye: rasterFisheye.active, dof, focusLine: !captureRequest && !exportRequest && dof.showPlane && selection?.kind === 'camera' });
+    // the splats in a pass of their own, blended in display space (splat-composite.js; not with the fisheye – linear
+    // there), darkened in the shadow of added models
+    const splatPass = !!splatMesh && !rasterFisheye.active && viewMode !== 'wire';
+    // the scan as the models' environment once captured (environment scan + models + environment on); not in HQ – the
+    // path tracer reflects the splat volume itself, and it cannot read a cube map as its environment (ShaderMaterial)
+    const scanEnvWanted = !!splatMesh?.userData.environment && extraModels.length > 0 && environment.on && SPLATS.environment.enabled && !splatMesh.loading && viewMode !== 'hq';
+    const envTexture = environment.on ? (scanEnvWanted && splatEnv.ready ? splatEnv.texture : environment.texture) : null;
+    if (scene.environment !== envTexture) scene.environment = envTexture;
+    if (splatMesh && viewMode === 'hq') splatVolume.updateUniforms();   // clouds overlapping the splat volume (moved splats)
+    if (splatMesh) {
+        splatMesh.layers.set(splatPass ? SPLAT_LAYER : 0);
+        splatMesh.setDisplayOutput(splatPass);
+        splatMesh.setShadow(shadowsOn && extraModels.length ? splatShadow : null);
+        splatMesh.setRenderState({ renderer, toneMapping: renderer.toneMapping, exposure: renderer.toneMappingExposure, environment: environment.on ? environment.texture : null,
+            environmentIntensity: scene.environmentIntensity, environmentRotation: scene.environmentRotation, lights: [dirLight1, dirLight2], ambient: ambientLight });
+    }
+    // opacity map of the splats: shadow on the models, the ground shadow and own shadow of relit splats (not in Basic –
+    // no shadows there)
+    const splatGround = ground.enabled && environment.ground;
+    const opacityWanted = !!splatMesh && !splatMesh.loading && shadowsOn && (extraModels.length > 0 || splatMesh.look.mode !== 'baked' || splatGround);
+    if (!opacityWanted && splatOpacity.enabled.value) { splatOpacity.enabled.value = 0; splatOpacity.markDirty(); }
     if (post) lens.begin();
+    if (splatPass) splatComposite.begin({ models: extraModels.length > 0, draw: !post });
     const contact = ground.enabled && environment.ground && rootGroup && !splatMesh;   // splats cast no shadow
     if (contact) {
         if ((contactLive && !animPlaying) || loadRender.active || fading.size) contactShadow.markDirty();
@@ -4692,8 +4923,14 @@ renderer.setAnimationLoop(() => {
     const exportReq = exportRequest;   // image export: likewise
     exportRequest = null;
     const focusLine = !capture && !exportReq && dof.enabled && dof.showPlane && selection?.kind === 'camera';
+    // clouds next to splats: drawn apart and composited by distance (splat-composite.js drawClouds) – in the frame the
+    // splats were painted over them
+    const splatClouds = splatPass && clouds.volumes.some(v => v.mesh.visible);
     const drawRaster = cam => {
+        const cloudsShown = clouds.group.visible;
+        if (splatClouds && cam === camera) clouds.group.visible = false;
         renderer.render(scene, cam);
+        clouds.group.visible = cloudsShown;
         if (viewMode === 'wire') drawWireframe(cam);
         slicer.renderCaps(renderer, scene, cam);
         if (contact) contactShadow.render(renderer, cam);
@@ -4708,7 +4945,68 @@ renderer.setAnimationLoop(() => {
     if (fading.size || !pathTracing.render(rasterize)) rasterize();
     // focus line over the raster image (uses its depth buffer; fisheye: already in the cube faces)
     if (focusLine && rasterDrawn && !rasterFisheye.active) dof.renderLine(renderer, scene, [ground.material]);
-    if (post) lens.end();
+    if (splatPass) {
+        // splats over the frame (HDR target), then out through the lens effects or the normal output path
+        // path traced: object splats are in the image (volume); scans are drawn over it like in Default (splat-volume.js)
+        // … and while the volume is still being baked (a splat opened in HQ) the raster splats stand in
+        const splatsDrawn = rasterDrawn || !splatVolume.primary || !splatVolume.ready;
+        if (splatsDrawn) splatComposite.drawSplats(scene, camera, { layer: SPLAT_LAYER, keep: slicer.group, extra: [wool.group, grass.group], splat: splatMesh });
+        else splatComposite.clearSplats();
+        if (splatClouds && splatsDrawn) splatComposite.drawClouds(scene, camera, { clouds, keep: slicer.group, modelSize: environment.modelSize, inFrame: !rasterDrawn });
+        const aoRadius = extraModels.length ? splatModelsBox().getBoundingSphere(_aoSphere).radius * 2 * SPLATS.ao.radius : 0;
+        const composed = splatComposite.compose(post ? lens.target.texture : splatComposite.frame.texture, { camera, aoRadius, clouds: splatClouds && splatsDrawn });
+        if (post) { lens.input.value = composed; lens.end(); lens.input.value = lens.target.texture; }
+        else splatComposite.output();
+    } else if (post) lens.end();
+    // splat scene with models: shadow depth map after the frame (a pass first in the frame would make the batcher
+    // prepare a regrouping in its render context) – the next frame shows it
+    if (splatMesh && !splatMesh.matrixWorld.equals(splatShadow.receiverMatrix)) {   // scan moved: shadow maps, environment
+        splatShadow.receiverMatrix.copy(splatMesh.matrixWorld);
+        splatShadow.markDirty();
+        splatOpacity.markDirty();
+        splatEnv.markDirty();
+    }
+    if (splatMesh && extraModels.length && shadowsOn && splatShadow.dirty) {
+        const active = splatShadow.update({ renderer, scene, light: dirLight1, casters: extraModels.map(x => x.holder), keep: [slicer.group, grass.group], hide: [rootGroup],
+            receiverBox: new THREE.Box3().setFromObject(rootGroup) });
+        if (active) loadRender.force = true;
+    }
+    // all splats once from the light: at most every 80 ms while models are dragged
+    if (opacityWanted && splatOpacity.dirty && performance.now() - splatOpacity.drawnAt > 80) {
+        splatOpacity.drawnAt = performance.now();
+        const active = splatOpacity.update({ renderer, scene, splat: splatMesh, light: dirLight1, receivers: extraModels.map(x => x.holder),
+            splatReceives: splatMesh.look.mode !== 'baked', groundY: splatGround ? environment.groundY : null, keep: [slicer.group], hide: extraModels.map(x => x.holder) });
+        if (active) loadRender.force = true;
+    } else if (opacityWanted && splatOpacity.dirty) loadRender.force = true;   // throttled: another frame
+    // light shafts through the splats: their opacity map along the shafts' sun (redrawn when sun, splats or the air
+    // around them change), the splat pass's coverage only where it ran this frame
+    const shaftLight = lens.shafts.enabled && rootGroup ? lens.volume.light : null;
+    lens.volume.u.splatCover.value = splatPass && shaftLight ? 1 : 0;
+    if (splatMesh && !splatMesh.loading && shaftLight) {
+        const reach = shaftBounds.radius * (0.75 + 2.25 * lens.shafts.length);
+        const sig = `${shaftLight.direction.toArray().map(v => v.toFixed(4))}|${shaftBounds.center.toArray().map(v => v.toPrecision(6))}|${reach.toPrecision(5)}|${splatMesh.matrixWorld.elements.join()}`;
+        if (sig !== shaftOpacitySig) { shaftOpacitySig = sig; shaftOpacity.markDirty(); }
+        if (shaftOpacity.dirty) {
+            shaftSun.position.copy(shaftLight.direction).multiplyScalar(1000);
+            shaftSun.target.position.set(0, 0, 0);
+            shaftSun.updateMatrixWorld(true);
+            shaftSun.target.updateMatrixWorld(true);
+            const air = new THREE.Box3().setFromCenterAndSize(shaftBounds.center, new THREE.Vector3().setScalar(2 * reach));
+            shaftOpacity.update({ renderer, scene, splat: splatMesh, light: shaftSun, receivers: [], splatReceives: false, receiverBox: air,
+                keep: [slicer.group], hide: extraModels.map(x => x.holder) });
+            loadRender.force = true;
+        }
+        lens.volume.u.splatLight.value = shaftOpacity.active ? 1 : 0;
+    } else lens.volume.u.splatLight.value = 0;
+    if (scanEnvWanted) {
+        // captured again when what it shows changes: tone curve, exposure, HDRI (holes of the scan), its intensity/rotation
+        const sig = `${renderer.toneMapping}|${renderer.toneMappingExposure}|${scene.environmentIntensity}|${environment.texture?.uuid}|${scene.environmentRotation.y}`;
+        if (sig !== splatEnv.signature) { splatEnv.signature = sig; splatEnv.markDirty(); }
+        const drew = splatEnv.update({ scene, splat: splatMesh, layer: SPLAT_LAYER, keep: slicer.group, hide: extraModels.map(x => x.holder),
+            probe: () => splatModelsBox().getCenter(new THREE.Vector3()), radius: Math.max(environment.modelSize || 0, splatModelsBox().getSize(new THREE.Vector3()).length(), 1),
+            rotation: scene.environmentRotation, background: environment.texture, backgroundIntensity: environment.intensity });
+        if (drew || splatEnv.busy || splatEnv.dirty) loadRender.force = true;
+    } else if (splatEnv.ready || splatEnv.phase >= 0) splatEnv.reset();
     // toon/outline lines (screen-space pass): fisheye – into each cube face with its camera, then laid over the
     // picture through the fisheye mapping like the gizmo (raster and HQ)
     if (!rasterFisheye.active) contours.render();

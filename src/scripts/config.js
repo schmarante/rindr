@@ -132,6 +132,15 @@ export const SPLATS = {
     shDegree: 3,          // highest SH degree that is kept (0 = no view-dependent colour)
     shBudgetMB: 512,      // GPU memory for the SH data
     unitScale: 1000,      // file units → mm (3DGS scenes are roughly in metres)
+    // shadow of added PBR models on the splats (splat-shadow.js): 1 = black where the main light is blocked; less, as
+    // the scan's own light already contains the ambient part
+    shadowStrength: 0.55,
+    // shadow of the splats on models and on relit splats (splat-opacity.js): opacity map size (8 depth slices)
+    opacitySize: 1024,
+    // ambient occlusion between scan and models (splat-composite.js): radius as a share of the models' size, strength
+    ao: { radius: 0.1, strength: 1 },
+    // scan as the models' environment (reflections, image-based light; splat-environment.js): cube face size, on/off
+    environment: { enabled: true, size: 256 },
     // after loading the camera slowly circles the scene until the user takes over: seconds per turn
     // (object: around it, room: panning on the spot); 0 = off
     autoRotate: { object: 40, indoor: 60 },

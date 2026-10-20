@@ -1124,6 +1124,29 @@
         "explode": {
             "label": "Explosion"
         },
+        "splatLook": {
+            "title": "Splat-Darstellung",
+            "mode": "Licht",
+            "modeTitle": "Eingebrannt: wie aufgenommen (Licht der Aufnahme). Oberfläche: neu beleuchtet, Normale aus der flachsten Achse jedes Splats. Volumen: neu beleuchtet ohne Normale (Rauch, Wolken) – Licht und Eigenschatten von allen Seiten",
+            "modes": {
+                "baked": "Eingebrannt",
+                "surface": "Oberfläche",
+                "volume": "Volumen"
+            },
+            "bakedHint": "Splats: Licht ist eingebrannt – Lichter und HDRI wirken auf sie erst mit „Oberfläche“ oder „Volumen“ (Splat auswählen → Splat-Darstellung → Licht)",
+            "dropHint": "Material aus der Liste auf die Splats ziehen, um sie einzufärben (Grundfarbe, Metall, Rauheit, Leuchten)",
+            "material": "Material",
+            "remove": "Entfernen",
+            "removeTitle": "Splat-Material entfernen – wieder die eigenen Farben",
+            "color": "Farbe",
+            "metalness": "Metall",
+            "roughness": "Rauheit",
+            "detail": "Struktur",
+            "detailTitle": "Wie stark die Helligkeit der Splats durch die Materialfarbe scheint (0 = einfarbig, 1 = wie aufgenommen)",
+            "emissive": "Leuchtfarbe",
+            "emissiveIntensity": "Leuchten",
+            "undo": "Splat-Darstellung ändern"
+        },
         "quality": {
             "label": "Qualität",
             "title": "Nur dieses Bauteil (mit Unterteilen) neu tessellieren",
@@ -1584,7 +1607,8 @@
         "modelAdded": "Modell „{name}“ hinzugefügt",
         "loadingSplats": "Lade Gaussian Splats…",
         "splatsLoaded": "{count} Gaussian Splats geladen",
-        "splatsAlone": "Gaussian Splats werden immer allein geladen – die übrigen Modelle wurden ignoriert",
+        "splatVolume": "Splats werden für HQ vorbereitet…",
+        "splatsAlone": "Nur ein Splat-Scan pro Szene – die weiteren wurden ignoriert",
         "splatsTooMany": "Zu viele Splats für diese Grafikkarte ({count})",
         "noSplats": "Die Datei enthält keine Splats",
         "viewSaved": "„{name}“ gespeichert",
@@ -1842,8 +1866,7 @@
             "addSplitHint": "Die neue Datei erscheint zusätzlich neben den vorhandenen Modellen",
             "relinkTitle": "Fehlende Dateien verknüpfen",
             "relinkHint": "Die Dateien werden über ihren Namen den fehlenden Texturen bzw. Dateien der Szene zugeordnet",
-            "splatReplaceHint": "Gaussian Splats stehen immer allein – sie werden nicht mit weiteren Modellen kombiniert",
-            "splatNote": "Gaussian Splats (.ply/.sog) ersetzen immer die ganze Szene"
+            "splatNote": "Gaussian Splats (.ply/.sog) werden zur Umgebung – die Modelle kommen in den Scan"
         },
         "ptStatus": "Pathtracing",
         "brand": "<strong>RINDR</strong> <i>alpha</i>"

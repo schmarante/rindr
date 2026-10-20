@@ -190,9 +190,9 @@ export class GuideKernel {
 
                         }
 
-                        // cloud volume box (clouds.js): no surface – the guides show what lies behind (the box's faces
-                        // made the denoiser draw a bright rectangle)
-                        if ( materialInfo.fogVolume == 3 ) {
+                        // cloud volume box (clouds.js) / splat volume (splat-volume.js): no surface – the guides show what
+                        // lies behind (the box's faces made the denoiser draw a bright rectangle)
+                        if ( materialInfo.fogVolume == 3 || materialInfo.fogVolume == 6 ) {
 
                             ray.origin = ${ offsetRayOriginFunc }( ray.origin + ray.direction * hit.dist, ray.direction, hit.normal );
                             continue;
