@@ -87,6 +87,7 @@
             "checker": "UV-Prüfmuster hinter den Vorschaubildern (Transparenz und Brechung beurteilen)",
             "stepPlaceholderHint": "Platzhalter aus der STEP-Farbe – durch ein Bibliotheks-Material ersetzen",
             "importedHint": "Material aus der importierten Datei",
+            "missingPictures": "Bild-Texturen fehlen: {files}",
             "libraryHint": "Ziehen: auf ein Objekt oder einen Eintrag im Scene Graph · Doppelklick: in die Szene übernehmen",
             "id": "ID {id}",
             "assignSelection": "Auswahl zuweisen",

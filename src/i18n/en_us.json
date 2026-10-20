@@ -87,6 +87,7 @@
             "checker": "UV test pattern behind the previews (judge transparency and refraction)",
             "stepPlaceholderHint": "Placeholder from the STEP colour – replace with a library material",
             "importedHint": "Material from the imported file",
+            "missingPictures": "Image textures missing: {files}",
             "libraryHint": "Drag: onto an object or a Scene Graph entry · Double-click: add to the scene",
             "id": "ID {id}",
             "assignSelection": "Assign to selection",

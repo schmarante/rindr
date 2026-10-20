@@ -18,6 +18,25 @@ import { MATERIAL_PRESETS, PRESET_CATEGORIES, presetName, presetCategoryLabel, l
 import { t, has } from './i18n.js';
 import { colorField, SELECT } from './ui-controls.js';
 
+const ICON_WARNING = '<svg viewBox="0 0 20 20" class="size-3.5 shrink-0 fill-amber-400 drop-shadow"><path d="M10 2.2 1.3 17.3h17.4L10 2.2Zm-.9 5.3h1.8v4.9H9.1V7.5Zm0 6.3h1.8v1.8H9.1v-1.8Z"/></svg>';
+
+// file names of the pictures the material's image nodes wait for (none when the nodes were removed)
+function missingPictures(def) {
+    const missing = def.render?.missing;
+    if (!missing) return [];
+    const keys = def.graph ? def.graph.nodes.filter(n => n.type === 'importMap' && missing[n.params?.map]).map(n => n.params.map) : Object.keys(missing);
+    return [...new Set(keys.map(k => decodeURIComponent(String(missing[k].url).split(/[\\/]/).pop())))];
+}
+
+// badge: on a dark round ground like the usage badge (the bare triangle got lost on the previews)
+function warningIcon(files, badge = false) {
+    const w = document.createElement('span');
+    w.className = badge ? 'flex size-4 items-center justify-center rounded-full bg-neutral-900 shadow ring-1 ring-black/40 [&>svg]:size-3' : 'flex shrink-0';
+    w.innerHTML = ICON_WARNING;
+    w.title = t('materials.panel.missingPictures', { files: files.join(', ') });
+    return w;
+}
+
 export const MATERIAL_MIME = 'application/x-step-viewer-material';
 
 // Display name of a texture map key (materials.maps.<key>, unknown keys as they are)
@@ -224,6 +243,7 @@ export class MaterialPanel {
             if (def.id === this.current) row.classList.add('bg-sky-500/30');
             else row.classList.add('hover:bg-white/10');
             const usage = counts.get(def.id) || 0;
+            const missingFiles = missingPictures(def);
             if (this.view === 'grid') {
                 // tile: selection as a ring around the swatch, usage count as a badge
                 if (sel.has(def.id)) {
@@ -233,9 +253,16 @@ export class MaterialPanel {
                     row.title = t('materials.panel.selectionBadge');
                 }
                 // usage count as a badge on the preview's corner (plain grey text got lost on the images)
-                if (usage) row.firstChild.append(el('span', 'absolute -top-1.5 -right-1.5 h-4 min-w-4 rounded-full bg-sky-500 px-1 text-center text-[10px] leading-4 font-medium tabular-nums text-white shadow ring-1 ring-black/40', String(usage)));
+                // missing pictures: warning triangle next to it
+                if (usage || missingFiles.length) {
+                    const corner = el('span', 'absolute -top-1.5 -right-1.5 flex items-center gap-0.5', '');
+                    if (missingFiles.length) corner.append(warningIcon(missingFiles, true));
+                    if (usage) corner.append(el('span', 'h-4 min-w-4 rounded-full bg-sky-500 px-1 text-center text-[10px] leading-4 font-medium tabular-nums text-white shadow ring-1 ring-black/40', String(usage)));
+                    row.firstChild.append(corner);
+                }
             } else {
                 if (sel.has(def.id)) row.append(el('span', 'shrink-0 rounded bg-amber-400/20 px-1 text-[10px] text-amber-200', t('materials.panel.selectionBadge')));
+                if (missingFiles.length) row.append(warningIcon(missingFiles));
                 row.append(el('span', 'w-6 shrink-0 text-right tabular-nums text-white/40', usage ? String(usage) : ''));
             }
             if (def.source === 'step') row.title = t('materials.panel.stepPlaceholderHint');
