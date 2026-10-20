@@ -29,6 +29,13 @@ export function memoryBudget() {
     return Math.min(Math.max(deviceMemoryGB() * 0.5, 0.75), 6) * GB * (safe ? 0.5 : 1);
 }
 
+/** largest side of `count` textures loaded together (USD import, textures from the net): a quarter of the budget for
+ * all of them (RGBA + mip chain ≈ 4 × 1.33 bytes per pixel), 256–4096 px */
+export function textureMaxSide(count) {
+    const perTexture = memoryBudget() * 0.25 / Math.max(count, 1) / (4 * 1.34);
+    return Math.min(Math.max(2 ** Math.floor(Math.log2(Math.sqrt(perTexture))), 256), 4096);
+}
+
 /** JS heap area of the tab (Chrome reports it; elsewhere the common 4 GB) */
 export function jsHeapLimit() {
     return globalThis.performance?.memory?.jsHeapSizeLimit || 4 * GB;

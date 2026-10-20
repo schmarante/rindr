@@ -513,6 +513,8 @@ export default defineConfig({
     server: { headers: isolationHeaders },
     preview: { headers: isolationHeaders },
     worker: { format: 'es' },
+    // bundle analysis: SOURCEMAP=1 npm run build → bytes per source module from the maps (CLAUDE.md "Bundle")
+    build: { sourcemap: !!process.env.SOURCEMAP },
     define: { __APP_VERSION__: JSON.stringify(appVersion()) },
     optimizeDeps: {
       // These packages create workers via `new URL(..., import.meta.url)` –

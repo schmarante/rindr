@@ -4,6 +4,11 @@ import fs from 'node:fs';
 import de from '../i18n/de_de.json';
 import { formatHtml } from '../scripts/i18n.js';
 import Logo from '../assets/rindr.svg';   // shown white via the #logo-white filter (see the brand line)
+import logoSource from '../assets/rindr.svg?raw';
+
+// preloader: the logo's paths (the file stays as exported) – outline + clip shape for the fill
+const logoPaths = [...logoSource.matchAll(/<path[^>]*\sd="([^"]+)"/g)].map(m => m[1]);
+const logoViewBox = logoSource.match(/viewBox="([^"]+)"/)?.[1] || '0 0 1417.323 1417.323';
 
 // German default texts rendered at build time (no flash); viewer.js calls applyDom() for other languages
 const tr = (k) => k.split('.').reduce((n, p) => n?.[p], de) ?? k;
@@ -23,7 +28,9 @@ const ogImage = abs('og-image.png');
 // X-Frame-Options, Permissions-Policy … – come from public/.htaccess resp. public/coi-serviceworker.js).
 // Only in the production build: the dev server needs its HMR websocket and inline scripts.
 // wasm-unsafe-eval: WebAssembly (Draco, Basis, web-ifc, denoiser); worker blob: Draco/KTX2 workers;
-// connect googleapis: AI rendering (KI.endpoint in config.js); style unsafe-inline: <style> in page + logo SVG.
+// style unsafe-inline: <style> in page + logo SVG; connect https: the AI service (KI.endpoint in config.js) and textures
+// a model references on another server – loaded only on request (remote-textures.js, asset window; per-file progress
+// needs fetch, so not only images – decided by the user, Oct. 2026).
 const CSP = [
     "default-src 'self'",
     "script-src 'self' 'wasm-unsafe-eval'",
@@ -32,7 +39,7 @@ const CSP = [
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
     "media-src 'self' data: blob:",
-    "connect-src 'self' data: blob: https://generativelanguage.googleapis.com",
+    "connect-src 'self' data: blob: https:",
     "manifest-src 'self'",
     "object-src 'none'",
     "base-uri 'self'",
@@ -129,10 +136,35 @@ const CSP = [
             input[type='number']:focus::-webkit-inner-spin-button { opacity: 0.55; }
             input[type='number']::-webkit-inner-spin-button:hover { opacity: 0.9; }
             input[type='number'] { -moz-appearance: textfield; }
+
+            /* preloader (see #preloader): the blue logo is revealed by a conic sweep from the top,
+               clockwise (scripts loading, no progress known – easing towards ~3/4, viewer.js completes it) */
+            #preloader { background: #171717; }   /* the app's own background (bg-neutral-900) – no jump in brightness */
+            @property --preloader-sweep { syntax: '<percentage>'; inherits: false; initial-value: 0%; }
+            #preloader [data-fill] {
+                -webkit-mask-image: conic-gradient(#000 var(--preloader-sweep), transparent 0);
+                mask-image: conic-gradient(#000 var(--preloader-sweep), transparent 0);
+                animation: preloader-sweep 7s cubic-bezier(0.12, 0.7, 0.3, 1) forwards;
+            }
+            @keyframes preloader-sweep { to { --preloader-sweep: 74%; } }
+            @media (prefers-reduced-motion: reduce) { #preloader [data-fill] { animation-duration: 0.01s; } }
         </style>
     </head>
     <body class="m-0 overflow-hidden bg-neutral-900 font-sans">
         <div id="viewport" class="h-dvh w-dvw"></div>
+
+        <!-- preloader until the app has started (viewer.js hidePreloader): the logo in dark grey with a soft shadow on the
+             app's own background (no jump in brightness when it goes), turned accent blue by a sweep around its centre
+             (like a clock hand). CSS only (no
+             inline script – CSP): the sweep runs towards ~3/4 while the scripts load; viewer.js completes it and fades
+             the screen out -->
+        <div id="preloader" class="pointer-events-none fixed inset-0 z-[70] flex flex-col items-center justify-center gap-5 transition-opacity duration-500" aria-hidden="true">
+            <div class="relative size-36 [filter:drop-shadow(0_6px_14px_rgb(0_0_0/0.55))]">
+                <svg viewBox={logoViewBox} class="absolute inset-0 size-full"><g class="fill-[#3a3a3a]">{logoPaths.map(d => <path d={d} />)}</g></svg>
+                <svg data-fill viewBox={logoViewBox} class="absolute inset-0 size-full"><g class="fill-sky-500">{logoPaths.map(d => <path d={d} />)}</g></svg>
+            </div>
+            <div data-i18n="page.loading" class="text-sm tracking-wide text-white/55">{tr('page.loading')}</div>
+        </div>
 
         <div
             id="loading"

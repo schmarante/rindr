@@ -17,6 +17,9 @@ import { floatWindow } from './float-window.js';
 import { materialType, typeAllowsGraph } from './material-types.js';
 
 
+const ICON_WARNING = '<svg viewBox="0 0 20 20" class="size-3.5 shrink-0 fill-amber-400"><path d="M10 2.2 1.3 17.3h17.4L10 2.2Zm-.9 5.3h1.8v4.9H9.1V7.5Zm0 6.3h1.8v1.8H9.1v-1.8Z"/></svg>';
+const ICON_DOWNLOAD = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v8M4.5 7 8 10.5 11.5 7M2.5 13.5h11"/></svg>';
+const ICON_FOLDER = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.4" stroke-linejoin="round"><path d="M1.5 4V12.5a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V5.5a1 1 0 0 0-1-1H8L6.5 2.5h-4a1 1 0 0 0-1 1z"/></svg>';
 const ICON_CLOSE = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
 const ICON_EYE = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.4"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>';
 const ICON_EYE_OFF = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.4" stroke-linecap="round"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><path d="M2.5 13.5l11-11"/></svg>';
@@ -31,8 +34,10 @@ export class NodeEditor {
      * @param {HTMLElement} root
      * @param {import('./material-manager.js').MaterialManager} manager
      * @param {{ preview?: (def, nodeId, port, size) => Promise<{ size, pixels } | { color } | null>,
-     *           materialThumb?: (id, size) => string|null, onThumbReady?: (cb) => void }} [hooks]
-     *        preview: bake one node output (graph-apply.js); materialThumb: the material's sphere image (output node)
+     *           materialThumb?: (id, size) => string|null, onThumbReady?: (cb) => void,
+     *           downloadTexture?: (url) => void, linkFiles?: (files: { path, file }[]) => void }} [hooks]
+     *        preview: bake one node output (graph-apply.js); materialThumb: the material's sphere image (output node);
+     *        downloadTexture / linkFiles: an image from the file that is missing – load it from its server / link a file
      */
     constructor(root, manager, hooks = {}) {
         this.root = root;
@@ -86,7 +91,9 @@ export class NodeEditor {
             for (const [type, def] of types) {
                 const b = document.createElement('button');
                 b.className = 'block w-full truncate rounded px-1.5 py-0.5 text-left text-white/80 hover:bg-white/15';
-                b.textContent = nodeLabel(type);
+                // the image from the model file: "Image (from the file)" next to the plain "Image"
+                b.textContent = def.importOnly ? t('nodeEditor.imageFromFileNode') : nodeLabel(type);
+                b.title = b.textContent;   // the list is narrow
                 b.draggable = true;
                 b.onclick = () => this.addNode(type);
                 b.ondragstart = e => { e.dataTransfer.setData(NODE_MIME, type); e.dataTransfer.effectAllowed = 'copy'; };
@@ -120,7 +127,7 @@ export class NodeEditor {
             if (e.detail?.id !== this.materialId) return;
             // switched to a type without node editor (cloud, wool, ...): nothing to edit here
             if (!typeAllowsGraph(materialType(manager.get(this.materialId)?.def.params))) { this.close(); return; }
-            if (!e.detail.restored) return;
+            if (!e.detail.restored && !e.detail.linked) return;
             const graph = manager.get(this.materialId).def.graph;
             this.drag = null;
             this.graph = graph ? structuredClone(graph) : createGraph();
@@ -137,10 +144,10 @@ export class NodeEditor {
         if (!entry || !typeAllowsGraph(materialType(entry.def.params))) { if (entry) this.close(); return; }
         if (materialId !== this.materialId) this.previews.clear();
         this.materialId = materialId;
+        const hasImport = Object.keys(this._importMaps()).length > 0 || Object.keys(this._missingMaps()).length > 0;
         this.graph = entry.def.graph ? structuredClone(entry.def.graph)
-            : Object.keys(this._importMaps()).length ? createImportGraph(this._importMaps()) : createGraph();
-        // offer "import texture" only for materials with textures from the file
-        const hasImport = Object.keys(this._importMaps()).length > 0;
+            : hasImport ? createImportGraph(this._importMaps(), this._missingMaps()) : createGraph();
+        // offer the image from the file only for materials with textures from the file
         this.root.querySelectorAll('[data-import-only]').forEach(b => { b.hidden = !hasImport; });
         this.title.textContent = t('nodeEditor.title', { name: entry.def.name });
         this.root.hidden = false;
@@ -156,6 +163,12 @@ export class NodeEditor {
     _importMaps() {
         const maps = this.manager.get(this.materialId)?.def.render?.maps || {};
         return Object.fromEntries(Object.entries(maps).filter(([k]) => IMPORT_SLOTS[k]));
+    }
+
+    // images the file names that are missing (map key -> { url, … })
+    _missingMaps() {
+        const missing = this.manager.get(this.materialId)?.def.render?.missing || {};
+        return Object.fromEntries(Object.entries(missing).filter(([k]) => IMPORT_SLOTS[k]));
     }
 
     close() {
@@ -180,7 +193,7 @@ export class NodeEditor {
         }
         if (at) { x = Math.round(at.x); y = Math.round(at.y); }
         const params = defaultParams(type);
-        if (type === 'importMap') params.map = Object.keys(this._importMaps())[0] ?? params.map;
+        if (type === 'importMap') params.map = Object.keys(this._importMaps())[0] ?? Object.keys(this._missingMaps())[0] ?? params.map;
         this.graph.nodes.push({ id, type, x, y, params });
         this.render();
         this.commit();
@@ -378,8 +391,10 @@ export class NodeEditor {
             s.onchange = () => set(s.value);
             wrap.append(label, s);
         } else if (p.kind === 'importMap') {
-            // choose a texture from the file; the same texture for several maps (glTF metallicRoughness) only once
-            const maps = this._importMaps();
+            // an image node whose picture comes from the model file (the same texture for several maps – glTF
+            // metallicRoughness – only once); missing: warning + load it from its server / link a file
+            const maps = this._importMaps(), missing = this._missingMaps();
+            const fileName = url => decodeURIComponent(String(url).split(/[\\/]/).pop());
             const s = document.createElement('select');
             s.className = 'min-w-0 flex-1 rounded bg-white/10 px-1 py-0.5 text-white outline-none';
             const seen = new Map();
@@ -389,14 +404,41 @@ export class NodeEditor {
                 seen.set(tex, o);
                 s.append(o);
             }
-            if (!maps[value]) s.append(new Option(t('nodeEditor.missingTexture'), value, false, true));
+            for (const [k, info] of Object.entries(missing)) {
+                if (seen.has(info.url)) { seen.get(info.url).text += ' / ' + mapLabel(k); continue; }
+                const o = new Option(`${mapLabel(k)} – ${t('nodeEditor.missingTexture')}`, k, false, k === value);
+                seen.set(info.url, o);
+                s.append(o);
+            }
+            if (!maps[value] && !missing[value]) s.append(new Option(t('nodeEditor.missingTexture'), value, false, true));
             // the chosen key can be a second map of the same texture
-            for (const [tex, o] of seen) if (maps[value] === tex) o.selected = true;
+            for (const [tex, o] of seen) if (maps[value] === tex || missing[value]?.url === tex) o.selected = true;
             s.onchange = () => { set(s.value); this.render(); };
             s.title = t('nodeEditor.importTextureTitle');
             wrap.append(s);
             const thumb = textureThumb(maps[value]);
             if (thumb) wrap.append(thumb);
+            // where the picture comes from (a row of its own below)
+            const source = missing[value];
+            const note = div('mt-1 flex w-full items-center gap-1 text-[11px] ' + (source ? 'text-amber-200' : 'text-white/45'));
+            if (source) {
+                note.insertAdjacentHTML('beforeend', ICON_WARNING);
+                note.append(span('min-w-0 flex-1 truncate', fileName(source.url)));
+                note.title = t('nodeEditor.imageMissing', { url: source.url });
+                if (/^https:\/\//i.test(source.url) && this.hooks.downloadTexture) {
+                    note.append(iconButton(ICON_DOWNLOAD, t('nodeEditor.downloadImage'), () => this.hooks.downloadTexture(source.url)));
+                }
+                if (this.hooks.linkFiles) {
+                    const f = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/*', hidden: true });
+                    f.onchange = () => { if (f.files[0]) this.hooks.linkFiles([{ path: fileName(source.url), file: new File([f.files[0]], fileName(source.url), { type: f.files[0].type }) }]); };
+                    note.append(f, iconButton(ICON_FOLDER, t('nodeEditor.linkImage'), () => f.click()));
+                }
+            } else {
+                note.append(span('min-w-0 flex-1 truncate', t('nodeEditor.imageFromFile')));
+                note.title = t('nodeEditor.importTextureTitle');
+            }
+            wrap.classList.add('flex-wrap');
+            wrap.append(note);
         } else if (p.kind === 'image') {
             const b = document.createElement('button');
             b.className = 'min-w-0 flex-1 truncate rounded bg-white/10 px-1 py-0.5 text-left text-white/80 hover:bg-white/20';
@@ -557,6 +599,17 @@ function span(className, text) {
 
 // Thumbnail of a texture (ImageBitmap/image/canvas; compressed textures without preview)
 const thumbs = new WeakMap();
+// small icon button in a node (download / link an image)
+function iconButton(icon, title, onClick) {
+    const b = document.createElement('button');
+    b.className = 'shrink-0 rounded p-0.5 text-white/70 hover:bg-white/15 hover:text-white';
+    b.innerHTML = icon;
+    b.title = title;
+    b.setAttribute('aria-label', title);
+    b.onclick = onClick;
+    return b;
+}
+
 function textureThumb(tex) {
     const img = tex?.image;
     if (!img || !(img.width > 0) || img.data) return null;
@@ -566,6 +619,8 @@ function textureThumb(tex) {
             const c = document.createElement('canvas');
             c.width = c.height = 48;
             const ctx = c.getContext('2d');
+            // pictures flipped while decoding (USD): upright again for the eye
+            if (tex.userData?.flippedImage) { ctx.translate(0, 48); ctx.scale(1, -1); }
             ctx.drawImage(img, 0, 0, 48, 48);
             url = c.toDataURL();
         } catch {

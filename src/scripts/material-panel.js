@@ -14,7 +14,7 @@ import { PARAMS, buildMaterial } from './material-manager.js';
 import { thumbKey } from './material-thumbs.js';
 import { MATERIALS } from './config.js';
 import { MATERIAL_TYPES, materialType, typeShows, typeAllowsGraph } from './material-types.js';
-import { MATERIAL_PRESETS, PRESET_CATEGORIES, presetName, presetCategoryLabel } from './material-presets.js';
+import { MATERIAL_PRESETS, PRESET_CATEGORIES, presetName, presetCategoryLabel, libraryComplete, loadLibraryPresets } from './material-presets.js';
 import { t, has } from './i18n.js';
 import { colorField, SELECT } from './ui-controls.js';
 
@@ -248,10 +248,12 @@ export class MaterialPanel {
 
     _renderLibrary() {
         this.root.querySelector('[data-act="merge"]').hidden = true;
+        // the category presets come with the first look at the library (material-presets.js) – shown again then
+        if (!libraryComplete()) loadLibraryPresets().then(() => { if (this.tab === 'library') this.render({ keepEditor: true }); }).catch(err => console.warn('[Materials] library:', err));
         const frag = document.createDocumentFragment();
         // category filter (right of the tabs): all, or one category – only categories that have presets
         const used = PRESET_CATEGORIES.filter(cat => MATERIAL_PRESETS.some(p => p.category === cat));
-        if (this.category && !used.includes(this.category)) this.category = '';
+        if (this.category && !used.includes(this.category) && libraryComplete()) this.category = '';
         const options = [new Option(t('materials.panel.allCategories'), '', false, !this.category),
             ...used.map(cat => new Option(presetCategoryLabel(cat), cat, false, cat === this.category))];
         this.categorySelect.replaceChildren(...options);
