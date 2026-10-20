@@ -1124,6 +1124,29 @@
         "explode": {
             "label": "Explode"
         },
+        "splatLook": {
+            "title": "Splat appearance",
+            "mode": "Light",
+            "modeTitle": "Baked: as captured (light of the capture). Surface: relit, normal from the flattest axis of each splat. Volume: relit without normals (smoke, clouds) – light and self-shadow from every side",
+            "modes": {
+                "baked": "Baked",
+                "surface": "Surface",
+                "volume": "Volume"
+            },
+            "bakedHint": "Splats: their light is baked – lights and HDRI affect them only with “Surface” or “Volume” (select the splats → Splat appearance → Light)",
+            "dropHint": "Drag a material from the list onto the splats to tint them (base colour, metal, roughness, glow)",
+            "material": "Material",
+            "remove": "Remove",
+            "removeTitle": "Remove the splat material – back to their own colours",
+            "color": "Colour",
+            "metalness": "Metal",
+            "roughness": "Roughness",
+            "detail": "Structure",
+            "detailTitle": "How much of the splats' brightness shows through the material colour (0 = plain, 1 = as captured)",
+            "emissive": "Glow colour",
+            "emissiveIntensity": "Glow",
+            "undo": "Change splat appearance"
+        },
         "quality": {
             "label": "Quality",
             "title": "Re-tessellate only this part (with its sub-parts)",
@@ -1584,7 +1607,8 @@
         "modelAdded": "Model “{name}” added",
         "loadingSplats": "Loading Gaussian splats…",
         "splatsLoaded": "{count} Gaussian splats loaded",
-        "splatsAlone": "Gaussian splats are always loaded on their own – the other models were ignored",
+        "splatVolume": "Preparing the splats for HQ…",
+        "splatsAlone": "Only one splat scan per scene – the others were ignored",
         "splatsTooMany": "Too many splats for this graphics card ({count})",
         "noSplats": "The file contains no splats",
         "viewSaved": "“{name}” saved",
@@ -1842,8 +1866,7 @@
             "addSplitHint": "The new file appears in addition, next to the existing models",
             "relinkTitle": "Link missing files",
             "relinkHint": "The files are matched to the missing textures or files of the scene by their names",
-            "splatReplaceHint": "Gaussian splats always stand alone – they are not combined with other models",
-            "splatNote": "Gaussian splats (.ply/.sog) always replace the whole scene"
+            "splatNote": "Gaussian splats (.ply/.sog) become the surroundings – the models are placed into the scan"
         },
         "ptStatus": "Path tracing",
         "brand": "<strong>RINDR</strong> <i>alpha</i>"

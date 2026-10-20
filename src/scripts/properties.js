@@ -58,10 +58,11 @@ export class PropertiesPanel {
         }
         this.root.hidden = false;
         const parts = [this._header(entry)];
-        // Gaussian splats: no transform (no gizmo either) and no explosion – one cloud without parts
-        const splats = !!this.ctx.splats?.();
-        if ((entry.kind === 'node' || entry.kind === 'model') && !splats) parts.push(...this._transformSection(true, true));
+        // Gaussian splats: no explosion – one cloud without parts (models added to a splat scene have it)
+        const splats = !!this.ctx.splats?.(entry);
+        if (entry.kind === 'node' || entry.kind === 'model') parts.push(...this._transformSection(true, true));
         if (entry.kind === 'model' && this.ctx.exploder && !splats) parts.push(this._explodeRow());
+        if (splats && (entry.kind === 'model' || entry.kind === 'node')) parts.push(...this._splatLookSection());
         if ((entry.kind === 'model' || entry.kind === 'node') && this.ctx.morphs?.list(entry).length) parts.push(...this._morphSection(entry));
         const bim = (entry.kind === 'node' || entry.kind === 'model') && this.ctx.bim?.(entry);
         if (bim) parts.push(this._bimSection(entry, bim));
@@ -76,6 +77,10 @@ export class PropertiesPanel {
             const del = el('button', BUTTON, t('properties.view.deleteAll', { count: entry.entries.length }));
             del.onclick = () => this.ctx.cameraViews.removeMany(entry.entries.map(e => e.view));
             parts.push(el('div', 'mb-1.5 text-white/60', t('properties.view.multiHint')), del);
+        }
+        // splats with their captured light ignore lights and environment – said where those are edited
+        if ((entry.kind === 'light' || entry.kind === 'environment' || entry.key === 'lights') && this.ctx.splatLook?.get()?.mode === 'baked') {
+            parts.push(el('div', 'mt-1.5 text-white/40', t('properties.splatLook.bakedHint')));
         }
         else if (entry.kind === 'slicer') parts.push(...this._slicerSection());
         else if (entry.kind === 'surface') {
@@ -210,6 +215,41 @@ export class PropertiesPanel {
         const reset = el('button', BUTTON + ' mt-1', t('properties.morphs.reset'));
         reset.onclick = () => { api.reset(entry); this.show(this.entry); };
         rows.push(reset);
+        return rows;
+    }
+
+    // Gaussian splats: lighting (as captured / relit as a surface / as a volume) and override material – a material
+    // dropped onto the splats gives its base values (colour, metal, roughness, glow), editable here
+    _splatLookSection() {
+        const api = this.ctx.splatLook;
+        const look = api?.get();
+        if (!look) return [];
+        const rows = [el('div', 'mt-2 mb-0.5 text-white/50', t('properties.splatLook.title'))];
+        const mode = el('select', INPUT.replace('text-right', 'text-left') + ' cursor-pointer');
+        for (const m of ['baked', 'surface', 'volume']) mode.append(new Option(t(`properties.splatLook.modes.${m}`), m));
+        mode.value = look.mode;
+        mode.title = t('properties.splatLook.modeTitle');
+        mode.onchange = () => api.set({ mode: mode.value });
+        rows.push(this._row(t('properties.splatLook.mode'), mode));
+        const mat = look.material;
+        if (!mat) {
+            rows.push(el('div', 'mb-1 text-white/40', t('properties.splatLook.dropHint')));
+            return rows;
+        }
+        const update = (key, v) => api.set({ material: { ...api.get().material, [key]: v } }, { mergeKey: `splat-look-${key}` });
+        const name = el('span', 'min-w-0 flex-1 truncate text-white/80', mat.name || t('properties.splatLook.material'));
+        const remove = el('button', BUTTON, t('properties.splatLook.remove'));
+        remove.title = t('properties.splatLook.removeTitle');
+        remove.onclick = () => api.set({ material: null });
+        rows.push(this._row(t('properties.splatLook.material'), name, remove));
+        rows.push(this._row(t('properties.splatLook.color'), colorField(mat.color, { onInput: v => update('color', v) })));
+        rows.push(this._rangeRow(t('properties.splatLook.metalness'), mat.metalness, 0, 1, 0.01, v => update('metalness', v)));
+        rows.push(this._rangeRow(t('properties.splatLook.roughness'), mat.roughness, 0, 1, 0.01, v => update('roughness', v)));
+        const detail = this._rangeRow(t('properties.splatLook.detail'), mat.detail ?? 1, 0, 2, 0.01, v => update('detail', v));
+        detail.title = t('properties.splatLook.detailTitle');
+        rows.push(detail);
+        rows.push(this._row(t('properties.splatLook.emissive'), colorField(mat.emissive, { onInput: v => update('emissive', v) })));
+        rows.push(this._rangeRow(t('properties.splatLook.emissiveIntensity'), mat.emissiveIntensity ?? 1, 0, 20, 0.05, v => update('emissiveIntensity', v)));
         return rows;
     }
 

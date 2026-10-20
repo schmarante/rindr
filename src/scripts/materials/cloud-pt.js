@@ -7,7 +7,7 @@
 //    Without any scattering the ray counts like a transparent pass (the background behind stays the background).
 //  - shadow rays (glass-shadow.patch.wgsl) take the transmittance through the box (marched, jittered).
 //  - density: the same lookups as the raster (field atlas + tiling noise, clouds.js) – must match densityAt there.
-//  - the walk itself: cloud-walk.patch.wgsl (plain text, read by the Vite plugin), the shadow part in
+//  - the walk itself: volume-walk.patch.wgsl (shared with the splat volume, volume-pt.js), the shadow part in
 //    glass-shadow.patch.wgsl
 import { wgslTagFn } from 'three-mesh-bvh/webgpu';
 import { texture3D, sampler } from 'three/tsl';

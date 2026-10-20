@@ -77,6 +77,11 @@ function ensureNoise() {
 }
 
 export const CLOUD_TEXTURES = { atlas, noise, slots: ATLAS_SLOTS };
+// every cloud volume for the path tracer's shared volume walk (volume-pt.js): world → box matrix, (slot, scale, puff,
+// σ per world unit at density 1), (albedo, 1 = shown) – updated each frame (CloudSystem.update)
+export const CLOUD_MEDIA = Array.from({ length: CLOUD_SLOTS }, () => ({
+    inverse: uniform(new THREE.Matrix4()), params: uniform(new THREE.Vector4()), albedo: uniform(new THREE.Vector4()),
+}));
 
 
 // light for the raster approximation: LIGHTS directions towards the light + irradiances – slot 0 = the environment's
@@ -209,7 +214,8 @@ function cloudNode(v) {
 // kind 'sun': orthographic sun camera, value = view depth / far; 'camera': modelSize / distance (like the shafts'
 // override materials). No such point: nothing written.
 const DEPTH_STEPS = 32;
-const depthParams = { sunFar: uniform(1), modelSize: uniform(1) };
+// tau = optical depth where the cloud counts as hit (light shafts 1; the splat composite takes its faint rim too)
+const depthParams = { sunFar: uniform(1), modelSize: uniform(1), tau: uniform(1) };
 function cloudDepthNode(v, kind) {
     return Fn(() => {
         const ortho = kind === 'sun';
@@ -228,7 +234,7 @@ function cloudDepthNode(v, kind) {
             const t = tNear.add(dt.mul(float(i).add(0.5)));
             const p = ro.add(rd.mul(t));
             tau.addAssign(densityAt(lo.add(ld.mul(t)), p, v, true).mul(sigma).mul(dt));
-            If(tau.greaterThanEqual(1), () => { tHit.assign(t); Break(); });
+            If(tau.greaterThanEqual(depthParams.tau), () => { tHit.assign(t); Break(); });
         });
         If(tHit.lessThan(0), () => { Discard(); });
         const p = ro.add(rd.mul(tHit));
@@ -320,6 +326,7 @@ export class CloudSystem {
         groundOn.value = ground !== null;
         groundY.value = ground ?? 0;
         if (this.volumes.some(v => v.mesh.visible)) this._updateLights();
+        this._updateMedia();
         for (const vol of this.volumes) {
             if (vol.mesh.visible && camera) {
                 const local = _local.copy(camera.position).applyMatrix4(_inverse.copy(vol.mesh.matrixWorld).invert());
@@ -339,6 +346,22 @@ export class CloudSystem {
                 this._compute(vol);
             }
         }
+    }
+
+    // the volumes for the path tracer's volume walk (CLOUD_MEDIA): only shown ones count
+    _updateMedia() {
+        this.volumes.forEach((vol, k) => {
+            const m = CLOUD_MEDIA[k];
+            let shown = vol.mesh.visible;
+            for (let o = vol.mesh.parent; o && shown; o = o.parent) shown = o.visible;
+            const v = vol.material.userData.cloudUniforms;
+            m.albedo.value.set(v.albedo.value.r, v.albedo.value.g, v.albedo.value.b, shown ? 1 : 0);
+            if (!shown) return;
+            vol.mesh.updateWorldMatrix(true, false);
+            m.inverse.value.copy(vol.mesh.matrixWorld).invert();
+            const scale = Math.max(v.scale.value, 1e-6);
+            m.params.value.set(vol.slot, scale, v.puff.value, v.density.value * CLOUD_SIGMA / scale);
+        });
     }
 
     // meshes per cloud material (one volume each, in order of appearance)
@@ -453,10 +476,12 @@ export class CloudSystem {
 
     /**
      * Light shafts' depth passes (volume-shafts.js): the boxes draw their cloud's depth (kind 'sun' with the sun
-     * camera's far plane, 'camera' with the shafts' model size) until endDepth()
+     * camera's far plane, 'camera' with the shafts' model size) until endDepth(); tau = optical depth that counts as
+     * the cloud's surface (splat-composite.js: 0.05 – its rim too)
      */
-    beginDepth(kind, value) {
+    beginDepth(kind, value, tau = 1) {
         if (kind === 'sun') depthParams.sunFar.value = value; else depthParams.modelSize.value = value;
+        depthParams.tau.value = tau;
         this._depthPass = true;
         for (const vol of this.volumes) {
             if (!vol.mesh.visible) continue;

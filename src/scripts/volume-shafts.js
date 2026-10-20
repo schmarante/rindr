@@ -18,6 +18,10 @@
 //   resolution (no halo along silhouettes), additively onto the image.
 // - Fisheye (view angle above 100°, fisheye.js): view rays with the same mapping as raster/path tracer, camera
 //   depth from a cube map (six 90° views) unwrapped with it – before, the shafts stayed perspective.
+// - Gaussian splats (attachSplats, viewer.js): left out of both depth passes; instead every step is lit by the light
+//   that comes through them (opacity map of the splats along the sun, splat-opacity.js) – a smoke splat throws shadow
+//   wedges into the beams – and steps behind them count only with their uncovered share (their depth and coverage
+//   from the splat pass, splat-composite.js).
 // Limits: section plane (depth passes ignore the cut).
 import * as THREE from 'three/webgpu';
 import { Fn, texture, cubeTexture, uniform, uv, vec2, vec3, vec4, float, dot, max, min, abs, exp, sqrt, length, normalize, smoothstep, select, positionView, fract, screenCoordinate, Loop, int } from 'three/tsl';
@@ -68,7 +72,10 @@ export class VolumeShafts {
             bias: uniform(0.002),
             texel: uniform(new THREE.Vector2()),
             blurDir: uniform(new THREE.Vector2()),
+            splatLight: uniform(0),   // 1: light through the splats (opacity map)
+            splatCover: uniform(0),   // 1: the splat pass's depth/coverage is current (not with the fisheye)
         };
+        this.splats = null;   // { transmittance(worldNode) → node, depth: Texture } – attachSplats
         const u = this.u;
 
         // depth passes (scene.overrideMaterial)
@@ -78,57 +85,9 @@ export class VolumeShafts {
         // distance from the camera (not view z): the same in every cube face of the fisheye depth
         this.camDepthMaterial.outputNode = vec4(u.modelSize.div(max(length(positionView), 1e-6)), 0, 0, 1);
 
-        const sunDepth = texture(this.sunTarget.texture);
-        const camDepth = texture(this.depthTarget.texture);
-
-        // ray march
+        const camDepth = texture(this.depthTarget.texture);   // blur + upsampling weights below
         this.marchMaterial = new THREE.NodeMaterial();
-        this.marchMaterial.fragmentNode = Fn(() => {
-            const p = uv();
-            const inv = camDepth.sample(p).r;
-            const ndc = vec2(p.x.mul(2).sub(1), float(1).sub(p.y.mul(2)));
-            // view ray: perspective, or the fisheye mapping above PERSPECTIVE_LIMIT (fisheye.js, like raster/path tracer)
-            const viewDir = select(fisheyeOnNode(), fisheyeDirectionNode(ndc), normalize(vec3(ndc.x.mul(u.tanHalf.x), ndc.y.mul(u.tanHalf.y), -1)));
-            // background: far beyond the sphere
-            const d = select(inv.greaterThan(1e-6), u.modelSize.div(max(inv, 1e-6)), u.radius.mul(1e3));
-            const dir = normalize(u.camWorld.mul(vec4(viewDir, 0)).xyz);
-            const tEnd = d;
-            // sphere [t0, t1] ∩ [0, tEnd]
-            const oc = u.camPos.sub(u.center);
-            const b = dot(oc, dir);
-            const disc = b.mul(b).sub(dot(oc, oc).sub(u.radius.mul(u.radius)));
-            const h = sqrt(max(disc, 0));
-            const t0 = max(b.negate().sub(h), 0);
-            const t1 = min(b.negate().add(h), tEnd);
-            const span = max(t1.sub(t0), 0).mul(select(disc.greaterThan(0), 1, 0));
-            // interleaved gradient noise (Jimenez) – start offset per pixel
-            const sc = screenCoordinate.xy;
-            const jitter = fract(float(52.9829189).mul(fract(dot(sc, vec2(0.06711056, 0.00583715)))));
-            const sum = float(0).toVar();
-            Loop({ start: int(0), end: int(STEPS) }, ({ i }) => {
-                const t = t0.add(span.mul(float(i).add(jitter).div(STEPS)));
-                const pos = u.camPos.add(dir.mul(t));
-                const sp = u.sunViewProj.mul(vec4(pos, 1));
-                const suv = vec2(sp.x.mul(0.5).add(0.5), float(0.5).sub(sp.y.mul(0.5)));
-                const ds = u.sunView.mul(vec4(pos, 1)).z.negate().div(u.sunFar);
-                const occluder = sunDepth.sample(suv).r;
-                const inside = suv.x.greaterThan(0).and(suv.x.lessThan(1)).and(suv.y.greaterThan(0)).and(suv.y.lessThan(1));
-                const lit = select(inside.not().or(ds.lessThanEqual(occluder.add(u.bias))), 1, 0);
-                // soft edge of the medium sphere
-                const r = length(pos.sub(u.center)).div(u.radius);
-                const density = float(1).sub(smoothstep(0.5, 1, r));
-                sum.addAssign(float(lit).mul(density));
-            });
-            // lit length in radii × phase (Henyey-Greenstein, isotropic = 1)
-            const g = u.anisotropy;
-            const cosT = dot(dir, u.sunDir);
-            const den = float(1).add(g.mul(g)).sub(g.mul(2).mul(cosT));
-            const phase = float(1).sub(g.mul(g)).div(den.mul(sqrt(max(den, 1e-6))));
-            // × 0.25: visible at the default strength 0.6 without turning into a white wall when facing the sun
-            // (phase up to ~10) – unscaled the shadow wedges drowned in it, × 0.1 was hardly visible (tests Oct. 2026)
-            const amount = sum.div(STEPS).mul(span).div(u.radius).mul(phase).mul(0.25);
-            return vec4(vec3(u.color).mul(amount), 1);
-        })();
+        this._buildMarch();
 
         this.unwrapMaterial = new THREE.NodeMaterial();
         this.unwrapMaterial.fragmentNode = Fn(() => {
@@ -209,6 +168,81 @@ export class VolumeShafts {
 
     get texture() {
         return this.up.texture;
+    }
+
+    /**
+     * Gaussian splats in the shafts (viewer.js, once): transmittance(worldNode) = light through the splats towards the
+     * sun (an opacity map along the shafts' sun), depth = the splat pass's depth attachment (x = Σ view depth · α, w =
+     * coverage). Switched per frame by u.splatLight / u.splatCover.
+     */
+    attachSplats(splats) {
+        this.splats = splats;
+        this._buildMarch();
+    }
+
+    _buildMarch() {
+        const u = this.u, splats = this.splats;
+        const sunDepth = texture(this.sunTarget.texture);
+        const camDepth = texture(this.depthTarget.texture);
+        this.marchMaterial.fragmentNode = Fn(() => {
+            const p = uv();
+            const inv = camDepth.sample(p).r;
+            const ndc = vec2(p.x.mul(2).sub(1), float(1).sub(p.y.mul(2)));
+            // view ray: perspective, or the fisheye mapping above PERSPECTIVE_LIMIT (fisheye.js, like raster/path tracer)
+            const viewDir = select(fisheyeOnNode(), fisheyeDirectionNode(ndc), normalize(vec3(ndc.x.mul(u.tanHalf.x), ndc.y.mul(u.tanHalf.y), -1)));
+            // background: far beyond the sphere
+            const d = select(inv.greaterThan(1e-6), u.modelSize.div(max(inv, 1e-6)), u.radius.mul(1e3));
+            const dir = normalize(u.camWorld.mul(vec4(viewDir, 0)).xyz);
+            const tEnd = d;
+            // sphere [t0, t1] ∩ [0, tEnd]
+            const oc = u.camPos.sub(u.center);
+            const b = dot(oc, dir);
+            const disc = b.mul(b).sub(dot(oc, oc).sub(u.radius.mul(u.radius)));
+            const h = sqrt(max(disc, 0));
+            const t0 = max(b.negate().sub(h), 0);
+            const t1 = min(b.negate().add(h), tEnd);
+            const span = max(t1.sub(t0), 0).mul(select(disc.greaterThan(0), 1, 0));
+            // interleaved gradient noise (Jimenez) – start offset per pixel
+            const sc = screenCoordinate.xy;
+            const jitter = fract(float(52.9829189).mul(fract(dot(sc, vec2(0.06711056, 0.00583715)))));
+            const sum = float(0).toVar();
+            // splats: their depth (view z) and coverage in this pixel – steps behind them count with the uncovered share
+            let splatZ = null, splatCover = null, forward = null;
+            if (splats) {
+                const sd = texture(splats.depth, p);
+                splatCover = select(u.splatCover.greaterThan(0.5), sd.w, float(0)).toVar();
+                splatZ = sd.x.div(max(sd.w, 1e-4)).toVar();
+                forward = normalize(u.camWorld.mul(vec4(0, 0, -1, 0)).xyz).toVar();
+            }
+            Loop({ start: int(0), end: int(STEPS) }, ({ i }) => {
+                const t = t0.add(span.mul(float(i).add(jitter).div(STEPS)));
+                const pos = u.camPos.add(dir.mul(t));
+                const sp = u.sunViewProj.mul(vec4(pos, 1));
+                const suv = vec2(sp.x.mul(0.5).add(0.5), float(0.5).sub(sp.y.mul(0.5)));
+                const ds = u.sunView.mul(vec4(pos, 1)).z.negate().div(u.sunFar);
+                const occluder = sunDepth.sample(suv).r;
+                const inside = suv.x.greaterThan(0).and(suv.x.lessThan(1)).and(suv.y.greaterThan(0)).and(suv.y.lessThan(1));
+                let lit = float(select(inside.not().or(ds.lessThanEqual(occluder.add(u.bias))), 1, 0));
+                if (splats) {
+                    lit = lit.mul(select(u.splatLight.greaterThan(0.5), splats.transmittance(pos), float(1)));
+                    lit = lit.mul(select(dot(pos.sub(u.camPos), forward).greaterThan(splatZ), float(1).sub(splatCover), float(1)));
+                }
+                // soft edge of the medium sphere
+                const r = length(pos.sub(u.center)).div(u.radius);
+                const density = float(1).sub(smoothstep(0.5, 1, r));
+                sum.addAssign(lit.mul(density));
+            });
+            // lit length in radii × phase (Henyey-Greenstein, isotropic = 1)
+            const g = u.anisotropy;
+            const cosT = dot(dir, u.sunDir);
+            const den = float(1).add(g.mul(g)).sub(g.mul(2).mul(cosT));
+            const phase = float(1).sub(g.mul(g)).div(den.mul(sqrt(max(den, 1e-6))));
+            // × 0.25: visible at the default strength 0.6 without turning into a white wall when facing the sun
+            // (phase up to ~10) – unscaled the shadow wedges drowned in it, × 0.1 was hardly visible (tests Oct. 2026)
+            const amount = sum.div(STEPS).mul(span).div(u.radius).mul(phase).mul(0.25);
+            return vec4(vec3(u.color).mul(amount), 1);
+        })();
+        this.marchMaterial.needsUpdate = true;
     }
 
     /** Something in the scene changed (geometry, visibility, matrices) – sun depth map is redrawn */
