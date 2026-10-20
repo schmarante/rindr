@@ -1286,23 +1286,30 @@ async function linkTexturesInPlace(files) {
     const maxSide = textureMaxSide(sources.size + files.length);
     const perMaterial = new Map();   // entry → { maps, color }
     for (const { path, file } of files) {
-        let bitmap;
+        // one picture per orientation the slots need: USD and FBX/MAX count texture rows from the bottom (flipped while
+        // decoding, flipY false – previews turn it back), glTF from the top (info.flipY false: as it is)
+        const bases = new Map();
+        let full;
         try {
-            const full = await createImageBitmap(file, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
-            const s = Math.min(1, maxSide / Math.max(full.width, full.height));
-            bitmap = await createImageBitmap(full, { imageOrientation: 'flipY', premultiplyAlpha: 'none',
-                ...(s < 1 ? { resizeWidth: Math.max(1, Math.round(full.width * s)), resizeHeight: Math.max(1, Math.round(full.height * s)), resizeQuality: 'high' } : {}) });
-            full.close();
+            full = await createImageBitmap(file, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
         } catch (err) {
             console.warn('[Relink] texture not readable:', path, err?.message || err);
             continue;
         }
-        const base = new THREE.Texture(bitmap);
-        base.name = path.split(/[\\/]/).pop();
-        base.flipY = false;
-        base.userData.flippedImage = true;   // flipped while decoding – previews turn it back
+        const s = Math.min(1, maxSide / Math.max(full.width, full.height));
+        const resize = s < 1 ? { resizeWidth: Math.max(1, Math.round(full.width * s)), resizeHeight: Math.max(1, Math.round(full.height * s)), resizeQuality: 'high' } : {};
+        const baseFor = async flip => {
+            if (!bases.has(flip)) {
+                const base = new THREE.Texture(await createImageBitmap(full, { imageOrientation: flip ? 'flipY' : 'from-image', premultiplyAlpha: 'none', ...resize }));
+                base.name = path.split(/[\\/]/).pop();
+                base.flipY = false;
+                if (flip) base.userData.flippedImage = true;
+                bases.set(flip, base);
+            }
+            return bases.get(flip);
+        };
         for (const { entry, key, info } of slots.get(baseName(path))) {
-            const tex = base.clone();   // shares the image; tiling and colour space per slot
+            const tex = (await baseFor(info.flipY !== false)).clone();   // shares the image; tiling and colour space per slot
             tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
             if (info.srgb) tex.colorSpace = THREE.SRGBColorSpace;
             if (info.repeat) tex.repeat.set(info.repeat[0], info.repeat[1]);
@@ -1313,6 +1320,7 @@ async function linkTexturesInPlace(files) {
             m.maps[key] = tex;
             if (key === 'map' && info.color) m.color = info.color;
         }
+        full.close();
     }
     for (const [entry, { maps, color }] of perMaterial) materialManager.linkImportMaps(entry.def.id, maps, { color });
     // no longer missing; kept in the pool for a later reopening (relink, scene file)
@@ -1326,6 +1334,40 @@ async function linkTexturesInPlace(files) {
     updateAssetsTool();
     pathTracing.reset();
     return true;
+}
+
+// A new picture for an image from the file (dropped onto its node in the node editor): every slot of the material that
+// used the same picture gets it, with the old texture's settings (tiling, colour space, orientation – flipped while
+// decoding where the old one counted rows from the bottom); size like the import
+async function replaceImportImage(materialId, key, file) {
+    const entry = materialManager.get(materialId);
+    const old = entry?.def.render?.maps?.[key];
+    if (!old) return;
+    const flip = old.flipY || !!old.userData?.flippedImage;
+    let bitmap;
+    try {
+        const full = await createImageBitmap(file, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+        const s = Math.min(1, textureMaxSide(Object.keys(entry.def.render.maps).length) / Math.max(full.width, full.height));
+        bitmap = await createImageBitmap(full, { imageOrientation: flip ? 'flipY' : 'from-image', premultiplyAlpha: 'none',
+            ...(s < 1 ? { resizeWidth: Math.max(1, Math.round(full.width * s)), resizeHeight: Math.max(1, Math.round(full.height * s)), resizeQuality: 'high' } : {}) });
+        full.close();
+    } catch (err) {
+        showError(err, { title: t('nodeEditor.imageNotReadable', { name: file.name }) });
+        return;
+    }
+    const source = new THREE.TextureSource(bitmap);
+    const maps = {};
+    for (const [k, tex] of Object.entries(entry.def.render.maps)) {
+        if (tex.source !== old.source) continue;
+        const next = tex.clone();
+        next.source = source;
+        next.name = file.name;
+        next.flipY = false;
+        next.userData.flippedImage = flip;
+        next.needsUpdate = true;
+        maps[k] = next;
+    }
+    materialManager.linkImportMaps(materialId, maps);
 }
 
 // A glTF could not be loaded because files are missing (.bin): it stays in the scene as an incomplete
@@ -1582,6 +1624,7 @@ const nodeEditor = lazy(async () => new (await import('./node-editor.js')).NodeE
     // an image from the file that is missing: from its server (on click, like the asset window) or a chosen file
     downloadTexture: url => loadRemoteTextures([url]),
     linkFiles: files => relinkFiles(files),
+    replaceImportMap: (materialId, key, file) => replaceImportImage(materialId, key, file),
 }));
 function openNodeEditor(id) { nodeEditor.get().then(editor => editor.open(id)); }
 function followNodeEditor(id) { if (nodeEditor.now?.isOpen) nodeEditor.now.open(id); }

@@ -6,7 +6,7 @@
 // Every material is a RindrMaterial (toon.js: MeshPhysicalNodeMaterial + optional toon lighting, TSL); the path
 // tracer reads the same physical parameters. Style params: toon (raster light steps), flat (plain base colour), contour (lines, contour.js).
 import * as THREE from 'three/webgpu';
-import { uniform, screenCoordinate, fract, dot, vec2 } from 'three/tsl';
+import { uniform, screenCoordinate, fract, dot, vec2, materialThickness, modelWorldMatrix } from 'three/tsl';
 import { MATERIAL_PRESETS, presetName } from './material-presets.js';
 import { createImportGraph, IMPORT_SLOTS } from './material-graph.js';
 import { t } from './i18n.js';
@@ -79,6 +79,13 @@ const PARAM_BY_KEY = Object.fromEntries(PARAMS.map(p => [p.key, p]));
 // a noise pattern (interleaved gradient noise) – no transparency, no material copies, shadows fade
 // along. Without fade (= 1) every pixel stays. The path tracer ignores the mask.
 const FADE = uniform(1).onObjectUpdate(({ object }) => object.userData.fade ?? 1);
+// Glass thickness (transmission, absorption) is meant in world mm like the other values, the path tracer measures real
+// distances. three's raster refraction takes it in the model's local units and multiplies by the model's scale: an
+// imported model scaled to mm (cm × 10, m × 1000) made the light path through tinted glass that much longer – tinted
+// glass and the watery slime turned black in Default while HQ was right. The scale is divided back out.
+const modelScale = modelWorldMatrix.element(0).xyz.length().add(modelWorldMatrix.element(1).xyz.length()).add(modelWorldMatrix.element(2).xyz.length()).div(3);
+export const WORLD_THICKNESS = materialThickness.div(modelScale.max(1e-6));
+
 export const FADE_MASK = FADE.greaterThan(fract(fract(dot(screenCoordinate.xy, vec2(0.06711056, 0.00583715))).mul(52.9829189)));
 
 let idCounter = 0;
@@ -117,6 +124,7 @@ export class MaterialManager extends EventTarget {
         if (!full.graph && full.source === 'import' && hasGraphMaps(full.render)) full.graph = createImportGraph(full.render.maps, full.render.missing);
         const material = new RindrMaterial();
         material.maskNode = FADE_MASK;
+        material.thicknessNode = WORLD_THICKNESS;
         material.name = full.name;
         material.userData.materialId = full.id;
         const entry = { def: full, material };

@@ -480,6 +480,7 @@
         "imageMissing": "Fehlt – Adresse in der Datei: {url}",
         "downloadImage": "Aus dem Netz laden",
         "linkImage": "Bilddatei wählen…",
+        "imageNotReadable": "„{name}“ ist kein lesbares Bild",
         "replaceImage": "Bild ersetzen…",
         "chooseImage": "Bild wählen…"
     },
