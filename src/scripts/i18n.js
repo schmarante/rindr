@@ -15,15 +15,17 @@
 // Workers (STEP kernel) do not use this module: their messages are technical (English) and only
 // end up in the console or as details behind a translated message.
 
-const FILES = import.meta.glob('../i18n/*.json', { eager: true, import: 'default' });
-const DICTS = Object.fromEntries(Object.entries(FILES).map(([path, dict]) => [path.match(/([\w-]+)\.json$/)[1], dict]));
+// Only the language in use is loaded (plus the reference language for keys it lacks) – each file is a chunk of its own
+// (~60 KB); top-level await: modules importing this one start once the texts are there.
+const FILES = Object.fromEntries(Object.entries(import.meta.glob('../i18n/*.json', { import: 'default' })).map(([path, load]) => [path.match(/([\w-]+)\.json$/)[1], load]));
+const DICTS = {};
 
 export const DEFAULT_LANGUAGE = 'de_de';
 const STORAGE_KEY = 'rindr.lang';
 const DEBUG = typeof location !== 'undefined' && new URLSearchParams(location.search).has('debug');
 
-/** Available languages: [{ code, name }] (name = the language's own "language.name" entry) */
-export const LANGUAGES = Object.keys(DICTS).sort().map(code => ({ code, name: DICTS[code]?.language?.name || code }));
+/** Available language codes */
+export const LANGUAGES = Object.keys(FILES).sort();
 
 // language code de_de -> BCP 47 locale de-DE (number/date formatting, plural rules)
 const toLocale = code => code.replace('_', '-').replace(/-(\w+)$/, (_, r) => '-' + r.toUpperCase());
@@ -36,8 +38,8 @@ function pickLanguage() {
     for (const c of candidates) {
         if (!c) continue;
         const code = c.toLowerCase().replace('-', '_');
-        if (DICTS[code]) return code;
-        const prefix = Object.keys(DICTS).find(k => k.startsWith(code.split('_')[0] + '_'));
+        if (FILES[code]) return code;
+        const prefix = Object.keys(FILES).find(k => k.startsWith(code.split('_')[0] + '_'));
         if (prefix) return prefix;
     }
     return DEFAULT_LANGUAGE;
@@ -45,15 +47,18 @@ function pickLanguage() {
 
 let language = pickLanguage();
 let pluralRules = new Intl.PluralRules(toLocale(language));
+const loadDict = async code => { DICTS[code] ??= await FILES[code](); };
+await Promise.all([loadDict(DEFAULT_LANGUAGE), loadDict(language)]);
 
 /** Current language code (e.g. de_de) */
 export const getLanguage = () => language;
 /** BCP 47 locale of the current language (e.g. de-DE) for toLocaleString & co. */
 export const getLocale = () => toLocale(language);
 
-/** Switch language (stored for the next visit); returns false for unknown codes */
-export function setLanguage(code) {
-    if (!DICTS[code]) return false;
+/** Switch language (stored for the next visit; its file is loaded first); resolves false for unknown codes */
+export async function setLanguage(code) {
+    if (!FILES[code]) return false;
+    await loadDict(code);
     language = code;
     pluralRules = new Intl.PluralRules(toLocale(code));
     try { localStorage.setItem(STORAGE_KEY, code); } catch { /* storage blocked */ }

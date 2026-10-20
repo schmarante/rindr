@@ -1,9 +1,10 @@
-// Asset window (like the links panel in InDesign): which external files the scene uses and whether they
+// Asset window (a links panel like in layout programs): which external files the scene uses and whether they
 // are there – models, HDRI, missing textures of imported models. Missing ones can be relinked: per row
 // via a file dialog, or by dropping files/folders anywhere while it is open (matched by file name).
-// Same style as the other panels; opened via the toolbar or automatically when a scene with missing files
-// is opened.
+// Free window in the style of the panels (movable, resizable – float-window.js); opened via the toolbar or
+// automatically when a scene with missing files is opened.
 import { t } from './i18n.js';
+import { floatWindow } from './float-window.js';
 
 const ICON_CLOSE = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
 const KIND_ICON = {
@@ -12,20 +13,29 @@ const KIND_ICON = {
     file: '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.4"><path d="M4 1.5h5.5L13 5v9.5H4z M9.5 1.5V5H13"/></svg>',
     texture: '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.4"><rect x="2" y="2" width="12" height="12" rx="1.5"/><path d="M2 11l3.5-3.5 3 3 2-2L14 12"/><circle cx="10.5" cy="5.5" r="1"/></svg>',
 };
+const ICON_FOLDER = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.4" stroke-linejoin="round"><path d="M1.5 4V12.5a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V5.5a1 1 0 0 0-1-1H8L6.5 2.5h-4a1 1 0 0 0-1 1z"/></svg>';
+const ICON_DOWNLOAD = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v8M4.5 7 8 10.5 11.5 7M2.5 13.5h11"/></svg>';
 const BUTTON = 'rounded px-2 py-0.5 text-white/80 outline-none transition-colors hover:bg-white/15 hover:text-white';
+const ICON_BUTTON = 'shrink-0 rounded p-1 text-white/70 outline-none transition-colors hover:bg-white/15 hover:text-white disabled:pointer-events-none disabled:opacity-40';
+const ICON_CHECK = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 4.5"/></svg>';
+const ICON_FAILED = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.6" stroke-linecap="round"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>';
+const MB = 1024 * 1024;
 
 /**
- * @param {{ rows(): {kind: 'model'|'hdri'|'texture'|'file', name: string, status: 'ok'|'missing', detail?: string}[],
- *           onFiles(files: {path: string, file: File}[]): void }} handlers
+ * @param {{ rows(): {kind: 'model'|'hdri'|'texture'|'file', name: string, status: 'ok'|'missing', detail?: string, url?: string}[],
+ *           onFiles(files: {path: string, file: File}[]): void,
+ *           remote?: { count(): number, start(urls?: string[]): void, cancel(): void } }} handlers
+ *   remote: missing textures on another server (rows with `url`) – a bar above the list offers to load all of them,
+ *   each row its own (only on that click); while loading the bar shows the current file and a thin progress bar (its
+ *   button cancels), each row its own progress (percent + bar), a tick when loaded, a cross when it failed
  */
-export function createAssetsWindow({ rows, onFiles }) {
+export function createAssetsWindow({ rows, onFiles, remote = null }) {
+    // free window like the editors (float-window.js): move by the header, resize at the edges, place remembered
     const root = document.createElement('div');
-    root.className = 'pointer-events-none fixed inset-0 z-40 flex items-center justify-center p-4 text-xs text-white/90';
     root.hidden = true;
-    const panel = document.createElement('div');
-    panel.className = 'pointer-events-auto flex max-h-[70dvh] w-[min(34rem,100%)] flex-col overflow-hidden rounded-lg bg-black/60 shadow-2xl backdrop-blur-sm transition-colors';
+    const panel = root;
     const head = document.createElement('div');
-    head.className = 'flex shrink-0 items-center gap-2 border-b border-white/10 px-3 py-2';
+    head.className = 'flex shrink-0 cursor-move items-center gap-2 border-b border-white/10 px-3 py-2';
     const title = document.createElement('span');
     title.className = 'flex-1 font-medium';
     title.textContent = t('assets.title');
@@ -37,6 +47,38 @@ export function createAssetsWindow({ rows, onFiles }) {
     close.title = t('setup.close');
     close.onclick = () => hide();
     head.append(title, count, close);
+    // missing textures on another server: load them from the net (only on request)
+    const remoteBar = document.createElement('div');
+    remoteBar.className = 'flex shrink-0 items-center gap-2 border-b border-white/10 bg-sky-500/10 px-3 py-2';
+    remoteBar.hidden = true;
+    const remoteText = document.createElement('span');
+    remoteText.className = 'min-w-0 flex-1 text-white/70';
+    const remoteButton = document.createElement('button');
+    remoteButton.className = 'shrink-0 rounded bg-sky-500/80 px-2.5 py-1 text-white outline-none transition-colors hover:bg-sky-500';
+    remoteButton.textContent = t('assets.loadRemote');
+    remoteButton.title = t('assets.loadRemoteTitle');
+    remoteButton.onclick = () => (remoteBusy ? remote?.cancel() : remote?.start());
+    // while loading: current file + thin bar (like the progress display bottom left)
+    const remoteInfo = document.createElement('div');
+    remoteInfo.className = 'min-w-0 flex-1';
+    const remoteTrack = document.createElement('div');
+    remoteTrack.className = 'mt-1.5 h-1 overflow-hidden rounded bg-white/15';
+    const remoteFill = document.createElement('div');
+    remoteFill.className = 'h-full w-0 rounded bg-amber-400 transition-[width] duration-200';
+    remoteTrack.append(remoteFill);
+    remoteInfo.append(remoteText, remoteTrack);
+    remoteText.className = 'block truncate text-white/70';
+    remoteBar.append(remoteInfo, remoteButton);
+    let remoteBusy = null;   // { label, fraction } while loading
+    // per file while loading: url → { status: 'queued'|'loading'|'done'|'failed', loaded, total }; rows update in place
+    // (at most once per frame – the stream reports every chunk)
+    const fileStates = new Map(), rowSlots = new Map(), dirty = new Set();
+    let frame = 0;
+    const flush = () => {
+        frame = 0;
+        for (const url of dirty) rowSlots.get(url)?.();
+        dirty.clear();
+    };
     const list = document.createElement('div');
     list.className = 'min-h-0 flex-1 overflow-auto p-2';
     const foot = document.createElement('div');
@@ -62,13 +104,13 @@ export function createAssetsWindow({ rows, onFiles }) {
     input.onchange = take(input);
     folderInput.onchange = take(folderInput);
     foot.append(hint, pick, pickFolder, input, folderInput);
-    panel.append(head, list, foot);
-    root.append(panel);
+    panel.append(head, remoteBar, list, foot);
+    const placement = floatWindow(root, head, { storeKey: 'rindr.assets.window', width: 544, height: 520, minWidth: 360, minHeight: 220 });
     document.body.append(root);
 
     // dropping files: the viewer's global drop handler relinks while the window is open (anywhere in the
     // window, the replace/add plane is not shown then)
-    const highlight = on => panel.classList.toggle('bg-sky-900/70', on);
+    const highlight = on => { panel.style.backgroundColor = on ? 'rgb(12 74 110 / 0.7)' : ''; };
     // a file drag anywhere in the window while open (the viewer then shows no drop plane): highlight as target
     const setDragActive = on => { if (!root.hidden || !on) highlight(on); };
 
@@ -77,7 +119,72 @@ export function createAssetsWindow({ rows, onFiles }) {
         const missing = items.filter(r => r.status === 'missing').length;
         count.textContent = missing ? t('assets.missingCount', { count: missing }) : t('assets.allFound');
         count.className = missing ? 'text-amber-300' : 'text-white/50';
+        rowSlots.clear();
         list.replaceChildren(...(items.length ? items.map(row) : [Object.assign(document.createElement('div'), { className: 'p-2 text-white/50', textContent: t('assets.empty') })]));
+        const remoteCount = remote?.count() || 0;
+        remoteBar.hidden = !remoteCount && !remoteBusy;
+        showRemoteBusy();
+        if (!remoteBusy) { remoteText.textContent = t('assets.remoteCount', { count: remoteCount }); remoteText.title = ''; }
+    }
+    function showRemoteBusy() {
+        remoteTrack.hidden = !remoteBusy;
+        // while loading the button cancels
+        remoteButton.textContent = remoteBusy ? t('assets.cancelRemote') : t('assets.loadRemote');
+        remoteButton.title = remoteBusy ? '' : t('assets.loadRemoteTitle');
+        remoteButton.disabled = !!remoteBusy?.linking;   // linking (scene reopens): no longer cancellable
+        remoteButton.className = remoteBusy
+            ? 'shrink-0 rounded bg-white/10 px-2.5 py-1 text-white/80 outline-none transition-colors hover:bg-white/20 disabled:opacity-50'
+            : 'shrink-0 rounded bg-sky-500/80 px-2.5 py-1 text-white outline-none transition-colors hover:bg-sky-500';
+        if (!remoteBusy) return;
+        remoteText.textContent = remoteBusy.label;
+        remoteText.title = remoteBusy.label;
+        remoteFill.style.width = `${Math.round(Math.min(Math.max(remoteBusy.fraction || 0, 0), 1) * 100)}%`;
+        for (const b of list.querySelectorAll('[data-download]')) b.disabled = true;
+    }
+    // the remote state of a row: download button / waiting / percent + bar / tick / cross
+    function remoteSlot(r, name, badge) {
+        const slot = document.createElement('span');
+        slot.className = 'flex w-11 shrink-0 items-center justify-end tabular-nums';
+        const track = document.createElement('div');
+        track.className = 'mt-1 h-0.5 overflow-hidden rounded bg-white/15';
+        const fill = document.createElement('div');
+        fill.className = 'h-full w-0 rounded bg-amber-400';
+        track.append(fill);
+        track.hidden = true;
+        name.append(track);
+        const update = () => {
+            const st = fileStates.get(r.url);
+            track.hidden = st?.status !== 'loading';
+            // loaded (linked when the batch is over): the tick says it – no "missing" badge any more
+            badge.hidden = st?.status === 'done';
+            if (!st || st.status === 'aborted') {
+                const download = document.createElement('button');
+                download.className = ICON_BUTTON;
+                download.innerHTML = ICON_DOWNLOAD;
+                download.title = t('assets.downloadTitle', { name: r.name });
+                download.setAttribute('aria-label', download.title);
+                download.dataset.download = '';
+                download.disabled = !!remoteBusy;
+                download.onclick = () => remote.start([r.url]);
+                slot.replaceChildren(download);
+            } else if (st.status === 'queued') {
+                slot.replaceChildren(Object.assign(document.createElement('span'), { className: 'text-white/35', textContent: t('assets.remoteQueued') }));
+            } else if (st.status === 'loading') {
+                const known = st.total > 0;
+                fill.style.width = known ? `${Math.round(st.loaded / st.total * 100)}%` : '100%';
+                fill.classList.toggle('animate-pulse', !known);
+                slot.replaceChildren(Object.assign(document.createElement('span'), { className: 'text-amber-200',
+                    textContent: known ? `${Math.round(st.loaded / st.total * 100)} %` : `${(st.loaded / MB).toFixed(1)} MB` }));
+            } else {
+                const ok = st.status === 'done';
+                const mark = Object.assign(document.createElement('span'), { className: 'p-1 ' + (ok ? 'text-emerald-300' : 'text-red-300'), innerHTML: ok ? ICON_CHECK : ICON_FAILED });
+                mark.title = ok ? t('assets.remoteDone') : t('assets.remoteFailed');
+                slot.replaceChildren(mark);
+            }
+        };
+        rowSlots.set(r.url, update);
+        update();
+        return slot;
     }
     function row(r) {
         const el = document.createElement('div');
@@ -98,25 +205,59 @@ export function createAssetsWindow({ rows, onFiles }) {
             d.textContent = r.detail;
             name.append(d);
         }
+        if (r.url) {
+            // where it would be loaded from (address in the model)
+            const a = document.createElement('a');
+            a.className = 'block truncate text-sky-300/60 hover:text-sky-300';
+            a.href = r.url;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.textContent = r.url;
+            a.title = r.url;
+            name.append(a);
+        }
         const status = document.createElement('span');
         status.className = 'shrink-0 rounded px-1.5 py-0.5 ' + (r.status === 'missing' ? 'bg-amber-500/25 text-amber-200' : 'bg-emerald-500/20 text-emerald-200');
         status.textContent = r.status === 'missing' ? t('assets.missing') : t('assets.found');
         el.append(icon, name, status);
         if (r.status === 'missing') {
+            if (r.url && remote) el.append(remoteSlot(r, name, status));
             const relink = document.createElement('button');
-            relink.className = BUTTON + ' shrink-0';
-            relink.textContent = t('assets.relink');
+            relink.className = ICON_BUTTON;
+            relink.innerHTML = ICON_FOLDER;
             relink.title = t('assets.relinkTitle', { name: r.name });
+            relink.setAttribute('aria-label', t('assets.relink'));
             relink.onclick = () => input.click();
             el.append(relink);
         }
         return el;
     }
-    function show() { render(); root.hidden = false; }
+    function show() {
+        render();
+        const wasHidden = root.hidden;
+        root.hidden = false;
+        if (wasHidden) placement.apply();   // (re)placed inside the browser window, in front
+    }
     function hide() { root.hidden = true; }
     window.addEventListener('keydown', e => { if (e.key === 'Escape' && !root.hidden) { e.stopPropagation(); hide(); } }, true);
     return {
         show, hide, render, setDragActive,
+        /** progress while remote textures load: { label, fraction, linking? } (null: done) – only the bar is updated */
+        setRemoteBusy(state) {
+            const changed = !!state !== !!remoteBusy;
+            remoteBusy = state;
+            if (changed && !root.hidden) render(); else showRemoteBusy();
+        },
+        /** state of one file (see fileStates); clearRemoteFiles() when the batch is over */
+        setRemoteFile(url, state) {
+            fileStates.set(url, state);
+            dirty.add(url);
+            frame ||= requestAnimationFrame(flush);
+        },
+        clearRemoteFiles() {
+            fileStates.clear();
+            if (!root.hidden) render();
+        },
         get isOpen() { return !root.hidden; },
         refresh() { if (!root.hidden) render(); },
     };

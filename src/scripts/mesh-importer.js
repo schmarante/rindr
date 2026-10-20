@@ -16,7 +16,8 @@ import { t } from './i18n.js';
 import { debugLog } from './log.js';
 
 // IFC (BIM) goes the same way but has its own importer (ifc/ifc-importer.js, web-ifc – loaded on demand)
-export const MESH_EXTENSIONS = ['glb', 'gltf', 'fbx', 'max', '3mf', 'stl', 'ifc', 'ifczip'];
+export const MESH_EXTENSIONS = ['glb', 'gltf', 'fbx', 'max', '3mf', 'usd', 'usda', 'usdc', 'usdz', 'stl', 'ifc', 'ifczip'];
+const USD_FORMATS = ['usd', 'usda', 'usdc', 'usdz'];   // usd-importer.js (loaded on demand)
 
 // The loaders are loaded only with the first glTF/FBX (~170 KB that a STEP-only session never needs).
 // Draco/Basis decoders: three.js references them itself (new URL(…, import.meta.url)) – Vite ships them
@@ -165,6 +166,12 @@ function createResolver(source) {
             urls.push(u);
             return u;
         }
+        // another server (absolute https address): never on its own – the asset window offers to load it
+        // (remote-textures.js); the CSP allows such images since then
+        if (/^https?:\/\//i.test(url) && new URL(url).origin !== location.origin) {
+            missing.add(url);
+            return 'data:,';
+        }
         // loaded via URL (?model=): relative to the model file – missing only if that fails (onError). Absolute local
         // paths of the authoring machine (N:\…, file:, \\server\…) → the file name next to the model (the browser
         // refuses local files: "Not allowed to load local resource")
@@ -232,6 +239,12 @@ async function load(source, ext, renderer, onStatus = () => {}, preloaded = null
             object = new THREE.Group();
             object.add(mesh);
             scale = 1;
+        } else if (USD_FORMATS.includes(ext)) {
+            // USD: layers + references resolved against the supplied files / the server (usd-importer.js)
+            const usd = await (await import('./usd-importer.js')).loadUsd(source, buffer, manager, onStatus);
+            for (const m of usd.missing) missing.add(m);
+            object = usd.object;
+            scale = usd.scale;
         } else if (ext === 'fbx') {
             const loader = new FBXLoader(manager);
             object = loader.parse(buffer, '');
@@ -1038,6 +1051,9 @@ function convertMaterial(m, scale) {
         normalScale: m.normalScale ? m.normalScale.toArray() : null,
         bumpScale: m.bumpScale ?? 1,
         aoMapIntensity: m.aoMapIntensity ?? 1,
+        // slots whose image is missing (USD: usd-mdl.js) – { slot: { url, srgb, repeat?, offset?, rotation?, color? } };
+        // the viewer links a file handed in later into them without reopening the scene
+        missing: m.userData?.usdMissingMaps ? structuredClone(m.userData.usdMissingMaps) : null,
     };
     return { name: m.name, params, render };
 }

@@ -27,6 +27,15 @@
         "3mf": {
             "not3mf": "Keine gültige 3MF-Datei"
         },
+        "usd": {
+            "noLayer": "Keine USD-Ebene in der Datei gefunden",
+            "parseError": "USD-Datei nicht lesbar: {message}",
+            "layers": "Lese USD-Ebenen… ({count})",
+            "composing": "Baue USD-Szene auf…",
+            "welding": "Verschweiße Eckpunkte… {done}/{total}",
+            "textures": "Lade Texturen… {done}/{total}",
+            "layersMissing": "Die Teile der Szene liegen in weiteren USD-Dateien, die fehlen: {files} – den ganzen Ordner ins Fenster ziehen"
+        },
         "max": {
             "notMax": "Keine gültige MAX-Datei",
             "skipped": {
@@ -88,7 +97,7 @@
             "delete": "Löschen",
             "deleteInUse": "Wird noch verwendet",
             "deleteTitle": "Material entfernen",
-            "importedTextures": "Texturen aus der Datei: {names} – im Node-Graph als „Import-Textur“. Direkt verbunden werden die Werte unten mit der Textur multipliziert.",
+            "importedTextures": "Texturen aus der Datei: {names} – im Node-Graph als „Bild-Textur (aus der Datei)“. Direkt verbunden werden die Werte unten mit der Textur multipliziert.",
             "graphControlled": "Wird über den Node-Graph gesteuert – Werte unten gelten für nicht verbundene Eingänge.",
             "importFailed": "Import fehlgeschlagen: {message}",
             "importErrorTitle": "Import fehlgeschlagen",
@@ -243,6 +252,7 @@
             "sss-jelly": "Gelee",
             "sss-wax": "Wachs",
             "sss-slime": "Schleim",
+            "sss-slime-watery": "Schleim, wässrig",
             "marble-glow-green": "Leuchtmarmor grün",
             "marble-glow-blue": "Leuchtmarmor blau",
             "marble-glow-amber": "Leuchtmarmor bernstein",
@@ -465,6 +475,11 @@
         },
         "missingTexture": "(fehlt)",
         "importTextureTitle": "Textur aus der importierten Datei",
+        "imageFromFile": "aus der Datei",
+        "imageFromFileNode": "Bild-Textur (aus der Datei)",
+        "imageMissing": "Fehlt – Adresse in der Datei: {url}",
+        "downloadImage": "Aus dem Netz laden",
+        "linkImage": "Bilddatei wählen…",
         "replaceImage": "Bild ersetzen…",
         "chooseImage": "Bild wählen…"
     },
@@ -538,7 +553,7 @@
                 }
             },
             "importMap": {
-                "label": "Import-Textur",
+                "label": "Bild-Textur",
                 "outputs": {
                     "color": "Farbe",
                     "r": "R",
@@ -1580,25 +1595,31 @@
         "loadingFile": "Lade Datei…",
         "optimizing": "Optimiere Darstellung…",
         "tessellatingParts": "Tesselliere Bauteile…",
-        "error": "Fehler: {message}",
-        "ptError": "Pathtracing-Fehler: {message}",
+        "errorTitle": "Fehler",
+        "loadErrorTitle": "„{name}“ konnte nicht geladen werden",
+        "ptErrorTitle": "Pathtracing-Fehler",
         "buildingScene": {
             "one": "{count} Bauteil – baue Szene…",
             "other": "{count} Bauteile – baue Szene…"
         },
         "noFaces": "Keine Flächen im Modell",
-        "missingTextures": "Nicht gefunden: {files} – Texturen mit ins Fenster ziehen",
+        "missingTexturesTitle": {
+            "one": "{count} Textur fehlt",
+            "other": "{count} Texturen fehlen"
+        },
+        "missingTextures": "Nicht gefunden: {files} – im Asset-Fenster verknüpfen oder mit ins Fenster ziehen",
+        "openAssets": "Assets öffnen",
         "decodingHdri": "Dekodiere HDRI…",
         "loadingHdri": "Lade HDRI…",
         "loadModelFirst": "Erst ein Modell laden",
         "sceneBelongsTo": "Szene gehört zu „{name}“ – Modell ins Fenster ziehen",
         "restoringScene": "Stelle Szene wieder her…",
-        "sceneError": "Szene: {message}",
+        "sceneErrorTitle": "Szene konnte nicht geöffnet werden",
         "invalidJson": "{name}: kein gültiges JSON",
         "notSceneOrMaterials": "{name}: weder Szene noch Materialien",
         "unsupportedFormat": "Format nicht unterstützt ({extensions})",
         "dropHint": "Datei ins Fenster ziehen",
-        "dropFormats": "STEP (.stp/.step) · glTF/GLB · FBX · MAX (.max) · 3MF · STL · PLY · BIM (.ifc/.ifczip) · BCF-Tickets (.bcfzip) · Gaussian Splats (.ply/.sog)",
+        "dropFormats": "STEP (.stp/.step) · glTF/GLB · FBX · MAX (.max) · 3MF · USD (.usd/.usdz) · STL · PLY · BIM (.ifc/.ifczip) · BCF-Tickets (.bcfzip) · Gaussian Splats (.ply/.sog)",
         "qualityReduced": "Großes Modell (≈ {triangles} Dreiecke bei „{from}“) – Qualität automatisch auf „{to}“ gesenkt",
         "modelTooLarge": "Modell zu groß: ≈ {triangles} Dreiecke bei „{quality}“ (Grenze {limit}) – Laden abgebrochen",
         "qualityTooFine": "„{quality}“ ist für dieses Modell zu fein (≈ {triangles} Dreiecke, Grenze {limit}) – Qualität bleibt „{previous}“",
@@ -1620,7 +1641,7 @@
         },
         "relinkUnmatched": "{count} verknüpft – passt zu keiner fehlenden Datei: {files}",
         "sceneSaved": "Szene gespeichert: {name}",
-        "sceneSaveError": "Szene konnte nicht gespeichert werden: {message}",
+        "sceneSaveErrorTitle": "Szene konnte nicht gespeichert werden",
         "noRenderer": "Dieser Browser kann hier weder WebGPU noch WebGL2 nutzen (keine Grafikkarte bzw. Hardwarebeschleunigung aus) – der Viewer kann nicht starten.",
         "bcfLoaded": "{count} BCF-Tickets aus {name} geladen",
         "bcfSaved": "BCF gespeichert: {name}",
@@ -1656,6 +1677,8 @@
         },
         "samples": "{samples} / {maxSamples} Samples",
         "percent": "{value} %",
+        "seconds": "{value} s",
+        "minutes": "{minutes}:{seconds} min",
         "detail": {
             "unsupported": "Browser ohne WebGPU – nur Rasterizer",
             "bufferTooSmall": "Modell zu groß für die GPU-Puffer – Qualität reduzieren",
@@ -1858,7 +1881,7 @@
         "sceneGraph": "Scene Graph",
         "drop": {
             "title": "Datei hier ablegen",
-            "hint": "STEP (.stp/.step), glTF/GLB, FBX, MAX (.max), 3MF, STL, PLY, BIM (.ifc/.ifczip), BCF-Tickets (.bcfzip), Gaussian Splats (.ply/.sog) – Texturen und .bin-Dateien einfach mit hineinziehen",
+            "hint": "STEP (.stp/.step), glTF/GLB, FBX, MAX (.max), 3MF, USD (.usd/.usdz), STL, PLY, BIM (.ifc/.ifczip), BCF-Tickets (.bcfzip), Gaussian Splats (.ply/.sog) – Texturen und .bin-Dateien einfach mit hineinziehen",
             "addHint": "Mehrere Modelle: zusammen oder nacheinander hineinziehen – sie erscheinen nebeneinander",
             "replaceTitle": "Modelle ersetzen",
             "replaceHint": "Die geladenen Modelle werden entfernt und durch die neue Datei ersetzt",
@@ -1873,7 +1896,7 @@
     },
     "about": {
         "title": "Über",
-        "description": "Your Local 3D-File Viewer – STEP, glTF, FBX, MAX, 3MF, STL, BIM (IFC, BCF) und Gaussian Splats direkt im Browser, mit Pathtracing in Echtzeit.",
+        "description": "Your Local 3D-File Viewer – STEP, glTF, FBX, MAX, 3MF, USD, STL, BIM (IFC, BCF) und Gaussian Splats direkt im Browser, mit Pathtracing in Echtzeit.",
         "author": "Autor",
         "email": "E-Mail",
         "version": "Version",
@@ -1924,6 +1947,27 @@
         "cancel": "Abbrechen"
     },
     "assets": {
+        "cancelRemote": "Abbrechen",
+        "remoteQueued": "wartet",
+        "remoteDone": "Geladen",
+        "remoteFailed": "Nicht ladbar",
+        "remoteLinking": {
+            "one": "Verknüpfe {count} Textur …",
+            "other": "Verknüpfe {count} Texturen …"
+        },
+        "remoteFile": "Lade {name} ({done}/{total})",
+        "downloadTitle": "„{name}“ aus dem Netz laden",
+        "loadRemote": "Aus dem Netz laden",
+        "loadRemoteTitle": "Lädt die Bilder von den Servern, auf die das Modell verweist – verkleinert auf die Größe, die der Import ohnehin verwendet",
+        "remoteCount": {
+            "one": "{count} fehlende Textur liegt auf einem anderen Server",
+            "other": "{count} fehlende Texturen liegen auf einem anderen Server"
+        },
+        "remoteProgress": "Lade Texturen aus dem Netz… {done}/{total}",
+        "remoteFailedTitle": {
+            "one": "{count} Textur nicht ladbar",
+            "other": "{count} Texturen nicht ladbar"
+        },
         "title": "Assets",
         "missingCount": {
             "one": "{count} fehlt",

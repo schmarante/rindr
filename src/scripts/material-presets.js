@@ -56,6 +56,9 @@ export const MATERIAL_PRESETS = [
     { libraryId: 'sss-jelly', category: 'subsurface', params: { color: '#ffffff', metalness: 0, roughness: 0.06, ior: 1.35, thickness: 1, subsurface: 1, subsurfaceColor: '#e8203a', subsurfaceRadius: 8 } },
     // slime: wet gloss (clearcoat), very translucent, a faint own glow
     { libraryId: 'sss-slime', category: 'subsurface', params: { color: '#ffffff', metalness: 0, roughness: 0.02, ior: 1.33, thickness: 1, clearcoat: 1, clearcoatRoughness: 0.01, subsurface: 1, subsurfaceColor: '#3fd60a', subsurfaceRadius: 20, emissive: '#2a9a00', emissiveIntensity: 0.3 } },
+    // watery slime (user's reference: a jelly cube one sees the skeleton in): clear like water, deep yellow-green by
+    // absorption with the depth (thin parts light, thick ones dark), wet gloss on top, a faint glow of its own
+    { libraryId: 'sss-slime-watery', category: 'subsurface', params: { color: '#d6f36c', metalness: 0, roughness: 0.04, transmission: 1, ior: 1.34, thickness: 40, attenuationColor: '#5fae10', attenuationDistance: 45, clearcoat: 1, clearcoatRoughness: 0.02, emissive: '#2f7000', emissiveIntensity: 0.06 } },
     { libraryId: 'sss-wax', category: 'subsurface', params: { color: '#f4ead6', metalness: 0, roughness: 0.4, ior: 1.45, thickness: 1, subsurface: 1, subsurfaceColor: '#f1dfbf', subsurfaceRadius: 1.5 } },
 
     // --- glowing marble: dark polished stone, light veins inside (marble.js; scale in mm) ---
@@ -87,7 +90,19 @@ export const MATERIAL_PRESETS = [
 ];
 
 // further presets per category in presets/<category>.js (default export: array like above, optionally with a node
-// graph – presets/graph.js builds it); they register themselves here (Vite glob)
-for (const mod of Object.values(import.meta.glob('./presets/*.js', { eager: true }))) {
-    if (Array.isArray(mod.default)) MATERIAL_PRESETS.push(...mod.default);
+// graph – presets/graph.js builds it); loaded when the library is shown for the first time (loadLibraryPresets) – the
+// start does not need them (~100 KB). The list above stays in the start bundle: material types take their templates
+// from it, scenes restore without the library.
+const CATEGORY_MODULES = import.meta.glob('./presets/*.js');
+let loading = null;
+let complete = false;
+/** all presets there (library shown before)? */
+export const libraryComplete = () => complete;
+/** load the category presets once; resolves when MATERIAL_PRESETS holds all of them */
+export function loadLibraryPresets() {
+    loading ??= Promise.all(Object.values(CATEGORY_MODULES).map(load => load())).then(mods => {
+        for (const mod of mods) if (Array.isArray(mod.default)) MATERIAL_PRESETS.push(...mod.default);
+        complete = true;
+    });
+    return loading;
 }

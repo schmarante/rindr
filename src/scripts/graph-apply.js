@@ -174,7 +174,7 @@ export class GraphApplier {
      * the last results are kept by signature (unchanged nodes come back at once).
      */
     async previewNode(def, nodeId, port, size = 128) {
-        const sig = nodeSignature(def.graph, nodeId, port) + '|' + size;
+        const sig = nodeSignature(def.graph, nodeId, port, def.render?.maps) + '|' + size;
         const cache = this.previews ??= new Map();
         if (cache.has(sig)) return cache.get(sig);
         const run = async () => {

@@ -228,16 +228,19 @@ export const IMPORT_SLOTS = {
 const PASS_PORT = Object.fromEntries(Object.values(IMPORT_SLOTS));
 
 /**
- * Graph for an imported material: one import node per texture, connected to its inputs
- * (one texture for several maps, e.g. glTF metallicRoughness -> one node, B -> metalness, G -> roughness).
+ * Graph for an imported material: one image node from the file per texture, connected to its inputs
+ * (one texture for several maps, e.g. glTF metallicRoughness -> one node, B -> metalness, G -> roughness). Images the
+ * file names but that are missing (render.missing) get their node too – shown with a warning and the way to load
+ * them; until they are there the material's own values apply (evaluateGraph skips them).
  * @param {{ [mapKey]: THREE.Texture }} maps
+ * @param {{ [mapKey]: { url: string } }} [missing]
  */
-export function createImportGraph(maps) {
+export function createImportGraph(maps, missing = null) {
     const graph = createGraph();
-    const byTexture = new Map();   // texture -> node
+    const byTexture = new Map();   // texture (or address of a missing image) -> node
     let row = 0;
     for (const [key, [input, port]] of Object.entries(IMPORT_SLOTS)) {
-        const tex = maps?.[key];
+        const tex = maps?.[key] || (missing?.[key] ? 'missing:' + missing[key].url : null);
         if (!tex) continue;
         let node = byTexture.get(tex);
         if (!node) {
@@ -298,6 +301,8 @@ export function evaluateGraph(graph, textures, importMaps = {}, { domain = null 
         if (!from || !nodes.has(from.node)) continue;
         // import texture directly at the matching input -> pass the original texture through
         const src = nodes.get(from.node);
+        // image from the file still missing: the material's own value (not a grey stand-in)
+        if (src.type === 'importMap' && !importMaps[src.params?.map]) continue;
         const tex = src.type === 'importMap' && importMaps[src.params?.map];
         if (tex && PASS_PORT[input.key] === from.port) {
             result[input.key] = { kind: 'map', texture: tex };
@@ -325,14 +330,15 @@ export function evaluateNode(graph, nodeId, port, textures, importMaps = {}, { b
     return convert(outputOf(nodeId, port), out.type === 'float' ? 'float' : 'color');
 }
 
-/** Signature of the subgraph before an output of a node – same signature = same preview */
-export function nodeSignature(graph, nodeId, port) {
-    return evaluator(graph, null).signature(nodeId, port);
+/** Signature of the subgraph before an output of a node – same signature = same preview; importMaps: the material's
+ * textures from the file (an image from the file counts by its picture, not only by its slot name) */
+export function nodeSignature(graph, nodeId, port, importMaps = null) {
+    return evaluator(graph, null, importMaps).signature(nodeId, port);
 }
 
 // shared by evaluateGraph/evaluateNode: node lookup, links (input -> source output), cached output evaluation
 // (ctx = evalNode context; null when only the signature is needed) and the signature of a subgraph
-function evaluator(graph, ctx) {
+function evaluator(graph, ctx, importMaps = ctx?.importMaps) {
     const nodes = new Map(graph.nodes.map(n => [n.id, n]));
     const linkTo = new Map(graph.links.map(l => [l.to.node + ':' + l.to.port, l.from]));
     const cache = new Map();
@@ -363,7 +369,11 @@ function evaluator(graph, ctx) {
             const from = linkTo.get(nodeId + ':' + i.key);
             return i.key + '=' + (from ? signature(from.node, from.port, seen) : '');
         });
-        return `${n.type}:${port}(${JSON.stringify(n.params || {})};${ins.join(',')})`;
+        // image from the file: its picture (two import materials with the same slot shared previews and baked maps;
+        // a picture linked later had the old preview)
+        const tex = n.type === 'importMap' ? importMaps?.[n.params?.map] : null;
+        const picture = n.type === 'importMap' ? '#' + (tex ? (tex.source?.uuid ?? tex.uuid) : 'missing') : '';
+        return `${n.type}:${port}(${JSON.stringify(n.params || {})}${picture};${ins.join(',')})`;
     };
     return { nodes, linkTo, outputOf, signature };
 }

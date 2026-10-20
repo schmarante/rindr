@@ -27,6 +27,15 @@
         "3mf": {
             "not3mf": "Not a valid 3MF file"
         },
+        "usd": {
+            "noLayer": "No USD layer found in the file",
+            "parseError": "USD file not readable: {message}",
+            "layers": "Reading USD layers… ({count})",
+            "composing": "Composing the USD scene…",
+            "welding": "Welding vertices… {done}/{total}",
+            "textures": "Loading textures… {done}/{total}",
+            "layersMissing": "The parts of the scene are in further USD files that are missing: {files} – drop the whole folder into the window"
+        },
         "max": {
             "notMax": "Not a valid MAX file",
             "skipped": {
@@ -88,7 +97,7 @@
             "delete": "Delete",
             "deleteInUse": "Still in use",
             "deleteTitle": "Remove material",
-            "importedTextures": "Textures from the file: {names} – in the node graph as “Imported texture”. When connected directly, the values below are multiplied with the texture.",
+            "importedTextures": "Textures from the file: {names} – in the node graph as “Image texture (from the file)”. When connected directly, the values below are multiplied with the texture.",
             "graphControlled": "Controlled by the node graph – the values below apply to unconnected inputs.",
             "importFailed": "Import failed: {message}",
             "importErrorTitle": "Import failed",
@@ -243,6 +252,7 @@
             "sss-jelly": "Jelly",
             "sss-wax": "Wax",
             "sss-slime": "Slime",
+            "sss-slime-watery": "Slime, watery",
             "marble-glow-green": "Glowing marble green",
             "marble-glow-blue": "Glowing marble blue",
             "marble-glow-amber": "Glowing marble amber",
@@ -465,6 +475,11 @@
         },
         "missingTexture": "(missing)",
         "importTextureTitle": "Texture from the imported file",
+        "imageFromFile": "from the file",
+        "imageFromFileNode": "Image texture (from the file)",
+        "imageMissing": "Missing – address in the file: {url}",
+        "downloadImage": "Load from the net",
+        "linkImage": "Choose image file…",
         "replaceImage": "Replace image…",
         "chooseImage": "Choose image…"
     },
@@ -538,7 +553,7 @@
                 }
             },
             "importMap": {
-                "label": "Imported texture",
+                "label": "Image texture",
                 "outputs": {
                     "color": "Colour",
                     "r": "R",
@@ -1580,25 +1595,31 @@
         "loadingFile": "Loading file…",
         "optimizing": "Optimizing display…",
         "tessellatingParts": "Tessellating parts…",
-        "error": "Error: {message}",
-        "ptError": "Path tracing error: {message}",
+        "errorTitle": "Error",
+        "loadErrorTitle": "Could not load “{name}”",
+        "ptErrorTitle": "Path tracing error",
         "buildingScene": {
             "one": "{count} part – building scene…",
             "other": "{count} parts – building scene…"
         },
         "noFaces": "No faces in the model",
-        "missingTextures": "Not found: {files} – drag the textures into the window as well",
+        "missingTexturesTitle": {
+            "one": "{count} texture missing",
+            "other": "{count} textures missing"
+        },
+        "missingTextures": "Not found: {files} – relink them in the asset window or drop them into the window",
+        "openAssets": "Open assets",
         "decodingHdri": "Decoding HDRI…",
         "loadingHdri": "Loading HDRI…",
         "loadModelFirst": "Load a model first",
         "sceneBelongsTo": "Scene belongs to “{name}” – drag the model into the window",
         "restoringScene": "Restoring scene…",
-        "sceneError": "Scene: {message}",
+        "sceneErrorTitle": "Could not open the scene",
         "invalidJson": "{name}: not valid JSON",
         "notSceneOrMaterials": "{name}: neither a scene nor materials",
         "unsupportedFormat": "Format not supported ({extensions})",
         "dropHint": "Drag a file into the window",
-        "dropFormats": "STEP (.stp/.step) · glTF/GLB · FBX · MAX (.max) · 3MF · STL · PLY · BIM (.ifc/.ifczip) · BCF issues (.bcfzip) · Gaussian splats (.ply/.sog)",
+        "dropFormats": "STEP (.stp/.step) · glTF/GLB · FBX · MAX (.max) · 3MF · USD (.usd/.usdz) · STL · PLY · BIM (.ifc/.ifczip) · BCF issues (.bcfzip) · Gaussian splats (.ply/.sog)",
         "qualityReduced": "Large model (≈ {triangles} triangles at “{from}”) – quality automatically reduced to “{to}”",
         "modelTooLarge": "Model too large: ≈ {triangles} triangles at “{quality}” (limit {limit}) – loading cancelled",
         "qualityTooFine": "“{quality}” is too fine for this model (≈ {triangles} triangles, limit {limit}) – quality stays “{previous}”",
@@ -1620,7 +1641,7 @@
         },
         "relinkUnmatched": "{count} linked – does not match any missing file: {files}",
         "sceneSaved": "Scene saved: {name}",
-        "sceneSaveError": "Could not save the scene: {message}",
+        "sceneSaveErrorTitle": "Could not save the scene",
         "noRenderer": "This browser can use neither WebGPU nor WebGL2 here (no graphics card or hardware acceleration off) – the viewer cannot start.",
         "bcfLoaded": "{count} BCF issues loaded from {name}",
         "bcfSaved": "BCF saved: {name}",
@@ -1656,6 +1677,8 @@
         },
         "samples": "{samples} / {maxSamples} samples",
         "percent": "{value} %",
+        "seconds": "{value} s",
+        "minutes": "{minutes}:{seconds} min",
         "detail": {
             "unsupported": "Browser without WebGPU – rasterizer only",
             "bufferTooSmall": "Model too large for the GPU buffers – reduce the quality",
@@ -1858,7 +1881,7 @@
         "sceneGraph": "Scene Graph",
         "drop": {
             "title": "Drop file here",
-            "hint": "STEP (.stp/.step), glTF/GLB, FBX, MAX (.max), 3MF, STL, PLY, BIM (.ifc/.ifczip), BCF issues (.bcfzip), Gaussian splats (.ply/.sog) – just drop textures and .bin files along with it",
+            "hint": "STEP (.stp/.step), glTF/GLB, FBX, MAX (.max), 3MF, USD (.usd/.usdz), STL, PLY, BIM (.ifc/.ifczip), BCF issues (.bcfzip), Gaussian splats (.ply/.sog) – just drop textures and .bin files along with it",
             "addHint": "Several models: drop them together or one after another – they appear side by side",
             "replaceTitle": "Replace models",
             "replaceHint": "The loaded models are removed and replaced by the new file",
@@ -1873,7 +1896,7 @@
     },
     "about": {
         "title": "About",
-        "description": "Your Local 3D-File Viewer – STEP, glTF, FBX, MAX, 3MF, STL, BIM (IFC, BCF) and Gaussian splats right in the browser, with real-time path tracing.",
+        "description": "Your Local 3D-File Viewer – STEP, glTF, FBX, MAX, 3MF, USD, STL, BIM (IFC, BCF) and Gaussian splats right in the browser, with real-time path tracing.",
         "author": "Author",
         "email": "Email",
         "version": "Version",
@@ -1924,6 +1947,27 @@
         "cancel": "Cancel"
     },
     "assets": {
+        "cancelRemote": "Cancel",
+        "remoteQueued": "waiting",
+        "remoteDone": "Loaded",
+        "remoteFailed": "Could not be loaded",
+        "remoteLinking": {
+            "one": "Linking {count} texture …",
+            "other": "Linking {count} textures …"
+        },
+        "remoteFile": "Loading {name} ({done}/{total})",
+        "downloadTitle": "Load “{name}” from the net",
+        "loadRemote": "Load from the net",
+        "loadRemoteTitle": "Loads the images from the servers the model points to \u2013 scaled down to the size the import uses anyway",
+        "remoteCount": {
+            "one": "{count} missing texture is on another server",
+            "other": "{count} missing textures are on another server"
+        },
+        "remoteProgress": "Loading textures from the net\u2026 {done}/{total}",
+        "remoteFailedTitle": {
+            "one": "{count} texture could not be loaded",
+            "other": "{count} textures could not be loaded"
+        },
         "title": "Assets",
         "missingCount": {
             "one": "{count} missing",

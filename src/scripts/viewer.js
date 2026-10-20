@@ -5,7 +5,6 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { ViewCube } from './view-cube.js';
 import { ContourPass } from './materials/contour.js';
 import { ScreenFade } from './screen-fade.js';
-import { HdriEditor } from './hdri/hdri-editor.js';
 import { HdriRenderService } from './hdri/hdri-service.js';
 import { studioPreset, cloneHdri } from './hdri/hdri-model.js';
 import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
@@ -25,26 +24,20 @@ import { GrassSystem } from './materials/grass.js';
 import { EdgeSystem } from './materials/edges.js';
 import { GraphApplier } from './graph-apply.js';
 import { isUvMode } from './material-graph.js';
-import { NodeEditor } from './node-editor.js';
 import { createStudioEnvironment, renderStudioEnvironment, loadHdri, listHdris, VignetteBackground } from './environment.js';
 import { PathTracingView } from './pathtracer.js';
-import { runBenchmark, showBenchmarkResult } from './benchmark.js';
 import { SceneGraph } from './scene-graph.js';
 import { Highlighter } from './highlight.js';
 import { ObjectTransformer, applyTransform, ensureTransform, restoreTransform, captureTransform } from './transform.js';
 import { History } from './history.js';
 import { DepthOfField } from './dof.js';
 import { LensEffects } from './lens-effects.js';
-import { DebugStats } from './debug-stats.js';
 import { t, applyDom, getLocale } from './i18n.js';
 import { QuadMenu } from './quad-menu.js';
 import { Exploder } from './explode.js';
-import { KiRender, describeMaterial } from './ki-render.js';
 import { kiSettings } from './ki-gemini.js';
 import { PhysicalCamera } from 'three-gpu-pathtracer/src/objects/PhysicalCamera.js';
 import { captureState, applyState, matchesModel, sceneModels, SCENE_FORMAT } from './scene-state.js';
-import { createAssetsWindow } from './assets.js';
-import { createImageExport } from './image-export.js';
 import { encodePng } from './png-encode.js';
 import { setFisheye, RasterFisheye, patchRaycaster, viewAngle, setViewAngle, fisheyeEnabled, fisheyeProject } from './fisheye.js';
 import { PropertiesPanel } from './properties.js';
@@ -69,10 +62,10 @@ import { findOutliers, formatLength } from './outliers.js';   // patches the pat
 import { ViewModeBar } from './view-mode.js';
 import { SetupMenu } from './setup-menu.js';
 import { buildAbout } from './about.js';
-import { SplatMesh } from './splat/splat-mesh.js';
 import { loadSplats, isSplatSource, SPLAT_EXTENSIONS } from './splat/splat-loader.js';
-import { analyzeSplatScene } from './splat/splat-camera.js';
 import { debugLog } from './log.js';
+import { isRemoteTexture } from './remote-textures.js';
+import { textureMaxSide } from './memory-budget.js';
 
 // Workaround three.js r186 (cf. mrdoob/three.js#34608, fix announced for r187):
 // ViewportTextureNode creates its own framebuffer texture per render target via clone()
@@ -97,6 +90,16 @@ const MODEL_FILE = new URLSearchParams(location.search).get('model');
 // sub folders allowed (e.g. ?model=folder/scene.gltf – .bin/textures are resolved relative to it)
 const MODEL_URL = `${import.meta.env.BASE_URL}models/${(MODEL_FILE || '').split('/').map(encodeURIComponent).join('/')}`;
 // OIDN weights (Apache 2.0, from RenderKit/oidn-weights)
+// a part of the UI whose module is loaded on first use: get() → Promise of the instance (created once), now → the
+// instance if it exists already (calls that only matter for an open window)
+function lazy(create) {
+    let promise = null, instance = null;
+    return {
+        get: () => (promise ??= create().then(x => (instance = x)).catch(err => { promise = null; throw err; })),
+        get now() { return instance; },
+    };
+}
+
 const DENOISE_WEIGHTS_URL = `${import.meta.env.BASE_URL}oidn/rt_hdr_alb_nrm.tza`;
 
 const loadingEl = document.getElementById('loading');
@@ -114,8 +117,31 @@ function showDropHint() {
     loadingEl.replaceChildren(title, formats);
     loadingEl.style.opacity = '1';
 }
+// the preloader of the page (index.astro): complete the sweep from where its animation stands, fade out, remove
+let preloaderFrames = 0, preloaderStart = null, preloaderGone = false;
+function hidePreloader() {
+    const el = document.getElementById('preloader');
+    if (!el || el.dataset.closing) return;
+    el.dataset.closing = '1';
+    const fill = el.querySelector('[data-fill]');
+    fill.style.setProperty('--preloader-sweep', getComputedStyle(fill).getPropertyValue('--preloader-sweep'));   // freeze the sweep where it is
+    fill.style.animation = 'none';
+    fill.getBoundingClientRect();   // apply before the transition starts
+    fill.style.transition = '--preloader-sweep 0.35s ease-out';
+    fill.style.setProperty('--preloader-sweep', '100%');
+    setTimeout(() => { el.style.opacity = '0'; }, 300);
+    setTimeout(() => el.remove(), 900);
+}
 function hideStatus() {
     loadingEl.style.opacity = '0';
+}
+// errors as a notice card at the top (like the other notices) instead of the status line; the empty scene gets its
+// drop hint back once the failed model is cleared away
+function showError(err, { name = '', title = '' } = {}) {
+    console.error(err);
+    hideStatus();
+    showNotice({ id: 'error', icon: 'warning', title: title || (name ? t('status.loadErrorTitle', { name: displayName(name) }) : t('status.errorTitle')), message: err?.message || String(err) });
+    setTimeout(() => { if (!rootGroup && !missingModels.length) showDropHint(); });
 }
 // short message, disappears by itself (unless it has been replaced in the meantime)
 let flashTimer = 0;
@@ -194,7 +220,7 @@ async function acquireAdapter() {
     if (!navigator.gpu) return null;
     let a = await navigator.gpu.requestAdapter(GPU_OPTIONS).catch(() => null);
     for (let i = 0; !a && gpuRecovering && i < 20; i++) {
-        if (i === 0) showStatus(t('gpu.waiting'));
+        if (i === 0) { hidePreloader(); showStatus(t('gpu.waiting')); }
         await new Promise(r => setTimeout(r, 500));
         a = await navigator.gpu.requestAdapter(GPU_OPTIONS).catch(() => null);
     }
@@ -216,6 +242,7 @@ try {
 } catch (err) {
     // neither WebGPU nor WebGL2 (e.g. no GPU and no software renderer in the browser): say so instead of a blank page
     console.error(err);
+    hidePreloader();
     showStatus(t('status.noRenderer'));
     throw err;
 }
@@ -383,8 +410,10 @@ renderer.onError = info => {
         loggedGpuErrors.add(info.message);
         console.error(`WebGPU ${info.type}: ${info.message}`);
     }
-    // only buffer/memory errors concern the path tracer (model too large)
-    if (pathTracing.ready && /buffer|binding size|out of memory/i.test(info.message || '')) pathTracing.fail(info.message);
+    // only buffer/memory errors concern the path tracer (model too large) – not raster errors that merely mention a
+    // buffer ("Vertex buffer slot 0 … was not set" of an overlay pass switched HQ off)
+    const message = info.message || '';
+    if (pathTracing.ready && /buffer|binding size|out of memory/i.test(message) && !/vertex buffer slot|index buffer/i.test(message)) pathTracing.fail(message);
 };
 // During movement (mouse pressed, zoom) rasterizer, afterwards path tracing again
 controls.addEventListener('start', () => pathTracing.beginInteraction());
@@ -991,7 +1020,7 @@ window.addEventListener('keydown', e => {
     if (key === 'x' && !e.ctrlKey && !e.metaKey && !e.altKey && !splatMesh) toggleExplode();
     if (e.key === 'Escape') {
         if (focusPick) endFocusPick();
-        else if (nodeEditor.isOpen) nodeEditor.close(); else sceneGraph.select(null);
+        else if (nodeEditor.now?.isOpen) nodeEditor.now.close(); else sceneGraph.select(null);
     }
     // A: frame the camera on the selection (was F – F is the front view now), H: hide the selection
     if (key === 'a' && !e.ctrlKey && !e.metaKey && !e.altKey && isModelEntry(selection)) frameObject(selection.object);
@@ -1127,12 +1156,60 @@ function checkAssets(state) {
     updateAssetsTool();
 }
 let missingHdri = null;
+// missing textures on another server (absolute https addresses in the model) – the asset window and the notice offer
+// to load them; only on that click (remote-textures.js), then relinked like dropped files
+function remoteTextureUrls() {
+    const urls = new Set();
+    for (const rm of runtimeModels()) {
+        const textures = rm.main ? model?.missingTextures : extraModels.find(x => x.id === rm.id)?.missingTextures;
+        for (const tex of textures || []) if (isRemoteTexture(tex)) urls.add(tex);
+    }
+    return [...urls];
+}
+let remoteLoading = false;
+// urls: all missing ones on other servers, or the one of a row in the asset window
+async function loadRemoteTextures(urls = remoteTextureUrls()) {
+    if (remoteLoading || !urls.length) return;
+    remoteLoading = true;
+    remoteAbort = new AbortController();
+    const progress = ({ done, total, current }) => {
+        const label = current ? t('assets.remoteFile', { name: current, done, total }) : t('assets.remoteProgress', { done, total });
+        assetsWindow.setRemoteBusy({ label, fraction: done / total });
+        showProgress(t('assets.remoteProgress', { done, total }), done / total);
+    };
+    try {
+        for (const url of urls) assetsWindow.setRemoteFile(url, { status: 'queued' });
+        progress({ done: 0, total: urls.length, current: '' });
+        const { downloadTextures } = await import('./remote-textures.js');
+        const { files, failed, aborted } = await downloadTextures(urls, {
+            signal: remoteAbort.signal, onProgress: progress, onFile: (url, state) => assetsWindow.setRemoteFile(url, state),
+        });
+        hideProgress();
+        if (failed.length) showNotice({ id: 'remote-textures', icon: 'warning', title: t('assets.remoteFailedTitle', { count: failed.length }),
+            message: failed.slice(0, 3).map(u => u.split('/').pop()).join(', ') + (failed.length > 3 ? ` (+${failed.length - 3})` : '') });
+        // cancelled: the files finished so far are linked all the same (they are ticked)
+        if (aborted) for (const url of urls) if (!files.some(f => f.url === url) && !failed.includes(url)) assetsWindow.setRemoteFile(url, { status: 'aborted' });
+        if (files.length) {
+            // the scene is reopened with the files (relinkFiles) – the bar stays until that is done (not cancellable)
+            assetsWindow.setRemoteBusy({ label: t('assets.remoteLinking', { count: files.length }), fraction: 1, linking: true });
+            await relinkFiles(files.map(({ path, file }) => ({ path, file })));
+        }
+    } finally {
+        remoteLoading = false;
+        remoteAbort = null;
+        hideProgress();
+        assetsWindow.setRemoteBusy(null);
+        assetsWindow.clearRemoteFiles();
+    }
+}
+let remoteAbort = null;
 function assetRows() {
     const rows = [];
     for (const rm of runtimeModels()) {
         rows.push({ kind: 'model', name: rm.file.name, status: 'ok' });
         const textures = rm.main ? model?.missingTextures : extraModels.find(x => x.id === rm.id)?.missingTextures;
-        for (const tex of textures || []) rows.push({ kind: 'texture', name: tex.split(/[\\/]/).pop(), status: 'missing', detail: t('assets.textureOf', { model: rm.file.name }) });
+        for (const tex of textures || []) rows.push({ kind: 'texture', name: tex.split(/[\\/]/).pop(), status: 'missing', detail: t('assets.textureOf', { model: rm.file.name }),
+            url: isRemoteTexture(tex) ? tex : undefined });
     }
     for (const m of missingModels) {
         // incomplete (glTF without .bin): the model itself is there, its files are not
@@ -1176,6 +1253,8 @@ async function relinkApply(files) {
     }
     const others = files.filter(f => f !== hdrFile);
     if (!others.length) return;
+    // only textures that import materials are still waiting for: into exactly those slots – no reopening
+    if (await linkTexturesInPlace(others)) return;
     // models (missing ones and existing ones with missing textures): reopen the current scene
     const state = captureState(sceneStateContext);
     // nothing loaded yet (only placeholders, e.g. a .gltf without its .bin): the current camera belongs to
@@ -1183,6 +1262,70 @@ async function relinkApply(files) {
     if (!runtimeModels().length && !openedScene) delete state.camera;
     // the loaded models stay the same files – reload anyway so missing textures/.bin get picked up
     await openSceneFile(state, others, { reload: true });
+}
+
+// Textures handed in for slots that import materials remember as missing (render.missing – USD so far): decoded
+// (scaled like the import, flipped while decoding – USD texture coordinates start bottom left) and set into exactly
+// those slots; the model is not reopened (it was: a single texture loaded from the net rebuilt the whole scene –
+// geometry, welding, every material). Only when every file belongs to such a slot and no model is missing; otherwise
+// the scene is reopened as before. Returns whether it handled the files.
+async function linkTexturesInPlace(files) {
+    if (missingModels.length) return false;
+    const slots = new Map();   // file name → [{ entry, key, info }]
+    for (const entry of materialManager.list) {
+        for (const [key, info] of Object.entries(entry.def.render?.missing || {})) {
+            const name = baseName(info.url);
+            if (!slots.has(name)) slots.set(name, []);
+            slots.get(name).push({ entry, key, info });
+        }
+    }
+    if (!files.every(f => slots.has(baseName(f.path)))) return false;
+    // size: like the import – all textures of the import materials together
+    const sources = new Set();
+    for (const entry of materialManager.list) for (const tex of Object.values(entry.def.render?.maps || {})) sources.add(tex.source);
+    const maxSide = textureMaxSide(sources.size + files.length);
+    const perMaterial = new Map();   // entry → { maps, color }
+    for (const { path, file } of files) {
+        let bitmap;
+        try {
+            const full = await createImageBitmap(file, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+            const s = Math.min(1, maxSide / Math.max(full.width, full.height));
+            bitmap = await createImageBitmap(full, { imageOrientation: 'flipY', premultiplyAlpha: 'none',
+                ...(s < 1 ? { resizeWidth: Math.max(1, Math.round(full.width * s)), resizeHeight: Math.max(1, Math.round(full.height * s)), resizeQuality: 'high' } : {}) });
+            full.close();
+        } catch (err) {
+            console.warn('[Relink] texture not readable:', path, err?.message || err);
+            continue;
+        }
+        const base = new THREE.Texture(bitmap);
+        base.name = path.split(/[\\/]/).pop();
+        base.flipY = false;
+        base.userData.flippedImage = true;   // flipped while decoding – previews turn it back
+        for (const { entry, key, info } of slots.get(baseName(path))) {
+            const tex = base.clone();   // shares the image; tiling and colour space per slot
+            tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+            if (info.srgb) tex.colorSpace = THREE.SRGBColorSpace;
+            if (info.repeat) tex.repeat.set(info.repeat[0], info.repeat[1]);
+            if (info.offset) tex.offset.set(info.offset[0], info.offset[1]);
+            if (info.rotation) tex.rotation = info.rotation * Math.PI / 180;
+            tex.needsUpdate = true;
+            const m = perMaterial.get(entry) || perMaterial.set(entry, { maps: {}, color: null }).get(entry);
+            m.maps[key] = tex;
+            if (key === 'map' && info.color) m.color = info.color;
+        }
+    }
+    for (const [entry, { maps, color }] of perMaterial) materialManager.linkImportMaps(entry.def.id, maps, { color });
+    // no longer missing; kept in the pool for a later reopening (relink, scene file)
+    const linked = new Set(files.map(f => baseName(f.path)));
+    const stillMissing = list => (list || []).filter(u => !linked.has(baseName(u)));
+    if (model) model.missingTextures = stillMissing(model.missingTextures);
+    for (const x of extraModels) { x.missingTextures = stillMissing(x.missingTextures); if (x.content) x.content.warn = x.missingTextures.length; }
+    filePool = [...filePool, ...files];
+    refreshSceneGraph();
+    assetsWindow.render();
+    updateAssetsTool();
+    pathTracing.reset();
+    return true;
 }
 
 // A glTF could not be loaded because files are missing (.bin): it stays in the scene as an incomplete
@@ -1200,7 +1343,7 @@ function registerIncomplete(source, err, sceneIndex) {
     missingModels.push({ sceneIndex: index, name: source.name, source, files,
         chunk: saved || { file: { name: source.name, type: source.type, size: source.main?.size ?? null }, placement: null, transforms: {}, hidden: [], deleted: [], assignments: {} } });
     missingModels.sort((a, b) => a.sceneIndex - b.sceneIndex);
-    if (!(err instanceof MissingFilesError)) { console.error(err); refreshSceneGraph(); assetsWindow.show(); updateAssetsTool(); showStatus(t('status.error', { message: err.message })); return; }
+    if (!(err instanceof MissingFilesError)) { refreshSceneGraph(); assetsWindow.show(); updateAssetsTool(); showError(err, { name: source.name }); return; }
     const names = files.map(f => f.uri.split(/[\\/]/).pop());
     showStatus(t('status.modelIncomplete', { name: source.name, files: names.slice(0, 3).join(', ') + (names.length > 3 ? ` (+${names.length - 3})` : '') }));
     refreshSceneGraph();
@@ -1430,17 +1573,21 @@ const materialPanel = new MaterialPanel(document.getElementById('materials'), ma
         if (meshes.length) sceneGraph.selectMeshes(meshes, t('viewer.objectsWithMaterial', { name: entry.def.name }));
     },
 });
-// node previews: one output baked small in the bake queue; output node = the material's sphere from the panel
-const nodeEditor = new NodeEditor(document.getElementById('node-editor'), materialManager, {
+// node previews: one output baked small in the bake queue; output node = the material's sphere from the panel.
+// Loaded with its first opening (lazy).
+const nodeEditor = lazy(async () => new (await import('./node-editor.js')).NodeEditor(document.getElementById('node-editor'), materialManager, {
     preview: (def, nodeId, port, size) => graphApplier.previewNode(def, nodeId, port, size),
     materialThumb: (id, size) => materialPanel.thumbUrl(id, size),
     onThumbReady: cb => materialPanel.thumbs?.addEventListener('ready', cb),
-});
-function openNodeEditor(id) { nodeEditor.open(id); }
-function followNodeEditor(id) { if (nodeEditor.isOpen) nodeEditor.open(id); }
+    // an image from the file that is missing: from its server (on click, like the asset window) or a chosen file
+    downloadTexture: url => loadRemoteTextures([url]),
+    linkFiles: files => relinkFiles(files),
+}));
+function openNodeEditor(id) { nodeEditor.get().then(editor => editor.open(id)); }
+function followNodeEditor(id) { if (nodeEditor.now?.isOpen) nodeEditor.now.open(id); }
 
-// --- HDRI editor (hdri/hdri-editor.js): own procedural HDRIs, free window ---
-const hdriEditor = new HdriEditor(document.getElementById('hdri-editor'), {
+// --- HDRI editor (hdri/hdri-editor.js): own procedural HDRIs, free window – loaded with its first opening ---
+const hdriEditor = lazy(async () => new (await import('./hdri/hdri-editor.js')).HdriEditor(document.getElementById('hdri-editor'), {
     service: hdriService,
     // rendered image of a description: shown if that HDRI is (still) the environment
     onApply: (texture, { final, id }) => {
@@ -1460,7 +1607,7 @@ const hdriEditor = new HdriEditor(document.getElementById('hdri-editor'), {
     onDelete: async doc => {
         const ok = await confirmDialog({ title: t('hdriEditor.deleteTitle'), message: t('hdriEditor.deleteMessage', { name: doc.name }), confirmLabel: t('hdriEditor.delete'), danger: true });
         if (!ok) return;
-        hdriEditor.close();
+        hdriEditor.now?.close();
         environment.custom.delete(doc.id);
         if (environment.hdri === CUSTOM_HDRI + doc.id) await environment.select('');
         if (selection?.kind === 'environment') properties.show(selection);
@@ -1468,11 +1615,11 @@ const hdriEditor = new HdriEditor(document.getElementById('hdri-editor'), {
     onDrag: active => (active ? pathTracing.beginInteraction() : pathTracing.endInteraction()),
     record: step => history.record(step),
     onClose: () => { if (selection?.kind === 'environment') properties.show(selection); },   // pencil no longer active
-});
+}));
 /** open the HDRI editor for a description (add: new one) – it becomes the environment */
 async function editCustomHdri(doc, { add = false } = {}) {
     if (add) environment.custom.set(doc.id, doc);
-    hdriEditor.open(doc);
+    (await hdriEditor.get()).open(doc);
     if (environment.hdri !== CUSTOM_HDRI + doc.id) {
         const before = environment.hdri;
         await environment.select(CUSTOM_HDRI + doc.id);
@@ -1486,7 +1633,7 @@ const hdriApi = {
     // new HDRI from the studio template
     create: () => editCustomHdri(studioPreset(t('hdriEditor.newName', { n: environment.custom.size + 1 })), { add: true }),
     edit: id => { const doc = environment.custom.get(id); if (doc) editCustomHdri(doc); },
-    isOpen: id => hdriEditor.isOpen && hdriEditor.docId === id,
+    isOpen: id => !!hdriEditor.now?.isOpen && hdriEditor.now.docId === id,
 };
 
 let selection = null;   // selected Scene Graph entry
@@ -2495,8 +2642,7 @@ async function retessellateParts() {
             showLimitError(err, 'parts');
             return;
         }
-        console.error(err);
-        showStatus(t('status.error', { message: err.message }));
+        showError(err);
     }
 }
 
@@ -2788,9 +2934,10 @@ const waitForImage = (onProgress, isOpen) => new Promise((resolve, reject) => {
         };
         tick();
     });
-const kiRender = new KiRender({
+// loaded with the first click on KI (lazy)
+const kiRender = lazy(async () => { const { KiRender, describeMaterial } = await import('./ki-render.js'); return new KiRender({
     getTitle: () => model?.name.replace(/\.[^.]+$/, '') || '',
-    waitForImage: onProgress => waitForImage(onProgress, () => kiRender.isOpen),
+    waitForImage: onProgress => waitForImage(onProgress, () => !!kiRender.now?.isOpen),
     capture: captureFrame,
     // materials of the visible parts with their part names, most frequent first
     getMaterials: () => {
@@ -2823,12 +2970,12 @@ const kiRender = new KiRender({
         const background = t(env.background ? 'viewer.ki.environment.backgroundHdri' : 'viewer.ki.environment.backgroundStudio');
         return t(env.ground ? 'viewer.ki.environment.sentenceGround' : 'viewer.ki.environment.sentence', { light, background });
     },
-});
+}); });
 viewModeBar.addAction({
     label: t('toolbar.ki'), title: t('toolbar.kiTitle'),
     // sparkle icon (large + small star), stroke style like the tool icons
     icon: '<svg viewBox="0 0 16 16" class="size-4 fill-none stroke-current" stroke-width="1.3" stroke-linejoin="round"><path d="M6.5 2.5l1.1 3.4 3.4 1.1-3.4 1.1-1.1 3.4-1.1-3.4L2 7l3.4-1.1z"/><path d="M12 9.5l.55 1.45L14 11.5l-1.45.55L12 13.5l-.55-1.45L10 11.5l1.45-.55z"/></svg>',
-    onClick: () => kiRender.start(),
+    onClick: () => kiRender.get().then(k => k.start()),
 });
 
 // Hide/show the UI (key U) and fullscreen – buttons on the right of the view-mode bar.
@@ -2851,20 +2998,35 @@ sceneFileInput.onchange = async () => {
     if (state) { closeBcf(); openSceneFile(state); }
 };
 document.body.append(sceneFileInput);
-const imageExport = createImageExport({
+// export dialog: loaded with its first opening (lazy)
+const imageExport = lazy(async () => (await import('./image-export.js')).createImageExport({
     exportImage,
     getName: () => (sceneFileName?.replace(/\.scene\.json$|\.json$/i, '') || model?.name.replace(/\.[^.]+$/, '') || 'rindr'),
     getSize: () => ({ width: renderer.domElement.width, height: renderer.domElement.height }),
     maxSize: maxExportSize,
-});
-viewModeBar.addTool({ icon: ICON_IMAGE, title: t('toolbar.exportImage'), onClick: () => { if (rootGroup) imageExport.open(); else showStatus(t('status.loadModelFirst')); }, group: 'scene' });
+}));
+viewModeBar.addTool({ icon: ICON_IMAGE, title: t('toolbar.exportImage'), onClick: () => { if (rootGroup) imageExport.get().then(dialog => dialog.open()); else showStatus(t('status.loadModelFirst')); }, group: 'scene' });
 // save/open scene: hidden for now (config.js SCENE.saveOpen)
 if (SCENE.saveOpen) {
     viewModeBar.addTool({ icon: ICON_SAVE, title: t('toolbar.saveScene'), onClick: () => saveScene(), group: 'scene' });
     viewModeBar.addTool({ icon: ICON_OPEN, title: t('toolbar.loadScene'), onClick: () => sceneFileInput.click(), group: 'scene' });
 }
 // asset window (links): which files the scene uses, relink missing ones
-assetsWindow = createAssetsWindow({ rows: () => assetRows(), onFiles: files => relinkFiles(files) });
+// asset window (assets.js): loaded with its first opening. Until then the calls that only matter for an open window do
+// nothing; state for the loading bar waits for the module (in order)
+const assetsModule = lazy(async () => (await import('./assets.js')).createAssetsWindow({ rows: () => assetRows(), onFiles: files => relinkFiles(files),
+    remote: { count: () => remoteTextureUrls().length, start: urls => loadRemoteTextures(urls), cancel: () => remoteAbort?.abort() } }));
+assetsWindow = {
+    show: () => { assetsModule.get().then(w => w.show()); },
+    hide: () => assetsModule.now?.hide(),
+    render: () => assetsModule.now?.render(),
+    refresh: () => assetsModule.now?.refresh(),
+    setDragActive: on => assetsModule.now?.setDragActive(on),
+    setRemoteBusy: state => { assetsModule.get().then(w => w.setRemoteBusy(state)); },
+    setRemoteFile: (url, state) => { assetsModule.get().then(w => w.setRemoteFile(url, state)); },
+    clearRemoteFiles: () => { assetsModule.get().then(w => w.clearRemoteFiles()); },
+    get isOpen() { return !!assetsModule.now?.isOpen; },
+};
 const ICON_ASSETS = '<svg viewBox="0 0 16 16" class="size-4 fill-none stroke-current" stroke-width="1.4" stroke-linecap="round"><path d="M6.5 9.5l3-3"/><path d="M7 4.5l1.3-1.3a2.5 2.5 0 0 1 3.5 3.5L10.5 8"/><path d="M9 11.5l-1.3 1.3a2.5 2.5 0 0 1-3.5-3.5L5.5 8"/></svg>';
 const setAssetsTool = viewModeBar.addTool({ icon: ICON_ASSETS, title: t('toolbar.assets'), onClick: () => (assetsWindow.isOpen ? assetsWindow.hide() : assetsWindow.show()), group: 'scene' });
 updateAssetsTool = () => {
@@ -2937,8 +3099,7 @@ async function openBcfFile(file, files = []) {
         await addBcfModels(names, files);
         return true;
     } catch (err) {
-        console.error(err);
-        showStatus(t('status.error', { message: err.message }));
+        showError(err);
         return true;
     }
 }
@@ -3332,8 +3493,7 @@ async function updatePathTracingScene() {
         await pathTracing.setScene(scene, camera);
         snapshotPathTracingScene();
     } catch (err) {
-        console.error(err);
-        showStatus(t('status.ptError', { message: err.message }));
+        showError(err, { title: t('status.ptErrorTitle') });
     }
     // scene changed during the build (new model) -> again
     if (version !== sceneVersion) {
@@ -3789,8 +3949,12 @@ async function loadModel(reload = false, safe = false) {
         }
         importNotices(result, model.name);
         assetsWindow.refresh();
-        if (missing?.length) showStatus(t('status.missingTextures', { files: missing.slice(0, 3).map(u => u.split(/[\\/]/).pop()).join(', ') +
-            (missing.length > 3 ? ` (+${missing.length - 3})` : '') }));
+        // missing textures: a notice with the way to the asset window (relink there or drop them into the window) –
+        // not while that window is open (relinking some of them reloads the scene)
+        if (missing?.length && !assetsWindow.isOpen) showNotice({ id: 'missing-textures', icon: 'warning', title: t('status.missingTexturesTitle', { count: missing.length }),
+            message: t('status.missingTextures', { files: missing.slice(0, 3).map(u => u.split(/[\\/]/).pop()).join(', ') + (missing.length > 3 ? ` (+${missing.length - 3})` : '') }),
+            actions: [{ label: t('status.openAssets'), primary: true, onClick: () => assetsWindow.show() },
+                ...(remoteTextureUrls().length ? [{ label: t('assets.loadRemote'), onClick: () => { assetsWindow.show(); loadRemoteTextures(); } }] : [])] });
         updatePathTracingScene();
 
         setupGUI();
@@ -3804,7 +3968,7 @@ async function loadModel(reload = false, safe = false) {
         if (err.name === 'AbortError') debugLog('[Load] aborted:', model.name);
         else if (err instanceof MissingFilesError || model.incomplete) registerIncomplete(model, err, mainSceneIndex);
         else if (err instanceof ImportLimitError) showLimitError(err, reload ? 'reload' : 'open');
-        else { console.error(err); showStatus(t('status.error', { message: err.message })); }
+        else showError(err, { name: model.name });
         // discard the half-built model; on re-tessellation the old one stays
         if (root === rootGroup) clearModel(); else disposeRoot(root);
         // materials of the previous model (replaced) must not stay behind – a relinked model would otherwise
@@ -3821,6 +3985,8 @@ async function loadSplatScene() {
     const root = new THREE.Group();
     let buildError = null;   // building in onBegin failed (e.g. too many splats) – shown instead of "aborted"
     try {
+        // splat mesh and scan analysis: only loaded with the first Gaussian splat file
+        const [{ SplatMesh }, { analyzeSplatScene }] = await Promise.all([import('./splat/splat-mesh.js'), import('./splat/splat-camera.js')]);
         hideStatus();
         stopAnimation();
         invalidatePathTracing();
@@ -3948,7 +4114,7 @@ async function loadSplatScene() {
         hideProgress();
         if (buildError) err = buildError;
         if (err.name === 'AbortError') debugLog('[Load] aborted:', model.name);
-        else { console.error(err); showStatus(t('status.error', { message: err.message })); }
+        else showError(err, { name: model.name });
         if (root === rootGroup) clearModel(); else disposeRoot(root);
         if (!rootGroup) { primaryContent = null; refreshSceneGraph(); setViewMode(viewMode); }
     }
@@ -3987,6 +4153,7 @@ function setupGUI() {
                 benchButton.enable(false);
                 controls.enabled = false;
                 try {
+                    const { runBenchmark, showBenchmarkResult } = await import('./benchmark.js');
                     showBenchmarkResult(await runBenchmark(pathTracing, { renderer, onProgress: showProgress }));
                     hideProgress();
                 } catch (err) {
@@ -4231,9 +4398,8 @@ async function loadExtraModel(source, { sceneIndex, placement: savedPlacement } 
         disposeRoot(root);
         if (err.name === 'AbortError') return;
         if (err instanceof MissingFilesError || source.incomplete) { registerIncomplete(source, err, sceneIndex); return; }
-        console.error(err);
-        showStatus(err instanceof ImportLimitError ? t('status.modelTooLarge', { triangles: formatCount(err.triangles), limit: formatCount(err.limit), quality: t(`tessellation.quality.${err.quality}`) })
-            : t('status.error', { message: err.message }));
+        if (err instanceof ImportLimitError) { console.error(err); showStatus(t('status.modelTooLarge', { triangles: formatCount(err.triangles), limit: formatCount(err.limit), quality: t(`tessellation.quality.${err.quality}`) })); }
+        else showError(err, { name });
     }
 }
 // first loaded IFC model (main model first): its root position (in the models' space) + its shift to the origin
@@ -4340,9 +4506,9 @@ const sceneStateContext = {
     setSlicerEnabled: v => { slicer.enabled = v; pathTracing.setSuspended(v); updateSlicerHelper(); },
     afterRestore: () => {
         // HDRI editor: show the restored description of the edited HDRI, close it if that one is gone
-        if (hdriEditor.isOpen) {
-            const doc = environment.custom.get(hdriEditor.docId);
-            if (doc) hdriEditor.setDoc(doc); else hdriEditor.close();
+        if (hdriEditor.now?.isOpen) {
+            const doc = environment.custom.get(hdriEditor.now.docId);
+            if (doc) hdriEditor.now.setDoc(doc); else hdriEditor.now.close();
         }
         setup.refresh();
         pathTracing.updateTransforms();
@@ -4389,8 +4555,7 @@ async function saveScene() {
                 sceneFileName = handle.name;
                 flashStatus(t('status.sceneSaved', { name: handle.name }), 3000);
             } catch (err) {
-                console.error(err);
-                showStatus(t('status.sceneSaveError', { message: err.message }));
+                showError(err, { title: t('status.sceneSaveErrorTitle') });
             }
             return;
         }
@@ -4417,9 +4582,8 @@ async function restoreScene(state, { force = false } = {}) {
         if (warnings.length) { console.warn('[Scene]', warnings); showStatus(warnings.join(' · ')); }
         else hideStatus();
     } catch (err) {
-        console.error(err);
         hideProgress();
-        showStatus(t('status.sceneError', { message: err.message }));
+        showError(err, { title: t('status.sceneErrorTitle') });
     }
 }
 
@@ -4446,14 +4610,34 @@ const extOf = name => name.split('.').pop().toLowerCase();
 // Several model files at once: one model per main file (STEP/glTF/GLB/FBX); textures/.bin go with every
 // glTF/FBX (resolved by path/name). Sorted by name.
 function modelsFromFiles(files) {
-    const mains = files.filter(f => MAIN_EXTENSIONS.includes(extOf(f.path))).sort((a, b) => a.path.localeCompare(b.path));
-    const rest = files.filter(f => !MAIN_EXTENSIONS.includes(extOf(f.path)));
+    // USD layers (.usd/.usda/.usdc): a scene is usually a folder of layers referencing each other – one root layer is
+    // the model, the others go with it (usd-importer.js loads the referenced ones)
+    const usdRoot = usdRootLayer(files);
+    const isMain = f => MAIN_EXTENSIONS.includes(extOf(f.path)) && (!USD_LAYER_EXTENSIONS.includes(extOf(f.path)) || f === usdRoot);
+    const mains = files.filter(isMain).sort((a, b) => a.path.localeCompare(b.path));
+    const rest = files.filter(f => !isMain(f));
     return mains.map(main => modelFromFiles([main, ...rest])).filter(Boolean);
+}
+const USD_LAYER_EXTENSIONS = ['usd', 'usda', 'usdc'];
+// root layer of dropped USD files: the one highest up in the folders; then the one named like its folder; then the
+// largest (a stage file next to component layers)
+function usdRootLayer(files) {
+    const layers = files.filter(f => USD_LAYER_EXTENSIONS.includes(extOf(f.path)));
+    if (!layers.length) return null;
+    const depth = f => f.path.split('/').length;
+    const stem = p => p.split('/').pop().replace(/\.[^.]+$/, '').toLowerCase();
+    const folderNamed = f => { const parts = f.path.split('/'); return parts.length > 1 && stem(f.path) === parts[parts.length - 2].toLowerCase(); };
+    return layers.sort((a, b) => depth(a) - depth(b) || Number(folderNamed(b)) - Number(folderNamed(a)) || (b.file.size || 0) - (a.file.size || 0))[0];
 }
 function modelFromFiles(files) {
     // main file: STEP before glTF/GLB before FBX; the rest (textures, .bin) is passed along
     const main = MAIN_EXTENSIONS.map(ext => files.find(f => extOf(f.path) === ext)).find(Boolean);
+    // USD: the root layer chosen above (modelsFromFiles passes it first), not just any layer of the folder
+    if (main && USD_LAYER_EXTENSIONS.includes(extOf(main.path)) && USD_LAYER_EXTENSIONS.includes(extOf(files[0].path))) return modelFromFilesWith(files[0], files);
     if (!main) return null;
+    return modelFromFilesWith(main, files);
+}
+function modelFromFilesWith(main, files) {
     const name = main.path.split('/').pop();
     if (STEP_EXTENSIONS.includes(extOf(name))) return { name, type: 'step', url: null, content: null, file: main.file };
     if (SPLAT_EXTENSIONS.includes(extOf(name))) return { name, type: 'splat', main: main.file, files: [] };
@@ -4742,8 +4926,31 @@ const PT_PHASES = {
 };
 const STATIC_PHASES = new Set(['done', 'waiting', 'unsupported', 'error', 'suspended']);
 const FULL_BAR_PHASES = new Set(['preview', 'motion', 'bvh', 'compiling', 'denoise-loading', 'suspended']);
+// render time of the last image: from the moment the path tracer renders at full quality until "done" (denoising
+// included) – scene build, BVH, shader compiling and the reduced frames while orbiting do not count; a restart (camera,
+// material …) starts the clock again
+const ptTimer = { start: null, samples: 0, ms: null };
+const RENDER_PHASES = new Set(['rendering', 'denoise-loading', 'denoising']);
+function trackRenderTime(s) {
+    const now = performance.now();
+    if (RENDER_PHASES.has(s.phase)) {
+        if (ptTimer.start === null || s.samples < ptTimer.samples) { ptTimer.start = now; ptTimer.ms = null; }
+        ptTimer.samples = s.samples;
+    } else if (s.phase === 'done') {
+        if (ptTimer.start !== null && ptTimer.ms === null) ptTimer.ms = now - ptTimer.start;
+    } else {
+        ptTimer.start = null;
+    }
+}
+// 12.4 s / 2:05 min (number format of the language)
+function formatRenderTime(ms) {
+    const s = ms / 1000;
+    if (s < 60) return t('pathtracing.seconds', { value: s.toLocaleString(getLocale(), { minimumFractionDigits: 1, maximumFractionDigits: 1 }) });
+    return t('pathtracing.minutes', { minutes: Math.floor(s / 60), seconds: String(Math.floor(s % 60)).padStart(2, '0') });
+}
 function updatePathTracingStatus() {
     const s = prepare.shown ? { phase: 'bvh', progress: 0, samples: 0, maxSamples: 0 } : pathTracing.getStatus();
+    trackRenderTime(s);
     const phase = PT_PHASES[s.phase];
     const pct = Math.floor(s.progress * 100);
     const samples = t('pathtracing.samples', { samples: Math.floor(s.samples), maxSamples: s.maxSamples });
@@ -4781,6 +4988,7 @@ function updatePathTracingStatus() {
         case 'done':
             value = t('pathtracing.percent', { value: 100 });
             detail = s.denoise ? t('pathtracing.detail.doneDenoised', { samples }) : samples;
+            if (ptTimer.ms !== null) detail += ' · ' + formatRenderTime(ptTimer.ms);
             break;
     }
     const key = `${s.phase}|${value}|${detail}|${progressEl.hidden}`;
@@ -4814,17 +5022,21 @@ function duplicateScanUnits() {
 
 // --- Render-Loop ---
 // Debug display (fps, memory, polygons) only with ?debug
-const debugStats = new URLSearchParams(location.search).has('debug')
-    ? new DebugStats(document.getElementById('debug-stats'), {
-        renderer, adapter, getRoot: () => rootGroup,
-        getPhase: () => (pathTracing.enabled ? `PT ${pathTracing.getStatus().phase} (${viewMode})` : viewMode) + (loading ? ', loading' : '')
-            + (batcher.stats.batches ? `, ${batcher.stats.instances} meshes in ${batcher.stats.batches} batches` : ''),
-        scanUnits: duplicateScanUnits,
-        getTiming: () => batcher.timing,
-    })
-    : null;
-// debug: cluster LOD section in the debug display (threshold, on/off, colours by the share of triangles drawn)
-if (debugStats && batcher.lods) import('./lod/lod-debug.js').then(m => m.attachLodDebug(debugStats.root, { batcher }));
+// debug display (?debug only – its module is not loaded otherwise)
+let debugStats = null;
+if (new URLSearchParams(location.search).has('debug')) {
+    import('./debug-stats.js').then(({ DebugStats }) => {
+        debugStats = new DebugStats(document.getElementById('debug-stats'), {
+            renderer, adapter, getRoot: () => rootGroup,
+            getPhase: () => (pathTracing.enabled ? `PT ${pathTracing.getStatus().phase} (${viewMode})` : viewMode) + (loading ? ', loading' : '')
+                + (batcher.stats.batches ? `, ${batcher.stats.instances} meshes in ${batcher.stats.batches} batches` : ''),
+            scanUnits: duplicateScanUnits,
+            getTiming: () => batcher.timing,
+        });
+        // cluster LOD section in the debug display (threshold, on/off, colours by the share of triangles drawn)
+        if (batcher.lods) import('./lod/lod-debug.js').then(m => m.attachLodDebug(debugStats.root, { batcher }));
+    });
+}
 renderer.setAnimationLoop(() => {
     const frameStart = performance.now();
     batcher.newFrame();
@@ -5060,4 +5272,11 @@ renderer.setAnimationLoop(() => {
     checkOptimizeWait();
     updatePathTracingStatus();
     debugStats?.frame(performance.now() - frameStart);
+    // the preloader goes once frames really draw (pipelines compiled – until then a frame draws nothing and the page
+    // showed flat dark between preloader and picture); at the latest 4 s after the first frame
+    if (!preloaderGone) {
+        preloaderStart ??= performance.now();
+        preloaderFrames = renderer.info.render.drawCalls > 0 ? preloaderFrames + 1 : 0;
+        if (preloaderFrames >= 2 || performance.now() - preloaderStart > 4000) { preloaderGone = true; hidePreloader(); }
+    }
 });

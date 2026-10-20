@@ -114,7 +114,7 @@ export class MaterialManager extends EventTarget {
             modified: !!def.modified,
         };
         // Import: the file's textures as nodes, so the node editor shows everything
-        if (!full.graph && full.source === 'import' && hasGraphMaps(full.render)) full.graph = createImportGraph(full.render.maps);
+        if (!full.graph && full.source === 'import' && hasGraphMaps(full.render)) full.graph = createImportGraph(full.render.maps, full.render.missing);
         const material = new RindrMaterial();
         material.maskNode = FADE_MASK;
         material.name = full.name;
@@ -217,6 +217,25 @@ export class MaterialManager extends EventTarget {
         this._apply(e);
         this._emit('update', { id });
         this._recordEdit(id, t('materials.undo.editGraph'), before, mergeKey && `graph:${id}:${mergeKey}`);
+    }
+
+    /**
+     * Textures of an import material that were missing at import and arrived later (relinked in place): maps into
+     * render.maps, the slots out of render.missing, base colour back to the shader's tint (it was toned down while
+     * the image was missing) unless edited. An unedited material gets its import graph again (the image as a node);
+     * an edited graph is kept – the image is there as "Import-Textur" to connect. No undo step (like the import).
+     */
+    linkImportMaps(id, maps, { color = null } = {}) {
+        const entry = this.get(id);
+        if (!entry?.def.render) return;
+        const { def } = entry;
+        const auto = !def.modified;
+        def.render = { ...def.render, maps: { ...def.render.maps, ...maps }, missing: { ...def.render.missing } };
+        for (const key of Object.keys(maps)) delete def.render.missing[key];
+        if (color && auto) def.params = { ...def.params, color };
+        if (auto) def.graph = hasGraphMaps(def.render) ? createImportGraph(def.render.maps, def.render.missing) : null;
+        this._apply(entry);
+        this._emit('update', { id, linked: true });
     }
 
     rename(id, name) {
@@ -394,7 +413,7 @@ export class MaterialManager extends EventTarget {
                 target.def.name = m.name || target.def.name;
                 target.def.params = { ...m.params };
                 target.def.graph = m.graph ? structuredClone(m.graph)
-                    : target.def.source === 'import' && hasGraphMaps(target.def.render) ? createImportGraph(target.def.render.maps) : null;
+                    : target.def.source === 'import' && hasGraphMaps(target.def.render) ? createImportGraph(target.def.render.maps, target.def.render.missing) : null;
                 target.def.modified = !!m.modified;
                 target.material.name = target.def.name;
                 this._apply(target);
@@ -529,7 +548,7 @@ const GRAPH_MAP_SLOTS = {
     emissive: 'emissiveMap', normal: 'normalMap', ao: 'aoMap', height: 'normalMap',
 };
 
-const hasGraphMaps = render => Object.keys(render?.maps || {}).some(k => IMPORT_SLOTS[k]);
+const hasGraphMaps = render => [...Object.keys(render?.maps || {}), ...Object.keys(render?.missing || {})].some(k => IMPORT_SLOTS[k]);
 
 // editable part of a material (undo)
 function snapshot(entry) {
