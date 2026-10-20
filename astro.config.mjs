@@ -57,8 +57,11 @@ function shadowCatcherPatch() {
       const mirrorVars = /\n(\t+)for \( var bounce = 0u; bounce < maxBounces; bounce \+\+ \) \{/;
       const mirrorCheck = /let surfaceDist = select\( \$\{ LIGHT_FAR_DISTANCE \}, hitResult\.dist, didHit \);\n/;
       for (const re of [mirrorVars, mirrorCheck]) if ((code.match(new RegExp(re.source, 'g')) || []).length !== 1) this.error(`rindr-shadow-catcher: ${re} not found exactly once in PathTracerMegaKernel.js`);
-      code = code.replace(mirrorVars, m => '\n\t\t\t\tvar scMirrorBg = vec3f( 0.0 );\n\t\t\t\tvar scMirrorPending = false;' + m);
+      // scMirrorTaken: the take-back happened in this segment – a volume box passed without scattering (volume-walk.patch.wgsl)
+      // arms the check again (the ray went on to the HDRI inside a splat box with the background hidden)
+      code = code.replace(mirrorVars, m => '\n\t\t\t\tvar scMirrorBg = vec3f( 0.0 );\n\t\t\t\tvar scMirrorPending = false;\n\t\t\t\tvar scMirrorTaken = false;' + m);
       code = code.replace(mirrorCheck, m => m + `
+					scMirrorTaken = false;
 					if ( scMirrorPending ) {
 
 						scMirrorPending = false;
@@ -68,6 +71,7 @@ function shadowCatcherPatch() {
 
 						}
 						resultColor -= vec4f( scMirrorBg, 0.0 );
+						scMirrorTaken = true;
 
 					}
 `);

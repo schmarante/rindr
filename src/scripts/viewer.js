@@ -1013,7 +1013,9 @@ function runtimeModels() {
     const list = [];
     if (rootGroup && model) list.push({ main: true, root: rootGroup, nodeGroups: currentNodeGroups, meshes: currentMeshes, prefix: '',
         file: { name: model.name, type: model.type, size: model.size ?? null }, holder: null, sceneIndex: mainSceneIndex, source: model,
-        morphs: animations.find(a => a.owner === 'main')?.anim.morphValues(), animation: animState('main') });
+        morphs: animations.find(a => a.owner === 'main')?.anim.morphValues(), animation: animState('main'),
+        // Gaussian splats: their look (light, override material) – saved with the scene
+        splatLook: splatMesh ? { mode: splatMesh.look.mode, material: splatMesh.look.material && { ...splatMesh.look.material } } : null });
     for (const x of extraModels) list.push({ main: false, id: x.id, root: x.root, nodeGroups: x.nodeGroups, meshes: x.meshes, prefix: `x${x.id}:`,
         file: { name: x.source.name, type: x.source.type, size: x.size ?? null }, holder: x.holder, sceneIndex: x.sceneIndex, source: x.source,
         morphs: animations.find(a => a.owner === x.id)?.anim.morphValues(), animation: animState(x.id) });
@@ -1857,7 +1859,7 @@ function prepareSplatVolume() {
         updatePathTracingScene();
     });
 }
-function setSplatLook(next, { mergeKey } = {}) {
+function setSplatLook(next, { mergeKey, record = true } = {}) {
     if (!splatMesh) return;
     const splat = splatMesh;
     const before = { mode: splat.look.mode, material: splat.look.material && { ...splat.look.material } };
@@ -1873,7 +1875,7 @@ function setSplatLook(next, { mergeKey } = {}) {
         if (refresh && selection) properties.show(selection);
     };
     apply(after, before.mode !== after.mode || !before.material !== !after.material);
-    history.record({ label: t('properties.splatLook.undo'), mergeKey, undo: () => apply(before, true), redo: () => apply(after, true) });
+    if (record) history.record({ label: t('properties.splatLook.undo'), mergeKey, undo: () => apply(before, true), redo: () => apply(after, true) });
 }
 // Target of a material drop: if it is in the multi-selection, the drop applies to the whole selection
 // (a sub-surface stays single unless it is marked itself)
@@ -2259,6 +2261,9 @@ const SPLAT_LAYER = 29;
 slicer.group.layers.enable(SPLAT_LAYER);
 const _aoSphere = new THREE.Sphere();
 const splatComposite = new SplatComposite(renderer);
+// raster fisheye: the same per cube face (fixed size = the face's) – the splats were drawn in the faces, blended in
+// linear light and tone-mapped
+const fisheyeSplats = new SplatComposite(renderer, { size: 256 });
 lens.volume.attachSplats({ transmittance: world => shaftOpacity.transmittance(world), depth: splatComposite.splats.textures[1] });
 // where a model of bounds `box` goes into the scan: x/z in front of the first scanned point along camera → orbit centre
 // beyond the first 40 % of the way (a camera standing in tall grass hit the blades right in front of the lens – the
@@ -4308,6 +4313,8 @@ const sceneStateContext = {
     get model() { return model; },
     stopCameraMotion: () => { cancelFlight(); streamFit.active = false; },
     setModelMorphs,
+    // Gaussian splats of a restored scene: their saved look (scene-state.js applyModelState)
+    setSplatLook: look => { if (splatMesh && look) setSplatLook({ mode: look.mode, material: look.material ?? null }, { record: false }); },
     setModelAnimation,
     scene, camera, controls, renderer, environment, lightsGroup, pathTracing, slicer, sceneGraph, materialManager, settings, dof, lens, toneMappings: TONE_MAPPINGS,
     lights: () => lightsGroup.children.filter(l => l.isLight),
@@ -4891,6 +4898,7 @@ renderer.setAnimationLoop(() => {
     // the splats in a pass of their own, blended in display space (splat-composite.js; not with the fisheye – linear
     // there), darkened in the shadow of added models
     const splatPass = !!splatMesh && !rasterFisheye.active && viewMode !== 'wire';
+    const splatFish = !!splatMesh && rasterFisheye.active && viewMode !== 'wire';   // per cube face (drawRaster)
     // the scan as the models' environment once captured (environment scan + models + environment on); not in HQ – the
     // path tracer reflects the splat volume itself, and it cannot read a cube map as its environment (ShaderMaterial)
     const scanEnvWanted = !!splatMesh?.userData.environment && extraModels.length > 0 && environment.on && SPLATS.environment.enabled && !splatMesh.loading && viewMode !== 'hq';
@@ -4898,8 +4906,8 @@ renderer.setAnimationLoop(() => {
     if (scene.environment !== envTexture) scene.environment = envTexture;
     if (splatMesh && viewMode === 'hq') splatVolume.updateUniforms();   // clouds overlapping the splat volume (moved splats)
     if (splatMesh) {
-        splatMesh.layers.set(splatPass ? SPLAT_LAYER : 0);
-        splatMesh.setDisplayOutput(splatPass);
+        splatMesh.layers.set(splatPass || splatFish ? SPLAT_LAYER : 0);
+        splatMesh.setDisplayOutput(splatPass || splatFish);
         splatMesh.setShadow(shadowsOn && extraModels.length ? splatShadow : null);
         splatMesh.setRenderState({ renderer, toneMapping: renderer.toneMapping, exposure: renderer.toneMappingExposure, environment: environment.on ? environment.texture : null,
             environmentIntensity: scene.environmentIntensity, environmentRotation: scene.environmentRotation, lights: [dirLight1, dirLight2], ambient: ambientLight });
@@ -4927,6 +4935,13 @@ renderer.setAnimationLoop(() => {
     // splats were painted over them
     const splatClouds = splatPass && clouds.volumes.some(v => v.mesh.visible);
     const drawRaster = cam => {
+        // fisheye with splats: this cube face first into the composite's HDR target, the splats composited over it, then
+        // copied into the face
+        const fishFace = splatFish && cam !== camera ? { target: renderer.getRenderTarget(), index: renderer.getActiveCubeFace() } : null;
+        if (fishFace) {
+            fisheyeSplats.fixedSize = fishFace.target.width;
+            fisheyeSplats.begin({ models: extraModels.length > 0 });
+        }
         const cloudsShown = clouds.group.visible;
         if (splatClouds && cam === camera) clouds.group.visible = false;
         renderer.render(scene, cam);
@@ -4935,6 +4950,11 @@ renderer.setAnimationLoop(() => {
         slicer.renderCaps(renderer, scene, cam);
         if (contact) contactShadow.render(renderer, cam);
         if (focusLine && cam !== camera) dof.renderLine(renderer, scene, [ground.material], cam);
+        if (fishFace) {
+            fisheyeSplats.drawSplats(scene, cam, { layer: SPLAT_LAYER, keep: slicer.group, extra: [wool.group, grass.group], splat: splatMesh });
+            fisheyeSplats.compose(fisheyeSplats.frame.texture);
+            fisheyeSplats.copyTo(fishFace.target, fishFace.index);
+        }
     };
     const rasterize = () => {
         if (rasterFisheye.active) rasterFisheye.render(renderer, camera, drawRaster, { shadowLights: lightsGroup.children });

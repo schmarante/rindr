@@ -27,7 +27,8 @@
 // depth + their own depth where they turn dense) and composited per pixel by distance: in front of the splats over
 // them, behind them under them. In HQ (scans drawn over the path traced image, which holds the clouds) the splats are
 // thinned where a cloud lies in front.
-// Also used with a fixed size for the environment capture (splat-environment.js: cube faces) – `linear`: the composite
+// Also used with a fixed size (fixedSize) for the environment capture (splat-environment.js) and the raster fisheye's
+// cube faces (viewer.js, copyTo) – `linear`: the composite
 // only back to linear (sRGB, ÷ exposure), not through the inverse curve: inverting ACES turned the bright and saturated
 // colours of a scan into values up to 32 (mean 3–10 instead of ~1) – the models were flooded with green light.
 import * as THREE from 'three/webgpu';
@@ -335,6 +336,16 @@ export class SplatComposite {
             }
             return vec4(sum.x.div(max(sum.y, 1e-4)), centre.y, 0, 1);
         })();
+    }
+
+    /** the composite into a render target (a cube face of the raster fisheye) – linear, its output pass tone-maps */
+    copyTo(target, face = 0) {
+        const r = this.renderer;
+        const autoClear = r.autoClear;
+        r.autoClear = true;
+        r.setRenderTarget(target, face);
+        this.out.render(r);
+        r.autoClear = autoClear;
     }
 
     /** the composite onto the canvas through the normal output path (tone mapping + sRGB) */
