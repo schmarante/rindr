@@ -242,6 +242,14 @@
 								}
 								transparentBounce ++;
 								bounce --;
+								// a ground reflection of the models only (background hidden) took the ground back for this box:
+								// nothing was hit – count it again and let the next segment decide (shadow-catcher patch)
+								if ( scMirrorTaken ) {
+
+									resultColor += vec4f( scMirrorBg, 0.0 );
+									scMirrorPending = true;
+
+								}
 
 							}
 							${ rngNextBounce }();

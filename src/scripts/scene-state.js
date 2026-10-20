@@ -65,6 +65,7 @@ function modelState(rm, sceneGraph) {
         assignments,
         ...(rm.morphs && Object.keys(rm.morphs).length ? { morphs: rm.morphs } : {}),
         ...(rm.animation ? { animation: rm.animation } : {}),
+        ...(rm.splatLook ? { splatLook: rm.splatLook } : {}),   // Gaussian splats: light (baked/surface/volume), override material
     };
 }
 
@@ -97,6 +98,8 @@ export function applyModelState(ctx, rm, chunk, idMap, warnings) {
     ctx.setModelMorphs?.(rm, chunk.morphs || {});
     // animation: clip + point in time
     if (chunk.animation) ctx.setModelAnimation?.(rm, chunk.animation);
+    // Gaussian splats: their look (older scenes: the default of the loaded splats stays)
+    if (chunk.splatLook) ctx.setSplatLook?.(chunk.splatLook);
     // placement (additional models)
     if (rm.holder && chunk.placement) { rm.holder.position.fromArray(chunk.placement); rm.holder.updateMatrixWorld(true); }
     // transforms
