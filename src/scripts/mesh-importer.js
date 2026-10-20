@@ -13,6 +13,7 @@ import { isCompoundFile } from './max/max-parse.js';
 import { creaseCornerNormals } from './crease-normals.js';
 import { IMPORT } from './config.js';
 import { t } from './i18n.js';
+import { IMPORT_SLOTS } from './material-graph.js';
 import { debugLog } from './log.js';
 
 // IFC (BIM) goes the same way but has its own importer (ifc/ifc-importer.js, web-ifc – loaded on demand)
@@ -506,6 +507,7 @@ async function convertLeanFbx({ scene, geometries: parts }, source, materialMana
             if (!url) return null;
             const texture = loader.load(url);
             texture.name = tx.name;
+            if (!tx.content) texture.userData.sourceUrl = tx.file;   // the path in the file (missing image → its node)
             texture.wrapS = tx.wrapU === 1 ? THREE.ClampToEdgeWrapping : THREE.RepeatWrapping;
             texture.wrapT = tx.wrapV === 1 ? THREE.ClampToEdgeWrapping : THREE.RepeatWrapping;
             if (tx.uvScaling) texture.repeat.set(tx.uvScaling[0], tx.uvScaling[1]);
@@ -639,6 +641,7 @@ async function convertMax({ scene, geometries: parts }, source, materialManager)
             if (!textures.has(key)) {
                 const tex = loader.load(scene.textures[i].file.replace(/\\/g, '/'));
                 tex.name = scene.textures[i].file.split(/[\\/]/).pop();
+                tex.userData.sourceUrl = scene.textures[i].file;
                 tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
                 if (color) tex.colorSpace = THREE.SRGBColorSpace;
                 textures.set(key, tex);
@@ -1029,8 +1032,21 @@ function convertMaterial(m, scale) {
         });
     }
     const maps = {};
-    // only textures with a loaded image (missing files yield image = null -> path tracer crashes)
-    for (const key of MAP_KEYS) if (m[key]?.isTexture && hasImage(m[key])) maps[key] = m[key];
+    // only textures with a loaded image (missing files yield image = null -> path tracer crashes); a missing one is
+    // remembered with its slot (render.missing – any format, USD fills it in usd-mdl.js): its image node shows a warning
+    // and a file handed in later is linked straight into the slot. flipY: how the image is to be oriented (FBX/MAX
+    // like three's default, glTF not flipped)
+    const missingMaps = { ...(m.userData?.usdMissingMaps || {}) };
+    for (const key of MAP_KEYS) {
+        const tex = m[key];
+        if (!tex?.isTexture) continue;
+        if (hasImage(tex)) { maps[key] = tex; continue; }
+        const url = tex.userData?.sourceUrl || tex.name;
+        if (url && IMPORT_SLOTS[key] && !missingMaps[key]) {
+            missingMaps[key] = { url, srgb: tex.colorSpace === THREE.SRGBColorSpace, flipY: tex.flipY,
+                repeat: tex.repeat.toArray(), offset: tex.offset.toArray(), rotation: tex.rotation * 180 / Math.PI };
+        }
+    }
     // unlit (glTF): shows its picture without lighting → black, non-reflective surface that emits the picture
     // (emissive texture/colour, otherwise base colour texture/colour)
     if (m.isMeshBasicMaterial) {
@@ -1051,9 +1067,9 @@ function convertMaterial(m, scale) {
         normalScale: m.normalScale ? m.normalScale.toArray() : null,
         bumpScale: m.bumpScale ?? 1,
         aoMapIntensity: m.aoMapIntensity ?? 1,
-        // slots whose image is missing (USD: usd-mdl.js) – { slot: { url, srgb, repeat?, offset?, rotation?, color? } };
+        // slots whose image is missing – { slot: { url, srgb, flipY?, repeat?, offset?, rotation?, color? } };
         // the viewer links a file handed in later into them without reopening the scene
-        missing: m.userData?.usdMissingMaps ? structuredClone(m.userData.usdMissingMaps) : null,
+        missing: Object.keys(missingMaps).length ? structuredClone(missingMaps) : null,
     };
     return { name: m.name, params, render };
 }

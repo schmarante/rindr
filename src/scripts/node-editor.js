@@ -6,6 +6,7 @@
 //  - Link: drag from an output (right) to an input (left); dragging an input detaches it
 //  - Clicking a link deletes it; × deletes a node
 //  - Unconnected inputs show their value directly in the node
+//  - Image files dropped onto a texture node become its picture
 import {
     NODE_TYPES, NODE_CATEGORIES, IMPORT_SLOTS, createGraph, createImportGraph, defaultParams,
     nodeLabel, portLabel, paramLabel, optionLabel, categoryLabel,
@@ -35,9 +36,11 @@ export class NodeEditor {
      * @param {import('./material-manager.js').MaterialManager} manager
      * @param {{ preview?: (def, nodeId, port, size) => Promise<{ size, pixels } | { color } | null>,
      *           materialThumb?: (id, size) => string|null, onThumbReady?: (cb) => void,
-     *           downloadTexture?: (url) => void, linkFiles?: (files: { path, file }[]) => void }} [hooks]
+     *           downloadTexture?: (url) => void, linkFiles?: (files: { path, file }[]) => void,
+     *           replaceImportMap?: (materialId, key, file) => void }} [hooks]
      *        preview: bake one node output (graph-apply.js); materialThumb: the material's sphere image (output node);
-     *        downloadTexture / linkFiles: an image from the file that is missing – load it from its server / link a file
+     *        downloadTexture / linkFiles: an image from the file that is missing – load it from its server / link a file;
+     *        replaceImportMap: a new picture for an image from the file (dropped onto its node)
      */
     constructor(root, manager, hooks = {}) {
         this.root = root;
@@ -114,6 +117,39 @@ export class NodeEditor {
             const r = this.canvas.getBoundingClientRect();
             this.addNode(type, { x: e.clientX - r.left - this.pan.x - 90, y: e.clientY - r.top - this.pan.y - 14 });
         });
+        // an image file dragged onto a texture node: the image node takes it as its picture, the image node from the
+        // file links it into its slot (missing) or replaces its picture. File drags over the editor stay here – the
+        // viewer would show its replace/add plane and open the file as a model.
+        const isFiles = e => !!e.dataTransfer?.types.includes('Files') && !e.dataTransfer.types.includes(NODE_MIME);
+        const imageNodeAt = target => {
+            const el = target?.closest?.('[data-node]');
+            const n = el && this.graph?.nodes.find(x => x.id === el.dataset.node);
+            return n && (n.type === 'image' || n.type === 'importMap') ? { el, n } : null;
+        };
+        for (const type of ['dragenter', 'dragover']) {
+            root.addEventListener(type, e => {
+                if (!isFiles(e)) return;
+                e.preventDefault();
+                e.stopPropagation();
+                const hit = imageNodeAt(e.target);
+                e.dataTransfer.dropEffect = hit ? 'copy' : 'none';
+                this._dropTarget(hit?.el || null);
+            });
+        }
+        root.addEventListener('dragleave', e => {
+            if (!isFiles(e)) return;
+            e.stopPropagation();
+            if (!root.contains(e.relatedTarget)) this._dropTarget(null);
+        });
+        root.addEventListener('drop', e => {
+            if (!isFiles(e)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            this._dropTarget(null);
+            const hit = imageNodeAt(e.target);
+            const file = [...e.dataTransfer.files].find(f => f.type.startsWith('image/') || /\.(png|jpe?g|webp|tga|tiff?|bmp|gif|exr|hdr)$/i.test(f.name));
+            if (hit && file) this._imageDropped(hit.n, file);
+        });
         root.querySelector('[data-close]').onclick = () => this.close();
         this.canvas.addEventListener('pointerdown', e => this._onPointerDown(e));
         window.addEventListener('pointermove', e => this._onPointerMove(e));
@@ -169,6 +205,33 @@ export class NodeEditor {
     _missingMaps() {
         const missing = this.manager.get(this.materialId)?.def.render?.missing || {};
         return Object.fromEntries(Object.entries(missing).filter(([k]) => IMPORT_SLOTS[k]));
+    }
+
+    // highlight of the node an image file would go to
+    _dropTarget(el) {
+        if (this._dropEl === el) return;
+        this._dropEl?.classList.remove('ring-2', 'ring-sky-400');
+        el?.classList.add('ring-2', 'ring-sky-400');
+        this._dropEl = el;
+    }
+
+    async _imageDropped(n, file) {
+        if (n.type === 'image') {
+            n.params = { ...n.params, image: await imageToDataUrl(file) };
+            this.commit(n.id + ':image');
+            this.render();
+            return;
+        }
+        // image from the file: a missing one is linked under the name the file gives (in place, also in other
+        // materials waiting for it); an existing one gets the new picture
+        const key = n.params?.map;
+        const missing = this._missingMaps()[key];
+        if (missing && this.hooks.linkFiles) {
+            const name = decodeURIComponent(String(missing.url).split(/[\\/]/).pop());
+            this.hooks.linkFiles([{ path: name, file: new File([file], name, { type: file.type }) }]);
+        } else if (this._importMaps()[key] && this.hooks.replaceImportMap) {
+            this.hooks.replaceImportMap(this.materialId, key, file);
+        }
     }
 
     close() {

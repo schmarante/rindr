@@ -480,6 +480,7 @@
         "imageMissing": "Missing – address in the file: {url}",
         "downloadImage": "Load from the net",
         "linkImage": "Choose image file…",
+        "imageNotReadable": "“{name}” is not a readable image",
         "replaceImage": "Replace image…",
         "chooseImage": "Choose image…"
     },
