@@ -98,6 +98,8 @@ export class RenderBatcher {
         // timing (debug display): CPU time of all renders of `scene` per frame, nested ones = shadow maps
         // (three.js renders them via renderer.render from inside the main render), comparison (sync)
         this.timing = { render: 0, nested: 0, sync: 0 };
+        this.beforeDraw = null;   // (camera) => void, called inside the next outer render of `scene` (see below)
+        this.compilePasses = [];  // (compile) => Promise: sets its renderer/scene state, calls compile(), restores
         renderer.render = (s, camera) => {
             if (s !== this.scene) return render(s, camera);
             const t0 = performance.now();
@@ -113,6 +115,9 @@ export class RenderBatcher {
                 if (this.lod.tint) tinted = this._tint();
             }
             try {
+                // pass that must see exactly what this render draws (ambient-occlusion.js pre-pass): batches attached,
+                // LOD cuts swapped in; its renders of `scene` count as nested
+                if (outer && this.beforeDraw) this.beforeDraw(camera);
                 return render(s, camera);
             } finally {
                 if (tinted) for (const [o, m] of tinted) o.material = m;
@@ -442,7 +447,10 @@ export class RenderBatcher {
         for (const r of roots) r.visible = false;
         this._hang(this.staging);
         try {
-            return compileAsync(this.renderer, this.scene, camera);
+            // passes that draw the scene in another state (ambient-occlusion.js pre-pass): their variants of the new
+            // batches too – otherwise their first draw builds every InstancedMesh synchronously (large assembly: 4 s)
+            const compile = () => compileAsync(this.renderer, this.scene, camera);
+            return Promise.all([compile(), ...this.compilePasses.map(pass => pass(compile))]);
         } catch (err) {
             return Promise.reject(err);
         } finally {
