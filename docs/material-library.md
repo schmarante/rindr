@@ -280,3 +280,13 @@ Prüfbilder: Scratchpad `tools/work-p-fabric/final-spheres.jpg`, `final-colors.j
 ### Hinweise
 - Holz läuft im Holz-Knoten immer entlang u; senkrechte Bretter/Schindeln bekommen ihre Faser deshalb aus einem feinen Wellen-Knoten (Achse u, Verzerrung) statt aus dem Holz-Knoten.
 - Vorschau-Kugel wirkt durch die bunte Umgebung heller als die Albedo; Farbwerte bewusst eher dunkel gewählt.
+
+## Natur (`src/scripts/presets/nature.js`, Kategorie `nature`)
+
+Okt. 2026, Wunsch des Nutzers „realistisches Kürbis-Material“. Neue Kategorie „Natur“ (für Obst, Gemüse u.ä.).
+
+| Preset | Aufbau |
+|---|---|
+| Kürbis (`nature-pumpkin`) | Kachel 300 mm. Tiefes Orange mit breiten, schwachen Streifen entlang v (Rauschen, Streckung 6, um 90° gedreht – auf den Seiten der Box-UVs senkrecht, also entlang der Rippen eines stehenden Kürbisses), weiche hellere Flecken Richtung Gelb (zweites Rauschen über `mix`), wenige kleine helle Poren (Sprenkel); wachsartig halbglänzend (Rauheit 0,40–0,62, in hellen Flecken und Poren matter, Klarlack 0,2 / 0,35). Die Rippen kommen aus der Geometrie. |
+
+Verlauf: erste Fassung (feine Streifen, Streckung 16, kräftiger Kontrast, Relief) sah nach gebürstetem Holz aus, Poren erhaben wie Wassertropfen → breiter, kontrastärmer, satter, Poren flach. Kein Relief: die Normal-Map zeigte die Box-UV-Nähte auf dem runden Körper als Treppen; dünne Linien an den Nähten bleiben auch ohne Relief (alle Node-Materialien auf Modellen ohne eigene UVs – mit einem Material ohne Graph sind sie weg; siehe „Offen“ in CLAUDE.md). Kein Sheen (machte die Farbe pastellig). Geprüft an einem erzeugten Test-Kürbis (STL, 10 Rippen, `public/models/pumpkin-test.stl`, nicht im Repo) in Default und HQ (Scratchpad `pumpkin.js`).
