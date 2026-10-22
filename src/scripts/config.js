@@ -111,6 +111,15 @@ export const TRANSITION = {
 // (render-batcher.js) – large assemblies need hundreds instead of thousands of draw calls. Test: ?batching=0
 export const RASTER = {
     batching: true,
+    // ambient occlusion of the raster view (ambient-occlusion.js): darkens only the indirect light in creases and
+    // between parts. Radius = share of the scene size, at most `viewRadius` × distance to the orbit centre (zoomed
+    // into a detail the radius follows); strength; samples per pixel; bias (cos of the ignored angle above the
+    // tangent plane – tessellation); resolution share of the picture, at most `maxPixels`; zoomed out finer (up to full
+    // resolution) until the radius spans `minTexels`, all AO targets within `memoryShare` of the memory budget;
+    // projected radius at most `maxScreen` × picture height. The pre-pass draws the model a second time: only after a change (view, scene), then
+    // at most every `costRatio` × its own CPU time (large assemblies: in between the last result is reprojected).
+    // Test: ?ao=0 (not even hooked into the materials)
+    ao: { enabled: true, radius: 0.08, viewRadius: 0.15, strength: 1.5, samples: 12, bias: 0.1, resolution: 0.5, maxPixels: 1_200_000, minTexels: 12, memoryShare: 0.02, maxScreen: 0.15, costRatio: 10 },
 };
 
 // Cluster LOD (lod/lod-store.js, render-batcher.js): distant instances drawn with fewer triangles in Basic/Default

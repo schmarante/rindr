@@ -66,6 +66,7 @@ import { loadSplats, isSplatSource, SPLAT_EXTENSIONS } from './splat/splat-loade
 import { debugLog } from './log.js';
 import { isRemoteTexture } from './remote-textures.js';
 import { textureMaxSide } from './memory-budget.js';
+import { RasterAO } from './ambient-occlusion.js';
 
 // Workaround three.js r186 (cf. mrdoob/three.js#34608, fix announced for r187):
 // ViewportTextureNode creates its own framebuffer texture per render target via clone()
@@ -234,6 +235,9 @@ const webgpuBlocked = !!navigator.gpu && !adapter;
 const requiredLimits = adapter ? {
     maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
     maxBufferSize: adapter.limits.maxBufferSize,
+    // the raster ambient occlusion adds one texture to every lit material (ambient-occlusion.js) – heavily textured
+    // imports stay below the limit
+    maxSampledTexturesPerShaderStage: adapter.limits.maxSampledTexturesPerShaderStage,
 } : undefined;
 // stencil: closed cut surfaces of the section plane (slicer.js)
 const renderer = new THREE.WebGPURenderer({ antialias: true, stencil: true, ...GPU_OPTIONS, requiredLimits });
@@ -248,6 +252,9 @@ try {
 }
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
+// ambient occlusion of the raster view: its hook into the materials' lighting goes in before any shader is built
+const rasterAO = new RasterAO(renderer);
+rasterAO.install();
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 // tone mapping curves selectable in the camera panel ("Image"); key = stored value
@@ -355,10 +362,13 @@ function markShadowsDirty() {
     splatOpacity.markDirty();  // splats on the models
     splatEnv.markDirty();      // scan as the models' environment (captured once they rest)
     splatModels.dirty = true;
+    rasterAO.markDirty();      // raster ambient occlusion: new snapshot
     if (!shadowsWanted()) return;
     for (const light of [dirLight1, dirLight2]) light.shadow.needsUpdate = true;
 }
 batcher.onChange = markShadowsDirty;
+// the AO pre-pass's variants of new batches compile with them (otherwise its first draw builds them synchronously)
+batcher.compilePasses.push(compile => rasterAO.compile(scene, slicer.group, compile));
 function updateShadowMaps() {
     const live = !batcher.enabled && shadowsWanted();
     for (const light of [dirLight1, dirLight2]) light.shadow.autoUpdate = live;
@@ -4930,7 +4940,7 @@ if (new URLSearchParams(location.search).has('debug')) {
         // material node graphs: bake an input into a PNG / render a description on the thumbnail sphere (debug-graph.js)
         bakeGraph: (graph, opts) => import('./debug-graph.js').then(m => m.bakeGraphImage(graphApplier, graph, opts)),
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel.thumbs, def)),
-        batcher, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+        batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 }
 
 // --- Resize ---
@@ -5189,6 +5199,11 @@ renderer.setAnimationLoop(() => {
     // clouds next to splats: drawn apart and composited by distance (splat-composite.js drawClouds) – in the frame the
     // splats were painted over them
     const splatClouds = splatPass && clouds.volumes.some(v => v.mesh.visible);
+    // raster ambient occlusion (ambient-occlusion.js): Default and the raster preview of HQ, normal view only (the
+    // fisheye's cube faces stay without), not while parts fade in (the dither mask is not in the pre-pass)
+    // nor before the first grouping after loading (its pre-pass would build every individually drawn mesh once more)
+    const aoFrame = rasterAO.on && (viewMode === 'default' || viewMode === 'hq') && !rasterFisheye.active && !fading.size && !scene.overrideMaterial
+        && !batcher.pending;
     const drawRaster = cam => {
         // fisheye with splats: this cube face first into the composite's HDR target, the splats composited over it, then
         // copied into the face
@@ -5199,7 +5214,21 @@ renderer.setAnimationLoop(() => {
         }
         const cloudsShown = clouds.group.visible;
         if (splatClouds && cam === camera) clouds.group.visible = false;
-        renderer.render(scene, cam);
+        // ambient occlusion: pre-pass from inside this render (same batches/LOD) when due, else the last snapshot
+        // reprojected; only the main view
+        if (aoFrame && cam === camera) {
+            if (rasterAO.due(camera, !batcher.enabled)) {
+                const orbit = camera.position.distanceTo(controls.target);
+                const radius = Math.min((environment.modelSize || orbit) * RASTER.ao.radius, orbit * RASTER.ao.viewRadius);
+                batcher.beforeDraw = c => rasterAO.prepare({ scene, camera: c, keep: slicer.group, radius, depthScale: orbit });
+            } else rasterAO.reuse();
+        }
+        try {
+            renderer.render(scene, cam);
+        } finally {
+            batcher.beforeDraw = null;
+            rasterAO.finish();
+        }
         clouds.group.visible = cloudsShown;
         if (viewMode === 'wire') drawWireframe(cam);
         slicer.renderCaps(renderer, scene, cam);
