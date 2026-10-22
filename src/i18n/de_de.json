@@ -215,9 +215,11 @@
             "concrete": "Beton & Putz",
             "tiles": "Fliesen & Böden",
             "fabric": "Stoff & Teppich",
-            "outdoor": "Außenbereich"
+            "outdoor": "Außenbereich",
+            "nature": "Natur"
         },
         "presets": {
+            "nature-pumpkin": "Kürbis",
             "metal-chrome": "Chrom",
             "metal-alu-polished": "Aluminium poliert",
             "metal-alu-brushed": "Aluminium gebürstet",

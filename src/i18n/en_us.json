@@ -215,9 +215,11 @@
             "concrete": "Concrete & plaster",
             "tiles": "Tiles & floors",
             "fabric": "Fabric & carpet",
-            "outdoor": "Outdoor"
+            "outdoor": "Outdoor",
+            "nature": "Nature"
         },
         "presets": {
+            "nature-pumpkin": "Pumpkin",
             "metal-chrome": "Chrome",
             "metal-alu-polished": "Aluminium polished",
             "metal-alu-brushed": "Aluminium brushed",
