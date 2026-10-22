@@ -13,8 +13,10 @@ export function attachLodDebug(root, { batcher }) {
     const box = document.createElement('div');
     box.className = 'mt-1 border-t border-white/15 pt-1';
     const text = document.createElement('div');
-    const row = () => { const d = document.createElement('label'); d.className = 'mt-1 flex items-center gap-2'; box.append(d); return d; };
-    box.append(text);
+    // the controls only while the model is large enough for LOD (below LOD.minTriangles just the note)
+    const controls = document.createElement('div');
+    const row = () => { const d = document.createElement('label'); d.className = 'mt-1 flex items-center gap-2'; controls.append(d); return d; };
+    box.append(text, controls);
 
     const onRow = row();
     const on = Object.assign(document.createElement('input'), { type: 'checkbox', checked: lod.enabled, className: CHECKBOX });
@@ -43,7 +45,7 @@ export function attachLodDebug(root, { batcher }) {
     preparing.className = 'mt-1 text-white/60';
     preparing.textContent = t('debugStats.lod.preparing');
     preparing.hidden = true;
-    box.append(legend, preparing);
+    controls.append(legend, preparing);
     root.append(box);
 
     const setThr = () => {
@@ -71,8 +73,9 @@ export function attachLodDebug(root, { batcher }) {
             lines.push(t('debugStats.lod.select', { cuts: s.cuts, ms: lod.selectMs.toFixed(2) }));
         }
         text.textContent = lines.join('\n');
+        controls.hidden = !lod.model;
         preparing.hidden = col.value !== 'share' || lod.tint;
-        setTimeout(tick, 500);
+        setTimeout(tick, 100);
     };
     tick();
 }

@@ -1513,7 +1513,7 @@
                 "material": "Material",
                 "share": "Share per part"
             },
-            "inactive": "LOD      off (model below {min} M triangles)",
+            "inactive": "LOD      off – only from {min} M triangles",
             "status": "LOD      {built}/{total} geometries · {triangles} M triangles · {seconds} s",
             "building": " · building …",
             "select": "         {cuts} cuts · choice {ms} ms",
@@ -1550,10 +1550,12 @@
         "frame": "Frame    {triangles} triangles · {drawCalls} draw calls",
         "workers": {
             "summary": "Workers  {alive} alive · {total} started · {cores} cores",
-            "row": "  {name} {bar} {load} % · {tasks} tasks · {memory}",
-            "unmeasured": "  {name} not measured · {messages} messages · {memory}",
-            "more": "  … {count} more",
-            "ended": "  {count} ended · {seconds} s computed"
+            "row": "{name}: {load} % busy · {tasks} tasks · {memory}",
+            "unmeasured": "{name}: not measured · {messages} messages · {memory}",
+            "tasks": "{tasks} · {memory}",
+            "messages": "{messages} msgs · {memory}",
+            "more": "… {count} more",
+            "ended": "{count} ended · {seconds} s computed"
         }
     },
     "benchmark": {
