@@ -1513,7 +1513,7 @@
                 "material": "Material",
                 "share": "Anteil je Teil"
             },
-            "inactive": "LOD      aus (Modell unter {min} Mio. Dreiecken)",
+            "inactive": "LOD      aus – erst ab {min} Mio. Dreiecken",
             "status": "LOD      {built}/{total} Geometrien · {triangles} Mio. Dreiecke · {seconds} s",
             "building": " · baut …",
             "select": "         {cuts} Stufen · Auswahl {ms} ms",
@@ -1550,10 +1550,12 @@
         "frame": "Bild     {triangles} Dreiecke · {drawCalls} Draw-Calls",
         "workers": {
             "summary": "Worker   {alive} aktiv · {total} gestartet · {cores} Kerne",
-            "row": "  {name} {bar} {load} % · {tasks} Aufträge · {memory}",
-            "unmeasured": "  {name} ohne Messung · {messages} Nachrichten · {memory}",
-            "more": "  … {count} weitere",
-            "ended": "  {count} beendet · {seconds} s gerechnet"
+            "row": "{name}: {load} % ausgelastet · {tasks} Aufträge · {memory}",
+            "unmeasured": "{name}: ohne Messung · {messages} Nachrichten · {memory}",
+            "tasks": "{tasks} · {memory}",
+            "messages": "{messages} Nachr. · {memory}",
+            "more": "… {count} weitere",
+            "ended": "{count} beendet · {seconds} s gerechnet"
         }
     },
     "benchmark": {
