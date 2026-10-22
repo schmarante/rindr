@@ -165,7 +165,8 @@ export class GraphApplier {
         }
         if (!changed) return;
         material.needsUpdate = true;
-        this.onBaked(entry);
+        // a preview material (library thumbnail) is not in the scene – the path tracer must not restart for it
+        if (!entry.preview) this.onBaked(entry);
     }
 
     /**
