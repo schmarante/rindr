@@ -49,10 +49,14 @@
 //   the tone mapping curve are renderer settings (viewer.js). Neutral look = no extra pass.
 // - Exports larger than the screen (setPixelScale): glare/shafts/flare targets keep their size relative to
 //   the screen version and bloom its resolution scale → effects look the same, only the image is sharper.
+// - Style filters (style-filters.js: handheld, pixel, LCD, scanlines, sketch, ASCII, code rain): on display values
+//   after tone mapping – end() then draws into the filter's HDR target instead of the canvas, the contour lines
+//   follow there, finish() filters onto the canvas (viewer.js), restoreToneMapping() at the end of the frame.
 import * as THREE from 'three/webgpu';
 import { Fn, texture, uniform, uniformArray, uv, vec2, vec3, vec4, float, dot, max, min, pow, length, mix, exp, smoothstep, cos, normalize } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
 import { VolumeShafts } from './volume-shafts.js';
+import { StyleFilter } from './style-filters.js';
 
 const SPECTRUM = 9;
 // weights per spectral sample (t = 0 blue … 1 red), normalised to sum 1 per channel → white stays white
@@ -117,6 +121,7 @@ export class LensEffects {
         this.look = { ...NEUTRAL_LOOK };
         this.neutralLook = false;   // transparent export: alpha passes without the look (viewer.js)
         this.pixelScale = 1;        // export larger than the screen: render size / screen size
+        this.style = new StyleFilter(renderer);
 
         // same multisampling as the canvas (antialias)
         // stencil buffer: cut surfaces of the section plane are drawn into this target too
@@ -155,7 +160,13 @@ export class LensEffects {
     }
 
     get active() {
-        return this.bloom.enabled || this.chromatic.enabled || this.glare.enabled || this.shafts.enabled || this.flare.enabled || this.lookActive;
+        return this.bloom.enabled || this.chromatic.enabled || this.glare.enabled || this.shafts.enabled || this.flare.enabled || this.lookActive
+            || this.styleActive;
+    }
+
+    /** A style filter is on (not in the transparent export's neutral captures – matting needs the plain picture) */
+    get styleActive() {
+        return this.style.active && !this.neutralLook;
     }
 
     /** Image look differs from neutral (needs the output pass) */
@@ -168,6 +179,7 @@ export class LensEffects {
     setPixelScale(scale) {
         this.pixelScale = scale;
         this._bloomNode?.setResolutionScale(0.5 / scale);
+        this.style.setPixelScale(scale);
     }
 
     /** Apply values (after a change); rebuilds the output shader only when toggling on/off */
@@ -189,7 +201,8 @@ export class LensEffects {
         u.lookBalance.value.copy(whiteBalance(look.temperature, look.tint));
         u.lookContrast.value = look.contrast;
         u.lookSaturation.value = look.saturation;
-        const key = `${this.bloom.enabled}|${this.chromatic.enabled}|${this.glare.enabled}|${this.shafts.enabled}|${this.flare.enabled}|${this.lookActive}`;
+        this.style.apply();
+        const key = `${this.bloom.enabled}|${this.chromatic.enabled}|${this.glare.enabled}|${this.shafts.enabled}|${this.flare.enabled}|${this.lookActive}|${this.styleActive}`;
         if (key === this._key) return;
         this._key = key;
         this._bloomNode?.dispose();
@@ -245,7 +258,10 @@ export class LensEffects {
         r.setRenderTarget(this.target);
     }
 
-    /** Apply the effects and output to the canvas */
+    /**
+     * Apply the effects and output to the canvas – with a style filter into its HDR target (stays the render target
+     * for the contour lines; finish() puts it onto the canvas)
+     */
     end() {
         if (this.glare.enabled) this._renderGlare();
         if (this.shafts.enabled) this._renderShafts();
@@ -253,9 +269,22 @@ export class LensEffects {
         const r = this.renderer;
         const autoClear = r.autoClear;
         r.autoClear = true;   // also clears the internal framebuffer target
-        r.setRenderTarget(null);
+        this.style.pending = this.styleActive;
+        r.setRenderTarget(this.style.pending ? this.style.prepare() : null);
         this.output.render(r);
         r.autoClear = autoClear;
+    }
+
+    /** Style filter onto the canvas (after the contour lines); the tone mapping stays off until restoreToneMapping() */
+    finish() {
+        if (!this.style.pending) return;
+        this.style.pending = false;
+        this.style.render();
+    }
+
+    /** End of the frame: the tone mapping the style filter switched off */
+    restoreToneMapping() {
+        this.style.restore();
     }
 
     // --- Lens flare ---
@@ -529,7 +558,7 @@ export class LensEffects {
 
     toJSON() {
         return { bloom: { ...this.bloom }, chromatic: { ...this.chromatic }, glare: { ...this.glare }, shafts: { ...this.shafts },
-            flare: { ...this.flare }, look: { ...this.look } };
+            flare: { ...this.flare }, look: { ...this.look }, style: this.style.toJSON() };
     }
 
     fromJSON(s) {
@@ -542,6 +571,7 @@ export class LensEffects {
         Object.assign(this.flare, { enabled: false }, s.flare);
         delete this.flare.threshold;   // older scenes (visibility came from image brightness)
         Object.assign(this.look, NEUTRAL_LOOK, s.look);
+        this.style.fromJSON(s.style);   // older scenes: no filter
         this.apply();
     }
 }

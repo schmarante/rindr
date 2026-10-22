@@ -8,6 +8,7 @@
 import { viewAngle, setViewAngle, PERSPECTIVE_LIMIT, MAX_VIEW_ANGLE } from './fisheye.js';
 import { Euler } from 'three/webgpu';
 import { t, has } from './i18n.js';
+import { STYLE_MODES } from './style-filters.js';
 import { draggable, fmt, INPUT, colorField } from './ui-controls.js';
 
 let checkId = 0;   // ids for <label for>
@@ -69,7 +70,7 @@ export class PropertiesPanel {
         if (this.ctx.partQuality?.available(entry)) parts.push(this._qualityRow(entry));
         else if (entry.kind === 'light') parts.push(...this._lightSection(entry.object));
         else if (entry.kind === 'environment') parts.push(...this._environmentSection());
-        else if (entry.kind === 'camera') parts.push(...this._cameraSection(), ...this._lookSection(), ...this._lensSection());
+        else if (entry.kind === 'camera') parts.push(...this._cameraSection(), ...this._lookSection(), ...this._lensSection(), ...this._styleSection());
         else if (entry.kind === 'view') parts.push(...this._viewSection(entry.view));
         else if (entry.kind === 'missing') parts.push(...this._missingSection(entry));
         else if (entry.kind === 'views') {
@@ -656,6 +657,50 @@ export class PropertiesPanel {
             this._rangeRow(t('properties.lens.strength'), lens.chromatic.strength, 0, 3, 0.01, set('chromatic', t('properties.lens.undo.chromaticStrength'), 'strength', 'chromatic-strength')),
         ]);
         return rows;
+    }
+
+    // Style filter (style-filters.js): one look over the finished picture – choice + the sliders of that look
+    _styleSection() {
+        const { lens } = this.ctx;
+        if (!lens?.style) return [];
+        const style = lens.style;
+        const mode = el('select', INPUT.replace('text-right', 'text-left') + ' cursor-pointer');
+        for (const k of STYLE_MODES) mode.append(new Option(t(`properties.style.modes.${k}`), k));
+        mode.value = style.mode;
+        mode.title = t('properties.style.modeTitle');
+        const setMode = this._tracked(t('properties.style.undo.mode'), null, () => style.mode, v => { style.mode = v; lens.apply(); this.show(this.entry); });
+        mode.onchange = () => setMode(mode.value);
+        // sliders per look: [key, label, min, max, step]
+        const SLIDERS = {
+            handheld: [['rows', 'rows', 48, 288, 1], ['dither', 'dither', 0, 1, 0.01]],
+            pixel: [['size', 'size', 1, 32, 1], ['levels', 'levels', 2, 16, 1], ['dither', 'dither', 0, 1, 0.01]],
+            lcd: [['size', 'size', 2, 24, 1], ['gap', 'gap', 0, 1, 0.01], ['glow', 'glow', 0, 1, 0.01]],
+            crt: [['spacing', 'lineSpacing', 2, 12, 0.5], ['strength', 'strength', 0, 1, 0.01], ['curvature', 'curvature', 0, 1, 0.01], ['vignette', 'vignette', 0, 1, 0.01]],
+            sketch: [['lines', 'lines', 0, 2, 0.01], ['hatching', 'hatching', 0, 1, 0.01], ['spacing', 'hatchSpacing', 3, 20, 0.5], ['color', 'color', 0, 1, 0.01]],
+            ascii: [['size', 'size', 6, 40, 1], ['color', 'color', 0, 1, 0.01], ['brightness', 'brightness', 0.5, 2, 0.01]],
+            rain: [['size', 'size', 8, 40, 1], ['speed', 'speed', 0, 3, 0.01], ['image', 'image', 0, 1, 0.01]],
+        };
+        return this._section('style', t('properties.style.title'), null, true, null, () => {
+            const rows = [this._row(t('properties.style.mode'), mode)];
+            const values = style.settings[style.mode];
+            if (!values) return rows;
+            const set = (label, key) => this._tracked(t('properties.style.undo.param', { name: label }), `style-${style.mode}-${key}`,
+                () => values[key], v => { values[key] = v; lens.apply(); });
+            for (const [key, label, min, max, step] of SLIDERS[style.mode]) {
+                const name = t(`properties.style.${label}`);
+                rows.push(this._rangeRow(name, values[key], min, max, step, set(name, key)));
+            }
+            if (style.mode === 'handheld') {
+                const palette = el('select', INPUT.replace('text-right', 'text-left') + ' cursor-pointer');
+                for (const k of ['green', 'grey']) palette.append(new Option(t(`properties.style.palettes.${k}`), k));
+                palette.value = values.palette;
+                const setPalette = this._tracked(t('properties.style.undo.param', { name: t('properties.style.palette') }), null,
+                    () => values.palette, v => { values.palette = v; palette.value = v; lens.apply(); });
+                palette.onchange = () => setPalette(palette.value);
+                rows.push(this._row(t('properties.style.palette'), palette));
+            }
+            return rows;
+        });
     }
 
     // Effect section with a separator line. Header: arrow + name (left) fold the settings in/out like the
