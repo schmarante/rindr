@@ -61,7 +61,7 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 | `docs/animation.md` | Animation und Morph Targets – `src/scripts/animation.js`. |
 | `docs/rendering.md` | Raster-Darstellung – Darstellungsarten, Batcher (`render-batcher.js`), Cluster-LOD großer Modelle (`lod/`), Schatten, Einblenden, Hervorhebung, Schnittebene, eigene Render-Durchgänge. |
 | `docs/pathtracer.md` | Pathtracer (HQ) – `src/scripts/pathtracer.js` (three-gpu-pathtracer WebGPU, Vite-Patches in astro.config.mjs). |
-| `docs/camera-lens.md` | Kamera, Tiefenschärfe, Fisheye, Objektiv-Effekte – `dof.js`, `fisheye.js`, `lens-effects.js`, `volume-shafts.js`, Kamera-Teile von `viewer.js`/`properties.js`. |
+| `docs/camera-lens.md` | Kamera, Tiefenschärfe, Fisheye, Objektiv-Effekte, Stil-Filter – `dof.js`, `fisheye.js`, `lens-effects.js`, `style-filters.js`, `volume-shafts.js`, Kamera-Teile von `viewer.js`/`properties.js`. |
 | `docs/hdri-editor.md` | HDRI-Editor – eigene prozedurale HDRIs (`src/scripts/hdri/`): Modell, Generator, Pins, Sonne & Himmel, Export, Fenster. |
 | `docs/environment.md` | Umgebung, HDRI, Boden – `environment.js`, `ground.js`, `background-dome.js`, `contact-shadow.js`, `shadow-catcher.js`. |
 | `docs/materials.md` | Materialien und Node-Editor – `material-*.js`, `graph-apply.js`, `node-editor.js`; besondere Materialien in `src/scripts/materials/` (Toon/RindrMaterial, Konturen, Leuchtmarmor, Wolke, Wolle, Gras, Seifenhaut). |
@@ -137,6 +137,9 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 
 ### VIEW-CUBE
 [X] Perspektiven-Würfel wie in gängigen 3D-Programmen, floatet unten rechts; Flächen (oben, links, hinten …), Kanten und Ecken anklickbar → Kamera fliegt in diese Ansicht; Ziehen dreht (Details: `docs/ui.md`)
+
+### STIL-FILTER
+[X] Looks über das fertige Bild: Retro-Handheld (4 Grüntöne), Pixel/8-Bit, LCD, Scanlines (Röhre), Skizze, ASCII-Art, Code-Regen – alle Darstellungsarten, auch Export und KI-Bild (Details: `docs/camera-lens.md`)
 
 ### KI RENDERING
 [X] Neben dem HQ-Button soll noch ein KI-Button rein der das aktuelle HQ-Bild an eine Bildgenerierung-KI schickt.

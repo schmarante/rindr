@@ -1288,6 +1288,47 @@
             "titleSplats": "Depth of Field (live, auch beim Drehen)",
             "hintSplats": "Bei Gaussian Splats wird jeder Splat nach seinem Abstand zur Schärfe weichgezeichnet – live in der Ansicht. Die grüne Linie zeigt, solange die Kamera ausgewählt ist, wo die Schärfe liegt."
         },
+        "style": {
+            "title": "Stil-Filter",
+            "mode": "Look",
+            "modeTitle": "Legt einen Look über das fertige Bild – in allen Darstellungsarten, auch im Bild-Export und im KI-Bild",
+            "modes": {
+                "none": "Aus",
+                "handheld": "Retro-Handheld",
+                "pixel": "Pixel / 8-Bit",
+                "lcd": "LCD",
+                "crt": "Scanlines (Röhre)",
+                "sketch": "Skizze",
+                "ascii": "ASCII-Art",
+                "rain": "Code-Regen"
+            },
+            "rows": "Zeilen",
+            "dither": "Dithering",
+            "palette": "Palette",
+            "palettes": {
+                "green": "Grün",
+                "grey": "Grau"
+            },
+            "size": "Größe px",
+            "levels": "Farbstufen",
+            "gap": "Spalt",
+            "glow": "Leuchten",
+            "lineSpacing": "Zeilen px",
+            "strength": "Stärke",
+            "curvature": "Wölbung",
+            "vignette": "Vignette",
+            "lines": "Konturen",
+            "hatching": "Schraffur",
+            "hatchSpacing": "Strich px",
+            "color": "Farbe",
+            "brightness": "Helligkeit",
+            "speed": "Tempo",
+            "image": "Bildanteil",
+            "undo": {
+                "mode": "Stil-Filter",
+                "param": "Stil-Filter: {name}"
+            }
+        },
         "lens": {
             "title": "Objektiv-Effekte",
             "bloom": "Bloom",

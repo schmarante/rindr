@@ -1288,6 +1288,47 @@
             "titleSplats": "Depth of field (live, also while orbiting)",
             "hintSplats": "With Gaussian splats every splat is blurred by its distance to the focus – live in the view. While the camera is selected, the green line shows where the focus lies."
         },
+        "style": {
+            "title": "Style filter",
+            "mode": "Look",
+            "modeTitle": "Lays a look over the finished picture – in every view mode, also in the image export and the AI image",
+            "modes": {
+                "none": "Off",
+                "handheld": "Retro handheld",
+                "pixel": "Pixel / 8-bit",
+                "lcd": "LCD",
+                "crt": "Scanlines (CRT)",
+                "sketch": "Sketch",
+                "ascii": "ASCII art",
+                "rain": "Code rain"
+            },
+            "rows": "Rows",
+            "dither": "Dithering",
+            "palette": "Palette",
+            "palettes": {
+                "green": "Green",
+                "grey": "Grey"
+            },
+            "size": "Size px",
+            "levels": "Levels",
+            "gap": "Gap",
+            "glow": "Glow",
+            "lineSpacing": "Lines px",
+            "strength": "Strength",
+            "curvature": "Curvature",
+            "vignette": "Vignette",
+            "lines": "Outlines",
+            "hatching": "Hatching",
+            "hatchSpacing": "Stroke px",
+            "color": "Colour",
+            "brightness": "Brightness",
+            "speed": "Speed",
+            "image": "Picture",
+            "undo": {
+                "mode": "Style filter",
+                "param": "Style filter: {name}"
+            }
+        },
         "lens": {
             "title": "Lens effects",
             "bloom": "Bloom",

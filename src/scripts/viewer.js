@@ -5090,7 +5090,7 @@ if (new URLSearchParams(location.search).has('debug')) {
         if (batcher.lods) import('./lod/lod-debug.js').then(m => m.attachLodDebug(debugStats.root, { batcher }));
     });
 }
-renderer.setAnimationLoop(() => {
+function renderFrame() {
     const frameStart = performance.now();
     batcher.newFrame();
     stepAnimation(frameStart);
@@ -5312,11 +5312,13 @@ renderer.setAnimationLoop(() => {
         if (drew || splatEnv.busy || splatEnv.dirty) loadRender.force = true;
     } else if (splatEnv.ready || splatEnv.phase >= 0) splatEnv.reset();
     // toon/outline lines (screen-space pass): fisheye – into each cube face with its camera, then laid over the
-    // picture through the fisheye mapping like the gizmo (raster and HQ)
+    // picture through the fisheye mapping like the gizmo (raster and HQ); with a style filter into its picture first
+    if (lens.style.pending) renderer.setRenderTarget(lens.style.target);
     if (!rasterFisheye.active) contours.render();
     else if (contours.hasLines()) {
         rasterFisheye.render(renderer, camera, cam => contours.render(cam, { scale: rasterFisheye.faceScale(renderer) }), { overlay: true });
     }
+    lens.finish();   // style filter onto the canvas (tone mapping off until the end of the frame)
     screenFade.frame(!capture && !exportReq);   // soft transition after a change (not into captured images)
     if (capture) {
         // read in the same task as the rendering (afterwards the canvas image is presented and discarded)
@@ -5350,5 +5352,13 @@ renderer.setAnimationLoop(() => {
         preloaderStart ??= performance.now();
         preloaderFrames = renderer.info.render.drawCalls > 0 ? preloaderFrames + 1 : 0;
         if (preloaderFrames >= 2 || performance.now() - preloaderStart > 4000) { preloaderGone = true; hidePreloader(); }
+    }
+}
+// a style filter switches the renderer's tone mapping off for the rest of its frame – back on before anything else
+renderer.setAnimationLoop(() => {
+    try {
+        renderFrame();
+    } finally {
+        lens.restoreToneMapping();
     }
 });
