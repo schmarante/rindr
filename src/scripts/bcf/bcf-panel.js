@@ -4,9 +4,10 @@
 // current view). New topic from the current view, open/export .bcfzip. Author for new entries: settings → BIM.
 import { t, getLocale } from '../i18n.js';
 import { uuid } from './bcf-format.js';
+import { icon } from '../icons.js';
 
-const ICON_CLOSE = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
-const ICON_BACK = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L5 8l5 5"/></svg>';
+const ICON_CLOSE = icon('close', 'size-3.5');
+const ICON_BACK = icon('back', 'size-3.5');
 const BUTTON = 'rounded px-2 py-0.5 text-white/80 outline-none transition-colors hover:bg-white/15 hover:text-white disabled:opacity-40 disabled:pointer-events-none';
 const INPUT = 'w-full min-w-0 rounded bg-white/10 px-1.5 py-0.5 text-white outline-none focus:bg-white/20';
 const STATUS_DEFAULTS = ['Open', 'In Progress', 'Resolved', 'Closed', 'ReOpened'];

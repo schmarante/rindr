@@ -16,14 +16,15 @@ import { t } from './i18n.js';
 import { colorField } from './ui-controls.js';
 import { floatWindow } from './float-window.js';
 import { materialType, typeAllowsGraph } from './material-types.js';
+import { icon } from './icons.js';
 
 
-const ICON_WARNING = '<svg viewBox="0 0 20 20" class="size-3.5 shrink-0 fill-amber-400"><path d="M10 2.2 1.3 17.3h17.4L10 2.2Zm-.9 5.3h1.8v4.9H9.1V7.5Zm0 6.3h1.8v1.8H9.1v-1.8Z"/></svg>';
-const ICON_DOWNLOAD = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v8M4.5 7 8 10.5 11.5 7M2.5 13.5h11"/></svg>';
-const ICON_FOLDER = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.4" stroke-linejoin="round"><path d="M1.5 4V12.5a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V5.5a1 1 0 0 0-1-1H8L6.5 2.5h-4a1 1 0 0 0-1 1z"/></svg>';
-const ICON_CLOSE = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
-const ICON_EYE = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.4"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg>';
-const ICON_EYE_OFF = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.4" stroke-linecap="round"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z"/><path d="M2.5 13.5l11-11"/></svg>';
+const ICON_WARNING = icon('warning', 'size-3.5 shrink-0 fill-amber-400');
+const ICON_DOWNLOAD = icon('download', 'size-3.5');
+const ICON_FOLDER = icon('folder', 'size-3.5');
+const ICON_CLOSE = icon('close', 'size-3.5');
+const ICON_EYE = icon('eye', 'size-3.5');
+const ICON_EYE_OFF = icon('eye-off', 'size-3.5');
 const PREVIEW_SIZE = 256;   // baked preview edge length (px)
 const NO_PREVIEW = new Set(['value', 'color']);   // show their content directly
 const NODE_MIME = 'application/x-rindr-node';   // node type dragged from the list

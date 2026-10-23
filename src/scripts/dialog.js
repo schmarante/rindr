@@ -2,6 +2,7 @@
 // (black, translucent, blur, rounded, no outline), centred, without darkening the viewer.
 // Enter = confirm, Esc or a click next to it = cancel. Returns a promise.
 import { t } from './i18n.js';
+import { icon } from './icons.js';
 
 const BUTTON = 'rounded px-3 py-1 outline-none transition-colors';
 let open = null;   // only one dialog at a time
@@ -28,8 +29,8 @@ const KIND = {
     danger: 'bg-red-500/80 text-white hover:bg-red-500',
 };
 const ICONS = {
-    warning: '<svg viewBox="0 0 20 20" class="size-4 shrink-0 fill-amber-400"><path d="M10 2.2 1.3 17.3h17.4L10 2.2Zm-.9 5.3h1.8v4.9H9.1V7.5Zm0 6.3h1.8v1.8H9.1v-1.8Z"/></svg>',
-    info: '<svg viewBox="0 0 20 20" class="size-4 shrink-0 fill-sky-400"><path d="M10 1.8a8.2 8.2 0 1 0 0 16.4 8.2 8.2 0 0 0 0-16.4Zm.9 12.6H9.1V8.8h1.8v5.6Zm0-7.2H9.1V5.4h1.8v1.8Z"/></svg>',
+    warning: icon('warning', 'size-4 shrink-0 fill-amber-400'),
+    info: icon('info', 'size-4 shrink-0 fill-sky-400'),
 };
 
 /**

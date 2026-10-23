@@ -11,6 +11,7 @@
 // The puppet hangs in a container (scale → mm) below the model root while live; user moves of single parts
 // (xf) do not apply to the live skinned parts, the explosion neither (both apply again after settle).
 import * as THREE from 'three/webgpu';
+import { icon } from './icons.js';
 
 const _p = new THREE.Vector3(), _n = new THREE.Vector3(), _base = new THREE.Vector3(), _tip = new THREE.Vector3();
 const _m = new THREE.Matrix4(), _im = new THREE.Matrix4(), _inv = new THREE.Matrix4();
@@ -332,8 +333,8 @@ function mergeGroups(geometry) {
     for (const m of merged) geometry.addGroup(m.start, m.count, m.materialIndex);
 }
 
-const ICON_PLAY = '<svg viewBox="0 0 16 16" class="size-3.5 fill-current"><path d="M4.5 2.8v10.4L13 8z"/></svg>';
-const ICON_PAUSE = '<svg viewBox="0 0 16 16" class="size-3.5 fill-current"><rect x="3.5" y="2.8" width="3" height="10.4" rx="0.6"/><rect x="9.5" y="2.8" width="3" height="10.4" rx="0.6"/></svg>';
+const ICON_PLAY = icon('play', 'size-3.5');
+const ICON_PAUSE = icon('pause', 'size-3.5');
 
 /**
  * Play bar above the bottom toolbar: play/pause, time slider, time, clip choice (several clips).
