@@ -709,21 +709,25 @@ export class PropertiesPanel {
     // inherited gives the node its own mapping (starting from the inherited values)
     _mappingSection(entry) {
         const api = this.ctx.uvMapping;
-        const { own, inherited, from } = api.get(entry);
+        const { own, inherited, from, below } = api.get(entry);
         const shown = own || inherited || DEFAULT_MAPPING;
-        // undo/redo on the whole own mapping (as JSON – comparable)
-        // the panel is rebuilt unless a slider of it is being dragged (undo/redo and type changes rebuild it)
+        // undo/redo on the mappings of this node and the nodes below (a change replaces those below – undo brings them
+        // back), as JSON – comparable. A new value = { own, below: [] }.
+        // The panel is rebuilt unless a slider of it is being dragged (undo/redo and type changes rebuild it)
         const write = this._tracked(t('properties.mapping.undo'), `mapping-${entry.key}`,
-            () => JSON.stringify(api.get(entry).own), json => {
+            () => JSON.stringify(api.snapshot(entry)), json => {
                 const before = api.get(entry).own;
-                api.set(entry, json === 'null' || json === undefined ? null : JSON.parse(json));
+                const list = JSON.parse(json);
+                if (Array.isArray(list)) api.restore(entry, list);
+                else api.set(entry, list.own);
                 const after = api.get(entry).own;
                 if (!live || !before !== !after || before?.type !== after?.type) this.show(this.entry);
             });
+        const set = mapping => write(JSON.stringify({ own: mapping }));
         let live = false;
         const change = patch => {
             live = true;
-            try { write(JSON.stringify({ ...(api.get(entry).own || shown), ...patch })); } finally { live = false; }
+            try { set({ ...(api.get(entry).own || shown), ...patch }); } finally { live = false; }
         };
         const select = (options, value, label, onChange) => {
             const box = el('select', INPUT.replace('text-right', 'text-left') + ' cursor-pointer');
@@ -738,7 +742,7 @@ export class PropertiesPanel {
         if (inherited) types.unshift(['', t('properties.mapping.inherited', { type: typeName(inherited.type), name: from })]);
         const plain = v => !inherited && v === 'standard' && (api.get(entry).own?.scale ?? 1) === 1;
         const type = select(types, own ? own.type : inherited ? '' : 'standard', t('properties.mapping.type'),
-            v => write(!v || plain(v) ? 'null' : JSON.stringify({ ...shown, type: v })));
+            v => set(!v || plain(v) ? null : { ...shown, type: v }));
         type.title = t('properties.mapping.typeTitle');
         return this._section('mapping', t('properties.mapping.title'), null, true, null, () => {
             const rows = [this._row(t('properties.mapping.type'), type)];
@@ -751,6 +755,7 @@ export class PropertiesPanel {
             scale.title = t('properties.mapping.scaleTitle');
             rows.push(scale);
             if (!own && inherited) rows.push(el('div', 'mb-1 text-white/40', t('properties.mapping.inheritHint')));
+            if (below) rows.push(el('div', 'mb-1 text-white/40', t('properties.mapping.belowHint', { count: below })));
             return rows;
         });
     }
