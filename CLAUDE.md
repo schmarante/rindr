@@ -64,7 +64,7 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 | `docs/camera-lens.md` | Kamera, Tiefenschärfe, Fisheye, Objektiv-Effekte, Stil-Filter – `dof.js`, `fisheye.js`, `lens-effects.js`, `style-filters.js`, `volume-shafts.js`, Kamera-Teile von `viewer.js`/`properties.js`. |
 | `docs/hdri-editor.md` | HDRI-Editor – eigene prozedurale HDRIs (`src/scripts/hdri/`): Modell, Generator, Pins, Sonne & Himmel, Export, Fenster. |
 | `docs/environment.md` | Umgebung, HDRI, Boden – `environment.js`, `ground.js`, `background-dome.js`, `contact-shadow.js`, `shadow-catcher.js`. |
-| `docs/materials.md` | Materialien und Node-Editor – `material-*.js`, `graph-apply.js`, `node-editor.js`; besondere Materialien in `src/scripts/materials/` (Toon/RindrMaterial, Konturen, Leuchtmarmor, Wolke, Wolle, Gras, Seifenhaut). |
+| `docs/materials.md` | Materialien und Node-Editor – `material-*.js`, `graph-apply.js`, `node-editor.js`, UV-Mapping je Objekt (`uv-mapping.js`); besondere Materialien in `src/scripts/materials/` (Toon/RindrMaterial, Konturen, Leuchtmarmor, Wolke, Wolle, Gras, Seifenhaut). |
 | `docs/material-library.md` | Material-Bibliothek – Presets je Kategorie in `src/scripts/presets/` (aus den MAX-Bibliotheken nachgebaut), Graph-Baukasten, Prüfweg. |
 | `docs/scene-state.md` | Szenen-Zustand, Speichern/Laden, Assets, Rückgängig – `scene-state.js`, `assets.js`, `history.js`, Teile von `viewer.js`. |
 | `docs/ui.md` | Oberfläche und Bedienung – Scene Graph, Eigenschaften/Gizmo, Leiste, Drop-Fläche, mehrere Modelle, Menüs, Dialoge, Tasten, Auswahl. |
@@ -102,7 +102,7 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
   - HDRI per Drag & Drop: `.hdr`/`.exr` ins Fenster ziehen → wird geladen und sofort als Umgebung gewählt (heute nur `public/hdr/` per Build-Liste bzw. `?hdr=`; Laden über `environment.selectFile` gibt es schon – beim Relink genutzt). Drop-Logik: HDRI-Datei allein = Umgebung, kein Modell-Ersetzen/Hinzufügen; Szenen-Zustand/Asset-Fenster müssen die Datei als Asset führen. Format-Texte ergänzen.
   - Decals/Aufkleber: nur über das Material (Bild-Node, Kacheln aus → UV-Modus); Drag & Drop aufs Teil mit Bearbeiten auf dem Objekt verworfen (Nutzer: zu langsam, stört die UI – Details `docs/materials.md`). Projektion (Variante 3) zurückgestellt.
 - Import-Materialien: Texturen gehen beim JSON-Export verloren (Graph verweist nur auf den Map-Schlüssel); Mischen von Materialien per Maske geplant; Vertex-Farben, Lichter/Kameras aus glTF/FBX werden ignoriert; FBX-Phong → Rauheit aus Shininess geschätzt. glTF/FBX nur mit selbst erzeugten Testdateien geprüft (Scratchpad `gen.py`).
-- Node-Editor: kein Zoom; Box-UVs haben Nähte auf gekrümmten Flächen; importierte Materialien landen in der Szene, nicht dauerhaft in der Bibliothek.
+- Node-Editor: kein Zoom; Box-UVs haben auf gekrümmten Flächen gerade Nähte (seit Okt. 2026 je Dreieck – vorher Zickzack-Streifen; nahtlos über das Mapping je Objekt: Zylinder/Kugel); importierte Materialien landen in der Szene, nicht dauerhaft in der Bibliothek.
 - Ungenutzte STEP-Dummy-Materialien werden beim Neu-Tessellieren entfernt.
 - Sehr große STEP-Dateien (~400 MB, ~6 Mio. Dreiecke) laden im Headless-Chrome in ~30 s; Dateien ≥ 1 GB kaum getestet. Weitere Hebel: Worker-Zahl an Dateigröße koppeln, Tangenten nur bei Normal-Maps, CPU-Kopien nach GPU-Upload freigeben.
 - Nicht unterstützt: Nähte in u *und* v, OFFSET_CURVE, COMPOSITE_CURVE; Längeneinheit ignoriert.
@@ -140,6 +140,9 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 
 ### STIL-FILTER
 [X] Looks über das fertige Bild: Retro-Handheld (4 Grüntöne), Pixel/8-Bit, LCD, Scanlines (Röhre), Skizze, ASCII-Art, Code-Regen – alle Darstellungsarten, auch Export und KI-Bild (Details: `docs/camera-lens.md`)
+
+### UV-MAPPING
+[X] Mapping je Objekt wie ein UVW-Modifier, aber einfach: Standard/Box/Planar/Zylinder/Kugel, Achse, Drehung, Maßstab (Faktor auf die Kachelgröße des Materials), vererbt über den Scene Graph; Zylinder/Kugel rundherum nahtlos (Details: `docs/materials.md`)
 
 ### KI RENDERING
 [X] Neben dem HQ-Button soll noch ein KI-Button rein der das aktuelle HQ-Bild an eine Bildgenerierung-KI schickt.

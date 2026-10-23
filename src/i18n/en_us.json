@@ -1290,6 +1290,30 @@
             "titleSplats": "Depth of field (live, also while orbiting)",
             "hintSplats": "With Gaussian splats every splat is blurred by its distance to the focus – live in the view. While the camera is selected, the green line shows where the focus lies."
         },
+        "mapping": {
+            "title": "Mapping",
+            "type": "Projection",
+            "typeTitle": "How the materials' textures are laid onto this object – applies to all parts below it unless they have their own",
+            "types": {
+                "standard": "Standard (as imported)",
+                "box": "Box",
+                "planar": "Planar",
+                "cylinder": "Cylinder",
+                "sphere": "Sphere"
+            },
+            "inherited": "Inherited: {type} from “{name}”",
+            "axis": "Axis",
+            "axes": {
+                "y": "Up (Y)",
+                "x": "X",
+                "z": "Z"
+            },
+            "rotation": "Rotation °",
+            "scale": "Scale",
+            "scaleTitle": "Factor on the material's tile size: 2 = texture twice as large",
+            "inheritHint": "A change gives this object its own mapping.",
+            "undo": "Mapping"
+        },
         "style": {
             "title": "Style filter",
             "mode": "Look",

@@ -3,7 +3,7 @@
 // metres → mm via the mesh matrices. Materials: one per surface style / IFC material + colour (Revit names the
 // styles after the material: "Glas", "StB - Ortbeton" …), transparent ones become glass. The worker stays alive
 // for the properties panel (result.bim.properties) until the model is removed (bim.dispose).
-import { boxUVs, buildGeometryBVHs, UV_TILE } from '../step-importer.js';
+import { boxProject, buildGeometryBVHs, UV_TILE } from '../step-importer.js';
 import { readZip } from '../splat/splat-formats.js';
 import { t, has } from '../i18n.js';
 import { debugLog } from '../log.js';
@@ -40,7 +40,10 @@ export async function importIfc(source, { materialManager, onStatus = () => {}, 
         const label = classLabel(n.ifc.type);
         n.name = n.ifc.group ? `${label} (${n.ifc.count})` : n.name || label;
     }
-    for (const g of geometries) g.uvs = boxUVs(g.positions, g.normals, UV_TILE / MM);
+    for (const g of geometries) {
+        const p = boxProject(g, UV_TILE / MM);
+        Object.assign(g, { positions: p.positions, normals: p.normals, index: p.index, uvs: p.uvs });
+    }
     const materialIds = styles.map(s => materialManager.create({ ...styleMaterial(s), source: 'import', origin: `import:${source.name}:${s.key}` }, { silent: true }).def.id);
     const meshes = placed.map((m, i) => {
         const e = m.matrix;

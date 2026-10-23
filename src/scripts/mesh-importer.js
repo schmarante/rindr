@@ -7,7 +7,7 @@
 // 3MF in the unit of its model part.
 // Materials become separate entries (source 'import') in the MaterialManager, textures are kept.
 import * as THREE from 'three/webgpu';
-import { boxUVs, buildGeometryBVHs, orientTrianglesIsolated, UV_TILE } from './step-importer.js';
+import { boxProject, buildGeometryBVHs, orientTrianglesIsolated, UV_TILE } from './step-importer.js';
 import { isBinaryFbx } from './fbx/fbx-parse.js';
 import { isCompoundFile } from './max/max-parse.js';
 import { creaseCornerNormals } from './crease-normals.js';
@@ -569,8 +569,9 @@ async function convertLeanFbx({ scene, geometries: parts }, source, materialMana
                     gis = (parts[lg] || []).map(part => {
                         let normals = part.normals;
                         if (!normals) computeNormals(part.positions, part.index, normals = new Float32Array(part.positions.length));
-                        const uvs = part.uvs || boxUVs(part.positions, normals, UV_TILE / Math.max(worldScale, 1e-12));
-                        geometries.push({ positions: part.positions, normals, index: part.index, uvs, name: m.name });
+                        const g = part.uvs ? { positions: part.positions, normals, index: part.index, uvs: part.uvs }
+                            : boxProject({ positions: part.positions, normals, index: part.index }, UV_TILE / Math.max(worldScale, 1e-12));
+                        geometries.push({ positions: g.positions, normals: g.normals, index: g.index, uvs: g.uvs, name: m.name });
                         return { gi: geometries.length - 1, material: part.material };
                     });
                     cache.set(lg, gis);
@@ -726,8 +727,8 @@ async function convertMax({ scene, geometries: parts }, source, materialManager)
             if (!gis) {
                 const worldScale = objectMatrix.getMaxScaleOnAxis() * scale;
                 gis = parts[m.geometry].map(part => {
-                    const uvs = part.uvs || boxUVs(part.positions, part.normals, UV_TILE / Math.max(worldScale, 1e-12));
-                    geometries.push({ positions: part.positions, normals: part.normals, index: part.index, uvs, name: m.name });
+                    const g = part.uvs ? part : boxProject(part, UV_TILE / Math.max(worldScale, 1e-12));
+                    geometries.push({ positions: g.positions, normals: g.normals, index: g.index, uvs: g.uvs, name: m.name });
                     return { gi: geometries.length - 1, material: part.material };
                 });
                 cache.set(m.geometry, gis);
@@ -820,8 +821,8 @@ async function convert3mf(scene, source, materialManager) {
             if (!gis) {
                 const worldScale = matrix.getMaxScaleOnAxis() * scale;
                 gis = parts.map(part => {
-                    const uvs = part.uvs || boxUVs(part.positions, part.normals, UV_TILE / Math.max(worldScale, 1e-12));
-                    return { gi: geometries.push({ positions: part.positions, normals: part.normals, index: part.index, uvs, name: o.name }) - 1, material: part.material };
+                    const g = part.uvs ? part : boxProject(part, UV_TILE / Math.max(worldScale, 1e-12));
+                    return { gi: geometries.push({ positions: g.positions, normals: g.normals, index: g.index, uvs: g.uvs, name: o.name }) - 1, material: part.material };
                 });
                 cache.set(o.geometry, gis);
             }
@@ -935,7 +936,8 @@ function extractGeometries(mesh, buckets, posed, worldScale) {
         // our vertex → source vertex (animation/morphs re-deform from the source)
         const sourceVertex = posed ? Int32Array.from(o.order) : null;
         // without UVs: box projection like STEP (UV_TILE in mm, geometry in source units)
-        return { positions, normals, index: o.index, uvs: uvs || boxUVs(positions, normals, UV_TILE / Math.max(worldScale, 1e-12)), sourceVertex };
+        if (uvs) return { positions, normals, index: o.index, uvs, sourceVertex };
+        return boxProject({ positions, normals, index: o.index, sourceVertex }, UV_TILE / Math.max(worldScale, 1e-12));
     });
 }
 

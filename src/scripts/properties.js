@@ -9,6 +9,7 @@ import { viewAngle, setViewAngle, PERSPECTIVE_LIMIT, MAX_VIEW_ANGLE } from './fi
 import { Euler } from 'three/webgpu';
 import { t, has } from './i18n.js';
 import { STYLE_MODES } from './style-filters.js';
+import { MAPPING_TYPES, MAPPING_AXES, DEFAULT_MAPPING } from './uv-mapping.js';
 import { draggable, fmt, INPUT, colorField } from './ui-controls.js';
 
 let checkId = 0;   // ids for <label for>
@@ -65,6 +66,7 @@ export class PropertiesPanel {
         if (entry.kind === 'model' && this.ctx.exploder && !splats) parts.push(this._explodeRow());
         if (splats && (entry.kind === 'model' || entry.kind === 'node')) parts.push(...this._splatLookSection());
         if ((entry.kind === 'model' || entry.kind === 'node') && this.ctx.morphs?.list(entry).length) parts.push(...this._morphSection(entry));
+        if (!splats && this.ctx.uvMapping?.available(entry)) parts.push(...this._mappingSection(entry));
         const bim = (entry.kind === 'node' || entry.kind === 'model') && this.ctx.bim?.(entry);
         if (bim) parts.push(this._bimSection(entry, bim));
         if (this.ctx.partQuality?.available(entry)) parts.push(this._qualityRow(entry));
@@ -699,6 +701,56 @@ export class PropertiesPanel {
                 palette.onchange = () => setPalette(palette.value);
                 rows.push(this._row(t('properties.style.palette'), palette));
             }
+            return rows;
+        });
+    }
+
+    // UV mapping of a model/assembly/part (uv-mapping.js): own or inherited from above; changing a value while it is
+    // inherited gives the node its own mapping (starting from the inherited values)
+    _mappingSection(entry) {
+        const api = this.ctx.uvMapping;
+        const { own, inherited, from } = api.get(entry);
+        const shown = own || inherited || DEFAULT_MAPPING;
+        // undo/redo on the whole own mapping (as JSON – comparable)
+        // the panel is rebuilt unless a slider of it is being dragged (undo/redo and type changes rebuild it)
+        const write = this._tracked(t('properties.mapping.undo'), `mapping-${entry.key}`,
+            () => JSON.stringify(api.get(entry).own), json => {
+                const before = api.get(entry).own;
+                api.set(entry, json === 'null' || json === undefined ? null : JSON.parse(json));
+                const after = api.get(entry).own;
+                if (!live || !before !== !after || before?.type !== after?.type) this.show(this.entry);
+            });
+        let live = false;
+        const change = patch => {
+            live = true;
+            try { write(JSON.stringify({ ...(api.get(entry).own || shown), ...patch })); } finally { live = false; }
+        };
+        const select = (options, value, label, onChange) => {
+            const box = el('select', INPUT.replace('text-right', 'text-left') + ' cursor-pointer');
+            for (const [v, text] of options) box.append(new Option(text, v));
+            box.value = value;
+            box.onchange = () => onChange(box.value);
+            return box;
+        };
+        const typeName = type => t(`properties.mapping.types.${type}`);
+        // inherited: first entry = no own mapping; otherwise "standard" without scale is the same as none
+        const types = MAPPING_TYPES.map(k => [k, typeName(k)]);
+        if (inherited) types.unshift(['', t('properties.mapping.inherited', { type: typeName(inherited.type), name: from })]);
+        const plain = v => !inherited && v === 'standard' && (api.get(entry).own?.scale ?? 1) === 1;
+        const type = select(types, own ? own.type : inherited ? '' : 'standard', t('properties.mapping.type'),
+            v => write(!v || plain(v) ? 'null' : JSON.stringify({ ...shown, type: v })));
+        type.title = t('properties.mapping.typeTitle');
+        return this._section('mapping', t('properties.mapping.title'), null, true, null, () => {
+            const rows = [this._row(t('properties.mapping.type'), type)];
+            if (shown.type !== 'standard') {
+                const axis = select(MAPPING_AXES.map(k => [k, t(`properties.mapping.axes.${k}`)]), shown.axis, '', v => change({ axis: v }));
+                rows.push(this._row(t('properties.mapping.axis'), axis));
+                rows.push(this._rangeRow(t('properties.mapping.rotation'), shown.rotation, -180, 180, 1, v => change({ rotation: v }), this._dragHooks()));
+            }
+            const scale = this._rangeRow(t('properties.mapping.scale'), shown.scale, 0.1, 10, 0.01, v => change({ scale: v }), this._dragHooks());
+            scale.title = t('properties.mapping.scaleTitle');
+            rows.push(scale);
+            if (!own && inherited) rows.push(el('div', 'mb-1 text-white/40', t('properties.mapping.inheritHint')));
             return rows;
         });
     }

@@ -1290,6 +1290,30 @@
             "titleSplats": "Depth of Field (live, auch beim Drehen)",
             "hintSplats": "Bei Gaussian Splats wird jeder Splat nach seinem Abstand zur Schärfe weichgezeichnet – live in der Ansicht. Die grüne Linie zeigt, solange die Kamera ausgewählt ist, wo die Schärfe liegt."
         },
+        "mapping": {
+            "title": "Mapping",
+            "type": "Projektion",
+            "typeTitle": "Wie die Texturen der Materialien auf dieses Objekt gelegt werden – gilt für alle Teile darunter, solange sie kein eigenes haben",
+            "types": {
+                "standard": "Standard (wie importiert)",
+                "box": "Box",
+                "planar": "Planar",
+                "cylinder": "Zylinder",
+                "sphere": "Kugel"
+            },
+            "inherited": "Geerbt: {type} von „{name}“",
+            "axis": "Achse",
+            "axes": {
+                "y": "Hoch (Y)",
+                "x": "X",
+                "z": "Z"
+            },
+            "rotation": "Drehung °",
+            "scale": "Maßstab",
+            "scaleTitle": "Faktor auf die Kachelgröße des Materials: 2 = Textur doppelt so groß",
+            "inheritHint": "Eine Änderung gibt diesem Objekt ein eigenes Mapping.",
+            "undo": "Mapping"
+        },
         "style": {
             "title": "Stil-Filter",
             "mode": "Look",
