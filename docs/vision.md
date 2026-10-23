@@ -1,6 +1,8 @@
 # Zukunftsvisionen
 
 ## Distributed Rendering (Rendern auf mehreren Rechnern)
+**Umsetzung läuft seit Okt. 2026 – Stand in `docs/distributed.md`** (Entscheidung des Nutzers: Buckets mit Beschriftung statt Samples aufteilen; dynamische Warteschlange gleicht unterschiedlich schnelle Rechner aus, Entrauschen einmal über das ganze Bild). Die Überlegungen unten bleiben als Hintergrund.
+
 Nur für finale Standbilder (hohe Auflösung/viele Samples) und Animationen sinnvoll – nicht für die interaktive Ansicht (jede Kamerabewegung = Neustart auf allen Knoten, Netzwerk-Latenz frisst den Gewinn). Grundlage ist der Szenen-Zustand (`scene-state.js`): Modelldatei + Zustand-JSON + HDRI legen ein Bild eindeutig fest.
 
 **Standbild: Samples aufteilen statt Kacheln**

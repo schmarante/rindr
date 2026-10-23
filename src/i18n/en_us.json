@@ -1093,7 +1093,8 @@
         "morphTargets": {
             "one": "{count} morph target – sliders in the properties",
             "other": "{count} morph targets – sliders in the properties"
-        }
+        },
+        "instance": "Instance of “{name}”"
     },
     "properties": {
         "kind": {
@@ -1479,6 +1480,12 @@
                 "saturation": "Saturation",
                 "reset": "Reset image"
             }
+        },
+        "instance": {
+            "info": "Instance of “{name}” · {count} linked – the UV mapping applies to all, the material per object",
+            "unique": "Unique copy of “{name}”",
+            "makeUnique": "Make unique",
+            "makeUniqueTitle": "Detach from the other instances: the UV mapping then applies to this object only"
         }
     },
     "sceneState": {
@@ -1657,7 +1664,11 @@
         }
     },
     "render": {
-        "gpuError": "GPU error"
+        "gpuError": "GPU error",
+        "running": "Rendering",
+        "cancel": "Cancel rendering – back to the view before",
+        "stopHq": "Stop path tracing – back to “{mode}”",
+        "runningPass": "Rendering (pass {n}/{total})"
     },
     "status": {
         "growingGrass": "Growing grass …",
@@ -1763,7 +1774,8 @@
             "motion": "Reduced quality – full quality on release",
             "renderingDenoise": "{samples} · then denoise",
             "denoiseLoading": "Loading AI network…",
-            "doneDenoised": "{samples} · denoised"
+            "doneDenoised": "{samples} · denoised",
+            "motionSamples": "Resolution {value} % · {samples}"
         }
     },
     "toolbar": {
@@ -1792,30 +1804,31 @@
             "other": "Assets – {count} files missing"
         },
         "exportImage": "Export image (PNG/JPG)",
-        "bcf": "BCF issues"
+        "bcf": "BCF issues",
+        "render": "Render – export an image, also distributed over several computers"
     },
     "viewMode": {
-        "basic": {
-            "label": "Basic",
-            "title": "Basic – uniform grey model (1)"
-        },
-        "default": {
-            "label": "Default",
-            "title": "Default – materials and textures (2)"
-        },
-        "hq": {
-            "label": "HQ",
-            "title": "HQ – path tracing (3)"
+        "wire": {
+            "label": "Wire",
+            "title": "Wireframe – grey model with its edges"
         },
         "uv": {
             "label": "UV",
-            "title": "UV – test pattern over the texture coordinates: stretching, seams, mirrored UVs (1)"
+            "title": "UV – test pattern through the texture coordinates: distortion, seams, mirrored UVs"
         },
-        "wire": {
-            "label": "Wire",
-            "title": "Wireframe – grey model with its edges (1)"
+        "basic": {
+            "label": "Grey",
+            "title": "Grey – the whole model in grey"
         },
-        "analysisChoice": "Choose the analysis view: Basic, UV, wireframe"
+        "default": {
+            "label": "Standard",
+            "title": "Standard – all materials and textures"
+        },
+        "hq": {
+            "label": "High Quality",
+            "title": "High Quality – path tracing"
+        },
+        "choice": "Click: choose the view"
     },
     "quadMenu": {
         "display": "Display",
@@ -1857,6 +1870,52 @@
         "tessellation": "Tessellation",
         "quality": "Quality",
         "close": "Close (Esc)",
+        "distributed": {
+            "title": "Distributed Rendering",
+            "hint": "Render one picture on several computers: buckets are handed out to the render clients, if one drops out another takes over. Clients are computers in the same local network (pair them) or further tabs of this browser.",
+            "openClient": "Open client tab",
+            "clients": "Render clients",
+            "job": "Job",
+            "renderLocal": "This computer renders along",
+            "bucketSize": "Bucket size",
+            "cancel": "Cancel",
+            "none": "No clients yet – “Pair computer …” or “Open client tab”.",
+            "thisComputer": "This computer",
+            "buckets": {
+                "one": "{count} bucket",
+                "other": "{count} buckets"
+            },
+            "state": {
+                "ready": "ready",
+                "loading": "loading scene",
+                "rendering": "rendering",
+                "lost": "unreachable",
+                "other": "for another master",
+                "error": "error"
+            },
+            "progress": "{done} / {total} buckets",
+            "statusRunning": "{done} / {total} buckets · {workers} rendering · {time}",
+            "close": "Close",
+            "done": "Rendered distributed in {time} s – {buckets} buckets ({who})",
+            "startHint": "Started from “Render” (teapot in the bottom bar) – size, samples and format are there too.",
+            "busy": "A distributed job is already running.",
+            "finishing": "Rendered distributed – denoising …",
+            "pair": "Pair computer …",
+            "pairHint": "No server needed: the render computer opens a link from here and then shows an answer code that has to come back here. Both computers must be in the same local network. If the connection drops, pair again.",
+            "pairStep1": "1. Open this link on the render computer (e.g. send it over in a message):",
+            "pairStep2": "2. Paste the answer code it then shows here:",
+            "answerPlaceholder": "Answer code",
+            "copy": "Copy",
+            "copied": "Copied",
+            "connect": "Connect",
+            "pairCreating": "Creating link …",
+            "pairWaiting": "Waiting for the answer code …",
+            "pairConnecting": "Connecting …",
+            "pairDone": "Connected – the computer shows up in the list in a moment.",
+            "pairFailed": "Pairing not possible: {message}",
+            "pairTimeout": "No connection came about – are both computers in the same network (no firewall in between)? Create a new link and try again.",
+            "pairBadCode": "The answer code is invalid or incomplete – please copy all of it."
+        },
         "ki": {
             "title": "AI rendering",
             "apiKey": "Gemini API key",
@@ -1908,7 +1967,12 @@
                 "other": "Delete {count} views"
             },
             "morph": "Morph target “{name}”",
-            "morphReset": "Reset morph targets"
+            "morphReset": "Reset morph targets",
+            "instance": {
+                "one": "Create instance",
+                "other": "Create {count} instances"
+            },
+            "makeUnique": "Make instance unique"
         },
         "objectsWithMaterial": "Objects with “{name}”",
         "ki": {
@@ -2033,12 +2097,12 @@
         "remoteFile": "Loading {name} ({done}/{total})",
         "downloadTitle": "Load “{name}” from the net",
         "loadRemote": "Load from the net",
-        "loadRemoteTitle": "Loads the images from the servers the model points to \u2013 scaled down to the size the import uses anyway",
+        "loadRemoteTitle": "Loads the images from the servers the model points to – scaled down to the size the import uses anyway",
         "remoteCount": {
             "one": "{count} missing texture is on another server",
             "other": "{count} missing textures are on another server"
         },
-        "remoteProgress": "Loading textures from the net\u2026 {done}/{total}",
+        "remoteProgress": "Loading textures from the net… {done}/{total}",
         "remoteFailedTitle": {
             "one": "{count} texture could not be loaded",
             "other": "{count} textures could not be loaded"
@@ -2062,19 +2126,36 @@
         "bufferOf": "Data of {model}"
     },
     "imageExport": {
-        "title": "Export image",
+        "title": "Render",
         "format": "Format",
         "transparent": "Transparent background",
         "transparentHint": "Models, ground shadow, glass, depth of field and bloom/glare are kept. Alpha is premultiplied (with black) – interpret it that way in compositing software. In HQ this renders twice.",
         "size": "{width} × {height} px",
         "preparing": "Preparing image…",
-        "export": "Export",
+        "export": "Render",
         "failed": "Export cancelled: {message}",
         "pass": "Pass {n}/{total}: {text}",
         "scale": "Size",
         "scaleTitle": "Larger than the screen: the image is rendered again at a higher resolution (takes correspondingly longer in HQ)",
         "tooLarge": "too large for the GPU (max. {max} px)",
-        "sizeScreen": "current view"
+        "sizeScreen": "current view",
+        "samples": "Samples",
+        "samplesAsSet": "as set ({samples})",
+        "distributed": "Render distributed",
+        "distributedClients": {
+            "one": "{count} render client ready.",
+            "other": "{count} render clients ready."
+        },
+        "distributedClientsLocal": {
+            "one": "{count} render client ready, this computer renders along.",
+            "other": "{count} render clients ready, this computer renders along."
+        },
+        "distributedNone": "No render clients connected.",
+        "distributedManage": "Manage clients …",
+        "passBackground": {
+            "black": "in front of black",
+            "grey": "in front of grey"
+        }
     },
     "bim": {
         "status": {
@@ -2345,5 +2426,24 @@
         },
         "message": "“{name}” contains geometry far outside or far larger than the rest of the model (up to {size}) – probably a helper object or an export error. It is hidden and ignored for centring, camera and ground.",
         "show": "Show"
+    },
+    "distributed": {
+        "client": {
+            "title": "Render client",
+            "defaultName": "Client {id}",
+            "waiting": "Waiting for a master …",
+            "loading": "Loading the scene …",
+            "ready": "Ready",
+            "rendering": "Rendering bucket {id}",
+            "error": "Error: {message}",
+            "pairing": "Preparing the pairing …",
+            "answer": "Waiting for the connection to the master …",
+            "answerLabel": "Paste this answer code at the master (Settings → Distributed Rendering → Pair computer):",
+            "receiving": "Receiving the scene … {percent} %",
+            "disconnected": "Connection to the master closed. Open a new link from the master to render again.",
+            "pairFailed": "Pairing failed: {message}",
+            "timeout": "No connection to the master – are both computers in the same network?",
+            "badCode": "The link is invalid or incomplete."
+        }
     }
 }

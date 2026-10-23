@@ -44,6 +44,7 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 - Oberflächentexte nur über `src/i18n/de_de.json` + `en_us.json` (`t()` aus `i18n.js`), neue Schlüssel immer in beiden Dateien – Details: `docs/i18n.md`.
 - Neues Dateiformat = in allen Format-Texten nennen (Wunsch des Nutzers): `status.dropFormats` (Start-Hinweis), `page.drop.hint` (Drop-Fläche), `about.description` – de_de + en_us; neue Bibliotheken in `src/scripts/libraries.js` eintragen (+ `about.libs.<id>` in beiden Sprachdateien) – daraus entstehen „Über“ in der App und „Built with“ in der README (`scripts/sync-readme.mjs`, läuft automatisch vor jedem `npm run build`; README danach mit committen).
 - Eingaben einheitlich (Wunsch des Nutzers): Zahlenfelder, Regler, Farbfelder, Auswahlen, Checkboxen immer mit den Klassen/Helfern aus `src/scripts/ui-controls.js` (`INPUT`, `SELECT`, `RANGE`, `CHECKBOX`, `draggable` – Zahlenfelder seitlich mit der Maus ziehbar, Shift schneller, Alt feiner; Farben immer `colorField` – eigener Farbwähler im Panel-Stil statt des nativen Dialogs, kein `<input type=color>`); neue Fenster im Stil der Panels (`bg-black/60` + Blur).
+- Icons (Wunsch des Nutzers): je Icon eine SVG-Datei in `src/assets/icons/`, im Code nur `icon(name, klassen)` aus `src/scripts/icons.js` – keine SVG-Strings im Code (Details: `docs/ui.md`).
 - Lizenz: PolyForm Noncommercial 1.0.0 (`LICENSE.md`). Fremden Code (z.B. Shader-Beispiele aus dem Netz) nur als Inspiration nehmen, Lizenz prüfen, eigene Umsetzung – keine Rechte verletzen (Wunsch des Nutzers).
 - **Keine Markennamen, keine fremden Inhalte (wichtig, Wunsch des Nutzers):** Markennamen nirgends übernehmen – weder in Material-, Farb- oder Preset-Namen noch in Oberflächentexten, Doku, Kommentaren oder Commits (z.B. „MAX“ statt des Produkt-/Herstellernamens; keine Farbsystem- oder Herstellerbezeichnungen; auch keine Vergleiche „wie bei <Produkt>“). Ausnahme nur, wo technisch nötig: Erkennung des exportierenden Programms im Datei-Header samt zugehöriger Kommentare (STEP/STL/IFC), Eigenschaftsnamen eines Dateiformats, tatsächlich angebundene Dienste (KI-Anbieter), Testumgebung (Browser, Hardware). Keine Texturen, Bilder, Materialbibliotheken oder sonstigen Inhalte Dritter ausliefern – fremde Vorlagen (z.B. `tests/MatLibs`, `tests/maps`) nur als Orientierung, eigene Werte und Namen, Optik höchstens prozedural nachbauen.
 - Große Modelle in `public/models/` und HDRIs in `public/hdr/` nicht committen (beide in .gitignore).
@@ -70,7 +71,8 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 | `docs/ui.md` | Oberfläche und Bedienung – Scene Graph, Eigenschaften/Gizmo, Leiste, Drop-Fläche, mehrere Modelle, Menüs, Dialoge, Tasten, Auswahl. |
 | `docs/export-ki.md` | Bild-Export und KI-Rendering – `image-export.js`, `png-encode.js`, `ki-render.js`, `ki-gemini.js`. |
 | `docs/memory.md` | Speicher und Gerätegrenzen – `memory-budget.js` (Budget aus den Gerätedaten, Worker-Zahl, Speicher-Schranke), `load-guard.js` (Absturz erkennen, sparsamer Modus), Dialoge/Hinweise bei zu großen Modellen (`notice.js`, `choiceDialog`). |
-| `docs/vision.md` | Zukunftsvisionen (Distributed Rendering) |
+| `docs/distributed.md` | Distributed Rendering – `src/scripts/distributed/`: Master/Render-Clients, Buckets (`pathTracing.renderRegion`), Verteilung, Ausfall, beschriftete Anzeige, Rechner im Netz (WebRTC, Kopplung per Code – `rtc.js`); Stand und nächste Stufen. |
+| `docs/vision.md` | Zukunftsvisionen (Distributed Rendering – Umsetzung siehe `docs/distributed.md`) |
 
 ## Stand (2026-10-14)
 
@@ -143,6 +145,12 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 
 ### UV-MAPPING
 [X] Mapping je Objekt wie ein UVW-Modifier, aber einfach: Standard/Box/Planar/Zylinder/Kugel, Achse, Drehung, Maßstab (Faktor auf die Kachelgröße des Materials), vererbt über den Scene Graph; Zylinder/Kugel rundherum nahtlos (Details: `docs/materials.md`)
+
+### DISTRIBUTED RENDERING (in Arbeit – `docs/distributed.md`)
+[X] Stufe 1: Master + Render-Clients (Tabs, `?render-client`), Buckets aus einer Warteschlange, Ausfall → Neuverteilung, beschriftete Buckets je Client, „Dieser Rechner rendert mit“; Einstellungsfenster verschieb- und skalierbar
+[X] Ergebnis entrauschen/exportieren (Render-Knopf), Zwischenstände je Bucket
+[X] Stufe 2: Rechner im lokalen Netz per WebRTC, Kopplung per Link + Antwort-Code (ohne Vermittlungsskript), Szene samt Modelldateien über den Kanal
+[ ] Szenen-Übertragung aufbereiteter Daten, Transparenz verteilt, QR-Code für den Link
 
 ### KI RENDERING
 [X] Neben dem HQ-Button soll noch ein KI-Button rein der das aktuelle HQ-Bild an eine Bildgenerierung-KI schickt.

@@ -1093,7 +1093,8 @@
         "morphTargets": {
             "one": "{count} Morph Target – Regler in den Eigenschaften",
             "other": "{count} Morph Targets – Regler in den Eigenschaften"
-        }
+        },
+        "instance": "Instanz von „{name}“"
     },
     "properties": {
         "kind": {
@@ -1479,6 +1480,12 @@
                 "saturation": "Sättigung",
                 "reset": "Bild zurücksetzen"
             }
+        },
+        "instance": {
+            "info": "Instanz von „{name}“ · {count} verknüpft – das UV-Mapping gilt für alle, das Material je Objekt",
+            "unique": "Eigenständige Kopie von „{name}“",
+            "makeUnique": "Eigenständig machen",
+            "makeUniqueTitle": "Von den anderen Instanzen lösen: das UV-Mapping gilt danach nur für dieses Objekt"
         }
     },
     "sceneState": {
@@ -1657,7 +1664,11 @@
         }
     },
     "render": {
-        "gpuError": "GPU-Fehler"
+        "gpuError": "GPU-Fehler",
+        "running": "Rendern",
+        "cancel": "Rendern abbrechen – zurück zur Ansicht davor",
+        "stopHq": "Pathtracing beenden – zurück zu „{mode}“",
+        "runningPass": "Rendern (Pass {n}/{total})"
     },
     "status": {
         "growingGrass": "Gras wächst …",
@@ -1763,7 +1774,8 @@
             "motion": "Reduzierte Qualität – volle Qualität beim Loslassen",
             "renderingDenoise": "{samples} · danach Denoise",
             "denoiseLoading": "KI-Netz wird geladen…",
-            "doneDenoised": "{samples} · entrauscht"
+            "doneDenoised": "{samples} · entrauscht",
+            "motionSamples": "Auflösung {value} % · {samples}"
         }
     },
     "toolbar": {
@@ -1792,30 +1804,31 @@
             "other": "Assets – {count} Dateien fehlen"
         },
         "exportImage": "Bild exportieren (PNG/JPG)",
-        "bcf": "BCF-Tickets"
+        "bcf": "BCF-Tickets",
+        "render": "Rendern – Bild exportieren, auch verteilt auf mehreren Rechnern"
     },
     "viewMode": {
-        "basic": {
-            "label": "Basic",
-            "title": "Basic – Modell einheitlich grau (1)"
-        },
-        "default": {
-            "label": "Default",
-            "title": "Default – Materialien und Texturen (2)"
-        },
-        "hq": {
-            "label": "HQ",
-            "title": "HQ – Pathtracing (3)"
+        "wire": {
+            "label": "Draht",
+            "title": "Drahtgitter – graues Modell mit seinen Kanten"
         },
         "uv": {
             "label": "UV",
-            "title": "UV – Prüfmuster über die Texturkoordinaten: Verzerrung, Nähte, gespiegelte UVs (1)"
+            "title": "UV – Prüfmuster über die Texturkoordinaten: Verzerrung, Nähte, gespiegelte UVs"
         },
-        "wire": {
-            "label": "Draht",
-            "title": "Drahtgitter – graues Modell mit seinen Kanten (1)"
+        "basic": {
+            "label": "Grau",
+            "title": "Grau – Modell einheitlich grau"
         },
-        "analysisChoice": "Analyse-Ansicht wählen: Basic, UV, Drahtgitter"
+        "default": {
+            "label": "Standard",
+            "title": "Standard – alle Materialien und Texturen"
+        },
+        "hq": {
+            "label": "High Quality",
+            "title": "High Quality – Pathtracing"
+        },
+        "choice": "Klick: Ansicht wählen"
     },
     "quadMenu": {
         "display": "Anzeige",
@@ -1857,6 +1870,52 @@
         "tessellation": "Tessellierung",
         "quality": "Qualität",
         "close": "Schließen (Esc)",
+        "distributed": {
+            "title": "Distributed Rendering",
+            "hint": "Ein Bild auf mehreren Rechnern rendern: Buckets werden an die Render-Clients verteilt, fällt einer aus, übernimmt ein anderer. Clients sind Rechner im selben lokalen Netz (koppeln) oder weitere Tabs dieses Browsers.",
+            "openClient": "Client-Tab öffnen",
+            "clients": "Render-Clients",
+            "job": "Auftrag",
+            "renderLocal": "Dieser Rechner rendert mit",
+            "bucketSize": "Bucket-Größe",
+            "cancel": "Abbrechen",
+            "none": "Noch keine Clients – „Rechner koppeln …“ oder „Client-Tab öffnen“.",
+            "thisComputer": "Dieser Rechner",
+            "buckets": {
+                "one": "{count} Bucket",
+                "other": "{count} Buckets"
+            },
+            "state": {
+                "ready": "bereit",
+                "loading": "lädt Szene",
+                "rendering": "rendert",
+                "lost": "nicht erreichbar",
+                "other": "für anderen Master",
+                "error": "Fehler"
+            },
+            "progress": "{done} / {total} Buckets",
+            "statusRunning": "{done} / {total} Buckets · {workers} rendern · {time}",
+            "close": "Schließen",
+            "done": "Verteilt gerendert in {time} s – {buckets} Buckets ({who})",
+            "startHint": "Gestartet wird über „Rendern“ (Teekanne in der Leiste unten) – dort auch Größe, Samples und Format.",
+            "busy": "Es läuft schon ein verteilter Auftrag.",
+            "finishing": "Verteilt gerendert – wird entrauscht …",
+            "pair": "Rechner koppeln …",
+            "pairHint": "Ohne Server: Der Render-Rechner öffnet einen Link von hier und zeigt dann einen Antwort-Code, der hierher zurück muss. Beide Rechner müssen im selben lokalen Netz sein. Wird die Verbindung getrennt, neu koppeln.",
+            "pairStep1": "1. Diesen Link auf dem Render-Rechner öffnen (z. B. per Nachricht hinüberschicken):",
+            "pairStep2": "2. Den Antwort-Code, den er dann anzeigt, hier einfügen:",
+            "answerPlaceholder": "Antwort-Code",
+            "copy": "Kopieren",
+            "copied": "Kopiert",
+            "connect": "Verbinden",
+            "pairCreating": "Link wird erzeugt …",
+            "pairWaiting": "Wartet auf den Antwort-Code …",
+            "pairConnecting": "Verbinde …",
+            "pairDone": "Verbunden – der Rechner erscheint gleich in der Liste.",
+            "pairFailed": "Kopplung nicht möglich: {message}",
+            "pairTimeout": "Keine Verbindung zustande gekommen – sind beide Rechner im selben Netz (keine Firewall dazwischen)? Neuen Link erzeugen und noch einmal versuchen.",
+            "pairBadCode": "Der Antwort-Code ist ungültig oder unvollständig – bitte vollständig kopieren."
+        },
         "ki": {
             "title": "KI-Rendering",
             "apiKey": "Gemini-API-Schlüssel",
@@ -1908,7 +1967,12 @@
                 "other": "{count} Ansichten löschen"
             },
             "morph": "Morph Target „{name}“",
-            "morphReset": "Morph Targets zurücksetzen"
+            "morphReset": "Morph Targets zurücksetzen",
+            "instance": {
+                "one": "Instanz erstellen",
+                "other": "{count} Instanzen erstellen"
+            },
+            "makeUnique": "Instanz eigenständig machen"
         },
         "objectsWithMaterial": "Objekte mit „{name}“",
         "ki": {
@@ -2062,19 +2126,36 @@
         "bufferOf": "Daten von {model}"
     },
     "imageExport": {
-        "title": "Bild exportieren",
+        "title": "Rendern",
         "format": "Format",
         "transparent": "Transparenter Hintergrund",
         "transparentHint": "Modelle, Bodenschatten, Glas, Tiefenschärfe und Bloom/Glare bleiben erhalten. Alpha ist vormultipliziert (mit Schwarz) – in Compositing-Programmen so interpretieren. In HQ wird zweimal gerendert.",
         "size": "{width} × {height} px",
         "preparing": "Bild wird vorbereitet…",
-        "export": "Exportieren",
+        "export": "Rendern",
         "failed": "Export abgebrochen: {message}",
         "pass": "Durchgang {n}/{total}: {text}",
         "scale": "Größe",
         "scaleTitle": "Größer als der Bildschirm: das Bild wird in höherer Auflösung neu gerechnet (in HQ dauert das entsprechend länger)",
         "tooLarge": "zu groß für die Grafikkarte (max. {max} px)",
-        "sizeScreen": "aktuelle Ansicht"
+        "sizeScreen": "aktuelle Ansicht",
+        "samples": "Samples",
+        "samplesAsSet": "wie eingestellt ({samples})",
+        "distributed": "Verteilt rendern",
+        "distributedClients": {
+            "one": "{count} Render-Client bereit.",
+            "other": "{count} Render-Clients bereit."
+        },
+        "distributedClientsLocal": {
+            "one": "{count} Render-Client bereit, dieser Rechner rendert mit.",
+            "other": "{count} Render-Clients bereit, dieser Rechner rendert mit."
+        },
+        "distributedNone": "Keine Render-Clients verbunden.",
+        "distributedManage": "Clients verwalten …",
+        "passBackground": {
+            "black": "vor Schwarz",
+            "grey": "vor Grau"
+        }
     },
     "bim": {
         "status": {
@@ -2345,5 +2426,24 @@
         },
         "message": "„{name}“ enthält Geometrie weit außerhalb oder weit größer als das übrige Modell (bis {size}) – vermutlich ein Hilfsobjekt oder ein Exportfehler. Sie ist ausgeblendet und zählt nicht für Ausrichtung, Kamera und Boden.",
         "show": "Einblenden"
+    },
+    "distributed": {
+        "client": {
+            "title": "Render-Client",
+            "defaultName": "Client {id}",
+            "waiting": "Wartet auf einen Master …",
+            "loading": "Lädt die Szene …",
+            "ready": "Bereit",
+            "rendering": "Rendert Bucket {id}",
+            "error": "Fehler: {message}",
+            "pairing": "Kopplung wird vorbereitet …",
+            "answer": "Wartet auf die Verbindung zum Master …",
+            "answerLabel": "Diesen Antwort-Code beim Master einfügen (Einstellungen → Distributed Rendering → Rechner koppeln):",
+            "receiving": "Empfängt die Szene … {percent} %",
+            "disconnected": "Verbindung zum Master getrennt. Zum Weiterrendern einen neuen Link vom Master öffnen.",
+            "pairFailed": "Kopplung fehlgeschlagen: {message}",
+            "timeout": "Keine Verbindung zum Master – sind beide Rechner im selben Netz?",
+            "badCode": "Der Link ist ungültig oder unvollständig."
+        }
     }
 }

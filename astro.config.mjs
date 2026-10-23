@@ -16,10 +16,12 @@ const DOME_MODULE = fileURLToPath(new URL('./src/scripts/background-dome.js', im
 const GROUND_MODULE = fileURLToPath(new URL('./src/scripts/ground-reflection.js', import.meta.url));
 const SHADOW_CATCHER_PATCH = fileURLToPath(new URL('./src/scripts/shadow-catcher.patch.wgsl', import.meta.url));
 const FISHEYE_MODULE = fileURLToPath(new URL('./src/scripts/fisheye.js', import.meta.url));
+// bucket rendering (distributed rendering, src/scripts/distributed/bucket.js): fisheye ray and noise in the full image
+const BUCKET_MODULE = fileURLToPath(new URL('./src/scripts/distributed/bucket.js', import.meta.url));
 // fisheye ray + depth of field with a spherical focus surface (distance along the ray) and the aperture
 // perpendicular to the ray – the shim's flat focal plane divides by dot( direction, forward ) (0 at 90°)
 const FISHEYE_DOF = `
-			if ( \${ __FISHEYE }( ndc, \${ cameraWorldMatrix }, ray ) ) {
+			if ( \${ __FISHEYE }( \${ __BUCKET_UV }( uv ) * 2.0 - vec2f( 1.0 ), \${ cameraWorldMatrix }, ray ) ) {
 
 				let fisheyeFocus = ray.origin + ray.direction * \${ focusDistance };
 				var fisheyeAperture = \${ sampleAperture }( \${ apertureBlades }, \${ rand3 }( \${ RNG_INDEX_APERTURE_SAMPLE } ) );
@@ -46,7 +48,8 @@ function shadowCatcherPatch() {
         const base = '*ray = ${ ndcToCameraRay }( ndc, ${ invViewProjectionMatrix } );';
         if (code.split(base).length !== 2) this.error('rindr-fisheye: base ray not found exactly once in PhysicalCameraShim.js (three-gpu-pathtracer changed?)');
         code = code.replace(base, () => base + FISHEYE_DOF);
-        return { code: `import { FISHEYE_RAY as __FISHEYE } from ${JSON.stringify(FISHEYE_MODULE)};\n` + code, map: null };
+        return { code: `import { FISHEYE_RAY as __FISHEYE } from ${JSON.stringify(FISHEYE_MODULE)};\n`
+          + `import { BUCKET_UV_WGSL as __BUCKET_UV } from ${JSON.stringify(BUCKET_MODULE)};\n` + code, map: null };
       }
       if (!file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) return null;
       if (!anchor.test(code)) this.error('rindr-shadow-catcher: matte branch not found in PathTracerMegaKernel.js (three-gpu-pathtracer changed?)');
@@ -154,6 +157,26 @@ function atlasCapacityPatch() {
         code: code.replace(from, () => `\t\t// RINDR: fixed capacity (uniform array size is fixed when the pipeline is built)
 \t\tthis.capacity = Math.max( this.capacity || 256, 2 ** Math.ceil( Math.log2( Math.max( info.length, 1 ) ) ) );
 \t\twhile ( info.length < this.capacity ) info.push( new Vector4( 0, 0, 0, 0 ) );`),
+        map: null,
+      };
+    },
+  };
+}
+
+// Bucket rendering (distributed rendering): the megakernel seeds its sampler with the full image's pixel – every
+// bucket would otherwise repeat the same noise pattern (src/scripts/distributed/bucket.js)
+function bucketPatch() {
+  return {
+    name: 'rindr-bucket',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.replace(/\\/g, '/').split('?')[0];
+      if (!file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) return null;
+      const from = '${ rngInit }( indexUV.xy, seed, 0 );';
+      if (code.split(from).length !== 2) this.error('rindr-bucket: rngInit not found exactly once in PathTracerMegaKernel.js (three-gpu-pathtracer changed?)');
+      return {
+        code: `import { BUCKET_PIXEL_WGSL as __BUCKET_PIXEL } from ${JSON.stringify(BUCKET_MODULE)};\n`
+          + code.replace(from, () => '${ rngInit }( ${ __BUCKET_PIXEL }( indexUV.xy ), seed, 0 );'),
         map: null,
       };
     },
@@ -528,7 +551,7 @@ export default defineConfig({
     headers: isolationHeaders,
   },
   vite: {
-    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), ptStandInPatch(), glassBouncesPatch(), cloudPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch()],
+    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), bucketPatch(), ptStandInPatch(), glassBouncesPatch(), cloudPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch()],
     server: { headers: isolationHeaders },
     preview: { headers: isolationHeaders },
     worker: { format: 'es' },
