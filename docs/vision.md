@@ -24,3 +24,22 @@ Nur für finale Standbilder (hohe Auflösung/viele Samples) und Animationen sinn
 - Jeder Knoten braucht das ganze Modell im GPU-Speicher – hilft nicht bei Modellen, die für eine GPU zu groß sind.
 - Große STEP-Dateien müssen zu jedem Knoten → zentral ablegen statt per Browser hochladen.
 - Vorgehen: erst Prototyp im lokalen Netz (2 Tabs/Rechner, Node-Koordinator, Knopf „Verteilt rendern“), dabei zuerst Seed/Readback klären; danach Robustheit (Knoten-Ausfall, Fortschritt) und Modell-Ablage.
+
+## Licht-Passes (Light Mix) und Export mit Ebenen (EXR, PSD)
+**Geplant (Nutzer, Okt. 2026 – „Licht nachträglich einzeln regeln wäre krass“, „EXR wäre auch krass“, „PSD ebenensepariert“); noch nicht begonnen.**
+
+Heute liefert der Pathtracer nur das fertige Farbbild (Beauty); transparentes PNG entsteht aus zwei Durchgängen vor Schwarz/Grau (`exportPasses`, verteilt ebenso).
+
+**Stufe 1 – pro Lichtquelle (Light Mix):** ein Pass je Quelle – Hauptlicht, Fülllicht, Umgebungslicht, **HDRI** (Licht der Umgebung, auch indirekt: Reflexionen, Bodenschatten), **Hintergrund** getrennt vom HDRI-Licht, Eigenleuchten. Nach dem Rendern Helligkeit und Farbe/Tönung je Quelle **live in RINDR** (Regler, Bild sofort neu gemischt: Σ Gewicht · Farbe · Pass), ohne neu zu rendern. Nicht nachträglich: Drehung des HDRI, Lage der Lichter (Richtungen → neu rendern); einzelne Teile des HDRI (Sonne, Pins des HDRI-Editors) erst später denkbar (bei eigenen HDRIs sind sie bekannt).
+- Kernel (`PathTracerMegaKernel.js`, per Vite-Patch wie `rindr-bucket`): alles Licht wird an fünf Stellen auf `resultColor` addiert – vorwärts getroffene Lichter (Index `li`), Eigenleuchten, direkte Beleuchtung (NEE, `lightIndex`; `== lightsCount` = Umgebung), Umgebung bei Fehltreffer nach Abprall, Hintergrund beim Kamerastrahl – an jeder ist die Quelle bekannt → Beitrag zusätzlich in den Puffer der Quelle (Speicherpuffer `array<vec4f>` je Pass statt Textur-Pingpong; Speicher je Pass bei 4K ~130 MB → ins Speicherbudget, `memory-budget.js`).
+- Entrauschen: jeder Pass einzeln (Summe muss stimmen) – Zeit × Anzahl Passes; Live-Mischen auf den entrauschten Passes.
+- Verteilt: Buckets liefern alle Passes (Datenmenge × Anzahl).
+
+**Stufe 2 – nach Lichtart:** Diffus, Spiegelung, Refraktion, Eigenleuchten, Hintergrund (klassische Compositing-Ebenen, Summe = Beauty). Tieferer Umbau: Pfad am ersten Treffer nach gewähltem Material-Anteil markieren; die direkte Beleuchtung am ersten Treffer braucht die Material-Auswertung (`bsdfEvalPdf`) getrennt nach Anteilen. Danach Schatten-Pass (Licht mit/ohne Verdeckung) – damit auch Alpha samt Bodenschatten in einem Durchlauf (zweiter Pass beim transparenten PNG entfällt).
+
+**Hilfs-Passes (günstig):** Alpha, Tiefe, Normalen, Albedo (Normalen/Albedo rechnet der Pathtracer schon für den Entrauscher), Objekt-/Material-ID-Masken.
+
+**Ausgabe:** **EXR** mehrlagig (linear, Float – eigener Schreiber wie `png-encode.js`) als Hauptformat; **PSD** mit einer Ebene je Lichtquelle, Füllmethode Addieren, Alpha-Kanal + Gesamtbild – nur in **32 Bit** stimmt die Summe (8/16 Bit: Ebenen in sRGB, addiert zu hell/flau – dort höchstens Masken/Hilfsebenen); eigener Schreiber nach der offenen Formatbeschreibung.
+
+**Reihenfolge (Vorschlag, vom Nutzer so besprochen):** Licht-Passes je Quelle im Kernel + Live-Regler → EXR → PSD (32 Bit) → Stufe 2.
+

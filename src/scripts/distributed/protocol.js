@@ -3,10 +3,14 @@
 // (clients opened with ?render-client) or WebRTC data channels to other computers (rtc.js, pairing by code; the master
 // joins both in a hub). Every message carries `from`; messages to one peer carry `to`.
 //
-//   client → master  hello        { name, gpu, sceneId, master }   every second (heartbeat; master = bound master)
-//   master → client  scene        { sceneId, state, files }       scene state + model files ({ path, file })
+//   client → master  hello        { name, gpu, sceneId, sceneFrom, master }   every second (heartbeat; master = bound
+//                                 master, sceneFrom = the master whose scene it holds – kept after a release: the
+//                                 second pass of a transparent image reuses it)
+//   master → client  scene        { sceneId, state, files }       scene state + model files ({ path, file }); the master
+//                                 follows the bytes sent per client (transport send option onProgress, rtc.js)
 //   client → master  scene-ready  { sceneId } / scene-error { sceneId, message }
-//   master → client  job          { jobId, sceneId, bucket: { id, x, y, w, h }, fullW, fullH, samples }
+//   master → client  job          { jobId, sceneId, bucket: { id, x, y, w, h }, fullW, fullH, samples, matte }
+//                                 matte: grey value of a plain background (transparent image passes) or null
 //   client → master  progress     { jobId, bucketId, p }  ·  result { jobId, bucketId, data: Float32Array }
 //                                 partial { jobId, bucketId, data, samples }   intermediate state at 1, 2, 4 … samples
 //                                 job-error { jobId, bucketId, message }
@@ -19,7 +23,7 @@ export const LOST_MS = 5000;   // no hello for this long = client lost (its buck
 
 export const newId = () => (crypto.randomUUID?.() ?? String(Math.random()).slice(2)).slice(0, 8);
 
-/** tabs of this browser (same origin) */
+/** tabs of this browser (same origin) – a message is there at once (files go by reference): no send progress */
 export function localTransport() {
     const channel = new BroadcastChannel(CHANNEL);
     const transport = {
@@ -36,4 +40,11 @@ export function gpuName(renderer) {
     const info = renderer?.backend?.adapter?.info || renderer?.backend?.device?.adapterInfo;
     if (!info) return '';
     return info.description || [info.vendor, info.architecture].filter(Boolean).join(' ');
+}
+
+/** data size for the transfer display ("8.4 MB", "157 MB", "1.2 GB") */
+export function formatSize(bytes, locale) {
+    const mb = bytes / 2 ** 20;
+    if (mb >= 1024) return `${(mb / 1024).toLocaleString(locale, { maximumFractionDigits: 1 })} GB`;
+    return `${mb.toLocaleString(locale, { maximumFractionDigits: mb < 10 ? 1 : 0 })} MB`;
 }

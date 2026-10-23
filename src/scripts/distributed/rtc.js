@@ -183,8 +183,9 @@ export async function answerOffer(offerCode) {
 // --- messages over a data channel ---
 
 /**
- * Transport over an open data channel: send(msg), onmessage(msg), onclose(), onprogress(received, total) while a
- * large message comes in, close().
+ * Transport over an open data channel: send(msg, { onProgress(sent, total) }) – bytes that left this computer (handed
+ * to the channel minus its buffer) of the message's binary parts; onmessage(msg), onclose(), onprogress(received, total)
+ * while a large message comes in, close().
  */
 export function channelTransport(channel) {
     channel.binaryType = 'arraybuffer';
@@ -193,8 +194,8 @@ export function channelTransport(channel) {
     let incoming = null;   // { header, index, parts, got, bins, received, total }
     const transport = {
         onmessage: null, onclose: null, onprogress: null,
-        send(msg) {
-            queue = queue.then(() => sendMessage(msg)).catch(err => console.warn('[Distributed] send:', err?.message || err));
+        send(msg, { onProgress } = {}) {
+            queue = queue.then(() => sendMessage(msg, onProgress)).catch(err => console.warn('[Distributed] send:', err?.message || err));
         },
         close: () => channel.close(),
     };
@@ -204,14 +205,16 @@ export function channelTransport(channel) {
             await new Promise(resolve => channel.addEventListener('bufferedamountlow', resolve, { once: true }));
         }
     };
-    const sendBytes = async bytes => {
+    const sendBytes = async (bytes, sent) => {
         for (let o = 0; o < bytes.byteLength; o += FRAME) {
             if (channel.readyState !== 'open') return;
-            channel.send(bytes.subarray(o, o + FRAME));
+            const frame = bytes.subarray(o, o + FRAME);
+            channel.send(frame);
+            sent?.(frame.byteLength);
             if (channel.bufferedAmount > BUFFER_HIGH) await drain();
         }
     };
-    async function sendMessage(msg) {
+    async function sendMessage(msg, onProgress) {
         if (channel.readyState !== 'open') return;
         const bins = [];
         const json = JSON.stringify(msg, (key, value) => {
@@ -225,14 +228,32 @@ export function channelTransport(channel) {
             }
             return value;
         });
-        channel.send(JSON.stringify({ m: json, sizes: bins.map(b => (b instanceof Blob ? b.size : b.byteLength)) }));
+        const sizes = bins.map(b => (b instanceof Blob ? b.size : b.byteLength));
+        channel.send(JSON.stringify({ m: json, sizes }));
+        // progress: what left this computer – handed over minus the channel's buffer; at most ~10 reports a second
+        const total = sizes.reduce((a, b) => a + b, 0);
+        let handed = 0, reported = 0;
+        const report = force => {
+            const now = performance.now();
+            if (!onProgress || (!force && now - reported < 100)) return;
+            reported = now;
+            onProgress(Math.max(0, handed - channel.bufferedAmount), total);
+        };
+        const sent = n => { handed += n; report(false); };
+        report(true);
         for (const b of bins) {
             if (b instanceof Blob) {
-                for (let o = 0; o < b.size; o += READ) await sendBytes(new Uint8Array(await b.slice(o, o + READ).arrayBuffer()));
+                for (let o = 0; o < b.size; o += READ) await sendBytes(new Uint8Array(await b.slice(o, o + READ).arrayBuffer()), sent);
             } else {
-                await sendBytes(new Uint8Array(b.buffer, b.byteOffset, b.byteLength));
+                await sendBytes(new Uint8Array(b.buffer, b.byteOffset, b.byteLength), sent);
             }
         }
+        // the rest of the buffer on its way
+        while (onProgress && channel.readyState === 'open' && channel.bufferedAmount > 0) {
+            report(true);
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        if (onProgress) onProgress(total, total);
     }
 
     function finishBin() {
@@ -302,10 +323,10 @@ export function hubTransport() {
             };
             return link;
         },
-        send(msg) {
+        send(msg, options) {
             const link = msg.to && route.get(msg.to);
-            if (link) link.send(msg);
-            else for (const l of links) l.send(msg);
+            if (link) link.send(msg, options);
+            else for (const l of links) l.send(msg, options);
         },
         close() {
             for (const l of links) l.close();

@@ -29,7 +29,9 @@ export class RenderMaster {
         this.transport = transport;
         this.hooks = hooks;
         this.id = newId();
-        this.clients = new Map();   // id → { id, name, gpu, lastSeen, sceneId, lost, color, bucket, done, busyOther }
+        // id → { id, name, gpu, lastSeen, sceneId, lost, color, bucket, done, busyOther, transfer }; transfer while the scene
+        // goes to the client: { sent, total } bytes – sent = total (or nothing to follow, tabs): the client loads it
+        this.clients = new Map();
         this.renderLocal = true;
         this.job = null;            // { jobId, sceneId, fullW, fullH, samples, queue, pending: Map(bucketId → info), done, total, t0 }
         this._colorSeq = 1;
@@ -58,8 +60,8 @@ export class RenderMaster {
         return !!this.job && !this.job.finished;
     }
 
-    _send(to, msg) {
-        this.transport.send({ ...msg, from: this.id, to });
+    _send(to, msg, options) {
+        this.transport.send({ ...msg, from: this.id, to }, options);
     }
 
     _client(id) {
@@ -76,7 +78,7 @@ export class RenderMaster {
             }
             const wasLost = c.lost;
             Object.assign(c, { name: msg.name, gpu: msg.gpu, lastSeen: performance.now(), lost: false, busyOther: !!msg.master && msg.master !== this.id });
-            c.sceneId = msg.master === this.id ? msg.sceneId : null;
+            c.sceneId = msg.master === this.id || msg.sceneFrom === this.id ? msg.sceneId : null;
             // a running job: a new (or returning) free client gets the scene
             if (this.running && !c.busyOther && c.sceneId !== this.job.sceneId && !c.sending) this._sendScene(c);
             if (wasLost || this.running) this._dispatch();
@@ -89,10 +91,12 @@ export class RenderMaster {
         const job = this.job;
         if (msg.type === 'scene-ready') {
             c.sending = false;
+            c.transfer = null;
             c.sceneId = msg.sceneId;
             this._dispatch();
         } else if (msg.type === 'scene-error') {
             c.sending = false;
+            c.transfer = null;
             c.error = msg.message;
             this.hooks.onChange?.();
         } else if (!job || msg.jobId !== job.jobId) {
@@ -120,6 +124,7 @@ export class RenderMaster {
             if (c.lost || now - c.lastSeen < LOST_MS) continue;
             c.lost = true;
             c.sceneId = null;
+            c.transfer = null;
             changed = true;
             this._requeue(c);
         }
@@ -128,28 +133,41 @@ export class RenderMaster {
 
     async _sendScene(c) {
         c.sending = true;
+        const transfer = c.transfer = { sent: 0, total: 0 };
+        this.hooks.onChange?.();
         try {
             const { state, files } = await this.job.scene;
-            this._send(c.id, { type: 'scene', sceneId: this.job.sceneId, state, files });
+            this._send(c.id, { type: 'scene', sceneId: this.job.sceneId, state, files }, {
+                onProgress: (sent, total) => {
+                    if (c.transfer !== transfer) return;   // done, cancelled or sent anew
+                    transfer.sent = sent;
+                    transfer.total = total;
+                    this.hooks.onChange?.();
+                },
+            });
         } catch (err) {
             c.sending = false;
+            c.transfer = null;
             console.error('[Distributed] scene:', err);
         }
     }
 
     /**
-     * Start a job: full image fullW × fullH, samples per pixel, bucket size. The scene goes to every free client;
-     * the own computer starts at once when it renders along.
+     * Start a job: full image fullW × fullH, samples per pixel, bucket size; matte: grey value of a plain background
+     * (passes of a transparent image) or null. The scene goes to every free client – keepScene: the scene of the job
+     * before (unchanged – e.g. the second pass of a transparent image), clients holding it start at once. The own
+     * computer starts at once when it renders along.
      */
-    start({ fullW, fullH, samples, bucketSize }) {
+    start({ fullW, fullH, samples, bucketSize, matte = null, keepScene = false }) {
+        const previous = keepScene ? this.job : null;
         this.cancel();
         const queue = makeBuckets(fullW, fullH, bucketSize);
-        this.job = { jobId: newId(), sceneId: newId(), fullW, fullH, samples, queue, pending: new Map(), done: 0, total: queue.length,
-            t0: performance.now(), finished: false, scene: this.hooks.captureScene(), perClient: new Map() };
+        this.job = { jobId: newId(), sceneId: previous?.sceneId ?? newId(), fullW, fullH, samples, matte, queue, pending: new Map(), done: 0,
+            total: queue.length, t0: performance.now(), finished: false, scene: previous?.scene ?? this.hooks.captureScene(), perClient: new Map() };
         for (const c of this.clients.values()) {
             c.bucket = null;
             c.done = 0;
-            if (!c.lost && !c.busyOther) this._sendScene(c);
+            if (!c.lost && !c.busyOther && c.sceneId !== this.job.sceneId) this._sendScene(c);
         }
         this.hooks.onChange?.();
         this._dispatch();
@@ -163,6 +181,7 @@ export class RenderMaster {
         for (const c of this.clients.values()) {
             if (c.bucket) this._send(c.id, { type: 'cancel', jobId: job.jobId });
             c.bucket = null;
+            c.transfer = null;
         }
         this.transport.send({ type: 'release', from: this.id });
         this.job = null;
@@ -180,7 +199,7 @@ export class RenderMaster {
             const bucket = job.queue.shift();
             c.bucket = bucket;
             job.pending.set(bucket.id, { bucket, client: c.id, progress: 0, color: c.color, name: c.name });
-            this._send(c.id, { type: 'job', jobId: job.jobId, sceneId: job.sceneId, bucket, fullW: job.fullW, fullH: job.fullH, samples: job.samples });
+            this._send(c.id, { type: 'job', jobId: job.jobId, sceneId: job.sceneId, bucket, fullW: job.fullW, fullH: job.fullH, samples: job.samples, matte: job.matte });
         }
         this.hooks.onChange?.();
     }
@@ -223,7 +242,7 @@ export class RenderMaster {
                 let data;
                 try {
                     data = await this.hooks.local.renderRegion({ x: bucket.x, y: bucket.y, w: bucket.w, h: bucket.h, fullW: job.fullW, fullH: job.fullH },
-                        job.samples, { signal: abort.signal, onProgress: p => { info.progress = p; this.hooks.onChange?.(); },
+                        job.samples, { signal: abort.signal, matte: job.matte, onProgress: p => { info.progress = p; this.hooks.onChange?.(); },
                             onPartial: partial => { if (!job.finished) this.hooks.onBucket(bucket, partial, false); } });
                 } catch (err) {
                     job.pending.delete(bucket.id);

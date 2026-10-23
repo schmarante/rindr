@@ -16,7 +16,7 @@ const ICON_CLOSE = icon('close', 'size-3.5');
 /**
  * @param {{ exportImage(transparent: boolean, onProgress: (text: string, p: number) => void, isOpen: () => boolean): Promise<HTMLCanvasElement|Blob>,
  *           getName(): string, getSize(): { width: number, height: number }, maxSize(): number, samples(): number,
- *           distributed?: { ready(): { clients: number, local: boolean }, render(scale, samples): Promise<HTMLCanvasElement>,
+ *           distributed?: { ready(): { clients: number, local: boolean }, render(scale, samples, transparent): Promise<HTMLCanvasElement|Blob>,
  *           manage(): void } }} ctx
  *   exportImage(transparent, onProgress, isOpen, scale, samples)
  */
@@ -68,8 +68,8 @@ export function createImageExport(ctx) {
             formats.append(b);
         }
         body.append(row(t('imageExport.format'), formats));
-        // transparent background (PNG) – not distributed yet (it needs two passes in front of different backgrounds)
-        if (state.format === 'png' && !state.distributed) {
+        // transparent background (PNG) – also distributed (two distributed passes in front of different backgrounds)
+        if (state.format === 'png') {
             const label = document.createElement('label');
             label.className = 'flex cursor-pointer items-start gap-2';
             const box = document.createElement('input');
@@ -202,16 +202,17 @@ export function createImageExport(ctx) {
     // distributed: the window gets out of the way (buckets, status and ✕ bottom left), the file comes at the end
     async function runDistributed() {
         const { format, scale } = state;
+        const transparent = format === 'png' && state.transparent;
         close();
         let canvas;
         try {
-            canvas = await ctx.distributed.render(scale, state.samples || ctx.samples());
+            canvas = await ctx.distributed.render(scale, state.samples || ctx.samples(), transparent);
         } catch (err) {
             if (err?.name !== 'AbortError') ctx.onError?.(err);
             return;
         }
         const type = format === 'png' ? 'image/png' : 'image/jpeg';
-        const blob = await new Promise(resolve => canvas.toBlob(resolve, type, 0.92));
+        const blob = canvas instanceof Blob ? canvas : await new Promise(resolve => canvas.toBlob(resolve, type, 0.92));
         await saveBlob(blob, `${ctx.getName() || 'rindr'}.${format}`);
     }
 

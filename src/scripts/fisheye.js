@@ -16,6 +16,7 @@ import { wgslTagFn, rayStruct } from 'three-mesh-bvh/webgpu';
 
 export const PERSPECTIVE_LIMIT = 100;   // ° vertical – above: fisheye
 export const MAX_VIEW_ANGLE = 240;
+export const MIN_VIEW_ANGLE = 3;        // the nearly orthographic side views of the view cube (viewer.js orthoView)
 
 const TAN_LIMIT = Math.tan(PERSPECTIVE_LIMIT * Math.PI / 360);
 const U = {
@@ -30,7 +31,7 @@ export function viewAngle(camera) {
 
 /** Set the view angle: up to PERSPECTIVE_LIMIT the normal perspective, above that fisheye */
 export function setViewAngle(camera, angle) {
-    const a = Math.min(Math.max(angle, 1), MAX_VIEW_ANGLE);
+    const a = Math.min(Math.max(angle, MIN_VIEW_ANGLE), MAX_VIEW_ANGLE);
     camera.fov = Math.min(a, PERSPECTIVE_LIMIT);
     if (a > PERSPECTIVE_LIMIT) camera.userData.viewAngle = a;
     else delete camera.userData.viewAngle;
