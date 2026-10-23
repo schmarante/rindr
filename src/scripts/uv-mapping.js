@@ -20,9 +20,9 @@
 // triangles squeeze the texture into a band. The new geometry shares the BVH of the import geometry (same triangle
 // order and positions); the import geometry stays (mesh.userData.uvBase) – back to it when no mapping applies.
 // Speed (Oct. 2026, user: "in MAX the UV gizmo is quick – what is the difference?"): a slider follows the mouse at
-// the speed of one projection (no waiting for it to rest); no worker round trip (BVH shared, tangents only for normal
-// maps); the path tracer rebuilds its scene once the slider is released (viewer.js) – the kernel stays compiled
-// (astro.config.mjs rindr-stable-kernel).
+// the speed of one projection with a frame drawn in between (no waiting for it to rest); no worker round trip (BVH
+// shared, tangents only for normal maps); the path tracer rebuilds its scene once the slider is released (viewer.js)
+// – the kernel stays compiled (astro.config.mjs rindr-stable-kernel).
 import * as THREE from 'three/webgpu';
 import { UV_TILE } from './step-importer.js';
 
@@ -164,7 +164,6 @@ export class UvMapper {
         this._queue = Promise.resolve();
         this._dirty = new Set();   // nodes waiting for a projection
         this._pumping = false;
-        this._held = false;        // a slider is dragged: values change, the projection waits for the release
         this._tiled = new Set();   // meshes with cylinder/sphere – their repeats depend on the material
     }
 
@@ -191,29 +190,62 @@ export class UvMapper {
         return list;
     }
 
-    /** set or remove (null) the mapping of a node; re-projects its meshes (live while a slider is dragged) */
+    /**
+     * Set or remove (null) the mapping of a node and re-project its meshes. The change passes down: own mappings of
+     * nodes below are replaced (user's wish – changing the parent overrides the parts changed before; undo brings
+     * them back through snapshot/restore)
+     */
     set(object, mapping) {
+        object.traverse(o => { if (o !== object) delete o.userData.mapping; });
         if (mapping) object.userData.mapping = { ...DEFAULT_MAPPING, ...mapping };
         else delete object.userData.mapping;
         this.schedule(object);
     }
 
-    /** while a slider is dragged: keep the new values, project only on release (user: live updates stuttered) */
-    hold(on) {
-        this._held = on;
-        if (!on && this._dirty.size) this.schedule(null);
+    /** number of nodes below object with an own mapping (a change of object replaces them) */
+    ownBelow(object) {
+        let n = 0;
+        object.traverse(o => { if (o !== object && o.userData.mapping) n++; });
+        return n;
     }
 
-    /** Re-project now, or – while a projection runs – once it is done, with the newest values; held: on release */
+    /** mappings of object and the nodes below (child index paths) – for undo */
+    snapshot(object) {
+        const list = [];
+        const walk = (o, path) => {
+            if (o.userData.mapping) list.push([path, { ...o.userData.mapping }]);
+            o.children.forEach((c, i) => walk(c, [...path, i]));
+        };
+        walk(object, []);
+        return list;
+    }
+
+    /** put a snapshot back (mappings not in it are removed) and re-project */
+    restore(object, list) {
+        object.traverse(o => { delete o.userData.mapping; });
+        for (const [path, mapping] of list) {
+            let o = object;
+            for (const i of path) o = o?.children[i];
+            if (o) o.userData.mapping = { ...DEFAULT_MAPPING, ...mapping };
+        }
+        this.schedule(object);
+    }
+
+    /**
+     * Re-project now, or – while a projection runs – once it is done, with the newest values. Live while a slider is
+     * dragged, like every other slider (user's wish: the same everywhere); a frame is drawn between two projections,
+     * so slider and view keep moving (back to back they made the drag stutter)
+     */
     schedule(object) {
-        if (object) this._dirty.add(object);
-        if (this._pumping || this._held) return;
+        this._dirty.add(object);
+        if (this._pumping) return;
         this._pumping = true;
         const pump = async () => {
             while (this._dirty.size) {
                 const objects = [...this._dirty];
                 this._dirty.clear();
                 for (const o of objects) await this.apply(o);
+                await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
             }
             this._pumping = false;
         };

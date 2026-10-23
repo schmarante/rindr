@@ -1312,6 +1312,10 @@
             "scale": "Scale",
             "scaleTitle": "Factor on the material's tile size: 2 = texture twice as large",
             "inheritHint": "A change gives this object its own mapping.",
+            "belowHint": {
+                "one": "{count} part below has its own mapping – a change here replaces it.",
+                "other": "{count} parts below have their own mapping – a change here replaces them."
+            },
             "undo": "Mapping"
         },
         "style": {

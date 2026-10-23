@@ -897,7 +897,6 @@ const properties = new PropertiesPanel(document.getElementById('properties'), {
     // slider being dragged (environment, light): reduced path tracing like when orbiting the camera
     onSliderDrag: active => {
         sliderDragging = active;
-        uvMapper.hold(active);   // UV mapping: projected once on release
         if (active) pathTracing.beginInteraction();
         else pathTracing.endInteraction();
         // UV mapping dragged: the path tracer scene once at the end (raster preview meanwhile)
@@ -975,9 +974,12 @@ const properties = new PropertiesPanel(document.getElementById('properties'), {
             const from = own ? null : uvMapper.effective(entry.object.parent);
             // name of the node it comes from: model roots by their file (like the Scene Graph)
             const rootName = root => displayName(runtimeModels().find(rm => rm.root === root)?.file.name) || t('sceneGraph.model');
-            return { own, inherited: from?.mapping || null, from: from?.owner ? (from.owner.userData.modelRoot ? rootName(from.owner) : from.owner.name || t('sceneGraph.unnamed')) : null };
+            return { own, inherited: from?.mapping || null, from: from?.owner ? (from.owner.userData.modelRoot ? rootName(from.owner) : from.owner.name || t('sceneGraph.unnamed')) : null,
+                below: uvMapper.ownBelow(entry.object) };
         },
         set: (entry, mapping) => uvMapper.set(entry.object, mapping),
+        snapshot: entry => uvMapper.snapshot(entry.object),
+        restore: (entry, list) => uvMapper.restore(entry.object, list),
     },
 });
 // environment changed (HDRI, HDRI editor rendering, intensity, light boost, rotation): preview in the panel

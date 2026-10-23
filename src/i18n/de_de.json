@@ -1312,6 +1312,10 @@
             "scale": "Maßstab",
             "scaleTitle": "Faktor auf die Kachelgröße des Materials: 2 = Textur doppelt so groß",
             "inheritHint": "Eine Änderung gibt diesem Objekt ein eigenes Mapping.",
+            "belowHint": {
+                "one": "{count} Teil darunter hat ein eigenes Mapping – eine Änderung hier ersetzt es.",
+                "other": "{count} Teile darunter haben ein eigenes Mapping – eine Änderung hier ersetzt sie."
+            },
             "undo": "Mapping"
         },
         "style": {
