@@ -15,7 +15,7 @@ import { duplicateNode, removeDuplicate, linkedMembers, familyOf, isLinked, make
 import { RenderMaster, LOCAL_ID } from './distributed/master.js';
 import { RenderClient } from './distributed/client.js';
 import { BucketDisplay } from './distributed/display.js';
-import { localTransport, newId, gpuName } from './distributed/protocol.js';
+import { localTransport, newId, gpuName, formatSize } from './distributed/protocol.js';
 import { hubTransport, channelTransport, answerOffer } from './distributed/rtc.js';
 import { buildDistributedSection, clientView } from './distributed/settings.js';
 import { IMPORT, KI, SPLATS, RASTER, SCENE, TRANSITION, LOD } from './config.js';
@@ -48,7 +48,7 @@ import { kiSettings } from './ki-gemini.js';
 import { PhysicalCamera } from 'three-gpu-pathtracer/src/objects/PhysicalCamera.js';
 import { captureState, applyState, matchesModel, sceneModels, SCENE_FORMAT } from './scene-state.js';
 import { encodePng } from './png-encode.js';
-import { setFisheye, RasterFisheye, patchRaycaster, viewAngle, setViewAngle, fisheyeEnabled, fisheyeProject } from './fisheye.js';
+import { setFisheye, RasterFisheye, patchRaycaster, viewAngle, setViewAngle, fisheyeEnabled, fisheyeProject, PERSPECTIVE_LIMIT, MIN_VIEW_ANGLE } from './fisheye.js';
 import { PropertiesPanel } from './properties.js';
 import { Slicer, isClosedGeometry } from './slicer.js';
 import { RenderBatcher, BATCH_LAYER } from './render-batcher.js';
@@ -437,7 +437,7 @@ renderer.onError = info => {
     if (pathTracing.ready && /buffer|binding size|out of memory/i.test(message) && !/vertex buffer slot|index buffer/i.test(message)) pathTracing.fail(message);
 };
 // During movement (mouse pressed, zoom) rasterizer, afterwards path tracing again
-controls.addEventListener('start', () => pathTracing.beginInteraction());
+controls.addEventListener('start', () => { releaseExportScale(); pathTracing.beginInteraction(); });
 controls.addEventListener('end', () => pathTracing.endInteraction());
 controls.addEventListener('change', () => pathTracing.updateCamera());
 if (!pathTracing.supported) console.warn('WebGPU not available – path tracing disabled.');
@@ -810,7 +810,7 @@ const contours = new ContourPass(renderer, scene, camera, {
 // setup menu, view mode. Not while dragging (sliders, gizmo, orbiting apply live).
 const screenFade = new ScreenFade(renderer, TRANSITION);
 const smoothChange = () => { if (!pathTracing._dragging && !pathTracing.interacting) screenFade.begin(); };
-pathTracing.onRestart = () => { if (viewMode === 'hq') smoothChange(); };
+pathTracing.onRestart = () => { releaseExportScale(); if (viewMode === 'hq') smoothChange(); };
 for (const name of ['record', 'undo', 'redo']) {
     const f = history[name].bind(history);
     history[name] = (...args) => { smoothChange(); return f(...args); };
@@ -1829,16 +1829,39 @@ function setCameraViews(list, { select = null } = {}) {
     if (select) sceneGraph.select(viewEntry(select));
     else if (selection?.kind === 'view' && !cameraViews.includes(selection.view)) sceneGraph.select(null);
 }
+// A different view angle (e.g. a nearly orthographic side view ↔ perspective, user: "switching between the two jumps
+// quite a bit" – the angle was set at once, the camera then flew straight from ~16× the distance): the angle blends like
+// in the view cube's flight, the distance follows it (the picture at the orbit centre keeps its size, blended between
+// the two views), the camera swings round the centre instead of flying straight (azimuth + elevation, as the cube). A saved side view at the minimum angle
+// becomes a nearly orthographic one again (turning away brings back the angle before).
 function flyToView(view) {
     splatSpin.active = false;
+    cancelFlight();
+    const fromPos = camera.position.clone(), fromTarget = controls.target.clone();
+    const toPos = new THREE.Vector3().fromArray(view.position), toTarget = new THREE.Vector3().fromArray(view.target);
+    const fromFov = viewAngle(camera), toFov = view.fov ?? fromFov;
+    const userFov = orthoView?.fov ?? fromFov;
+    orthoView = null;
     flight = {
         t0: performance.now(), duration: 600,
-        fromPos: camera.position.clone(), fromTarget: controls.target.clone(),
-        toPos: new THREE.Vector3().fromArray(view.position), toTarget: new THREE.Vector3().fromArray(view.target),
+        fromPos, fromTarget, toPos, toTarget,
         fromRoll: camera.userData.roll || 0, toRoll: view.roll || 0,
     };
+    if (Math.abs(lensScale(toFov) / lensScale(fromFov) - 1) > 0.01) {
+        // direction in azimuth + elevation like the view cube (azimuth the shorter way) – a slerp along the great circle
+        // reached a top view with the azimuth of the start and turned it round quickly in the last frames (user)
+        const from = new THREE.Spherical().setFromVector3(fromPos.clone().sub(fromTarget));
+        const to = new THREE.Spherical().setFromVector3(toPos.clone().sub(toTarget));
+        const dTheta = ((to.theta - from.theta) % (2 * Math.PI) + 3 * Math.PI) % (2 * Math.PI) - Math.PI;
+        flight.zoom = { fromFov, toFov, fromTheta: from.theta, dTheta, fromPhi: from.phi, toPhi: to.phi,
+            fromSize: from.radius * lensScale(fromFov), toSize: to.radius * lensScale(toFov) };
+    } else {
+        setViewAngle(camera, toFov);
+    }
+    if (toFov <= ORTHO_FOV + 1e-6 && userFov > ORTHO_FOV + 1e-6) {
+        flight.ortho = { fov: userFov, dir: toPos.clone().sub(toTarget).normalize() };
+    }
     streamFit.active = false;
-    setViewAngle(camera, view.fov ?? viewAngle(camera));
     if (view.dof) { dof.fromJSON(view.dof); dof.apply(); }
     flightInteraction = true;
     pathTracing.beginInteraction();
@@ -2373,8 +2396,24 @@ function updateFlight() {
     const k = u * u * (3 - 2 * u);
     if (flight.orbit) {   // view cube: azimuth and elevation around the orbit centre, the distance stays
         const o = flight.orbit;
-        _flightDir.setFromSphericalCoords(o.dist, o.fromPhi + (o.toPhi - o.fromPhi) * k, o.fromTheta + o.dTheta * k);
+        // view angle towards/away from nearly orthographic: the distance follows it (dolly zoom – the orbit centre's
+        // plane keeps its size)
+        let dist = o.dist;
+        if (o.toFov !== o.fromFov) {
+            const fov = blendFov(o.fromFov, o.toFov, k);
+            dist *= lensScale(o.fromFov) / lensScale(fov);
+            setViewAngle(camera, fov);
+        }
+        _flightDir.setFromSphericalCoords(dist, o.fromPhi + (o.toPhi - o.fromPhi) * k, o.fromTheta + o.dTheta * k);
         camera.position.copy(o.center).add(_flightDir);
+    } else if (flight.zoom) {   // saved view with another view angle: angle blended, distance following it (flyToView)
+        const z = flight.zoom;
+        controls.target.lerpVectors(flight.fromTarget, flight.toTarget, k);
+        const fov = blendFov(z.fromFov, z.toFov, k);
+        const size = Math.exp(Math.log(z.fromSize) * (1 - k) + Math.log(z.toSize) * k);
+        _flightDir.setFromSphericalCoords(size / lensScale(fov), z.fromPhi + (z.toPhi - z.fromPhi) * k, z.fromTheta + z.dTheta * k);
+        camera.position.copy(controls.target).add(_flightDir);
+        setViewAngle(camera, fov);
     } else {
         camera.position.lerpVectors(flight.fromPos, flight.toPos, k);
         controls.target.lerpVectors(flight.fromTarget, flight.toTarget, k);
@@ -2385,11 +2424,59 @@ function updateFlight() {
     }
     controls.update();   // fires 'change' -> path tracing pauses during the flight
     if (u === 1) {
+        if (flight.ortho) {
+            orthoView = flight.ortho;
+            // ~18× further away: near plane along (depth precision – far grows by itself, syncViewDependents)
+            camera.near = Math.max(camera.near, camera.position.distanceTo(controls.target) * 0.001);
+            camera.updateProjectionMatrix();
+        }
         flight = null;   // (following during loading is "quiet": without begin/endInteraction)
         endFlightInteraction();
     }
 }
 const _flightDir = new THREE.Vector3();
+
+// --- Nearly orthographic side views (user: "too much perspective in top, left, right … it should be orthogonal, to move
+// objects sensibly"): a face of the view cube narrows the view angle to ORTHO_FOV and moves the camera back by the same
+// factor (dolly zoom, ~18× at 50°) – the plane of the orbit centre keeps its size, the perspective is practically gone.
+// No orthographic camera: path tracer, fisheye, depth of field, picking, LOD all work with the perspective one. Panning
+// and zooming keep the view; turning away (mouse, view cube drag, an edge/corner view) brings the user's view angle back
+// the same way (ORTHO_RESTORE_MS, also while still dragging) – a fisheye too. A view angle set elsewhere (camera panel, a
+// scene) ends it.
+const ORTHO_FOV = MIN_VIEW_ANGLE;
+const ORTHO_RESTORE_MS = 350;
+const ORTHO_LEAVE = Math.cos(THREE.MathUtils.degToRad(0.5));   // turned further than this: back to perspective
+let orthoView = null;   // { fov: the user's view angle, dir: view direction (target → camera), restore: { t0, from } }
+// how much a view angle shrinks the picture's centre (screen radius per angle there): perspective tan(angle / 2); the
+// fisheye beyond PERSPECTIVE_LIMIT (fisheye.js: θ = k·atan(ρ·tan(limit / 2)), k = angle / limit) k·tan(limit / 2) – the
+// same at the limit, so the camera distance follows any view angle (also out of the fisheye, user: "steer the transition
+// by the view angle") and the orbit centre keeps its size
+const TAN_LIMIT_HALF = Math.tan(THREE.MathUtils.degToRad(PERSPECTIVE_LIMIT) / 2);
+const lensScale = deg => (deg <= PERSPECTIVE_LIMIT ? Math.tan(THREE.MathUtils.degToRad(deg) / 2) : deg / PERSPECTIVE_LIMIT * TAN_LIMIT_HALF);
+const lensAngle = scale => (scale <= TAN_LIMIT_HALF ? THREE.MathUtils.radToDeg(2 * Math.atan(scale)) : scale / TAN_LIMIT_HALF * PERSPECTIVE_LIMIT);
+// view angle between two, even in lensScale on a log scale – the distance changes evenly (linear in degrees it raced away
+// near the narrow end)
+const blendFov = (a, b, k) => lensAngle(Math.exp(Math.log(lensScale(a)) * (1 - k) + Math.log(lensScale(b)) * k));
+const _orthoDir = new THREE.Vector3();
+function updateOrthoView() {
+    const o = orthoView;
+    if (!o || flight) return;
+    const now = performance.now();
+    if (!o.restore) {
+        if (Math.abs(viewAngle(camera) - ORTHO_FOV) > 1e-6) { orthoView = null; return; }
+        _orthoDir.subVectors(camera.position, controls.target).normalize();
+        if (_orthoDir.dot(o.dir) > ORTHO_LEAVE) return;
+        o.restore = { t0: now, from: ORTHO_FOV };
+    }
+    const u = Math.min((now - o.restore.t0) / ORTHO_RESTORE_MS, 1);
+    const fov = blendFov(o.restore.from, o.fov, u * u * (3 - 2 * u));
+    const before = viewAngle(camera);
+    // the live offset (the user may be turning): only its length changes
+    _orthoDir.subVectors(camera.position, controls.target).multiplyScalar(lensScale(before) / lensScale(fov));
+    camera.position.copy(controls.target).add(_orthoDir);
+    setViewAngle(camera, fov);
+    if (u === 1) orthoView = null;
+}
 
 // --- View cube (view-cube.js): click = fly to the view, drag = orbit like the mouse in the viewport ---
 // The camera turns around the current orbit centre (a straight flight to the opposite side would pass through
@@ -2406,10 +2493,19 @@ function flyToDirection(dir) {
     const to = new THREE.Spherical().setFromVector3(Math.abs(dir.y) > 0.999 ? new THREE.Vector3(0, Math.sign(dir.y), 1e-3) : dir);
     // shorter way round in azimuth; from top/bottom (azimuth undefined there) it simply turns into the new one
     const dTheta = ((to.theta - from.theta) % (2 * Math.PI) + 3 * Math.PI) % (2 * Math.PI) - Math.PI;
+    // a face (top, front, left …): nearly orthographic (orthoView); an edge/corner view: the user's view angle again
+    const n = dir.clone().normalize();
+    const face = Math.max(Math.abs(n.x), Math.abs(n.y), Math.abs(n.z)) > 0.999;
+    const angle = viewAngle(camera);
+    const userFov = orthoView?.fov ?? angle;
+    const ortho = face;   // also from the fisheye: the view angle blends through it (lensScale)
+    orthoView = null;
     flight = {
         t0: performance.now(), duration: 500,
-        orbit: { center, dist: from.radius, fromTheta: from.theta, dTheta, fromPhi: from.phi, toPhi: to.phi },
+        orbit: { center, dist: from.radius, fromTheta: from.theta, dTheta, fromPhi: from.phi, toPhi: to.phi,
+            fromFov: angle, toFov: ortho ? ORTHO_FOV : userFov },
         fromRoll: camera.userData.roll || 0, toRoll: 0,
+        ortho: ortho && { fov: userFov, dir: new THREE.Vector3().setFromSpherical(to).normalize() },
     };
     flightInteraction = true;
     pathTracing.beginInteraction();
@@ -2969,6 +3065,7 @@ let renderJob = null;
 // view's finished HQ image is kept beforehand and put back afterwards (user: "two passes for the PNG and then once more for
 // the viewport makes no sense"); started from another mode there is no HQ image to show: back to that mode instead.
 async function exportImage(transparent, onProgress, isOpen, scale = 1, samples = 0) {
+    releaseExportScale();   // the screen size again before measuring it
     const mode = viewMode;
     const job = renderJob = { cancelled: false, text: '' };
     const keep = transparent && scale === 1 && viewMode === 'hq' && pathTracing.getStatus().phase === 'done'
@@ -2981,7 +3078,7 @@ async function exportImage(transparent, onProgress, isOpen, scale = 1, samples =
         const result = await exportScaled(transparent, (text, p, pass) => {
             job.text = text;
             // per pass only forward (loading the denoiser reports 0 for a moment)
-            if (pass && job.pass?.pass === pass.pass) pass = { ...pass, p: Math.max(pass.p, job.pass.p) };
+            if (pass && job.pass?.pass === pass.pass && passRank(job.pass) > passRank(pass)) pass = job.pass;
             job.pass = pass || null;
             onProgress?.(text, p);
         },
@@ -3012,13 +3109,35 @@ async function exportScaled(transparent, onProgress, isOpen, scale) {
     lens.setPixelScale(scale);
     loadRender.force = true;
     await nextFrame(); await nextFrame();   // path tracer noticed the new size and restarted
+    let done = false;
     try {
-        return await exportPasses(transparent, onProgress, isOpen);
+        const result = await exportPasses(transparent, onProgress, isOpen);
+        done = true;
+        return result;
     } finally {
-        renderer.setPixelRatio(ratio);
-        lens.setPixelScale(1);
-        loadRender.force = true;
+        // the picture stays at the export size (holdExportScale); the transparent passes leave no picture of the view
+        if (done && !transparent) holdExportScale(ratio);
+        else restoreExportScale(ratio);
     }
+}
+// Render at a multiple of the screen size: afterwards the canvas keeps that size until the view changes (camera, view
+// mode, window, a path tracer restart) – the browser shows it scaled down. Restoring at once resized the path tracer:
+// the finished picture was gone, rendered and denoised a second time right after the file was saved (user: "the image
+// is done, the download triggered, but it denoises again").
+let heldExportRatio = null;
+function restoreExportScale(ratio) {
+    renderer.setPixelRatio(ratio);
+    lens.setPixelScale(1);
+    loadRender.force = true;
+}
+function holdExportScale(ratio) {
+    heldExportRatio = ratio;
+}
+function releaseExportScale() {
+    if (heldExportRatio === null) return;
+    const ratio = heldExportRatio;
+    heldExportRatio = null;
+    restoreExportScale(ratio);
 }
 // alpha of the transparent export is computed back through the ACES curve without the image look: those
 // captures are taken with ACES + neutral look (only the output changes – the path traced image stays)
@@ -3035,15 +3154,27 @@ async function captureNeutral() {
         lens.apply();
     }
 }
+// grey background of the second matte pass in scene units: the ACES input is colour · exposure / 0.6 (rounded to 8 bit –
+// the path tracer stores colour backgrounds as 8-bit texture); greyY = its value before the ACES fit (composeMatte)
+function matteGrey() {
+    const grey = Math.round(MATTE_GREY_Y * 0.6 / renderer.toneMappingExposure * 255) / 255;
+    return { grey, greyY: grey * renderer.toneMappingExposure / 0.6 };
+}
+// plain background for the matte passes (grey value) or null = the view's own – also per bucket on a render client
+// (job.matte); true if it changed (the path tracer restarted with it)
+function setMatte(value) {
+    if ((environment.matte?.r ?? null) === value) return false;
+    environment.matte = value === null ? null : new THREE.Color(value, value, value);
+    environment.apply();
+    contactShadow.markDirty();
+    return true;
+}
 async function exportPasses(transparent, onProgress, isOpen) {
     if (!transparent) {
-        await waitForImage(onProgress, isOpen);
+        await waitForImage((text, p) => onProgress(text, p), isOpen);   // one pass: no pass segments
         return exportFrame();
     }
-    // grey in scene units: the ACES input is colour · exposure / 0.6
-    // (rounded to 8 bit – the path tracer stores colour backgrounds as 8-bit texture)
-    const grey = Math.round(MATTE_GREY_Y * 0.6 / renderer.toneMappingExposure * 255) / 255;
-    const greyY = grey * renderer.toneMappingExposure / 0.6;
+    const { grey, greyY } = matteGrey();
     const passes = [['black', 0], ['grey', grey]];
     const shots = [];
     let color = null;   // image in front of black with the image look (colour of the PNG)
@@ -3055,8 +3186,9 @@ async function exportPasses(transparent, onProgress, isOpen) {
             environment.apply();
             contactShadow.markDirty();
             await nextFrame(); await nextFrame();   // path tracer restarted with the new background
-            await waitForImage((text, p) => onProgress(`${t(`imageExport.passBackground.${passes[n][0]}`)} · ${text}`,
-                (n + p) / passes.length, { pass: n, total: passes.length, p }), isOpen);
+            const text = `${t(`imageExport.passBackground.${passes[n][0]}`)} · `;
+            await waitForImage((detail, p, stage) => onProgress(text + detail, (n + p) / passes.length, { pass: n, total: passes.length, ...stage }), isOpen);
+            onProgress(text + t('pathtracing.phases.done'), (n + 1) / passes.length, { pass: n, total: passes.length, stage: 'done', p: 1 });
             shots.push(await captureNeutral());
             if (n === 0) color = await exportFrame();
         }
@@ -3098,6 +3230,11 @@ function composeMatte(black, grey, greyY, color) {
 }
 // current view: Default/Basic immediately, HQ only once the image is finished (denoised); isOpen: the
 // asking window is still open (otherwise cancelled)
+// stage of the path tracer's picture for the pass segments: rendering (samples), denoising, done
+const imageStage = st => (st.phase === 'done' ? { stage: 'done', p: 1 }
+    : st.phase === 'denoising' ? { stage: 'denoise', p: st.progress }
+    : st.phase === 'denoise-loading' ? { stage: 'denoise', p: 0 }
+    : { stage: 'render', p: st.progress });
 const waitForImage = (onProgress, isOpen) => new Promise((resolve, reject) => {
         if (!rootGroup) return reject(new Error(t('viewer.ki.noModel')));
         if (viewMode !== 'hq') return resolve();
@@ -3108,7 +3245,8 @@ const waitForImage = (onProgress, isOpen) => new Promise((resolve, reject) => {
             if (st.phase === 'error') return reject(new Error(st.error || t('viewer.ki.ptError')));
             if (st.phase === 'suspended') return reject(new Error(t('viewer.ki.sectionActive')));
             const phase = { bvh: 'bvh', compiling: 'bvh', rendering: 'rendering', 'denoise-loading': 'denoiseLoading', denoising: 'denoising', preview: 'moving', motion: 'moving' }[st.phase] || 'waiting';
-            onProgress(t(`viewer.ki.progress.${phase}`, { samples: Math.round(st.samples), maxSamples: st.maxSamples }), st.phase === 'denoising' ? 0.9 + 0.1 * st.progress : st.progress * 0.9);
+            onProgress(t(`viewer.ki.progress.${phase}`, { samples: Math.round(st.samples), maxSamples: st.maxSamples }), st.phase === 'denoising' ? 0.9 + 0.1 * st.progress : st.progress * 0.9,
+                imageStage(st));
             setTimeout(tick, 200);
         };
         tick();
@@ -3190,7 +3328,7 @@ const imageExport = lazy(async () => (await import('./image-export.js')).createI
     // distributed rendering (docs/distributed.md): clients ready, render, manage them in the settings
     distributed: renderMaster && {
         ready: () => ({ clients: renderMaster.list().filter(c => c.online && !c.busyOther).length, local: distSettings.renderLocal }),
-        render: (scale, samples) => renderDistributedImage(scale, samples),
+        render: (scale, samples, transparent) => renderDistributedImage(scale, samples, transparent),
         manage: () => { setSetupOpen(true); setup.show('distributed'); },
     },
 }));
@@ -3560,6 +3698,7 @@ function showHqUnavailable() {
 if (webgpuBlocked && gpuRecovering) showHqUnavailable();
 let modeBeforeHq = 'default';   // the mode HQ was entered from – the ✕ of the path tracing status goes back to it
 function setViewMode(mode) {
+    releaseExportScale();
     // HQ without WebGPU: the dimmed button explains why; already in Default → nothing changes (no fade)
     if (mode === 'hq' && !pathTracing.supported) {
         showHqUnavailable();
@@ -5026,6 +5165,7 @@ window.addEventListener('drop', async e => {
 
 // distributed rendering (initDistributed below): master or render client
 let renderMaster = null, renderClient = null, distDisplay = null, distSection = null, distLastResult = null, distHub = null;
+let distPass = null;   // pass of a transparent distributed image { n, total } (status: "Pass 1/2 · in front of black")
 let clientPage = false;   // this page is a render client (its status page instead of the interface)
 const distSettings = (() => {
     const base = { renderLocal: true, samples: 128, bucket: 128 };
@@ -5105,11 +5245,18 @@ if (new URLSearchParams(location.search).has('debug')) {
         // material node graphs: bake an input into a PNG / render a description on the thumbnail sphere (debug-graph.js)
         bakeGraph: (graph, opts) => import('./debug-graph.js').then(m => m.bakeGraphImage(graphApplier, graph, opts)),
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel.thumbs, def)),
-        batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return runDistributedJob(b.x, b.y, samples).catch(() => null); }, renderDistributedImage: (scale = 1, samples = 64) => renderDistributedImage(scale, samples), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+        batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 }
 
 // --- Resize ---
 window.addEventListener('resize', () => {
+    releaseExportScale();
+    // rendering is cancelled like with ✕ (user: "on resize everything should be cancelled, the rendering is started again"
+    // – a job going on at the old size showed a stretched picture); a finished distributed picture (shown until the view
+    // changes) has the old size too
+    if (distRender || renderJob) cancelRendering();
+    else if (renderMaster?.running) cancelDistributed();
+    else if (distDisplay?.active) endDistributedView();
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -5213,7 +5360,14 @@ function updatePathTracingStatus() {
     }
     // a render job of the render window: its own label, the pass text of a transparent export
     if (renderJob?.text) detail = renderJob.text;
-    const key = `${s.phase}|${value}|${detail}|${progressEl.hidden}|${!!renderJob}|${viewMode}|${renderJob?.pass ? `${renderJob.pass.pass}:${renderJob.pass.p.toFixed(3)}` : ''}`;
+    // transparent distributed image between its passes (this computer denoises the injected pass): its segments stay and
+    // show the denoising (user: "a status update of the two pass indicators")
+    const distSeg = distPass && { pass: distPass.n, total: distPass.total,
+        ...(distPass.rendered && ['done', 'denoising', 'denoise-loading'].includes(s.phase) ? imageStage(s)
+            : { stage: 'render', p: distPass.rendered ? 1 : 0 }) };
+    if (distSeg) detail = `${t(`imageExport.passBackground.${distPass.n === 0 ? 'black' : 'grey'}`)} · ${detail}`;
+    const jobPass = renderJob?.pass ?? distSeg;
+    const key = `${s.phase}|${value}|${detail}|${progressEl.hidden}|${!!renderJob}|${viewMode}|${jobPass ? `${jobPass.pass}:${jobPass.stage}:${jobPass.p.toFixed(3)}` : ''}`;
     if (key === ptStatus.last) return;
     ptStatus.last = key;
     // while loading, the progress display shows the state at the same place
@@ -5223,16 +5377,17 @@ function updatePathTracingStatus() {
     distStatusCancel.title = renderJob ? t('render.cancel') : t('render.stopHq', { mode: t(`viewMode.${modeBeforeHq}.label`) });
     if (!phase) return;
     ptStatus.label.textContent = renderJob?.pass ? t('render.runningPass', { n: renderJob.pass.pass + 1, total: renderJob.pass.total })
+        : distSeg ? t('setup.distributed.titlePass', { n: distSeg.pass + 1, total: distSeg.total })
         : renderJob ? t('render.running') : t(phase.label);
-    // render job with several passes (transparent PNG: in front of black, then grey): one segment per pass, side by side,
-    // each in its own colour – the bar shows from the start that another pass follows
-    const pass = renderJob?.pass;
+    // render job with several passes (transparent PNG: in front of black, then grey): one segment per pass, side by side –
+    // the bar shows from the start that another pass follows (showPassSegments)
+    const pass = jobPass;
     showPassSegments(pass);
     if (pass) {
-        value = t('pathtracing.percent', { value: Math.floor(((pass.pass + pass.p) / pass.total) * 100) });
+        value = t('pathtracing.percent', { value: Math.floor(passOverall(pass) * 100) });
         ptStatus.value.textContent = value;
         ptStatus.detail.textContent = detail;
-        ptStatus.dot.className = `inline-block size-2 rounded-full ${PASS_COLORS[pass.pass % PASS_COLORS.length]} animate-pulse`;
+        ptStatus.dot.className = `inline-block size-2 rounded-full ${PASS_STAGE_COLORS[pass.stage]} animate-pulse`;
         return;
     }
     ptStatus.value.textContent = value;
@@ -5243,8 +5398,14 @@ function updatePathTracingStatus() {
     ptStatus.bar.style.width = FULL_BAR_PHASES.has(s.phase) ? '100%' : `${s.progress * 100}%`;
 }
 
-// segments of the status bar for a render job with several passes (pass colours in order – user: orange, then our green)
-const PASS_COLORS = ['bg-orange-400', 'bg-emerald-400'];
+// Segments of the status bar for a render job with several passes (transparent PNG – local and distributed), user's
+// scheme: a pass still to come dark grey; the current one fills blue while rendering, then purple over it while denoising,
+// green once done – then the next pass the same way. pass = { pass: index, total, stage: 'render' | 'denoise' | 'done', p }
+const PASS_STAGE_COLORS = { render: 'bg-sky-400', denoise: 'bg-violet-400', done: 'bg-emerald-400' };
+const PASS_STAGES = ['render', 'denoise', 'done'];
+// order within a pass (progress only forward) and share of the whole job (rendering 90 % of a pass, denoising the rest)
+const passRank = pass => PASS_STAGES.indexOf(pass.stage) + Math.min(pass.p, 1);
+const passOverall = pass => (pass.pass + (pass.stage === 'done' ? 1 : pass.stage === 'denoise' ? 0.9 + 0.1 * pass.p : 0.9 * pass.p)) / pass.total;
 function showPassSegments(pass) {
     const track = ptStatus.bar.parentElement;
     if (!pass) {
@@ -5257,10 +5418,12 @@ function showPassSegments(pass) {
         box.className = 'flex h-1 gap-0.5';
         for (let i = 0; i < pass.total; i++) {
             const seg = document.createElement('div');
-            seg.className = 'h-full flex-1 overflow-hidden rounded bg-white/15';
-            const fill = document.createElement('div');
-            fill.className = `h-full w-0 rounded ${PASS_COLORS[i % PASS_COLORS.length]}`;
-            seg.append(fill);
+            seg.className = 'relative h-full flex-1 overflow-hidden rounded bg-neutral-700';
+            const base = document.createElement('div');     // rendering (blue) / done (green)
+            const over = document.createElement('div');     // denoising (purple) over the rendered blue
+            base.className = 'absolute inset-y-0 left-0 w-0 rounded';
+            over.className = `absolute inset-y-0 left-0 w-0 rounded ${PASS_STAGE_COLORS.denoise}`;
+            seg.append(base, over);
             box.append(seg);
         }
         track.after(box);
@@ -5269,7 +5432,12 @@ function showPassSegments(pass) {
     track.hidden = true;
     ptStatus.segments.hidden = false;
     [...ptStatus.segments.children].forEach((seg, i) => {
-        seg.firstChild.style.width = `${i < pass.pass ? 100 : i === pass.pass ? Math.min(pass.p, 1) * 100 : 0}%`;
+        const [base, over] = seg.children;
+        const stage = i < pass.pass ? 'done' : i === pass.pass ? pass.stage : null;
+        const p = Math.min(Math.max(pass.p, 0), 1);
+        base.className = `absolute inset-y-0 left-0 rounded ${PASS_STAGE_COLORS[stage === 'done' ? 'done' : 'render']}`;
+        base.style.width = !stage ? '0%' : stage === 'render' ? `${p * 100}%` : '100%';
+        over.style.width = stage === 'denoise' ? `${p * 100}%` : '0%';
     });
 }
 
@@ -5331,6 +5499,7 @@ function renderFrame() {
     grass.update();
     edges.update();
     if (grass.fading) { loadRender.dirty = true; markShadowsDirty(); }   // blades fading in: frames, their shadow
+    updateOrthoView();
     controls.update();
     applyCameraRoll();
     viewCube.update(camera);
@@ -5609,6 +5778,7 @@ function initDistributed() {
             name: t('setup.distributed.thisComputer'),
             renderRegion: async (region, samples, options) => {
                 await ensurePathTracer();
+                setMatte(options.matte ?? null);   // set for the whole pass already (renderDistributedImage)
                 return pathTracing.renderRegion(region, samples, options);
             },
         },
@@ -5616,7 +5786,7 @@ function initDistributed() {
         onChange: () => distChanged(),
         onDone: stats => {
             controls.enabled = true;
-            distJob?.resolve(distDisplay.data);
+            distJob?.resolve({ data: distDisplay.data, width: distDisplay.width, height: distDisplay.height });
             distJob = null;
             const names = [...stats.perClient].map(([id, n]) => `${id === LOCAL_ID ? t('setup.distributed.thisComputer') : renderMaster.clients.get(id)?.name || id}: ${n}`);
             distLastResult = t('setup.distributed.done', { time: (stats.ms / 1000).toFixed(1), buckets: stats.buckets, who: names.join(' · ') });
@@ -5639,6 +5809,9 @@ function initRenderClient(param) {
     const hooks = {
         id, name, renderer,
         loadScene: async (state, files) => {
+            // a client holds exactly the master's current scene: its files replace those of the previous one (appended,
+            // every render kept another copy of the model files in memory – ~150 MB each for a large assembly)
+            filePool = [];
             await openSceneFile(state, files, { reload: !rootGroup });
             await settleMaterials();
             controls.update();
@@ -5654,6 +5827,8 @@ function initRenderClient(param) {
             syncViewDependents();
             // view angle beyond perspective = fisheye rays – taken over by the render loop, which a client skips
             setFisheye(camera);
+            // plain background of a transparent image's pass (black, grey) or the scene's own again
+            setMatte(options.matte ?? null);
             return pathTracing.renderRegion(region, samples, options);
         },
         onStatus: status => { if (!disconnected) view.update(status); },
@@ -5670,7 +5845,11 @@ function initRenderClient(param) {
         view.update({ state: 'answer' });
         const transport = channelTransport(await answer.channel);
         view.showAnswer('');
-        transport.onprogress = (got, total) => { if (!disconnected) view.update({ state: 'receiving', progress: got / total, done: renderClient?.done || 0 }); };
+        transport.onprogress = (got, total) => {
+            if (disconnected) return;
+            const size = `${formatSize(got, getLocale())} / ${formatSize(total, getLocale())}`;
+            view.update({ state: 'receiving', progress: got / total, size, done: renderClient?.done || 0 });
+        };
         transport.onclose = () => {
             disconnected = true;
             renderClient?.dispose();
@@ -5718,6 +5897,14 @@ async function ensurePathTracer() {
         await new Promise(resolve => setTimeout(resolve, 50));
     }
 }
+// path tracer done with pending changes – rebuilt, and a first sample rendered: a plain background needs a kernel variant
+// of its own, compiled only with the first sample (asynchronously; afterwards it restarts – that would have thrown away
+// the injected picture). The render loop runs the frames for it.
+async function pathTracerSettled() {
+    await nextFrame(); await nextFrame();
+    const settled = s => ['rendering', 'denoise-loading', 'denoising', 'done'].includes(s.phase) && s.samples >= 1;
+    for (let i = 0; i < 1200 && !settled(pathTracing.getStatus()); i++) await nextFrame();
+}
 // node graphs bake asynchronously after a scene was applied – buckets wait until the materials are complete
 async function settleMaterials() {
     for (let i = 0; i < 100; i++) {
@@ -5726,54 +5913,129 @@ async function settleMaterials() {
         if (!graphApplier.pending.size && !graphApplier.waiting.size) return;
     }
 }
-// one distributed job of fullW × fullH with `samples` – resolves with the assembled linear image (Float32 RGBA, rows top to
-// bottom), rejects with an AbortError when cancelled (✕ bottom left)
+// one distributed job with `samples` at size() = { w, h } – resolves with the assembled linear image { data (Float32 RGBA,
+// rows top to bottom), width, height }, rejects with an AbortError when cancelled (✕ bottom left, window resized)
 let distJob = null;
-function runDistributedJob(fullW, fullH, samples, preview) {
+// options: { matte, keepScene } (RenderMaster.start)
+function runDistributedJob(size, samples, preview, options = {}) {
     if (!renderMaster || !rootGroup || renderMaster.running) return Promise.reject(new Error(t('setup.distributed.busy')));
     return new Promise((resolve, reject) => {
         distJob = { resolve, reject };
-        startDistributed(fullW, fullH, samples, preview);
+        const { w, h } = size();
+        startDistributed(w, h, samples, preview, options);
     });
 }
+// the render window's job in progress (distributed: distRender – also between its jobs, while a pass is denoised; local:
+// renderJob) cancelled like with ✕ – back to the view before
+let distRender = null;   // { cancelled } while renderDistributedImage runs
+function cancelRendering() {
+    if (distRender) {
+        distRender.cancelled = true;
+        if (renderMaster?.running) cancelDistributed();
+    }
+    if (renderJob) renderJob.cancelled = true;
+}
+// Esc cancels rendering like the ✕ (user's wish) – before the other Esc actions (deselect …); an open window or dialog
+// takes the Esc first (their own capture listeners)
+window.addEventListener('keydown', e => {
+    if (e.key !== 'Escape' || e.repeat || dialogOpen()) return;
+    if (distRender || renderJob) cancelRendering();
+    else if (renderMaster?.running) cancelDistributed();
+    else if (distDisplay?.active) endDistributedView();
+    else return;
+    e.stopPropagation();
+    e.preventDefault();
+}, true);
 // Render window, distributed: the buckets at the export size (path tracer resolution), the result injected into this
 // computer's path tracer as its finished image → denoiser, upscaler, lens effects, style filter as for an own render →
 // the canvas as the file. Started from HQ (e.g. few samples to look, then the render with many – user: no jump into the
 // raster look) its image stays behind the buckets still missing and comes back when cancelled.
-async function renderDistributedImage(scale, samples) {
+// Transparent PNG: two distributed passes like the local export (exportPasses) – in front of black, then grey (job.matte:
+// every worker sets the plain background for its buckets); the clients keep the scene for the second pass (keepScene),
+// the first pass' picture shows behind its missing buckets. Each pass is injected and denoised here, captured, then
+// composeMatte as locally; afterwards the view's HQ image comes back (or the mode it started from).
+async function renderDistributedImage(scale, samples, transparent = false) {
+    releaseExportScale();   // the screen size again before measuring it
     const mode = viewMode;
     const keep = mode === 'hq' && ['rendering', 'denoise-loading', 'denoising', 'done'].includes(pathTracing.getStatus().phase)
         ? await pathTracing.snapshotImage().catch(() => null) : null;
     await ensurePathTracer();
+    // its kernel compiled and a first sample rendered: a compile finishing after the injection restarted the path tracer –
+    // the distributed picture was thrown away and this computer rendered the image itself (from Standard)
+    await pathTracerSettled();
     const ratio = renderer.getPixelRatio();
     if (scale !== 1) { renderer.setPixelRatio(ratio * scale); lens.setPixelScale(scale); }
+    const { grey, greyY } = matteGrey();
+    const passes = transparent ? [0, grey] : [null];
+    let outcome = null;   // 'done' | 'cancelled'
+    const render = distRender = { cancelled: false };
+    const check = () => { if (render.cancelled) throw new DOMException('Render cancelled', 'AbortError'); };
+    // path tracer resolution of the (scaled) canvas (the HQ image of the start comes back only at the same size)
+    const size = () => {
+        const buffer = renderer.getDrawingBufferSize(new THREE.Vector2());
+        const rs = pathTracing.pathTracer.renderScale;
+        return { w: Math.floor(rs * buffer.x), h: Math.floor(rs * buffer.y) };
+    };
     try {
         loadRender.force = true;
         await nextFrame(); await nextFrame();   // canvas and path tracer at the export size
-        const buffer = renderer.getDrawingBufferSize(new THREE.Vector2());
-        const rs = pathTracing.pathTracer.renderScale;
-        const w = Math.floor(rs * buffer.x), h = Math.floor(rs * buffer.y);
-        let image;
-        try {
-            image = await runDistributedJob(w, h, samples, keep && { data: keep.data, width: keep.w, height: keep.h });
-        } catch (err) {
-            if (err?.name === 'AbortError' && mode !== 'hq') setViewMode(mode);
-            else if (err?.name === 'AbortError' && keep && scale === 1) await pathTracing.injectImage(keep.data, keep.w, keep.h, keep.samples).catch(() => {});
-            throw err;
+        let preview = keep && { data: keep.data, width: keep.w, height: keep.h };
+        const shots = [];
+        let color = null;   // first pass with the image look (colour of the PNG)
+        for (let n = 0; n < passes.length; n++) {
+            // the path tracer takes the new background before the job – otherwise it rebuilt once the render loop ran again
+            // and threw the injected picture away (rendered the pass itself)
+            distPass = transparent ? { n, total: passes.length, rendered: false } : null;   // segments from the start
+            if (setMatte(passes[n])) await pathTracerSettled();
+            check();
+            const image = await runDistributedJob(size, samples, preview, { matte: passes[n], keepScene: n > 0 });
+            check();
+            preview = image;
+            if (distPass) distPass.rendered = true;
+            await pathTracing.injectImage(image.data, image.width, image.height, samples);
+            endDistributedView();
+            await waitForImage(() => {}, () => !render.cancelled);   // denoised – the status shows it (pass segments: purple)
+            if (!transparent) { outcome = 'done'; return await exportFrame(); }
+            shots.push(await captureNeutral());
+            if (n === 0) color = await exportFrame();
+            check();
         }
-        await pathTracing.injectImage(image, w, h, samples);
-        endDistributedView();
-        flashProgress(t('setup.distributed.finishing'), 4000);
-        await waitForImage(() => {}, () => true);   // denoised
-        return await exportFrame();
+        outcome = 'done';
+        return composeMatte(shots[0], shots[1], greyY, color);
+    } catch (err) {
+        if (!render.cancelled && err?.name !== 'AbortError') throw err;
+        outcome = 'cancelled';
+        throw new DOMException('Render cancelled', 'AbortError');
     } finally {
-        if (scale !== 1) { renderer.setPixelRatio(ratio); lens.setPixelScale(1); }
+        distRender = null;
+        distPass = null;
+        const matted = setMatte(null);
+        if (scale !== 1) {
+            if (outcome === 'done' && !transparent) holdExportScale(ratio);   // the picture stays (see holdExportScale)
+            else restoreExportScale(ratio);
+        }
         loadRender.force = true;
+        // cancelled, or a transparent image (its passes leave the path tracer without the view's background): back to the
+        // mode it started from – from HQ its image as it was (scale 1; after the restart with the background)
+        if (outcome === 'cancelled' || (outcome === 'done' && transparent)) {
+            if (mode !== 'hq') setViewMode(mode);
+            else if (keep && scale === 1 && keep.w === size().w && keep.h === size().h) {   // not after a resize
+                if (matted || scale !== 1) { await nextFrame(); await nextFrame(); }
+                await pathTracing.injectImage(keep.data, keep.w, keep.h, keep.samples).catch(() => {});
+            }
+        }
     }
 }
+// one raster frame of the view (fisheye included) into the bucket display's HDR target
+function drawDistPreview(target) {
+    renderer.setRenderTarget(target);
+    if (rasterFisheye.active) rasterFisheye.render(renderer, camera, cam => renderer.render(scene, cam));
+    else renderer.render(scene, camera);
+    renderer.setRenderTarget(null);
+}
 // preview: the HQ image to show behind the buckets still missing ({ data, width, height } – BucketDisplay.begin);
-// without, one raster frame of the view (fisheye included)
-function startDistributed(fullW, fullH, samples, preview) {
+// without, one raster frame of the view (drawDistPreview)
+function startDistributed(fullW, fullH, samples, preview, options = {}) {
     if (!renderMaster || !rootGroup || renderMaster.running) return;
     const size = { x: fullW, y: fullH };
     setSetupOpen(false);
@@ -5785,13 +6047,8 @@ function startDistributed(fullW, fullH, samples, preview) {
     fading.clear();
     hideProgress();
     // the view of the start, behind the buckets still missing
-    distDisplay.begin(size.x, size.y, preview || (target => {
-        renderer.setRenderTarget(target);
-        if (rasterFisheye.active) rasterFisheye.render(renderer, camera, cam => renderer.render(scene, cam));
-        else renderer.render(scene, camera);
-        renderer.setRenderTarget(null);
-    }));
-    renderMaster.start({ fullW: size.x, fullH: size.y, samples, bucketSize: distSettings.bucket });
+    distDisplay.begin(size.x, size.y, preview || drawDistPreview);
+    renderMaster.start({ fullW: size.x, fullH: size.y, samples, bucketSize: distSettings.bucket, ...options });
 }
 function cancelDistributed() {
     renderMaster?.cancel();
@@ -5804,6 +6061,7 @@ function endDistributedView() {
     controls.enabled = true;
     loadRender.force = true;
     ptStatus.last = '';   // the path tracing status takes the panel back
+    showTransfers([]);
     distStatusCancel.hidden = true;
     distChanged();
 }
@@ -5813,26 +6071,73 @@ const distStatusCancel = document.getElementById('pt-status-cancel');
 distStatusCancel?.addEventListener('click', () => {
     if (renderMaster?.running) cancelDistributed();
     else if (distDisplay?.active) endDistributedView();
-    else if (renderJob) renderJob.cancelled = true;                // render window, local: cancel (mode back)
+    else if (distRender || renderJob) cancelRendering();          // render window (distributed between its jobs, local): cancel (mode back)
     else if (viewMode === 'hq') setViewMode(modeBeforeHq);         // path tracing: stop, back to the view before
 });
+function showTransfers(rows) {
+    let box = ptStatus.transfers;
+    // display, not the hidden attribute/class: Tailwind's flex would override them
+    if (!rows.length) { if (box) box.style.display = 'none'; return; }
+    if (!box) {
+        box = ptStatus.transfers = document.createElement('div');
+        box.className = 'mt-2 flex flex-col gap-1.5';
+        ptStatus.detail.after(box);
+    }
+    box.style.display = '';
+    box.replaceChildren(...rows.map(r => {
+        const row = document.createElement('div');
+        const head = document.createElement('div');
+        head.className = 'flex items-baseline justify-between gap-2';
+        const name = document.createElement('span');
+        name.className = 'truncate text-white/80';
+        name.textContent = r.name;
+        const text = document.createElement('span');
+        text.className = 'shrink-0 tabular-nums text-white/50';
+        text.textContent = r.text;
+        head.append(name, text);
+        const track = document.createElement('div');
+        track.className = 'mt-0.5 h-1 overflow-hidden rounded bg-white/15';
+        const fill = document.createElement('div');
+        fill.className = `h-full rounded${r.loading ? ' animate-pulse' : ''}`;
+        fill.style.cssText = `width:${r.p * 100}%;background:${r.color}`;
+        track.append(fill);
+        row.append(head, track);
+        return row;
+    }));
+}
 function updateDistStatus() {
     const job = renderMaster?.job;
     if (!job) return;
     const running = renderMaster.running;
     const workers = new Set([...job.pending.values()].map(p => p.client)).size;
     const elapsed = ((running ? performance.now() : job.t0 + (job.ms || 0)) - job.t0) / 1000;
-    const detail = running
+    let detail = running
         ? t('setup.distributed.statusRunning', { done: job.done, total: job.total, workers, time: formatRenderTime(elapsed * 1000) })
         : distLastResult || '';
+    if (distPass && running) detail = `${t(`imageExport.passBackground.${distPass.n === 0 ? 'black' : 'grey'}`)} · ${detail}`;
+    const label = distPass ? t('setup.distributed.titlePass', { n: distPass.n + 1, total: distPass.total }) : t('setup.distributed.title');
     const value = t('pathtracing.percent', { value: Math.floor(job.done / job.total * 100) });
-    const key = `dist|${running}|${value}|${detail}`;
+    // the scene on its way to each client: one bar per client in its colour – bytes sent (computers in the network), then
+    // loading until it reports ready (tabs of this browser get the files at once)
+    const transfers = running ? renderMaster.list().filter(c => c.transfer).map(c => {
+        const { sent, total } = c.transfer;
+        const sending = total > 0 && sent < total;
+        const p = sending ? sent / total : 1;
+        const locale = getLocale();
+        return { name: c.name, color: c.color, p, loading: !sending,
+            text: sending ? t('setup.distributed.sending', { percent: Math.floor(p * 100), sent: formatSize(sent, locale), total: formatSize(total, locale) })
+                : t('setup.distributed.loadingScene') };
+    }) : [];
+    const key = `dist|${label}|${running}|${value}|${detail}|${transfers.map(r => `${r.name}:${r.text}`).join('|')}`;
     if (key === ptStatus.last) return;
     ptStatus.last = key;
+    showTransfers(transfers);
     ptStatus.root.classList.remove('hidden');
-    showPassSegments(null);
-    ptStatus.label.textContent = t('setup.distributed.title');
-    ptStatus.value.textContent = value;
+    // transparent image: one segment per pass like the local render – the buckets fill it blue (showPassSegments)
+    const segPass = distPass && { pass: distPass.n, total: distPass.total, stage: 'render', p: running ? job.done / job.total : 1 };
+    showPassSegments(segPass);
+    ptStatus.label.textContent = label;
+    ptStatus.value.textContent = segPass ? t('pathtracing.percent', { value: Math.floor(passOverall(segPass) * 100) }) : value;
     ptStatus.detail.textContent = detail;
     ptStatus.dot.className = `inline-block size-2 rounded-full bg-amber-400${running ? ' animate-pulse' : ''}`;
     ptStatus.bar.className = 'h-full rounded bg-amber-400';
@@ -5897,7 +6202,9 @@ function removeInstances(blocks) {
     }
     instancesChanged([]);
 }
-// groups and meshes added/removed: Scene Graph, explosion, path tracer, edges, shadows, mappings of the new copies
+// groups and meshes added/removed: Scene Graph, explosion, path tracer, edges, special materials (grass blades, wool,
+// clouds of the copies – otherwise found only with the next material change: in HQ by chance, never in Standard), shadows,
+// mappings of the new copies
 function instancesChanged(tops, { tree = true } = {}) {
     meshIndex.list = null;   // allModelMeshes() again
     exploder.refresh();
@@ -5905,6 +6212,9 @@ function instancesChanged(tops, { tree = true } = {}) {
     invalidatePathTracing();
     updatePathTracingScene();
     edges.invalidate();
+    clouds.invalidate();
+    wool.invalidate();
+    grass.invalidate();
     markShadowsDirty();
     contactShadow.markDirty();
     for (const g of tops) if (uvMapper.effective(g).mapping) uvMapper.apply(g);

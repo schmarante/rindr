@@ -538,7 +538,10 @@ export class PathTracingView {
             return await this._readOutput(backend.outputTarget, w, h);
         } finally {
             camera.clearViewOffset();
-            camera.aspect = before.aspect;
+            // the aspect from before – unless it was set meanwhile (window resized while this bucket ran: the old one
+            // would distort the view until the next resize)
+            if (camera.aspect === fullW / fullH) camera.aspect = before.aspect;
+            camera.updateProjectionMatrix();
             setBucketRegion(null);
             backend.maxSamples = before.maxSamples;
             this.regionBusy = false;

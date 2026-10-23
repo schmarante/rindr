@@ -182,8 +182,8 @@ export function clientView(name, gpu) {
     page.append(box);
     document.body.append(page);
     return {
-        update({ state: s, bucket, progress = 0, done = 0, message }) {
-            state.textContent = t(`distributed.client.${s}`, { id: bucket?.id ?? '', message: message || '', percent: Math.round(progress * 100) });
+        update({ state: s, bucket, progress = 0, done = 0, message, size = '' }) {
+            state.textContent = t(`distributed.client.${s}`, { id: bucket?.id ?? '', message: message || '', percent: Math.round(progress * 100), size });
             fill.style.width = s === 'rendering' || s === 'receiving' ? `${Math.round(progress * 100)}%` : '0%';
             count.textContent = t('setup.distributed.buckets', { count: done });
         },

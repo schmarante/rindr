@@ -72,7 +72,7 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 | `docs/export-ki.md` | Bild-Export und KI-Rendering – `image-export.js`, `png-encode.js`, `ki-render.js`, `ki-gemini.js`. |
 | `docs/memory.md` | Speicher und Gerätegrenzen – `memory-budget.js` (Budget aus den Gerätedaten, Worker-Zahl, Speicher-Schranke), `load-guard.js` (Absturz erkennen, sparsamer Modus), Dialoge/Hinweise bei zu großen Modellen (`notice.js`, `choiceDialog`). |
 | `docs/distributed.md` | Distributed Rendering – `src/scripts/distributed/`: Master/Render-Clients, Buckets (`pathTracing.renderRegion`), Verteilung, Ausfall, beschriftete Anzeige, Rechner im Netz (WebRTC, Kopplung per Code – `rtc.js`); Stand und nächste Stufen. |
-| `docs/vision.md` | Zukunftsvisionen (Distributed Rendering – Umsetzung siehe `docs/distributed.md`) |
+| `docs/vision.md` | Zukunftsvisionen (Distributed Rendering – Umsetzung siehe `docs/distributed.md`; Licht-Passes / Light Mix, EXR- und PSD-Export mit Ebenen) |
 
 ## Stand (2026-10-14)
 
@@ -100,6 +100,7 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 - Logik ohne Browser: Node-Skripte im Scratchpad (Beispiele in den docs-Dateien).
 
 ## Offen
+- **Zukünftige Themen (Nutzer, Okt. 2026):** Licht-Passes je Lichtquelle (Light Mix inkl. HDRI, live nach dem Rendern regeln), danach nach Lichtart; Export mehrlagig als EXR und PSD (32 Bit) – Plan in `docs/vision.md`.
 - **Geplant (Nutzer, Okt. 2026):**
   - HDRI per Drag & Drop: `.hdr`/`.exr` ins Fenster ziehen → wird geladen und sofort als Umgebung gewählt (heute nur `public/hdr/` per Build-Liste bzw. `?hdr=`; Laden über `environment.selectFile` gibt es schon – beim Relink genutzt). Drop-Logik: HDRI-Datei allein = Umgebung, kein Modell-Ersetzen/Hinzufügen; Szenen-Zustand/Asset-Fenster müssen die Datei als Asset führen. Format-Texte ergänzen.
   - Decals/Aufkleber: nur über das Material (Bild-Node, Kacheln aus → UV-Modus); Drag & Drop aufs Teil mit Bearbeiten auf dem Objekt verworfen (Nutzer: zu langsam, stört die UI – Details `docs/materials.md`). Projektion (Variante 3) zurückgestellt.
@@ -150,7 +151,9 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 [X] Stufe 1: Master + Render-Clients (Tabs, `?render-client`), Buckets aus einer Warteschlange, Ausfall → Neuverteilung, beschriftete Buckets je Client, „Dieser Rechner rendert mit“; Einstellungsfenster verschieb- und skalierbar
 [X] Ergebnis entrauschen/exportieren (Render-Knopf), Zwischenstände je Bucket
 [X] Stufe 2: Rechner im lokalen Netz per WebRTC, Kopplung per Link + Antwort-Code (ohne Vermittlungsskript), Szene samt Modelldateien über den Kanal
-[ ] Szenen-Übertragung aufbereiteter Daten, Transparenz verteilt, QR-Code für den Link
+[X] Übertragungsanzeige: Balken je Client am Master (gesendete MB, dann „Lädt die Szene …“), MB auch am Client
+[X] Transparentes PNG auch verteilt (zwei Durchgänge vor Schwarz/Grau, Szene nur einmal übertragen)
+[ ] Szenen-Übertragung aufbereiteter Daten / Szene auf den Clients behalten, QR-Code für den Link
 
 ### KI RENDERING
 [X] Neben dem HQ-Button soll noch ein KI-Button rein der das aktuelle HQ-Bild an eine Bildgenerierung-KI schickt.

@@ -5,7 +5,7 @@
 //    flatten ground (+ capture height)
 //  - Camera: focal length (FOV)
 //  - Section plane: position + rotation, axis X/Y/Z, flip side, colour of the cut surface
-import { viewAngle, setViewAngle, PERSPECTIVE_LIMIT, MAX_VIEW_ANGLE } from './fisheye.js';
+import { viewAngle, setViewAngle, PERSPECTIVE_LIMIT, MAX_VIEW_ANGLE, MIN_VIEW_ANGLE } from './fisheye.js';
 import { Euler } from 'three/webgpu';
 import { t, has } from './i18n.js';
 import { STYLE_MODES } from './style-filters.js';
@@ -503,11 +503,13 @@ export class PropertiesPanel {
         save.title = t('properties.view.saveTitle');
         save.onclick = () => this.ctx.cameraViews.save();
         // view angle: above PERSPECTIVE_LIMIT the picture continues as a fisheye (fisheye.js)
-        const fov = this._rangeRow(t('properties.camera.fov'), viewAngle(camera), 10, MAX_VIEW_ANGLE, 1, this._tracked(t('properties.camera.undo.fov'), 'camera-fov', () => viewAngle(camera), v => {
+        // down to the nearly orthographic side views; follows their transition (refreshCamera)
+        const fov = this._rangeRow(t('properties.camera.fov'), viewAngle(camera), MIN_VIEW_ANGLE, MAX_VIEW_ANGLE, 1, this._tracked(t('properties.camera.undo.fov'), 'camera-fov', () => viewAngle(camera), v => {
             setViewAngle(camera, v);
             this.ctx.onCameraChange();
         }), this._dragHooks());
         fov.title = t('properties.camera.fovTitle', { limit: PERSPECTIVE_LIMIT });
+        [this.fields.fovRange, this.fields.fovNum] = fov.querySelectorAll('input');
         const rows = [
             save,
             position, rotation,
@@ -829,6 +831,10 @@ export class PropertiesPanel {
         // roll is applied again)
         [e.x, e.y].forEach((v, i) => set('cr' + i, v * 180 / Math.PI));
         set('cr2', camera.userData.roll || 0);
+        // view angle: the side views of the view cube change it (in their flight, and back when turning away)
+        const angle = viewAngle(camera);
+        if (this.fields.fovRange && document.activeElement !== this.fields.fovRange) this.fields.fovRange.value = angle;
+        set('fovNum', angle);
     }
 
     refreshFocus() {
