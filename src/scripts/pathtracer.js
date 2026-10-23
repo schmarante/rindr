@@ -22,6 +22,7 @@ import { PT_MOTION } from './pt-motion.js';
 import { GLASS_SHADOW } from './glass-shadow.js';
 import { t } from './i18n.js';
 import { debugLog } from './log.js';
+import { setBucketRegion } from './distributed/bucket.js';
 
 // environments up to this size get their importance-sampling table from the library directly (updateEnvironment)
 const SMALL_ENV_PIXELS = 512 * 512;
@@ -194,6 +195,8 @@ export class PathTracingView {
         // sample is computed at once (_renderFirstSample) and fades in over the previous image (_fade).
         const reset = pt.reset.bind(pt);
         pt.reset = () => {
+            // samples of the settings back after a render with its own count (setMaxSamplesLater) – from this restart on
+            if (this._maxSamplesLater != null) { const v = this._maxSamplesLater; this._maxSamplesLater = null; pt.maxSamples = v; }
             reset();
             this._restarts = (this._restarts || 0) + 1;   // image filter cache (_filter)
             if (this.ready && !this._motion && !this.interacting) {
@@ -238,8 +241,24 @@ export class PathTracingView {
         return this.pathTracer ? this.pathTracer._lastSampleCounts.avg : 0;
     }
 
-    get maxSamples() { return this.pathTracer?.maxSamples ?? this._settings.maxSamples; }
-    set maxSamples(v) { this._settings.maxSamples = v; if (this.pathTracer) this.pathTracer.maxSamples = v; }
+    get maxSamples() { return this._maxSamplesLater ?? this.pathTracer?.maxSamples ?? this._settings.maxSamples; }
+    set maxSamples(v) { this._maxSamplesLater = null; this._settings.maxSamples = v; if (this.pathTracer) this.pathTracer.maxSamples = v; }
+
+    /**
+     * The settings' sample count again, but only from the next restart: the image shown keeps the samples it was rendered
+     * with (render window with its own count – it would otherwise go on accumulating up to the settings)
+     */
+    setMaxSamplesLater(v) {
+        this._settings.maxSamples = v;
+        if (this.pathTracer?.maxSamples === v) { this._maxSamplesLater = null; return; }
+        this._maxSamplesLater = v;
+    }
+
+    /** the finished accumulation as it is (linear RGBA + size + samples) – put back later with injectImage */
+    async snapshotImage() {
+        const backend = this.pathTracer._pathTracer, size = backend.getSize(new Vector2());
+        return { data: await this._readOutput(backend.outputTarget, size.x, size.y), w: size.x, h: size.y, samples: this.pathTracer.maxSamples };
+    }
 
     // during motion this shows/changes the standing-still resolution (reduction is internal only)
     get renderScale() { return this._motion?.saved.renderScale ?? this.pathTracer?.renderScale ?? this._settings.renderScale; }
@@ -293,8 +312,8 @@ export class PathTracingView {
         try {
             // path tracer usually preloaded already; the environment table comes from a worker
             await Promise.all([this.load(), prepareEnvCdf(scene.environment)]);
-            // wait one frame so the status display becomes visible
-            await new Promise(resolve => requestAnimationFrame(resolve));
+            // wait one frame so the status display becomes visible (hidden tab – render client: no frames, no display)
+            if (!document.hidden) await new Promise(resolve => requestAnimationFrame(resolve));
             const t0 = performance.now();
             this.pathTracer.setScene(scene, camera);
             this._atlasCapacity = this._atlasInfoLength();   // texture slots the pipeline was built with (atlasCapacityPatch)
@@ -465,6 +484,111 @@ export class PathTracingView {
         this.pathTracer.reset();
     }
 
+    /**
+     * Render one bucket of a larger image (distributed rendering, docs/distributed.md): the camera's view offset
+     * narrows the projection to the rectangle, the path tracer renders it as an image of its own with `samples`
+     * samples; noise and fisheye follow the full image (distributed/bucket.js) – the result equals that part of a
+     * full-frame render. Normal rendering pauses meanwhile (render() returns false). Several samples per round as
+     * far as the frame budget allows, paced by the GPU finishing its work (not by animation frames – a client in a
+     * background tab gets none); async kernel compile like render(). Returns the accumulated linear RGBA,
+     * rows top to bottom (Float32Array, w × h × 4).
+     * region = { x, y, w, h, fullW, fullH } (pixels, y from the top); signal: AbortSignal; onProgress(0…1);
+     * onPartial(pixels, samplesSoFar): intermediate states at 1, 2, 4, 8 … samples (user's wish: a preview of the bucket
+     * sooner than its last sample – doubling keeps the readbacks few: 7 for 128 samples)
+     */
+    async renderRegion(region, samples, { signal, onProgress, onPartial } = {}) {
+        if (!this.ready) throw new Error('path tracer not ready');
+        const { x, y, w, h, fullW, fullH } = region;
+        const pt = this.pathTracer, backend = pt._pathTracer, camera = pt.camera;
+        const device = this.renderer.backend.device;
+        const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+        const before = { aspect: camera.aspect, maxSamples: backend.maxSamples };
+        this.regionBusy = true;
+        try {
+            // renderSample() initialises the material on its first call – a region may come first (kernel nodes)
+            if (!pt.material.initialized) { pt.material.init(this.renderer); pt.material.initialized = true; }
+            camera.aspect = fullW / fullH;
+            camera.setViewOffset(fullW, fullH, x, y, w, h);
+            setBucketRegion(region);
+            backend.setSize(w, h);
+            backend.maxSamples = samples;
+            pt.updateCamera();   // projection with the offset, reset (seed from the start like a full-frame render)
+            const progress = () => backend._completedSamples + backend._tileProgress;
+            let nextPartial = 1;
+            while (progress() < samples) {
+                if (signal?.aborted) throw new DOMException('Bucket aborted', 'AbortError');
+                if (this._compiling) { await wait(50); continue; }   // kernel compiling asynchronously: wait
+                if (this._compiled) { this._compiled = false; pt.reset(); }   // skipped dispatches counted as samples
+                // as many samples this frame as the budget allows (a small bucket is one tile per sample)
+                const perFrame = Math.max(1, Math.floor(backend.frameBudget / (w * h)));
+                this._tracing = true;
+                try {
+                    for (let i = 0; i < perFrame && progress() < samples; i++) backend.update();
+                } finally {
+                    this._tracing = false;
+                }
+                await device.queue.onSubmittedWorkDone();   // one round on the GPU at a time (no queue piling up)
+                onProgress?.(Math.min(progress() / samples, 1));
+                const done = Math.floor(progress());
+                if (onPartial && done >= nextPartial && done < samples) {
+                    onPartial(await this._readOutput(backend.outputTarget, w, h), done);
+                    while (nextPartial <= done) nextPartial *= 2;
+                }
+            }
+            return await this._readOutput(backend.outputTarget, w, h);
+        } finally {
+            camera.clearViewOffset();
+            camera.aspect = before.aspect;
+            setBucketRegion(null);
+            backend.maxSamples = before.maxSamples;
+            this.regionBusy = false;
+            pt.updateCamera();   // back to the view (size follows in the next render())
+        }
+    }
+
+    /** float RGBA of a storage texture (rows top to bottom; the copy pads rows to 256 bytes) */
+    async _readOutput(texture, w, h) {
+        const raw = await this.renderer.backend.copyTextureToBuffer(texture, 0, 0, w, h, 0);
+        const row = Math.ceil(w * 16 / 256) * 64;   // floats per padded row
+        if (row === w * 4) return raw.slice(0, w * h * 4);
+        const out = new Float32Array(w * h * 4);
+        for (let r = 0; r < h; r++) out.set(raw.subarray(r * row, r * row + w * 4), r * w * 4);
+        return out;
+    }
+
+    /**
+     * Distributed rendering: an image assembled from buckets (linear RGBA, rows top to bottom, w × h = the path
+     * tracer's size) becomes the finished accumulation of `samples` samples – the rest of the chain (denoiser,
+     * upscaler, image fade, lens effects, export) treats it like an own render. Every pixel's sample count is set to the
+     * maximum, so the kernel skips them all; the sample rounds are then played through (one tile per round – the
+     * budget covers the image) until the counters say done.
+     */
+    async injectImage(data, w, h, samples) {
+        if (!this.ready) throw new Error('path tracer not ready');
+        const pt = this.pathTracer, backend = pt._pathTracer, gpu = this.renderer.backend;
+        if (!pt.material.initialized) { pt.material.init(this.renderer); pt.material.initialized = true; }
+        pt.maxSamples = samples;
+        backend.setSize(w, h);
+        pt.reset();   // clears the targets (creates them on the GPU) and the denoiser
+        const write = (texture, array, bytesPerTexel) => gpu.device.queue.writeTexture({ texture: gpu.get(texture).texture }, array,
+            { bytesPerRow: w * bytesPerTexel, rowsPerImage: h }, { width: w, height: h });
+        write(backend.outputTarget, data, 16);
+        write(backend.prevOutputTarget, data, 16);
+        write(backend.sampleCountTarget, new Uint32Array(w * h).fill(samples), 4);
+        const budget = backend.frameBudget;
+        backend.frameBudget = w * h;
+        this._tracing = true;
+        try {
+            for (let i = 0; i < samples + 2 && backend._completedSamples + backend._tileProgress < samples; i++) backend.update();
+        } finally {
+            this._tracing = false;
+            backend.frameBudget = budget;
+        }
+        pt._lastSampleCounts = { min: samples, max: samples, avg: samples, samplesPerSecond: 0 };
+        this._compiled = false;   // a compile that finished meanwhile must not restart (and wipe) the image
+        await gpu.device.queue.onSubmittedWorkDone();
+    }
+
     // Render one frame. Returns false if path tracing is not possible (yet).
     // rasterize: draws the raster image. As long as the path tracer has no complete image yet
     // (fadeState < 1), it is drawn AFTER the path tracer and covers it completely.
@@ -472,7 +596,7 @@ export class PathTracingView {
     // added), and right after a reset its buffer still contains the old image – both let
     // the previous rendering in the old perspective shine through.
     render(rasterize) {
-        if (!this.enabled || !this.ready || this.interacting || this.error || this.suspended) return false;
+        if (!this.enabled || !this.ready || this.interacting || this.error || this.suspended || this.regionBusy) return false;
         const pt = this.pathTracer;
         // kernel compiling asynchronously: raster image meanwhile; afterwards start over (the frames without
         // dispatch were counted as samples)
@@ -918,7 +1042,14 @@ export class PathTracingView {
         const pt = this.pathTracer;
         if (this.interacting) return { ...status, phase: 'preview' };
         if (this._compiling) return { ...status, phase: 'compiling' };
-        if (this._motion) return { ...status, phase: 'motion' };
+        // orbiting: the preview accumulates while the camera rests with the mouse still pressed – the noise gets finer
+        // (user); progress = its samples of the maximum, resolution = the preview's relative to standing still
+        if (this._motion) {
+            const still = this._motion.saved.renderScale || 1;
+            const samples = Math.floor(this._samplesNow());
+            return { ...status, phase: 'motion', samples, progress: Math.min(samples / Math.max(pt.maxSamples, 1), 1),
+                resolution: Math.min(pt.renderScale / still, 1) };
+        }
 
         const counts = pt._lastSampleCounts;
         status.samples = counts.avg;

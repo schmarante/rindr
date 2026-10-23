@@ -1,21 +1,29 @@
-// Image export (button in the bottom bar): the current view as PNG – optionally with a transparent
-// background that keeps the ground shadow – or as JPG, in the canvas resolution or 2–4× larger (rendered again
-// at that size, up to ctx.maxSize() px per side). In HQ the export waits for
-// the finished (denoised) image like the AI button. Panel style like the other windows, no darkening.
-// The image itself comes from the viewer (ctx.exportImage → canvas; transparency: exportImage/composeMatte in viewer.js).
+// Render window (teapot in the bottom bar – image export and distributed rendering in one, user's wish): the current
+// view path traced as PNG – optionally with a transparent background that keeps the ground shadow – or as JPG, in the
+// canvas resolution or 2–4× larger (rendered again at that size, up to ctx.maxSize() px per side), with a chosen
+// number of samples. Here: waits for the finished (denoised) image like the AI button. Distributed: the buckets go to
+// the render clients (docs/distributed.md) – the window closes so the labelled buckets can be watched, status and ✕
+// bottom left, the file is saved when the image is done. Panel style like the other windows, no darkening.
+// The image itself comes from the viewer (ctx.exportImage → canvas; transparency: exportImage/composeMatte in viewer.js;
+// ctx.distributed.render).
 import { t } from './i18n.js';
 import { dialogOpen } from './dialog.js';
+import { icon } from './icons.js';
 
 const BTN = 'rounded px-3 py-1 outline-none transition-colors';
-const ICON_CLOSE = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
+const ICON_CLOSE = icon('close', 'size-3.5');
 
 /**
  * @param {{ exportImage(transparent: boolean, onProgress: (text: string, p: number) => void, isOpen: () => boolean): Promise<HTMLCanvasElement|Blob>,
- *           getName(): string, getSize(): { width: number, height: number }, maxSize(): number }} ctx
- *   exportImage(transparent, onProgress, isOpen, scale)
+ *           getName(): string, getSize(): { width: number, height: number }, maxSize(): number, samples(): number,
+ *           distributed?: { ready(): { clients: number, local: boolean }, render(scale, samples): Promise<HTMLCanvasElement>,
+ *           manage(): void } }} ctx
+ *   exportImage(transparent, onProgress, isOpen, scale, samples)
  */
+export const SAMPLE_CHOICES = [16, 32, 64, 128, 256, 512, 1024, 2048];
+
 export function createImageExport(ctx) {
-    const state = { format: 'png', transparent: true, scale: 1, busy: false };
+    const state = { format: 'png', transparent: true, scale: 1, samples: 0, distributed: false, busy: false };
     const SCALES = [1, 2, 3, 4];
     const root = document.createElement('div');
     root.className = 'pointer-events-none fixed inset-0 z-40 flex items-center justify-center p-4 text-xs text-white/90';
@@ -37,6 +45,8 @@ export function createImageExport(ctx) {
         const title = document.createElement('span');
         title.className = 'flex-1 font-medium';
         title.textContent = t('imageExport.title');
+        const dist = ctx.distributed?.ready() ?? { clients: 0, local: true };
+        if (state.distributed && !dist.clients) state.distributed = false;   // the clients went away
         const x = document.createElement('button');
         x.className = 'text-white/50 hover:text-white';
         x.innerHTML = ICON_CLOSE;
@@ -58,8 +68,8 @@ export function createImageExport(ctx) {
             formats.append(b);
         }
         body.append(row(t('imageExport.format'), formats));
-        // transparent background (PNG)
-        if (state.format === 'png') {
+        // transparent background (PNG) – not distributed yet (it needs two passes in front of different backgrounds)
+        if (state.format === 'png' && !state.distributed) {
             const label = document.createElement('label');
             label.className = 'flex cursor-pointer items-start gap-2';
             const box = document.createElement('input');
@@ -100,6 +110,42 @@ export function createImageExport(ctx) {
         size.textContent = state.scale === 1 ? t('imageExport.size', { width, height }) + ' · ' + t('imageExport.sizeScreen')
             : t('imageExport.size', { width: width * state.scale, height: height * state.scale });
         body.append(size);
+        // samples per pixel (0 = as in the path tracing settings)
+        const samples = document.createElement('select');
+        samples.className = 'min-w-0 flex-1 cursor-pointer rounded bg-white/10 px-1.5 py-0.5 text-white outline-none focus:bg-white/20';
+        samples.append(new Option(t('imageExport.samplesAsSet', { samples: ctx.samples() }), '0'));
+        for (const n of SAMPLE_CHOICES) samples.append(new Option(String(n), String(n)));
+        for (const o of samples.options) o.className = 'bg-neutral-900';
+        samples.value = String(state.samples);
+        samples.disabled = state.busy;
+        samples.onchange = () => { state.samples = Number(samples.value); };
+        body.append(row(t('imageExport.samples'), samples));
+        // distributed rendering: on the render clients (and this computer, if it renders along)
+        if (ctx.distributed) {
+            const label = document.createElement('label');
+            label.className = `flex items-start gap-2 ${dist.clients ? 'cursor-pointer' : 'opacity-50'}`;
+            const box = document.createElement('input');
+            box.type = 'checkbox';
+            box.className = 'mt-0.5 accent-sky-400';
+            box.checked = state.distributed;
+            box.disabled = state.busy || !dist.clients;
+            box.onchange = () => { state.distributed = box.checked; render(); };
+            const text = document.createElement('span');
+            text.append(t('imageExport.distributed'));
+            const hint = document.createElement('div');
+            hint.className = 'text-white/40';
+            hint.textContent = dist.clients
+                ? t(dist.local ? 'imageExport.distributedClientsLocal' : 'imageExport.distributedClients', { count: dist.clients })
+                : t('imageExport.distributedNone');
+            const manage = document.createElement('button');
+            manage.className = 'ml-1 text-sky-300 hover:underline';
+            manage.textContent = t('imageExport.distributedManage');
+            manage.onclick = e => { e.preventDefault(); close(); ctx.distributed.manage(); };
+            hint.append(' ', manage);
+            text.append(hint);
+            label.append(box, text);
+            body.append(label);
+        }
         if (progress) {
             const p = document.createElement('div');
             p.className = 'text-sky-200';
@@ -134,25 +180,39 @@ export function createImageExport(ctx) {
         return r;
     }
 
+    // the window gets out of the way: progress and ✕ in the status bottom left (viewer.js), the file comes at the end
     async function run() {
-        state.busy = true;
-        render(t('imageExport.preparing'));
-        const transparent = state.format === 'png' && state.transparent;
+        if (state.distributed) return runDistributed();
+        const { format, scale, samples } = state;
+        const transparent = format === 'png' && state.transparent;
+        close();
         let canvas;
         try {
-            canvas = await ctx.exportImage(transparent, text => { if (!root.hidden) render(text); }, () => !root.hidden, state.scale);
+            canvas = await ctx.exportImage(transparent, null, null, scale, samples);
         } catch (err) {
-            state.busy = false;
-            if (!root.hidden) render(t('imageExport.failed', { message: err.message }));
+            if (err?.name !== 'AbortError') ctx.onError?.(err);
             return;
         }
-        const type = state.format === 'png' ? 'image/png' : 'image/jpeg';
+        const type = format === 'png' ? 'image/png' : 'image/jpeg';
         // transparent: already a finished PNG (premultiplied, see composeMatte), otherwise a canvas
         const blob = canvas instanceof Blob ? canvas : await new Promise(resolve => canvas.toBlob(resolve, type, 0.92));
-        const name = `${ctx.getName() || 'rindr'}.${state.format}`;
-        state.busy = false;
+        await saveBlob(blob, `${ctx.getName() || 'rindr'}.${format}`);
+    }
+
+    // distributed: the window gets out of the way (buckets, status and ✕ bottom left), the file comes at the end
+    async function runDistributed() {
+        const { format, scale } = state;
         close();
-        await saveBlob(blob, name);
+        let canvas;
+        try {
+            canvas = await ctx.distributed.render(scale, state.samples || ctx.samples());
+        } catch (err) {
+            if (err?.name !== 'AbortError') ctx.onError?.(err);
+            return;
+        }
+        const type = format === 'png' ? 'image/png' : 'image/jpeg';
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, type, 0.92));
+        await saveBlob(blob, `${ctx.getName() || 'rindr'}.${format}`);
     }
 
     return {

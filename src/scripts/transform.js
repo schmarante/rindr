@@ -44,6 +44,12 @@ export class ObjectTransformer extends EventTarget {
         this.kind = null;
 
         this.controls.addEventListener('dragging-changed', e => {
+            // drag start: the viewer may hand in another object to drag (Shift: an instance of it – duplicate.js); the
+            // original stays where it is
+            if (e.value && this.object) {
+                const other = this.onBeforeDrag?.(this.object, this.kind);
+                if (other) this.object = other;
+            }
             const { object, kind } = this;
             if (e.value) this._before = object && captureTransform(object, kind);
             if (e.value && kind === 'selection') {

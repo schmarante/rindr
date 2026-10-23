@@ -14,19 +14,22 @@
 //   kind: 'model' | 'node' | 'surface' | 'light' | 'environment' | 'camera' | 'folder'
 //   Without "toggle", object.visible is switched; entries with neither have no checkbox.
 import { t } from './i18n.js';
+import { icon } from './icons.js';
 
 // kinds with their own properties panel (arrow on the right of the row)
 const SETTINGS_KINDS = new Set(['environment', 'light', 'camera', 'slicer', 'view']);
-const CHEVRON = '<svg viewBox="0 0 16 16" class="size-3 fill-current"><path d="M6 4l4 4-4 4z"/></svg>';
+const CHEVRON = icon('caret-right', 'size-3');
 const ICONS = {
-    light: '<svg viewBox="0 0 16 16" class="size-3 fill-current text-amber-300"><circle cx="8" cy="7" r="4"/><rect x="6" y="12" width="4" height="2"/></svg>',
-    environment: '<svg viewBox="0 0 16 16" class="size-3 fill-none stroke-current text-sky-300" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c-3 3-3 9 0 12M8 2c3 3 3 9 0 12"/></svg>',
-    camera: '<svg viewBox="0 0 16 16" class="size-3 fill-current text-white/60"><rect x="1" y="5" width="10" height="7" rx="1"/><path d="M11 7l4-2v7l-4-2z"/></svg>',
-    slicer: '<svg viewBox="0 0 16 16" class="size-3 fill-none stroke-current text-orange-300" stroke-width="1.5"><path d="M3 13L13 3M2 6h5v8H2z" /></svg>',
-    view: '<svg viewBox="0 0 16 16" class="size-3 fill-current text-sky-300"><rect x="1" y="5" width="10" height="7" rx="1"/><path d="M11 7l4-2v7l-4-2z"/></svg>',
-    morphs: '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.4" stroke-linecap="round"><path d="M2 4h12M2 8h12M2 12h12"/><circle cx="5" cy="4" r="1.4" fill="currentColor"/><circle cx="10" cy="8" r="1.4" fill="currentColor"/><circle cx="7" cy="12" r="1.4" fill="currentColor"/></svg>',
-    missing: '<svg viewBox="0 0 16 16" class="size-3 fill-current text-amber-300"><path d="M8 1.5 15 14H1z"/><rect x="7.3" y="5.5" width="1.4" height="4.5" fill="#000"/><rect x="7.3" y="11" width="1.4" height="1.4" fill="#000"/></svg>',
-    model: '<svg viewBox="0 0 16 16" class="size-3 fill-none stroke-current text-white/60" stroke-width="1.5"><path d="M8 1l6 3.5v7L8 15l-6-3.5v-7z M8 8v7 M8 8l6-3.5 M8 8L2 4.5"/></svg>',
+    light: icon('light', 'size-3 text-amber-300'),
+    environment: icon('globe', 'size-3 text-sky-300'),
+    camera: icon('camera', 'size-3 text-white/60'),
+    slicer: icon('slicer', 'size-3 text-orange-300'),
+    view: icon('camera', 'size-3 text-sky-300'),
+    // instance of another part (duplicate.js – Shift + gizmo drag), linked: two overlapping squares
+    instance: icon('instance', 'size-3'),
+    morphs: icon('morphs', 'size-3.5'),
+    missing: icon('missing', 'size-3 text-amber-300'),
+    model: icon('model', 'size-3 text-white/60'),
 };
 
 export class SceneGraph {
@@ -462,6 +465,14 @@ export class SceneGraph {
         label.textContent = entry.name;
         label.title = entry.kind === 'missing' ? t('sceneGraph.missingModel', { name: entry.name }) : entry.name;
         row.append(label);
+        // linked instance of another part (duplicate.js)
+        if (entry.kind === 'node' && entry.object?.userData.instanceOf && !entry.object.userData.unique) {
+            const m = document.createElement('span');
+            m.className = 'shrink-0 text-sky-300/80';
+            m.innerHTML = ICONS.instance;
+            m.title = t('sceneGraph.instance', { name: entry.object.userData.instanceOf.name || t('sceneGraph.unnamed') });
+            row.append(m);
+        }
         // model with morph targets (blend shapes): sliders in its properties
         if (entry.morphs) {
             const m = document.createElement('span');

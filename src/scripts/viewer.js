@@ -10,6 +10,14 @@ import { studioPreset, cloneHdri } from './hdri/hdri-model.js';
 import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
 import { TESS_PRESETS, normalizeQuality, abortStepImport, buildBVHIsolated, buildGeometryBVHs, fetchStepFile, readStepFile, releaseStepFile, tessellateStep, ImportLimitError } from './step-importer.js';
 import { UvMapper } from './uv-mapping.js';
+import { floatWindow } from './float-window.js';
+import { duplicateNode, removeDuplicate, linkedMembers, familyOf, isLinked, makeUnique } from './duplicate.js';
+import { RenderMaster, LOCAL_ID } from './distributed/master.js';
+import { RenderClient } from './distributed/client.js';
+import { BucketDisplay } from './distributed/display.js';
+import { localTransport, newId, gpuName } from './distributed/protocol.js';
+import { hubTransport, channelTransport, answerOffer } from './distributed/rtc.js';
+import { buildDistributedSection, clientView } from './distributed/settings.js';
 import { IMPORT, KI, SPLATS, RASTER, SCENE, TRANSITION, LOD } from './config.js';
 import { importMeshFile, MissingFilesError, MESH_EXTENSIONS } from './mesh-importer.js';
 import { MaterialManager, FADE_MASK } from './material-manager.js';
@@ -60,7 +68,7 @@ import { showNotice } from './notice.js';
 import { triangleLimits, deviceMemoryGB, memoryBudget, BYTES_PER_TRIANGLE, formatBytes, setSafeMode } from './memory-budget.js';
 import { beginLoad, endLoad, crashedLoad, markSafe, isSafe, clearSafe } from './load-guard.js';
 import { findOutliers, formatLength } from './outliers.js';   // patches the path tracer's background lookup – import before it is created
-import { ViewModeBar } from './view-mode.js';
+import { ViewModeBar, ANALYSIS_KEYS } from './view-mode.js';
 import { SetupMenu } from './setup-menu.js';
 import { buildAbout } from './about.js';
 import { loadSplats, isSplatSource, SPLAT_EXTENSIONS } from './splat/splat-loader.js';
@@ -68,6 +76,7 @@ import { debugLog } from './log.js';
 import { isRemoteTexture } from './remote-textures.js';
 import { textureMaxSide } from './memory-budget.js';
 import { RasterAO } from './ambient-occlusion.js';
+import { icon } from './icons.js';
 
 // Workaround three.js r186 (cf. mrdoob/three.js#34608, fix announced for r187):
 // ViewportTextureNode creates its own framebuffer texture per render target via clone()
@@ -198,8 +207,9 @@ function checkOptimizeWait() {
         || performance.now() > w.until || viewMode === 'hq' || !batcher.enabled;
     if (done) hideProgress();
 }
-// Lets the browser paint the progress display before a long synchronous step
-const afterPaint = () => new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve)));
+// Lets the browser paint the progress display before a long synchronous step (a hidden tab paints nothing and gets no
+// animation frames – a render client in a background tab, distributed rendering: go on at once)
+const afterPaint = () => (document.hidden ? Promise.resolve() : new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve))));
 
 // --- Scene, camera, renderer ---
 const scene = new THREE.Scene();
@@ -825,6 +835,7 @@ transformer.addEventListener('change', e => {
 // completed move/rotation (gizmo or panel) -> undo
 transformer.addEventListener('edit', e => {
     const { object, kind, before, after } = e.detail;
+    if (pendingInstances) { recordInstances(pendingInstances, after); pendingInstances = null; return; }
     const resolve = objectResolver(object, kind);
     const set = state => {
         const o = resolve();
@@ -977,9 +988,15 @@ const properties = new PropertiesPanel(document.getElementById('properties'), {
             return { own, inherited: from?.mapping || null, from: from?.owner ? (from.owner.userData.modelRoot ? rootName(from.owner) : from.owner.name || t('sceneGraph.unnamed')) : null,
                 below: uvMapper.ownBelow(entry.object) };
         },
-        set: (entry, mapping) => uvMapper.set(entry.object, mapping),
+        // instances (duplicate.js): the linked groups of the family follow
+        set: (entry, mapping) => linkedGroups(entry.object).forEach(g => uvMapper.set(g, mapping)),
         snapshot: entry => uvMapper.snapshot(entry.object),
-        restore: (entry, list) => uvMapper.restore(entry.object, list),
+        restore: (entry, list) => linkedGroups(entry.object).forEach(g => uvMapper.restore(g, list)),
+    },
+    // instances: family info and "make unique" (properties panel of a part/assembly)
+    instances: {
+        info: entry => instanceInfo(entry),
+        makeUnique: entry => makeInstanceUnique(entry),
     },
 });
 // environment changed (HDRI, HDRI editor rendering, intensity, light boost, rotation): preview in the panel
@@ -1036,10 +1053,10 @@ window.addEventListener('keydown', e => {
         if (rootGroup) sceneGraph.selectAllParts();
         return;
     }
-    // 1: the analysis view (Basic/UV/wireframe – already in it: the next variant), 2: Default, 3: HQ
+    // 1: the analysis views (grey/UV/wire – already in one: the next), 2: standard, 3: High Quality
     if (!e.ctrlKey && !e.metaKey && !e.altKey && ['1', '2', '3'].includes(e.key) && !splatMesh) {
-        const variants = ['basic', 'uv', 'wire'];
-        setViewMode(e.key === '1' ? (isAnalysis(viewMode) ? variants[(variants.indexOf(viewMode) + 1) % 3] : viewModeBar.analysis) : ['default', 'hq'][Number(e.key) - 2]);
+        if (e.key === '1') setViewMode(ANALYSIS_KEYS[(ANALYSIS_KEYS.indexOf(viewMode) + 1) % ANALYSIS_KEYS.length]);
+        else setViewMode(e.key === '2' ? 'default' : 'hq');
     }
     if (key === 'u' && !e.ctrlKey && !e.metaKey && !e.altKey) toggleUi();
     if (e.key === 'w' || e.key === 'W') { transformer.setMode('translate'); properties.show(selection); }
@@ -2704,7 +2721,7 @@ async function retessellateParts() {
         });
         // same meshes (instance + face colour) expected – otherwise re-tessellate completely
         const byKey = new Map(currentMeshes.map(m => [m.userData.key, m]));
-        const oldKeys = currentMeshes.filter(m => changed.has(plan.instances[m.userData.instance]?.solid)).map(m => m.userData.key);
+        const oldKeys = currentMeshes.filter(m => !m.userData.dupOf && changed.has(plan.instances[m.userData.instance]?.solid)).map(m => m.userData.key);
         if (oldKeys.length !== result.meshes.length || result.meshes.some(m => !byKey.has(m.key))) {
             debugLog('[STEP] part quality: face groups changed – re-tessellating completely');
             hideProgress();
@@ -2724,6 +2741,17 @@ async function retessellateParts() {
             mesh.geometry = geometries[m.geometry] ??= makeGeometry(result.geometries[m.geometry]);
             mesh.matrix.fromArray(m.matrix);   // instancing: alignment to the shared geometry may change
             mesh.updateMatrixWorld();
+            swapped.push(mesh);
+        }
+        // instances (duplicate.js): take their source's new import geometry
+        const swappedSet = new Set(swapped);
+        for (const mesh of currentMeshes) {
+            const src = mesh.userData.dupOf;
+            if (!src || !swappedSet.has(src)) continue;
+            old.add(mesh.geometry);
+            if (mesh.userData.uvBase) old.add(mesh.userData.uvBase);
+            delete mesh.userData.uvBase;
+            mesh.geometry = src.geometry;
             swapped.push(mesh);
         }
         // instancing: unchanged solids may still use an old geometry of a changed one
@@ -2931,7 +2959,53 @@ const MATTE_GREY_Y = 0.6;   // grey background before the ACES fit (display ≈ 
 // tracer restarts by itself on the size change), effects keep their screen look (lens.setPixelScale); restored
 // afterwards. Limit: maxExportSize (GPU texture limit, at most 8192 px for memory).
 const maxExportSize = () => Math.min(renderer.backend?.device?.limits?.maxTextureDimension2D || 8192, 8192);
-async function exportImage(transparent, onProgress, isOpen, scale = 1) {
+// Render window (teapot): always path traced – switches to HQ; samples = the window's choice for this image
+// (0 = as in the settings), restored afterwards
+// A render job of the render window (local): progress in the status bottom left with ✕ (the window is closed); cancelled
+// → back to the view mode it started from (user: "from grey into HQ, cancelled – one expects grey again"); done → the HQ
+// image stays to look at (the file is saved), the ✕ of the path tracing status leads back
+let renderJob = null;
+// Transparent PNG: the two matte passes (black, grey background) leave the path tracer without the view's background – the
+// view's finished HQ image is kept beforehand and put back afterwards (user: "two passes for the PNG and then once more for
+// the viewport makes no sense"); started from another mode there is no HQ image to show: back to that mode instead.
+async function exportImage(transparent, onProgress, isOpen, scale = 1, samples = 0) {
+    const mode = viewMode;
+    const job = renderJob = { cancelled: false, text: '' };
+    const keep = transparent && scale === 1 && viewMode === 'hq' && pathTracing.getStatus().phase === 'done'
+        ? await pathTracing.snapshotImage() : null;
+    if (viewMode !== 'hq') setViewMode('hq');
+    const before = pathTracing.maxSamples;
+    if (samples && samples !== before) pathTracing.maxSamples = samples;
+    let done = false;
+    try {
+        const result = await exportScaled(transparent, (text, p, pass) => {
+            job.text = text;
+            // per pass only forward (loading the denoiser reports 0 for a moment)
+            if (pass && job.pass?.pass === pass.pass) pass = { ...pass, p: Math.max(pass.p, job.pass.p) };
+            job.pass = pass || null;
+            onProgress?.(text, p);
+        },
+            () => !job.cancelled && (isOpen?.() ?? true), scale);
+        done = true;
+        return result;
+    } catch (err) {
+        if (!job.cancelled) throw err;
+        if (mode !== 'hq') setViewMode(mode);
+        throw new DOMException('Render cancelled', 'AbortError');
+    } finally {
+        // the settings' samples from the next restart on – the image shown keeps the render's (no accumulating on)
+        if (pathTracing.maxSamples !== before) pathTracing.setMaxSamplesLater(before);
+        renderJob = null;
+        ptStatus.last = '';
+        if (done && transparent) {
+            if (keep) {
+                await nextFrame(); await nextFrame();   // the background is back in the path tracer (it restarted)
+                await pathTracing.injectImage(keep.data, keep.w, keep.h, keep.samples);
+            } else if (mode !== 'hq') setViewMode(mode);
+        }
+    }
+}
+async function exportScaled(transparent, onProgress, isOpen, scale) {
     if (scale === 1) return exportPasses(transparent, onProgress, isOpen);
     const ratio = renderer.getPixelRatio();
     renderer.setPixelRatio(ratio * scale);
@@ -2981,7 +3055,8 @@ async function exportPasses(transparent, onProgress, isOpen) {
             environment.apply();
             contactShadow.markDirty();
             await nextFrame(); await nextFrame();   // path tracer restarted with the new background
-            await waitForImage((text, p) => onProgress(t('imageExport.pass', { n: n + 1, total: passes.length, text }), (n + p) / passes.length), isOpen);
+            await waitForImage((text, p) => onProgress(`${t(`imageExport.passBackground.${passes[n][0]}`)} · ${text}`,
+                (n + p) / passes.length, { pass: n, total: passes.length, p }), isOpen);
             shots.push(await captureNeutral());
             if (n === 0) color = await exportFrame();
         }
@@ -3078,21 +3153,23 @@ const kiRender = lazy(async () => { const { KiRender, describeMaterial } = await
 viewModeBar.addAction({
     label: t('toolbar.ki'), title: t('toolbar.kiTitle'),
     // sparkle icon (large + small star), stroke style like the tool icons
-    icon: '<svg viewBox="0 0 16 16" class="size-4 fill-none stroke-current" stroke-width="1.3" stroke-linejoin="round"><path d="M6.5 2.5l1.1 3.4 3.4 1.1-3.4 1.1-1.1 3.4-1.1-3.4L2 7l3.4-1.1z"/><path d="M12 9.5l.55 1.45L14 11.5l-1.45.55L12 13.5l-.55-1.45L10 11.5l1.45-.55z"/></svg>',
+    icon: icon('ai', 'size-4'),
     onClick: () => kiRender.get().then(k => k.start()),
 });
 
 // Hide/show the UI (key U) and fullscreen – buttons on the right of the view-mode bar.
 // Elements with data-ui="left|right|down" slide out (CSS in index.astro); loading progress stays.
-const ICON_UI = '<svg viewBox="0 0 16 16" class="size-4 fill-none stroke-current" stroke-width="1.5"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M5.5 2.5v11M1.5 6h4"/></svg>';
-const ICON_FULL = '<svg viewBox="0 0 16 16" class="size-4 fill-none stroke-current" stroke-width="1.5"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg>';
-const ICON_FULL_EXIT = '<svg viewBox="0 0 16 16" class="size-4 fill-none stroke-current" stroke-width="1.5"><path d="M6 2v4H2M14 6h-4V2M10 14v-4h4M2 10h4v4"/></svg>';
+const ICON_UI = icon('panels', 'size-4');
+const ICON_FULL = icon('fullscreen', 'size-4');
+const ICON_FULL_EXIT = icon('fullscreen-exit', 'size-4');
 let uiHidden = false;
 // Save/load scene (own group before UI/fullscreen) – file input independent of the GUI,
 // so that "load" also works without a model
-const ICON_IMAGE = '<svg viewBox="0 0 16 16" class="size-4 fill-none stroke-current" stroke-width="1.4" stroke-linejoin="round"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M2 11l3.5-3.5 3 3 2-2L14 12"/><circle cx="10.5" cy="5.5" r="1"/></svg>';
-const ICON_SAVE = '<svg viewBox="0 0 16 16" class="size-4 fill-none stroke-current" stroke-width="1.4" stroke-linejoin="round"><path d="M2.5 2.5h8.5l2.5 2.5v8.5h-11z"/><path d="M5 2.5v3.5h5.5V2.5M5 13.5V9.5h6v4"/></svg>';
-const ICON_OPEN = '<svg viewBox="0 0 16 16" class="size-4 fill-none stroke-current" stroke-width="1.4" stroke-linejoin="round"><path d="M1.5 12.5v-9h4.5l1.5 1.5h6v2"/><path d="M1.5 12.5l2-5.5h11l-2 5.5z"/></svg>';
+// render (teapot, solid: knob, domed lid, round pot, spout up to the left, loop handle right – own drawing, simple
+// flat icon style; the first version with a long low spout looked like a magic lamp, user)
+const ICON_TEAPOT = icon('teapot', 'size-4');
+const ICON_SAVE = icon('save', 'size-4');
+const ICON_OPEN = icon('open', 'size-4');
 const sceneFileInput = Object.assign(document.createElement('input'), { type: 'file', accept: '.json,application/json,.bcfzip,.bcf', hidden: true });
 sceneFileInput.onchange = async () => {
     const file = sceneFileInput.files[0];
@@ -3108,8 +3185,17 @@ const imageExport = lazy(async () => (await import('./image-export.js')).createI
     getName: () => (sceneFileName?.replace(/\.scene\.json$|\.json$/i, '') || model?.name.replace(/\.[^.]+$/, '') || 'rindr'),
     getSize: () => ({ width: renderer.domElement.width, height: renderer.domElement.height }),
     maxSize: maxExportSize,
+    samples: () => pathTracing.maxSamples,
+    onError: err => showError(err),
+    // distributed rendering (docs/distributed.md): clients ready, render, manage them in the settings
+    distributed: renderMaster && {
+        ready: () => ({ clients: renderMaster.list().filter(c => c.online && !c.busyOther).length, local: distSettings.renderLocal }),
+        render: (scale, samples) => renderDistributedImage(scale, samples),
+        manage: () => { setSetupOpen(true); setup.show('distributed'); },
+    },
 }));
-viewModeBar.addTool({ icon: ICON_IMAGE, title: t('toolbar.exportImage'), onClick: () => { if (rootGroup) imageExport.get().then(dialog => dialog.open()); else showStatus(t('status.loadModelFirst')); }, group: 'scene' });
+// render (teapot) right next to the view choice
+viewModeBar.addCompanion({ icon: ICON_TEAPOT, title: t('toolbar.render'), onClick: () => { if (rootGroup) imageExport.get().then(dialog => dialog.open()); else showStatus(t('status.loadModelFirst')); } });
 // save/open scene: hidden for now (config.js SCENE.saveOpen)
 if (SCENE.saveOpen) {
     viewModeBar.addTool({ icon: ICON_SAVE, title: t('toolbar.saveScene'), onClick: () => saveScene(), group: 'scene' });
@@ -3131,7 +3217,7 @@ assetsWindow = {
     clearRemoteFiles: () => { assetsModule.get().then(w => w.clearRemoteFiles()); },
     get isOpen() { return !!assetsModule.now?.isOpen; },
 };
-const ICON_ASSETS = '<svg viewBox="0 0 16 16" class="size-4 fill-none stroke-current" stroke-width="1.4" stroke-linecap="round"><path d="M6.5 9.5l3-3"/><path d="M7 4.5l1.3-1.3a2.5 2.5 0 0 1 3.5 3.5L10.5 8"/><path d="M9 11.5l-1.3 1.3a2.5 2.5 0 0 1-3.5-3.5L5.5 8"/></svg>';
+const ICON_ASSETS = icon('assets', 'size-4');
 const setAssetsTool = viewModeBar.addTool({ icon: ICON_ASSETS, title: t('toolbar.assets'), onClick: () => (assetsWindow.isOpen ? assetsWindow.hide() : assetsWindow.show()), group: 'scene' });
 updateAssetsTool = () => {
     const missing = assetRows().filter(r => r.status === 'missing').length;
@@ -3159,7 +3245,7 @@ const loadBcf = () => (bcfModule ??= Promise.all([import('./bcf/bcf-format.js'),
 const bcfFileInput = Object.assign(document.createElement('input'), { type: 'file', accept: '.bcfzip,.bcf', hidden: true });
 bcfFileInput.onchange = () => { const f = bcfFileInput.files[0]; bcfFileInput.value = ''; if (f) openBcfFile(f); };
 document.body.append(bcfFileInput);
-const ICON_BCF = '<svg viewBox="0 0 16 16" class="size-4 fill-none stroke-current" stroke-width="1.4" stroke-linejoin="round"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"/><path d="M5.5 6h5M5.5 8h3" stroke-linecap="round"/></svg>';
+const ICON_BCF = icon('bcf', 'size-4');
 const setBcfTool = viewModeBar.addTool({ icon: ICON_BCF, title: t('toolbar.bcf'), onClick: async () => (await loadBcf()).panel.toggle(), group: 'scene' });
 // only with BIM: an IFC model is loaded (issues can be created and saved) or a BCF file is open
 function updateBcfTool() {
@@ -3365,34 +3451,19 @@ async function saveBcf(doc, format) {
 const bimActive = () => [rootGroup, ...extraModels.map(x => x.root)].some(r => r?.userData.bim) || !!bcfPanel?.doc?.topics.length;
 
 // Setup menu: gear left of the UI button, panel centred in the window
-const ICON_GEAR = '<svg viewBox="0 0 16 16" class="size-4 fill-none stroke-current" stroke-width="1.3" stroke-linejoin="round"><circle cx="8" cy="8" r="2.2"/><path d="M6.9 1.5h2.2l.35 1.75 1.2.7 1.7-.57 1.1 1.9-1.35 1.18v1.38l1.35 1.18-1.1 1.9-1.7-.57-1.2.7-.35 1.75H6.9l-.35-1.75-1.2-.7-1.7.57-1.1-1.9 1.35-1.18V6.98L2.55 5.8l1.1-1.9 1.7.57 1.2-.7z"/></svg>';
+const ICON_GEAR = icon('settings', 'size-4');
 let setupOpen = false;
 const setGearTool = viewModeBar.addTool({ icon: ICON_GEAR, title: t('toolbar.setup'), onClick: () => setSetupOpen(!setupOpen) });
-// centred in the window
-function centerSetupMenu() {
-    setupMenu.style.left = `${Math.max(8, (window.innerWidth - setupMenu.offsetWidth) / 2)}px`;
-    setupMenu.style.top = `${Math.max(8, (window.innerHeight - setupMenu.offsetHeight) / 2)}px`;
-}
-window.addEventListener('resize', () => { if (setupOpen) centerSetupMenu(); });
+// a free window like the HDRI editor or the asset window (user's wish: move and resize it like the others) – stays open
+// until ✕, Esc or the gear (a click beside it no longer closes it: it may stand next to the picture, e.g. while
+// distributed rendering shows its buckets)
+const setupWindow = floatWindow(setupMenu, setup.header, { storeKey: 'rindr.setup.window', width: 560, height: 420, minWidth: 440, minHeight: 240 });
 function setSetupOpen(open) {
     setupOpen = open;
     setGearTool(open);
-    if (open) {
-        centerSetupMenu();
-        // slight scale-in only when opening; closing just fades (shrinking while fading looked odd)
-        setupMenu.style.transition = 'none';
-        setupMenu.classList.add('scale-[0.98]');
-        void setupMenu.offsetWidth;
-        setupMenu.style.transition = '';
-        setupMenu.classList.remove('scale-[0.98]');
-    }
-    setupMenu.classList.toggle('opacity-0', !open);
-    setupMenu.classList.toggle('pointer-events-none', !open);
-    setupMenu.classList.toggle('pointer-events-auto', open);
+    setupMenu.hidden = !open;
+    if (open) setupWindow.apply();
 }
-document.addEventListener('pointerdown', e => {
-    if (setupOpen && !dialogOpen() && !setupMenu.contains(e.target) && !setGearTool.button.contains(e.target)) setSetupOpen(false);
-}, true);
 window.addEventListener('keydown', e => { if (e.key === 'Escape' && setupOpen && !dialogOpen()) { e.stopPropagation(); setSetupOpen(false); } }, true);
 const setUiTool = viewModeBar.addTool({ icon: ICON_UI, title: t('toolbar.hideUi'), onClick: () => toggleUi() });
 function toggleUi(hidden = !uiHidden) {
@@ -3408,15 +3479,15 @@ const setFullTool = viewModeBar.addTool({
 // Exploded view (key X, button in the bar, strength in the model panel). Raster preview during the
 // animation, then update the path tracing scene once (rebuilding it every frame would be too expensive).
 const exploder = new Exploder(() => [...currentNodeGroups, ...extraModels.flatMap(x => x.nodeGroups)].filter(g => g.children.some(c => c.isMesh && !c.isSplat)));
-const ICON_EXPLODE = '<svg viewBox="0 0 16 16" class="size-4 fill-none stroke-current" stroke-width="1.4"><rect x="6" y="6" width="4" height="4" rx="0.5"/><path d="M4.5 4.5L2 2m0 0h2.5M2 2v2.5M11.5 4.5L14 2m0 0h-2.5M14 2v2.5M4.5 11.5L2 14m0 0h2.5M2 14v-2.5M11.5 11.5L14 14m0 0h-2.5M14 14v-2.5"/></svg>';
+const ICON_EXPLODE = icon('explode', 'size-4');
 const setExplodeTool = viewModeBar.addTool({ icon: ICON_EXPLODE, label: t('toolbar.explodeLabel'), title: t('toolbar.explode'), onClick: () => toggleExplode(), start: true });
 // Undo/redo far left (start group created later = further left)
-const ICON_UNDO = '<svg viewBox="0 0 16 16" class="size-4 fill-none stroke-current" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 3L2.5 6l3 3"/><path d="M2.5 6h7a4 4 0 010 8H7"/></svg>';
-const ICON_REDO = '<svg viewBox="0 0 16 16" class="size-4 fill-none stroke-current" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 3l3 3-3 3"/><path d="M13.5 6h-7a4 4 0 000 8H9"/></svg>';
+const ICON_UNDO = icon('undo', 'size-4');
+const ICON_REDO = icon('redo', 'size-4');
 const setUndoTool = viewModeBar.addTool({ icon: ICON_UNDO, title: t('toolbar.undo'), onClick: () => undoRedo(false), start: true, group: 'history' });
 const setRedoTool = viewModeBar.addTool({ icon: ICON_REDO, title: t('toolbar.redo'), onClick: () => undoRedo(true), start: true, group: 'history' });
 // reset all model changes (materials, moves/rotations/scaling, visibility, explosion) – one undo step
-const ICON_RESET = '<svg viewBox="0 0 16 16" class="size-4 fill-none stroke-current" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8a5 5 0 1 0 1.5-3.6"/><path d="M3 2.5v2.5h2.5"/><circle cx="8" cy="8" r="1"/></svg>';
+const ICON_RESET = icon('reset', 'size-4');
 viewModeBar.addTool({ icon: ICON_RESET, title: t('toolbar.resetModel'), onClick: () => resetModel(), start: true, group: 'history' });
 function resetModel() {
     if (!rootGroup || loading) return;
@@ -3487,6 +3558,7 @@ function showHqUnavailable() {
 }
 // after a GPU reset the adapter did not come back: say so at once (the user expects HQ)
 if (webgpuBlocked && gpuRecovering) showHqUnavailable();
+let modeBeforeHq = 'default';   // the mode HQ was entered from – the ✕ of the path tracing status goes back to it
 function setViewMode(mode) {
     // HQ without WebGPU: the dimmed button explains why; already in Default → nothing changes (no fade)
     if (mode === 'hq' && !pathTracing.supported) {
@@ -3504,6 +3576,7 @@ function setViewMode(mode) {
     // HQ while playing: pause first (the path tracer shows the paused frame); another mode chosen during
     // playing: no automatic return to HQ
     if (animPlaying && clipAnims().length) { hqBeforePlay = false; if (mode === 'hq') setAnimPlaying(false); }
+    if (mode === 'hq' && viewMode !== 'hq') modeBeforeHq = viewMode;
     viewMode = mode;
     scene.overrideMaterial = ANALYSIS_MATERIALS[mode] ?? null;
     // Basic without shadow maps: each one is another pass over the whole model (one draw call per mesh –
@@ -3849,6 +3922,7 @@ async function loadModel(reload = false, safe = false) {
         let keep = null;
         if (reload && rootGroup) {
             keep = { materials: currentMeshes.map(m => m.material.userData.materialId), transforms: currentNodeGroups.map(g => g.userData.xf || null),
+                duplicates: rootGroup.userData.duplicates || [], unique: uniqueNodes(currentNodeGroups),
                 mappings: currentNodeGroups.map(g => g.userData.mapping || null), rootMapping: rootGroup.userData.mapping || null };
         }
         invalidatePathTracing();
@@ -4019,6 +4093,15 @@ async function loadModel(reload = false, safe = false) {
             controls.target.sub(center);
             if (flight) { flight.fromPos.sub(center); flight.fromTarget.sub(center); flight.toPos.sub(center); flight.toTarget.sub(center); }
             controls.update();
+        }
+        // instances first (their groups and meshes have to exist), with the materials they had
+        root.userData.base = { nodes: nodes.length, meshes: meshList.length };
+        if (keep?.duplicates.length) {
+            replayInstances({ main: true, root, nodeGroups, meshes: meshList }, keep.duplicates, keep.unique, { nodes, partCounts });
+            for (let i = root.userData.base.meshes; i < meshList.length; i++) {
+                const kept = materialManager.get(keep.materials[i]);
+                if (kept) meshList[i].material = kept.material;
+            }
         }
         // reapply remembered moves/rotations
         keep?.transforms.forEach((xf, i) => {
@@ -4329,6 +4412,16 @@ function setupGUI() {
     bimNote.textContent = t('setup.bim.authorHint');
     bim.append(bimNote);
 
+    // distributed rendering: render clients, own computer, start/cancel (docs/distributed.md)
+    if (renderMaster) {
+        distSection = buildDistributedSection(setup.addSection('distributed', t('setup.distributed.title')), {
+            master: renderMaster, settings: distSettings, save: saveDistSettings, cancel: cancelDistributed,
+            openClient: () => window.open(`${location.pathname}?render-client`, '_blank'),
+            addPeer: channel => distHub.add(channelTransport(channel)),
+            get lastResult() { return distLastResult; },
+        });
+    }
+
     setup.addSection('about', t('about.title')).append(buildAbout());
 
     // save/load scene and undo/redo live in the bar at the bottom
@@ -4485,6 +4578,7 @@ async function loadExtraModel(source, { sceneIndex, placement: savedPlacement } 
             placement.set(spot.x, spot.y - (lowestPoint(meshList.filter((_, i) => !stray.stray.has(i)), bbox.min.y) + root.position.y), spot.z);
         }
         if (savedPlacement) placement.fromArray(savedPlacement);   // from the scene file
+        root.userData.base = { nodes: nodes.length, meshes: meshList.length };   // instances are appended after (duplicate.js)
         const holder = new THREE.Group();
         holder.name = 'Placement';
         holder.position.copy(placement);
@@ -4603,6 +4697,8 @@ const sceneStateContext = {
     rootCenterOffset: () => rootGroup?.userData.centerOffset || new THREE.Vector3(),
     ensureTransform, applyTransform, refreshSceneGraph: () => refreshSceneGraph(),
     applyMappings: root => uvMapper.apply(root),
+    // instances: replayed before anything else of a model's state (their node keys must exist)
+    replayInstances: (rm, list, unique) => replayInstances(rm, list, unique),
     runtimeModels: () => runtimeModels(),
     missingModels: () => missingModels,
     // saved camera views (scene state)
@@ -4928,7 +5024,15 @@ window.addEventListener('drop', async e => {
     models.forEach(m => addModel(m));
 });
 
+// distributed rendering (initDistributed below): master or render client
+let renderMaster = null, renderClient = null, distDisplay = null, distSection = null, distLastResult = null, distHub = null;
+let clientPage = false;   // this page is a render client (its status page instead of the interface)
+const distSettings = (() => {
+    const base = { renderLocal: true, samples: 128, bucket: 128 };
+    try { return { ...base, ...JSON.parse(localStorage.getItem('rindr.distributed') || '{}') }; } catch { return base; }
+})();
 // Start: empty scene or ?model=<file from public/models>
+initDistributed();
 setupGUI();
 setViewMode(viewMode);   // start mode (config: PATHTRACING.enabled -> HQ, otherwise Default)
 qualityController.enable(false);
@@ -5001,7 +5105,7 @@ if (new URLSearchParams(location.search).has('debug')) {
         // material node graphs: bake an input into a PNG / render a description on the thumbnail sphere (debug-graph.js)
         bakeGraph: (graph, opts) => import('./debug-graph.js').then(m => m.bakeGraphImage(graphApplier, graph, opts)),
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel.thumbs, def)),
-        batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+        batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return runDistributedJob(b.x, b.y, samples).catch(() => null); }, renderDistributedImage: (scale = 1, samples = 64) => renderDistributedImage(scale, samples), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 }
 
 // --- Resize ---
@@ -5039,7 +5143,7 @@ const PT_PHASES = {
     done:              { label: 'pathtracing.phases.done',           color: 'bg-emerald-400' },
 };
 const STATIC_PHASES = new Set(['done', 'waiting', 'unsupported', 'error', 'suspended']);
-const FULL_BAR_PHASES = new Set(['preview', 'motion', 'bvh', 'compiling', 'denoise-loading', 'suspended']);
+const FULL_BAR_PHASES = new Set(['preview', 'bvh', 'compiling', 'denoise-loading', 'suspended']);   // motion: its resolution
 // render time of the last image: from the moment the path tracer renders at full quality until "done" (denoising
 // included) – scene build, BVH, shader compiling and the reduced frames while orbiting do not count; a restart (camera,
 // material …) starts the clock again
@@ -5086,7 +5190,9 @@ function updatePathTracingStatus() {
             detail = t('pathtracing.detail.preview');
             break;
         case 'motion':
-            detail = t('pathtracing.detail.motion');
+            // orbit preview: its samples while the camera rests (mouse still pressed) as bar, resolution in the text
+            value = t('pathtracing.percent', { value: Math.floor(s.progress * 100) });
+            detail = t('pathtracing.detail.motionSamples', { samples, value: Math.round(s.resolution * 100) });
             break;
         case 'rendering':
             value = t('pathtracing.percent', { value: pct });
@@ -5105,19 +5211,66 @@ function updatePathTracingStatus() {
             if (ptTimer.ms !== null) detail += ' · ' + formatRenderTime(ptTimer.ms);
             break;
     }
-    const key = `${s.phase}|${value}|${detail}|${progressEl.hidden}`;
+    // a render job of the render window: its own label, the pass text of a transparent export
+    if (renderJob?.text) detail = renderJob.text;
+    const key = `${s.phase}|${value}|${detail}|${progressEl.hidden}|${!!renderJob}|${viewMode}|${renderJob?.pass ? `${renderJob.pass.pass}:${renderJob.pass.p.toFixed(3)}` : ''}`;
     if (key === ptStatus.last) return;
     ptStatus.last = key;
     // while loading, the progress display shows the state at the same place
     ptStatus.root.classList.toggle('hidden', !phase || !progressEl.hidden);
+    // ✕: cancel the render job, or stop path tracing (back to the mode before HQ)
+    distStatusCancel.hidden = viewMode !== 'hq';
+    distStatusCancel.title = renderJob ? t('render.cancel') : t('render.stopHq', { mode: t(`viewMode.${modeBeforeHq}.label`) });
     if (!phase) return;
-    ptStatus.label.textContent = t(phase.label);
+    ptStatus.label.textContent = renderJob?.pass ? t('render.runningPass', { n: renderJob.pass.pass + 1, total: renderJob.pass.total })
+        : renderJob ? t('render.running') : t(phase.label);
+    // render job with several passes (transparent PNG: in front of black, then grey): one segment per pass, side by side,
+    // each in its own colour – the bar shows from the start that another pass follows
+    const pass = renderJob?.pass;
+    showPassSegments(pass);
+    if (pass) {
+        value = t('pathtracing.percent', { value: Math.floor(((pass.pass + pass.p) / pass.total) * 100) });
+        ptStatus.value.textContent = value;
+        ptStatus.detail.textContent = detail;
+        ptStatus.dot.className = `inline-block size-2 rounded-full ${PASS_COLORS[pass.pass % PASS_COLORS.length]} animate-pulse`;
+        return;
+    }
     ptStatus.value.textContent = value;
     ptStatus.detail.textContent = detail;
     ptStatus.dot.className = `inline-block size-2 rounded-full ${phase.color}`
         + (STATIC_PHASES.has(s.phase) ? '' : ' animate-pulse');
     ptStatus.bar.className = `h-full rounded ${phase.color}`;
     ptStatus.bar.style.width = FULL_BAR_PHASES.has(s.phase) ? '100%' : `${s.progress * 100}%`;
+}
+
+// segments of the status bar for a render job with several passes (pass colours in order – user: orange, then our green)
+const PASS_COLORS = ['bg-orange-400', 'bg-emerald-400'];
+function showPassSegments(pass) {
+    const track = ptStatus.bar.parentElement;
+    if (!pass) {
+        if (ptStatus.segments) { ptStatus.segments.hidden = true; track.hidden = false; }
+        return;
+    }
+    if (!ptStatus.segments || ptStatus.segments.children.length !== pass.total) {
+        ptStatus.segments?.remove();
+        const box = document.createElement('div');
+        box.className = 'flex h-1 gap-0.5';
+        for (let i = 0; i < pass.total; i++) {
+            const seg = document.createElement('div');
+            seg.className = 'h-full flex-1 overflow-hidden rounded bg-white/15';
+            const fill = document.createElement('div');
+            fill.className = `h-full w-0 rounded ${PASS_COLORS[i % PASS_COLORS.length]}`;
+            seg.append(fill);
+            box.append(seg);
+        }
+        track.after(box);
+        ptStatus.segments = box;
+    }
+    track.hidden = true;
+    ptStatus.segments.hidden = false;
+    [...ptStatus.segments.children].forEach((seg, i) => {
+        seg.firstChild.style.width = `${i < pass.pass ? 100 : i === pass.pass ? Math.min(pass.p, 1) * 100 : 0}%`;
+    });
 }
 
 // Units for the duplicate measurement (debug display): one per geometry, meshes sharing it count as instances
@@ -5151,6 +5304,21 @@ if (new URLSearchParams(location.search).has('debug')) {
         if (batcher.lods) import('./lod/lod-debug.js').then(m => m.attachLodDebug(debugStats.root, { batcher }));
     });
 }
+// state that follows the camera – every frame, and on a render client once the scene's camera is set (a client in a
+// background tab gets no frames: its vignette stayed oriented to the start camera → its buckets brighter/darker)
+function syncViewDependents() {
+    // clipping planes follow the distance to the orbit centre (zooming far out/close in, flights to far views) –
+    // they were only set when a model was framed: far at least 20×, near at most 1/100 of the distance
+    const orbitDist = camera.position.distanceTo(controls.target);
+    if (camera.far < orbitDist * 20 || camera.near > orbitDist * 0.01) {
+        camera.far = Math.max(camera.far, orbitDist * 100);
+        camera.near = Math.min(camera.near, orbitDist * 0.001);
+        camera.updateProjectionMatrix();
+    }
+    // vignette follows the camera (the path tracer takes over the rotation at the next camera restart)
+    if (scene.background === vignette.texture && !environment.matte && vignette.update(camera, scene)) pathTracing.updateEnvironment();
+    dome.update(camera);   // dome background: camera position relative to the projection centre
+}
 function renderFrame() {
     const frameStart = performance.now();
     batcher.newFrame();
@@ -5166,17 +5334,14 @@ function renderFrame() {
     controls.update();
     applyCameraRoll();
     viewCube.update(camera);
-    // clipping planes follow the distance to the orbit centre (zooming far out/close in, flights to far views) –
-    // they were only set when a model was framed: far at least 20×, near at most 1/100 of the distance
-    const orbitDist = camera.position.distanceTo(controls.target);
-    if (camera.far < orbitDist * 20 || camera.near > orbitDist * 0.01) {
-        camera.far = Math.max(camera.far, orbitDist * 100);
-        camera.near = Math.min(camera.near, orbitDist * 0.001);
-        camera.updateProjectionMatrix();
+    syncViewDependents();
+    // distributed rendering: a render client draws nothing (its page is the status) – except while a model loads (the
+    // import streams through the render loop); the master shows the assembled image with the labelled buckets
+    if ((clientPage && !loading) || distDisplay?.active) {
+        if (distDisplay?.active) { distDisplay.draw(); distDisplay.label(distPending()); updateDistStatus(); }
+        if (!preloaderGone) { preloaderGone = true; hidePreloader(); }
+        return;
     }
-    // vignette follows the camera (the path tracer takes over the rotation at the next camera restart)
-    if (scene.background === vignette.texture && !environment.matte && vignette.update(camera, scene)) pathTracing.updateEnvironment();
-    dome.update(camera);   // dome background: camera position relative to the projection centre
     // During import rasterize only when needed: the main thread merges the worker results in
     // parallel. New parts at most every 100 ms, camera following ~30 fps, user input immediately.
     updateFades(performance.now());
@@ -5423,3 +5588,404 @@ renderer.setAnimationLoop(() => {
         lens.restoreToneMapping();
     }
 });
+
+// --- Distributed rendering (docs/distributed.md) ---
+// ?render-client[=name]: this page is a render client (status page, renders buckets for a master); otherwise this page
+// is a master that knows the clients from their heartbeat – tabs of this browser (BroadcastChannel) and computers in the
+// network paired by code (WebRTC, rtc.js) in one hub
+function initDistributed() {
+    const param = new URLSearchParams(location.search).get('render-client');
+    if (!pathTracing.supported) return;
+    if (param !== null) {
+        initRenderClient(param);
+        return;
+    }
+    distDisplay = new BucketDisplay(renderer, document.getElementById('viewport'));
+    distHub = hubTransport();
+    if ('BroadcastChannel' in window) distHub.add(localTransport());
+    renderMaster = new RenderMaster(distHub, {
+        captureScene: async () => ({ state: captureState(sceneStateContext), files: sceneFiles() }),
+        local: {
+            name: t('setup.distributed.thisComputer'),
+            renderRegion: async (region, samples, options) => {
+                await ensurePathTracer();
+                return pathTracing.renderRegion(region, samples, options);
+            },
+        },
+        onBucket: (bucket, data) => distDisplay.put(bucket, data),
+        onChange: () => distChanged(),
+        onDone: stats => {
+            controls.enabled = true;
+            distJob?.resolve(distDisplay.data);
+            distJob = null;
+            const names = [...stats.perClient].map(([id, n]) => `${id === LOCAL_ID ? t('setup.distributed.thisComputer') : renderMaster.clients.get(id)?.name || id}: ${n}`);
+            distLastResult = t('setup.distributed.done', { time: (stats.ms / 1000).toFixed(1), buckets: stats.buckets, who: names.join(' · ') });
+            distChanged();
+        },
+    });
+    renderMaster.renderLocal = distSettings.renderLocal;
+    // the finished picture stays until the view changes
+    controls.addEventListener('change', () => { if (distDisplay.active && !renderMaster.running) endDistributedView(); });
+}
+// render client: a tab of this browser (BroadcastChannel) or, opened from the master's pairing link
+// (…?render-client#pair=<offer>), a computer in the network – it shows its answer code until the master connects
+function initRenderClient(param) {
+    const id = newId();
+    const name = param || t('distributed.client.defaultName', { id });
+    const view = clientView(name, gpuName(renderer));
+    clientPage = true;
+    hidePreloader();   // the status page is the picture – with the answer code while pairing
+    let disconnected = false;
+    const hooks = {
+        id, name, renderer,
+        loadScene: async (state, files) => {
+            await openSceneFile(state, files, { reload: !rootGroup });
+            await settleMaterials();
+            controls.update();
+            applyCameraRoll();
+            syncViewDependents();
+            await ensurePathTracer();
+        },
+        renderRegion: async (region, samples, options) => {
+            await ensurePathTracer();
+            // the full image's aspect (not this tab's window): the vignette background is built for it
+            camera.aspect = region.fullW / region.fullH;
+            camera.updateProjectionMatrix();
+            syncViewDependents();
+            // view angle beyond perspective = fisheye rays – taken over by the render loop, which a client skips
+            setFisheye(camera);
+            return pathTracing.renderRegion(region, samples, options);
+        },
+        onStatus: status => { if (!disconnected) view.update(status); },
+    };
+    const offer = new URLSearchParams(location.hash.slice(1)).get('pair');
+    if (offer === null) {
+        if ('BroadcastChannel' in window) renderClient = new RenderClient(localTransport(), hooks);
+        return;
+    }
+    window.history.replaceState(null, '', location.pathname + location.search);   // an offer serves one connection (history = undo here)
+    view.update({ state: 'pairing' });
+    answerOffer(offer).then(async answer => {
+        view.showAnswer(answer.code);
+        view.update({ state: 'answer' });
+        const transport = channelTransport(await answer.channel);
+        view.showAnswer('');
+        transport.onprogress = (got, total) => { if (!disconnected) view.update({ state: 'receiving', progress: got / total, done: renderClient?.done || 0 }); };
+        transport.onclose = () => {
+            disconnected = true;
+            renderClient?.dispose();
+            view.update({ state: 'disconnected', done: renderClient?.done || 0 });
+        };
+        renderClient = new RenderClient(transport, hooks);
+    }).catch(err => {
+        view.showAnswer('');
+        const message = err?.message === 'timeout' ? t('distributed.client.timeout') : err?.message === 'invalid code'
+            ? t('distributed.client.badCode') : err?.message || String(err);
+        view.update({ state: 'pairFailed', message });
+    });
+}
+function saveDistSettings() {
+    try { localStorage.setItem('rindr.distributed', JSON.stringify(distSettings)); } catch { /* private mode */ }
+}
+// buckets in progress for the labels
+const distPending = () => (renderMaster?.job && !renderMaster.job.finished ? [...renderMaster.job.pending.values()] : []);
+let distChangeQueued = false;
+function distChanged() {
+    if (distChangeQueued) return;
+    distChangeQueued = true;
+    requestAnimationFrame(() => { distChangeQueued = false; distSection?.refresh(); });
+}
+// model files of the scene for the clients (dropped files; models from the server's folder they fetch themselves)
+function sceneFiles() {
+    const out = [], seen = new Set();
+    const add = (path, file) => { if (file && !seen.has(file)) { seen.add(file); out.push({ path, file }); } };
+    for (const rm of runtimeModels()) {
+        const src = rm.source || {};
+        add(src.name, src.file || src.main);
+        for (const f of src.files || []) add(f.path, f.file);
+    }
+    for (const f of filePool) add(f.path, f.file);
+    return out;
+}
+// path tracer with its scene, set up the normal way (HQ – the view mode prepares stand-ins, glass shadow … for it); the
+// render loop of a client or of the master showing buckets does not draw it meanwhile
+async function ensurePathTracer() {
+    if (viewMode !== 'hq') setViewMode('hq');
+    for (let i = 0; !pathTracing.ready; i++) {
+        if (pathTracing.error) throw new Error(pathTracing.error);
+        if (i > 1200) throw new Error('path tracer did not start');
+        if (!pathTracing.building) updatePathTracingScene();
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+}
+// node graphs bake asynchronously after a scene was applied – buckets wait until the materials are complete
+async function settleMaterials() {
+    for (let i = 0; i < 100; i++) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        await graphApplier.queue;
+        if (!graphApplier.pending.size && !graphApplier.waiting.size) return;
+    }
+}
+// one distributed job of fullW × fullH with `samples` – resolves with the assembled linear image (Float32 RGBA, rows top to
+// bottom), rejects with an AbortError when cancelled (✕ bottom left)
+let distJob = null;
+function runDistributedJob(fullW, fullH, samples, preview) {
+    if (!renderMaster || !rootGroup || renderMaster.running) return Promise.reject(new Error(t('setup.distributed.busy')));
+    return new Promise((resolve, reject) => {
+        distJob = { resolve, reject };
+        startDistributed(fullW, fullH, samples, preview);
+    });
+}
+// Render window, distributed: the buckets at the export size (path tracer resolution), the result injected into this
+// computer's path tracer as its finished image → denoiser, upscaler, lens effects, style filter as for an own render →
+// the canvas as the file. Started from HQ (e.g. few samples to look, then the render with many – user: no jump into the
+// raster look) its image stays behind the buckets still missing and comes back when cancelled.
+async function renderDistributedImage(scale, samples) {
+    const mode = viewMode;
+    const keep = mode === 'hq' && ['rendering', 'denoise-loading', 'denoising', 'done'].includes(pathTracing.getStatus().phase)
+        ? await pathTracing.snapshotImage().catch(() => null) : null;
+    await ensurePathTracer();
+    const ratio = renderer.getPixelRatio();
+    if (scale !== 1) { renderer.setPixelRatio(ratio * scale); lens.setPixelScale(scale); }
+    try {
+        loadRender.force = true;
+        await nextFrame(); await nextFrame();   // canvas and path tracer at the export size
+        const buffer = renderer.getDrawingBufferSize(new THREE.Vector2());
+        const rs = pathTracing.pathTracer.renderScale;
+        const w = Math.floor(rs * buffer.x), h = Math.floor(rs * buffer.y);
+        let image;
+        try {
+            image = await runDistributedJob(w, h, samples, keep && { data: keep.data, width: keep.w, height: keep.h });
+        } catch (err) {
+            if (err?.name === 'AbortError' && mode !== 'hq') setViewMode(mode);
+            else if (err?.name === 'AbortError' && keep && scale === 1) await pathTracing.injectImage(keep.data, keep.w, keep.h, keep.samples).catch(() => {});
+            throw err;
+        }
+        await pathTracing.injectImage(image, w, h, samples);
+        endDistributedView();
+        flashProgress(t('setup.distributed.finishing'), 4000);
+        await waitForImage(() => {}, () => true);   // denoised
+        return await exportFrame();
+    } finally {
+        if (scale !== 1) { renderer.setPixelRatio(ratio); lens.setPixelScale(1); }
+        loadRender.force = true;
+    }
+}
+// preview: the HQ image to show behind the buckets still missing ({ data, width, height } – BucketDisplay.begin);
+// without, one raster frame of the view (fisheye included)
+function startDistributed(fullW, fullH, samples, preview) {
+    if (!renderMaster || !rootGroup || renderMaster.running) return;
+    const size = { x: fullW, y: fullH };
+    setSetupOpen(false);
+    controls.enabled = false;   // the buckets follow the camera of the start
+    distLastResult = null;
+    // the render loop pauses its scene drawing during the job: parts still fading in (dither mask) are finished now –
+    // the preview would keep their half-transparent pattern; the progress display of a pending regrouping goes too
+    for (const mesh of fading.keys()) delete mesh.userData.fade;
+    fading.clear();
+    hideProgress();
+    // the view of the start, behind the buckets still missing
+    distDisplay.begin(size.x, size.y, preview || (target => {
+        renderer.setRenderTarget(target);
+        if (rasterFisheye.active) rasterFisheye.render(renderer, camera, cam => renderer.render(scene, cam));
+        else renderer.render(scene, camera);
+        renderer.setRenderTarget(null);
+    }));
+    renderMaster.start({ fullW: size.x, fullH: size.y, samples, bucketSize: distSettings.bucket });
+}
+function cancelDistributed() {
+    renderMaster?.cancel();
+    endDistributedView();
+    distJob?.reject(new DOMException('Distributed rendering cancelled', 'AbortError'));
+    distJob = null;
+}
+function endDistributedView() {
+    distDisplay?.end();
+    controls.enabled = true;
+    loadRender.force = true;
+    ptStatus.last = '';   // the path tracing status takes the panel back
+    distStatusCancel.hidden = true;
+    distChanged();
+}
+// status bottom left while distributed rendering shows its picture (instead of the path tracer's): buckets, clients,
+// time; the round ✕ cancels the job – once it is done, it closes the picture
+const distStatusCancel = document.getElementById('pt-status-cancel');
+distStatusCancel?.addEventListener('click', () => {
+    if (renderMaster?.running) cancelDistributed();
+    else if (distDisplay?.active) endDistributedView();
+    else if (renderJob) renderJob.cancelled = true;                // render window, local: cancel (mode back)
+    else if (viewMode === 'hq') setViewMode(modeBeforeHq);         // path tracing: stop, back to the view before
+});
+function updateDistStatus() {
+    const job = renderMaster?.job;
+    if (!job) return;
+    const running = renderMaster.running;
+    const workers = new Set([...job.pending.values()].map(p => p.client)).size;
+    const elapsed = ((running ? performance.now() : job.t0 + (job.ms || 0)) - job.t0) / 1000;
+    const detail = running
+        ? t('setup.distributed.statusRunning', { done: job.done, total: job.total, workers, time: formatRenderTime(elapsed * 1000) })
+        : distLastResult || '';
+    const value = t('pathtracing.percent', { value: Math.floor(job.done / job.total * 100) });
+    const key = `dist|${running}|${value}|${detail}`;
+    if (key === ptStatus.last) return;
+    ptStatus.last = key;
+    ptStatus.root.classList.remove('hidden');
+    showPassSegments(null);
+    ptStatus.label.textContent = t('setup.distributed.title');
+    ptStatus.value.textContent = value;
+    ptStatus.detail.textContent = detail;
+    ptStatus.dot.className = `inline-block size-2 rounded-full bg-amber-400${running ? ' animate-pulse' : ''}`;
+    ptStatus.bar.className = 'h-full rounded bg-amber-400';
+    ptStatus.bar.style.width = `${(job.done / job.total) * 100}%`;
+    distStatusCancel.hidden = false;
+    distStatusCancel.title = t(running ? 'setup.distributed.cancel' : 'setup.distributed.close');
+}
+
+// --- Instances (duplicate.js): Shift + gizmo drag (move, rotate, scale) copies the part/assembly as an instance and
+// drags the copy – the original stays. One undo step with the drag. Parts and assemblies, also several at once; not whole
+// models or splats. Like instances in MAX: geometry and modifiers shared – the UV mapping is linked within an instance
+// family until "make unique" – the material belongs to each object (user: "instances can have different materials").
+let shiftHeld = false;
+window.addEventListener('keydown', e => { if (e.key === 'Shift') shiftHeld = true; });
+window.addEventListener('keyup', e => { if (e.key === 'Shift') shiftHeld = false; });
+window.addEventListener('blur', () => { shiftHeld = false; });
+renderer.domElement.addEventListener('pointerdown', e => { shiftHeld = e.shiftKey; }, true);   // the drag's own modifier
+let pendingInstances = null;   // blocks made by the drag in progress
+transformer.onBeforeDrag = (object, kind) => {
+    if (!shiftHeld || (kind !== 'node' && kind !== 'selection')) return null;
+    const groups = kind === 'node' ? [object] : object.members;
+    if (!groups.every(g => g.isGroup && !holdsSplat(g))) return null;
+    // the Scene Graph is rebuilt when the drag ends: rebuilt now it would re-resolve the selection and re-attach the
+    // gizmo in the middle of the drag (multi-selection: with a half-built selection object)
+    const blocks = createInstances(groups, null, { tree: false });
+    if (!blocks.length) return null;
+    pendingInstances = { blocks, kind };
+    if (kind === 'node') return blocks[0].top;
+    const tops = blocks.map(b => b.top);
+    return { ...object, members: tops, meshes: blocks.flatMap(b => b.meshes), traverse: fn => tops.forEach(o => o.traverse(fn)) };
+};
+// the model a node group belongs to, as the arrays duplicate.js works on
+function instanceModel(group) {
+    for (const rm of runtimeModels()) {
+        const index = rm.nodeGroups.indexOf(group);
+        if (index < 0) continue;
+        const content = rm.main ? primaryContent : extraModels.find(x => x.id === rm.id)?.content;
+        if (!content) return null;
+        return { rm, index, model: { root: rm.root, nodeGroups: rm.nodeGroups, meshes: rm.meshes, importNodes: content.importNodes, partCounts: content.partCounts } };
+    }
+    return null;
+}
+function createInstances(groups, tags = null, { tree = true } = {}) {
+    const blocks = [];
+    groups.forEach((g, k) => {
+        const found = instanceModel(g);
+        if (!found) return;
+        const root = found.rm.root;
+        const list = root.userData.duplicates ??= [];
+        const tag = tags?.[k] ?? `i${root.userData.dupSeq = (root.userData.dupSeq || 0) + 1}`;
+        const block = duplicateNode(found.model, found.index, tag);
+        list.push({ of: found.index, tag });
+        blocks.push(Object.assign(block, { root, model: found.model }));
+    });
+    if (blocks.length) instancesChanged(blocks.map(b => b.top), { tree });
+    return blocks;
+}
+function removeInstances(blocks) {
+    for (const b of [...blocks].reverse()) {
+        removeDuplicate(b.model, b);
+        b.root.userData.duplicates.pop();
+    }
+    instancesChanged([]);
+}
+// groups and meshes added/removed: Scene Graph, explosion, path tracer, edges, shadows, mappings of the new copies
+function instancesChanged(tops, { tree = true } = {}) {
+    meshIndex.list = null;   // allModelMeshes() again
+    exploder.refresh();
+    if (tree) refreshSceneGraph();
+    invalidatePathTracing();
+    updatePathTracingScene();
+    edges.invalidate();
+    markShadowsDirty();
+    contactShadow.markDirty();
+    for (const g of tops) if (uvMapper.effective(g).mapping) uvMapper.apply(g);
+    loadRender.force = true;
+}
+// drag done: one undo step (instances + where they were dragged), the copies selected
+function recordInstances({ blocks, kind }, after) {
+    const tags = blocks.map(b => b.tag), sources = blocks.map(b => b.model.nodeGroups[b.of]);
+    let current = blocks;
+    refreshSceneGraph();   // deferred from the drag start (onBeforeDrag)
+    const select = list => {
+        if (kind === 'node') { const e = sceneGraph.entryForObject(list[0].top); sceneGraph.select(e || null); }
+        else sceneGraph.selectObjects(list.map(b => b.top));
+    };
+    select(current);
+    pathTracing.updateTransforms();
+    history.record({
+        label: t('viewer.undo.instance', { count: blocks.length }),
+        undo: () => { removeInstances(current); sceneGraph.selectObjects(sources); },
+        redo: () => {
+            current = createInstances(sources, tags);
+            const target = kind === 'node' ? current[0].top : { members: current.map(b => b.top) };
+            restoreTransform(target, kind, after);
+            pathTracing.updateTransforms();
+            select(current);
+        },
+    });
+}
+// linked groups of a group's instance family (itself included) – the same node in every linked copy
+function linkedGroups(group) {
+    if (!isLinked(group)) return [group];
+    const all = runtimeModels().flatMap(rm => rm.nodeGroups);
+    return linkedMembers([group], all);
+}
+function instanceInfo(entry) {
+    const g = entry?.object;
+    if (!g?.isGroup || !(entry.kind === 'node')) return null;
+    const family = familyOf(g);
+    const all = runtimeModels().flatMap(rm => rm.nodeGroups);
+    const members = all.filter(o => familyOf(o) === family);
+    if (members.length < 2) return null;
+    const linked = isLinked(g) ? members.filter(isLinked).length : 0;
+    return { name: family.name || t('sceneGraph.unnamed'), count: members.length, linked, unique: !isLinked(g) };
+}
+function makeInstanceUnique(entry) {
+    const changed = makeUnique(entry.object);
+    if (!changed.length) return;
+    const apply = on => { for (const o of changed) { if (on) o.userData.unique = true; else delete o.userData.unique; } properties.show(selection); };
+    properties.show(selection);
+    history.record({ label: t('viewer.undo.makeUnique'), undo: () => apply(false), redo: () => apply(true) });
+}
+// node indices made unique (scene state) and their replay
+function uniqueNodes(groups) {
+    return groups.flatMap((g, i) => (g.userData.unique ? [i] : []));
+}
+/**
+ * Instances of a model's state: the blocks again in their order (same tags → same keys), then "made unique". Blocks
+ * already there go first (back to the file's structure). content: { nodes, partCounts } while a model is being built.
+ */
+function replayInstances(rm, list = [], unique = [], content = null) {
+    const root = rm.root;
+    const c = content ? { importNodes: content.nodes, partCounts: content.partCounts }
+        : rm.main ? primaryContent : extraModels.find(x => x.id === rm.id)?.content;
+    if (!c) return;
+    const model = { root, nodeGroups: rm.nodeGroups, meshes: rm.meshes, importNodes: c.importNodes, partCounts: c.partCounts };
+    const base = root.userData.base;
+    if (base && (model.importNodes.length > base.nodes || model.meshes.length > base.meshes)) {
+        for (const ch of model.meshes.splice(base.meshes)) { ch.removeFromParent(); ch.dispatchEvent({ type: 'dispose' }); }
+        for (const g of model.nodeGroups.splice(base.nodes)) g.removeFromParent();
+        model.importNodes.length = base.nodes;
+        model.partCounts.length = base.nodes;
+    }
+    root.userData.duplicates = [];
+    let seq = 0;
+    for (const { of, tag } of list) {
+        if (!model.nodeGroups[of]) continue;
+        duplicateNode(model, of, tag);
+        root.userData.duplicates.push({ of, tag });
+        seq = Math.max(seq, Number(String(tag).replace(/\D/g, '')) || 0);
+    }
+    root.userData.dupSeq = seq;
+    for (const i of unique) if (model.nodeGroups[i]) makeUnique(model.nodeGroups[i]);
+    if (!content) instancesChanged(model.nodeGroups.slice(base?.nodes ?? model.nodeGroups.length));
+}

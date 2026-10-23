@@ -59,9 +59,14 @@ function modelState(rm, sceneGraph) {
         (assignments[id] ||= []).push(stripKey(m.userData.key, rm.prefix));
     }
     const own = set => [...set].map(k => stripKey(k, rm.prefix)).filter(k => k !== null && (rm.prefix || !/^s?x\d+:/.test(k)));
+    // instances (duplicate.js): the blocks in their order and the nodes made unique – replayed first when loading
+    const duplicates = rm.root.userData.duplicates?.length ? rm.root.userData.duplicates.map(d => ({ ...d })) : null;
+    const unique = rm.nodeGroups.flatMap((g, i) => (g?.userData.unique ? [i] : []));
     return {
         file: rm.file,
         placement: rm.holder ? vecs(rm.holder.position) : null,
+        ...(duplicates ? { duplicates } : {}),
+        ...(unique.length ? { unique } : {}),
         count: rm.nodeGroups.length,
         transforms,
         hidden: own(sceneGraph.hiddenModel),
@@ -89,6 +94,8 @@ export function sceneModels(state) {
  */
 export function applyModelState(ctx, rm, chunk, idMap, warnings) {
     const { materialManager } = ctx;
+    // instances first: their groups and meshes carry keys the rest of the state refers to
+    if (chunk.duplicates?.length || rm.root.userData.duplicates?.length) ctx.replayInstances?.(rm, chunk.duplicates || [], chunk.unique || []);
     // materials: defaults first, then the saved deviations
     const byKey = new Map(rm.meshes.map(m => [m.userData.key, m]));
     for (const m of rm.meshes) { const def = materialManager.get(m.userData.defaultMaterialId); if (def) m.material = def.material; }

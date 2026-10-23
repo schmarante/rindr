@@ -11,6 +11,7 @@ import { t, has } from './i18n.js';
 import { STYLE_MODES } from './style-filters.js';
 import { MAPPING_TYPES, MAPPING_AXES, DEFAULT_MAPPING } from './uv-mapping.js';
 import { draggable, fmt, INPUT, colorField } from './ui-controls.js';
+import { icon } from './icons.js';
 
 let checkId = 0;   // ids for <label for>
 
@@ -20,19 +21,14 @@ const expanded = new Set((() => { try { return JSON.parse(localStorage.getItem(E
 const saveExpanded = () => { try { localStorage.setItem(EXPANDED_KEY, JSON.stringify([...expanded])); } catch { /* storage blocked */ } };
 const BUTTON = 'rounded px-2 py-0.5 text-white/80 hover:bg-white/15';
 const BUTTON_ACTIVE = 'rounded bg-sky-500/40 px-2 py-0.5 text-white';
-const ICON_PENCIL = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 2.5l3 3-8 8H2.5v-3z"/><path d="M9 4l3 3"/></svg>';
+const ICON_PENCIL = icon('pencil', 'size-3.5');
 
 // transform mode / reset as icons (the German labels ran out of the panel); label as title + aria-label
-const ICON_SVG = '<svg viewBox="0 0 16 16" class="size-4 fill-none stroke-current" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">';
 const TRANSFORM_ICONS = {
-    // four-way arrow
-    translate: ICON_SVG + '<path d="M8 1.5v13M1.5 8h13"/><path d="M6 3.5l2-2 2 2M6 12.5l2 2 2-2M3.5 6l-2 2 2 2M12.5 6l2 2-2 2"/></svg>',
-    // circular arrow
-    rotate: ICON_SVG + '<path d="M13 8a5 5 0 1 1-1.5-3.6"/><path d="M13 2.5v2.5h-2.5"/></svg>',
-    // small box growing to a large one
-    scale: ICON_SVG + '<rect x="1.5" y="8.5" width="6" height="6" rx="0.5"/><path d="M1.5 5.5v-4h13v13h-4"/><path d="M7.5 8.5l4-4M8.5 4.5h3v3"/></svg>',
-    // arrow back to the origin
-    reset: ICON_SVG + '<path d="M3 8a5 5 0 1 0 1.5-3.6"/><path d="M3 2.5v2.5h2.5"/><circle cx="8" cy="8" r="1"/></svg>',
+    translate: icon('translate', 'size-4'),   // four-way arrow
+    rotate: icon('rotate', 'size-4'),         // circular arrow
+    scale: icon('scale', 'size-4'),           // small box growing to a large one
+    reset: icon('reset', 'size-4'),           // arrow back to the origin
 };
 const ICON_BUTTON = ' flex items-center justify-center px-1.5 py-1';
 
@@ -66,6 +62,8 @@ export class PropertiesPanel {
         if (entry.kind === 'model' && this.ctx.exploder && !splats) parts.push(this._explodeRow());
         if (splats && (entry.kind === 'model' || entry.kind === 'node')) parts.push(...this._splatLookSection());
         if ((entry.kind === 'model' || entry.kind === 'node') && this.ctx.morphs?.list(entry).length) parts.push(...this._morphSection(entry));
+        const instance = entry.kind === 'node' && this.ctx.instances?.info(entry);
+        if (instance) parts.push(this._instanceRow(entry, instance));
         if (!splats && this.ctx.uvMapping?.available(entry)) parts.push(...this._mappingSection(entry));
         const bim = (entry.kind === 'node' || entry.kind === 'model') && this.ctx.bim?.(entry);
         if (bim) parts.push(this._bimSection(entry, bim));
@@ -705,6 +703,22 @@ export class PropertiesPanel {
         });
     }
 
+    // instance family of a part/assembly (duplicate.js): "instance of X · n in all" + make unique; a copy made unique says so
+    _instanceRow(entry, info) {
+        const box = el('div', 'mt-1.5 border-t border-white/10 pt-1.5');
+        const text = el('div', 'mb-1 text-white/60', info.unique
+            ? t('properties.instance.unique', { name: info.name })
+            : t('properties.instance.info', { name: info.name, count: info.linked }));
+        box.append(text);
+        if (!info.unique) {
+            const b = el('button', BUTTON, t('properties.instance.makeUnique'));
+            b.title = t('properties.instance.makeUniqueTitle');
+            b.onclick = () => this.ctx.instances.makeUnique(entry);
+            box.append(b);
+        }
+        return box;
+    }
+
     // UV mapping of a model/assembly/part (uv-mapping.js): own or inherited from above; changing a value while it is
     // inherited gives the node its own mapping (starting from the inherited values)
     _mappingSection(entry) {
@@ -766,7 +780,7 @@ export class PropertiesPanel {
     _section(id, label, title, enabled, onChange, build) {
         const box = el('div', 'mt-1.5 border-t border-white/10 pt-1.5');
         const name = el('button', '-ml-1 flex min-w-0 cursor-pointer items-center gap-0.5 text-left text-white/60 hover:text-white');
-        name.innerHTML = '<svg viewBox="0 0 16 16" class="size-3 shrink-0 fill-current transition-transform"><path d="M6 4l4 4-4 4z"/></svg>';
+        name.innerHTML = icon('caret-right', 'size-3 shrink-0 transition-transform');
         name.append(el('span', 'min-w-0', label));
         if (title == null) box.append(this._row(name));   // no checkbox: always applies
         else {

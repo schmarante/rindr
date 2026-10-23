@@ -1,5 +1,6 @@
 // Setup menu (gear in the toolbar): sections on the left, their options on the right.
-// Same style as the other panels (black, translucent, blur, rounded, no outline).
+// Same style as the other panels (black, translucent, blur, rounded, no outline); a free window like the others
+// (viewer.js: floatWindow on `header` – moved by the header, resized at the edges, remembered per browser).
 //
 //   const menu = new SetupMenu(element, title, { onClose });   // onClose: ✕ in the header
 //   const s = menu.addSection('pt', 'Path tracing');
@@ -14,9 +15,10 @@
 //   of the picture, screen-fade.js) – not for sliders, they apply live while dragging.
 
 import { t } from './i18n.js';
+import { icon } from './icons.js';
 
 const INPUT = 'w-14 shrink-0 rounded bg-white/10 px-1.5 py-0.5 text-right tabular-nums text-white outline-none focus:bg-white/20';
-const ICON_CLOSE = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
+const ICON_CLOSE = icon('close', 'size-3.5');
 const NAV = 'w-full rounded px-2.5 py-1.5 text-left transition-colors';
 const NAV_IDLE = 'text-white/70 hover:bg-white/10 hover:text-white';
 const NAV_ACTIVE = 'bg-sky-500/30 text-white';
@@ -36,7 +38,7 @@ export class SetupMenu {
         this.current = null;
         // header like the scene graph's, below it sections left, options right
         root.classList.add('flex-col');
-        const header = el('div', 'flex shrink-0 items-center border-b border-white/10 px-3 py-2');
+        const header = this.header = el('div', 'flex shrink-0 items-center border-b border-white/10 px-3 py-2');   // drag handle (float window)
         header.append(el('span', 'flex-1 font-medium', title));
         if (onClose) {
             const x = el('button', 'text-white/50 hover:text-white');

@@ -5,6 +5,7 @@ import de from '../i18n/de_de.json';
 import { formatHtml } from '../scripts/i18n.js';
 import Logo from '../assets/rindr.svg';   // shown white via the #logo-white filter (see the brand line)
 import logoSource from '../assets/rindr.svg?raw';
+import { icon } from '../scripts/icons.js';   // icons: src/assets/icons
 
 // preloader: the logo's paths (the file stays as exported) – outline + clip shape for the fill
 const logoPaths = [...logoSource.matchAll(/<path[^>]*\sd="([^"]+)"/g)].map(m => m[1]);
@@ -198,11 +199,8 @@ const CSP = [
         <div id="view-mode"></div>
         <!-- play bar for animated models (animation.js), above the toolbar -->
         <div id="playbar" hidden></div>
-        <!-- Setup menu (gear in the bar, setup-menu.js): sections left, options right, centred -->
-        <div
-            id="setup-menu"
-            class="pointer-events-none fixed z-20 flex h-[min(21.5rem,60dvh)] w-[34rem] max-w-[calc(100vw-1rem)] overflow-hidden rounded-lg bg-black/60 text-xs text-white/90 opacity-0 shadow-2xl backdrop-blur-sm transition-[opacity,transform] duration-200"
-        ></div>
+        <!-- Setup menu (gear in the bar, setup-menu.js): sections left, options right – a free window (float-window.js) -->
+        <div id="setup-menu" hidden class="fixed z-30 flex flex-col overflow-hidden rounded-lg bg-black/60 text-xs text-white/90 backdrop-blur-sm"></div>
 
         <div data-ui="right" class="pointer-events-none absolute top-5 right-5 flex max-h-[calc(100dvh-5rem)] w-80 flex-col gap-3">
             <div
@@ -270,7 +268,14 @@ const CSP = [
                     <span id="pt-status-dot" class="inline-block size-2 rounded-full bg-sky-400"></span>
                     <span id="pt-status-label" data-i18n="page.ptStatus">{tr('page.ptStatus')}</span>
                 </span>
-                <span id="pt-status-value" class="tabular-nums text-white/60"></span>
+                <span class="flex items-center gap-2">
+                    <span id="pt-status-value" class="tabular-nums text-white/60"></span>
+                    <!-- distributed rendering: cancel the job / close its picture (viewer.js updateDistStatus) -->
+                    <button id="pt-status-cancel" type="button" hidden
+                        class="pointer-events-auto flex size-4 items-center justify-center rounded-full bg-white/15 text-white/80 hover:bg-red-500/80 hover:text-white">
+                        <Fragment set:html={icon('cross', 'size-2.5 stroke-2')} />
+                    </button>
+                </span>
             </div>
             <div class="h-1 overflow-hidden rounded bg-white/15">
                 <div id="pt-status-bar" class="h-full w-0 rounded bg-sky-400"></div>

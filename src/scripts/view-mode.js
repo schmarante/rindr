@@ -1,43 +1,45 @@
-// View mode (button group bottom centre, keys 1/2/3), tools next to it on the right
-// (hide/show UI, fullscreen – addTool):
-//  - analysis (first button, key 1 – again: next variant; the small arrow opens the choice): one material for the
-//    whole model (scene.overrideMaterial, materials are kept) – basic (grey clay), uv (UV test pattern, uv-checker.js),
-//    wire (clay with its edges as a wireframe)
-//  - default: raster view with all materials and textures
-//  - hq:      path tracing while still (raster preview while orbiting)
+// View (one choice bottom centre, Oct. 2026 – user: "wire, UV, grey, standard and High Quality in one, the teapot
+// next to it"), tools next to it on the right (hide/show UI, fullscreen – addTool):
+//  - wire / uv / basic (key 1 – again: the next of them): one material for the whole model (scene.overrideMaterial,
+//    materials are kept) – wire (clay with its edges as a wireframe), uv (UV test pattern, uv-checker.js),
+//    basic (grey clay)
+//  - default (key 2): raster view with all materials and textures
+//  - hq (key 3): path tracing while still (raster preview while orbiting)
+// The button shows the current mode (ball + name + arrow), a click opens the choice above the bar; addCompanion puts a
+// button right next to it (the teapot – rendering).
 
 import { t } from './i18n.js';
+import { uvBall, wireBall } from './view-balls.js';
+import { icon } from './icons.js';
 
-// labelKey/titleKey: i18n keys, translated when the buttons are created
-
-// analysis variants behind the first button
-export const ANALYSIS_MODES = [
-    {
-        key: 'basic', labelKey: 'viewMode.basic.label', titleKey: 'viewMode.basic.title',
-        ball: 'radial-gradient(circle at 32% 28%, #f0f0f0 0, #a3a3a3 30%, #6e6e6e 62%, #2b2b2b 100%)',
-    },
-    {
-        key: 'uv', labelKey: 'viewMode.uv.label', titleKey: 'viewMode.uv.title',
-        ball: 'linear-gradient(90deg, transparent 47%, #0006 47% 53%, transparent 53%) 0 0/50% 50%, linear-gradient(0deg, transparent 47%, #0006 47% 53%, transparent 53%) 0 0/50% 50%, linear-gradient(to bottom, #3fae5a, #3a6fd8), linear-gradient(to bottom, #e8c83a, #d84a3a) right/50% 100% no-repeat',
-    },
-    {
-        key: 'wire', labelKey: 'viewMode.wire.label', titleKey: 'viewMode.wire.title',
-        ball: 'linear-gradient(60deg, transparent 46%, #222 46% 54%, transparent 54%), linear-gradient(-60deg, transparent 46%, #222 46% 54%, transparent 54%), linear-gradient(0deg, transparent 46%, #222 46% 54%, transparent 54%), radial-gradient(circle at 32% 28%, #f0f0f0 0, #a3a3a3 45%, #6e6e6e 100%)',
-    },
-];
-
+// labelKey/titleKey: i18n keys, translated when the buttons are created; ball: CSS background (uv/wire: an image of a
+// sphere drawn once – view-balls.js)
 export const VIEW_MODES = [
-    { ...ANALYSIS_MODES[0], analysis: true },
+    { key: 'wire', labelKey: 'viewMode.wire.label', titleKey: 'viewMode.wire.title', keyHint: '1', ball: () => `url(${wireBall()}) center/cover` },
+    { key: 'uv', labelKey: 'viewMode.uv.label', titleKey: 'viewMode.uv.title', keyHint: '1', ball: () => `url(${uvBall()}) center/cover` },
     {
-        key: 'default', labelKey: 'viewMode.default.label', titleKey: 'viewMode.default.title',
-        ball: 'radial-gradient(circle at 32% 28%, #ffffff 0, #e8643f 16%, #b93a1f 55%, #3d1007 100%)',
+        key: 'basic', labelKey: 'viewMode.basic.label', titleKey: 'viewMode.basic.title', keyHint: '1',
+        ball: () => 'radial-gradient(circle at 32% 28%, #f0f0f0 0, #a3a3a3 30%, #6e6e6e 62%, #2b2b2b 100%)',
     },
     {
-        key: 'hq', labelKey: 'viewMode.hq.label', titleKey: 'viewMode.hq.title',
-        ball: 'radial-gradient(circle at 32% 24%, #ffffff 0 7%, transparent 20%), '
+        key: 'default', labelKey: 'viewMode.default.label', titleKey: 'viewMode.default.title', keyHint: '2',
+        ball: () => 'radial-gradient(circle at 32% 28%, #ffffff 0, #e8643f 16%, #b93a1f 55%, #3d1007 100%)',
+    },
+    {
+        key: 'hq', labelKey: 'viewMode.hq.label', titleKey: 'viewMode.hq.title', keyHint: '3',
+        ball: () => 'radial-gradient(circle at 32% 24%, #ffffff 0 7%, transparent 20%), '
             + 'linear-gradient(180deg, #e6eef6 0%, #9fb4c9 42%, #1c2631 50%, #4d5b68 66%, #c4ced8 100%)',
     },
 ];
+// the analysis views behind key 1 (in this order)
+export const ANALYSIS_KEYS = ['basic', 'uv', 'wire'];
+
+const ball = background => {
+    const b = document.createElement('span');
+    b.className = 'size-4 shrink-0 rounded-full shadow-[inset_0_-1px_2px_rgba(0,0,0,0.4)]';
+    b.style.background = background;
+    return b;
+};
 
 export class ViewModeBar {
     /**
@@ -46,51 +48,55 @@ export class ViewModeBar {
      */
     constructor(root, onSelect) {
         this.root = root;
-        this.buttons = new Map();
-        root.className = 'pointer-events-auto absolute bottom-5 left-1/2 flex -translate-x-1/2 gap-1 rounded-full bg-black/60 p-1 text-xs text-white/80 backdrop-blur-sm';
         this.onSelect = onSelect;
-        this.analysis = 'basic';   // variant shown on the first button (the last one chosen)
-        for (const m of VIEW_MODES) {
-            const b = document.createElement('button');
-            b.title = t(m.titleKey);
-            b.className = 'relative flex items-center gap-1.5 rounded-full py-1 pr-3 pl-1 outline-none transition-colors';
-            const ball = document.createElement('span');
-            ball.className = 'size-5 shrink-0 rounded-full shadow-[inset_0_-1px_2px_rgba(0,0,0,0.4)]';
-            ball.style.background = m.ball;
-            const label = document.createElement('span');
-            label.textContent = t(m.labelKey);
-            b.append(ball, label);
-            b.onclick = () => onSelect(m.analysis ? this.analysis : m.key);
-            if (m.analysis) {
-                // small arrow: choice of the analysis variants above the bar
-                const arrow = document.createElement('span');
-                arrow.className = '-mr-1.5 flex size-4 items-center justify-center rounded-full text-white/60 hover:bg-white/15 hover:text-white';
-                arrow.innerHTML = '<svg viewBox="0 0 16 16" class="size-3 fill-current"><path d="M4 10l4-4 4 4z"/></svg>';
-                arrow.title = t('viewMode.analysisChoice');
-                arrow.onclick = e => { e.stopPropagation(); this._toggleMenu(b); };
-                b.append(arrow);
-                b._ball = ball;
-                b._label = label;
-            }
-            root.append(b);
-            this.buttons.set(m.key, b);
-        }
+        this.mode = 'default';
+        this.unavailable = [];
+        root.className = 'pointer-events-auto absolute bottom-5 left-1/2 flex -translate-x-1/2 gap-1 rounded-full bg-black/60 p-1 text-xs text-white/80 backdrop-blur-sm';
+        // the choice and its companions (teapot) together – actions and tool groups go after this box
+        this.box = document.createElement('span');
+        this.box.className = 'flex items-center gap-1';
+        const b = this.button = document.createElement('button');
+        b.className = 'relative flex items-center gap-1.5 rounded-full py-1 pr-2 pl-1 outline-none transition-colors hover:bg-white/10';
+        b._ball = ball('');
+        b._label = document.createElement('span');
+        const arrow = document.createElement('span');
+        arrow.className = 'flex size-4 items-center justify-center text-white/60';
+        arrow.innerHTML = icon('caret-up', 'size-3');
+        b.append(b._ball, b._label, arrow);
+        b.onclick = () => this._toggleMenu(b);
+        this.box.append(b);
+        root.append(this.box);
     }
 
-    // choice of the analysis variants (above the first button, panel style)
+    /** a button right next to the choice (no separator), e.g. the teapot */
+    addCompanion({ icon, title, onClick }) {
+        const b = document.createElement('button');
+        b.className = 'flex size-7 items-center justify-center rounded-full outline-none transition-colors hover:bg-white/10 hover:text-white';
+        b.title = title;
+        b.innerHTML = icon;
+        b.onclick = () => { b.blur(); onClick(); };
+        this.box.append(b);
+        return b;
+    }
+
+    // the choice above the button (panel style): ball, name, key
     _toggleMenu(anchor) {
         if (this._menu) { this._closeMenu(); return; }
         const menu = document.createElement('div');
-        menu.className = 'absolute bottom-full left-0 mb-2 flex flex-col gap-0.5 rounded-lg bg-black/60 p-1 text-xs text-white/85 shadow-xl backdrop-blur-sm';
-        for (const m of ANALYSIS_MODES) {
+        menu.className = 'absolute bottom-full left-0 mb-2 flex min-w-40 flex-col gap-0.5 rounded-lg bg-black/60 p-1 text-xs text-white/85 shadow-xl backdrop-blur-sm';
+        for (const m of VIEW_MODES) {
             const item = document.createElement('button');
-            item.className = 'flex items-center gap-2 rounded-md py-1 pr-3 pl-1 text-left whitespace-nowrap outline-none hover:bg-white/15'
-                + (m.key === this.analysis ? ' text-white' : '');
+            const dim = this.unavailable.includes(m.key);
+            item.className = 'flex items-center gap-2 rounded-md py-1 pr-2 pl-1 text-left whitespace-nowrap outline-none hover:bg-white/15'
+                + (m.key === this.mode ? ' bg-white/10 text-white' : '') + (dim ? ' opacity-40' : '');
             item.title = t(m.titleKey);
-            const ball = document.createElement('span');
-            ball.className = 'size-5 shrink-0 rounded-full shadow-[inset_0_-1px_2px_rgba(0,0,0,0.4)]';
-            ball.style.background = m.ball;
-            item.append(ball, t(m.labelKey));
+            const name = document.createElement('span');
+            name.className = 'flex-1';
+            name.textContent = t(m.labelKey);
+            const key = document.createElement('kbd');
+            key.className = 'rounded bg-white/10 px-1 font-sans text-[10px] text-white/50';
+            key.textContent = m.keyHint;
+            item.append(ball(m.ball()), name, key);
             item.onclick = e => { e.stopPropagation(); this._closeMenu(); this.onSelect(m.key); };
             menu.append(item);
         }
@@ -125,14 +131,13 @@ export class ViewModeBar {
             dot.className = 'flex size-5 shrink-0 items-center justify-center';
             dot.innerHTML = icon;
         } else {
-            dot.className = 'size-5 shrink-0 rounded-full shadow-[inset_0_-1px_2px_rgba(0,0,0,0.4)]';
+            dot.className = 'size-4 shrink-0 rounded-full shadow-[inset_0_-1px_2px_rgba(0,0,0,0.4)]';
             dot.style.background = ball;
         }
         b.append(dot, label);
         b.onclick = () => { b.blur(); onClick(); };
-        const last = [...this.buttons.values()].pop();
         this._actionSeparator ??= this._separator();
-        last.after(this._actionSeparator, b);
+        this.box.after(this._actionSeparator, b);
         return b;
     }
 
@@ -176,34 +181,19 @@ export class ViewModeBar {
 
     /** Hide the view mode buttons (and the separator to the actions) and/or tool groups with their separator */
     setHidden({ modes = false, groups = [] } = {}) {
-        for (const b of this.buttons.values()) b.hidden = modes;
+        this.box.hidden = modes;
         if (this._actionSeparator) this._actionSeparator.hidden = modes;
         for (const [key, box] of this._groups ?? []) box.hidden = box.separator.hidden = groups.includes(key);
     }
 
-    /**
-     * Show the active mode; disabled: modes not possible right now (e.g. HQ with Gaussian splats); unavailable: dimmed
-     * but still clickable, the click explains why (e.g. HQ without WebGPU)
-     */
-    set(mode, { disabled = [], unavailable = [] } = {}) {
-        // an analysis variant: the first button shows it (ball, label, tooltip) and keeps it for its next click
-        const variant = ANALYSIS_MODES.find(m => m.key === mode);
-        if (variant) {
-            this.analysis = mode;
-            const b = this.buttons.get('basic');
-            b._ball.style.background = variant.ball;
-            b._label.textContent = t(variant.labelKey);
-            b.title = t(variant.titleKey);
-        }
-        for (const [key, b] of this.buttons) {
-            const active = key === mode || (key === 'basic' && !!variant);
-            b.disabled = disabled.includes(key);
-            const dim = b.disabled || unavailable.includes(key);
-            b.setAttribute('aria-disabled', String(dim));
-            b.classList.toggle('bg-white/20', active);
-            b.classList.toggle('text-white', active);
-            b.classList.toggle('hover:bg-white/10', !active && !dim);
-            b.classList.toggle('opacity-40', dim);
-        }
+    /** Show the active mode; unavailable: dimmed but still clickable – the click explains why (e.g. HQ without WebGPU) */
+    set(mode, { unavailable = [] } = {}) {
+        this.mode = mode;
+        this.unavailable = unavailable;
+        const m = VIEW_MODES.find(x => x.key === mode) || VIEW_MODES[3];
+        const b = this.button;
+        b._ball.style.background = m.ball();
+        b._label.textContent = t(m.labelKey);
+        b.title = `${t(m.titleKey)} – ${t('viewMode.choice')}`;
     }
 }
