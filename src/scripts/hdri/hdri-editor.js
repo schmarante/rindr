@@ -13,6 +13,7 @@ import { gradientEditor } from './gradient-editor.js';
 import { encodeHdr, encodeExr, saveFile } from './hdri-export.js';
 import { draggable, fmt, INPUT, SELECT, RANGE, CHECKBOX, colorField } from '../ui-controls.js';
 import { floatWindow } from '../float-window.js';
+import { icon } from '../icons.js';
 
 const D = Math.PI / 180;
 const CW = 1024, CH = 512;            // canvas resolution (preview image, overlay coordinates)
@@ -20,7 +21,7 @@ const LIVE_WIDTH = 512;               // render width while dragging
 const BUTTON = 'rounded px-2 py-0.5 text-white/80 hover:bg-white/15 disabled:opacity-40';
 const STORE_KEY = 'rindr.hdriEditor.window';
 
-const ICON_CLOSE = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
+const ICON_CLOSE = icon('close', 'size-3.5');
 
 export class HdriEditor {
     /**

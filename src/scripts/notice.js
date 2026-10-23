@@ -3,13 +3,14 @@
 // opened more sparingly, the last load ended by the browser … (blocking questions: dialog.js choiceDialog).
 //   showNotice({ id, icon: 'warning'|'info', title, message, actions: [{ label, onClick, primary }], timeout })
 // The same id replaces its card instead of stacking it. Returns { close }.
+import { icon } from './icons.js';
 
 const BUTTON = 'rounded px-2.5 py-1 outline-none transition-colors';
 const ICONS = {
-    warning: '<svg viewBox="0 0 20 20" class="mt-px size-4 shrink-0 fill-amber-400"><path d="M10 2.2 1.3 17.3h17.4L10 2.2Zm-.9 5.3h1.8v4.9H9.1V7.5Zm0 6.3h1.8v1.8H9.1v-1.8Z"/></svg>',
-    info: '<svg viewBox="0 0 20 20" class="mt-px size-4 shrink-0 fill-sky-400"><path d="M10 1.8a8.2 8.2 0 1 0 0 16.4 8.2 8.2 0 0 0 0-16.4Zm.9 12.6H9.1V8.8h1.8v5.6Zm0-7.2H9.1V5.4h1.8v1.8Z"/></svg>',
+    warning: icon('warning', 'mt-px size-4 shrink-0 fill-amber-400'),
+    info: icon('info', 'mt-px size-4 shrink-0 fill-sky-400'),
 };
-const ICON_CLOSE = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
+const ICON_CLOSE = icon('close', 'size-3.5');
 
 let stack = null;
 const open = new Map();   // id -> { el, close }

@@ -12,6 +12,7 @@
 import { confirmDialog, messageDialog, dialogOpen } from './dialog.js';
 import { t, has, getLocale } from './i18n.js';
 import { kiSettings, render, history, removeRender } from './ki-gemini.js';
+import { icon } from './icons.js';
 
 const TIMEOUT_MS = 240000;
 const BTN = 'rounded bg-white/10 px-2.5 py-1 text-xs hover:bg-white/20 disabled:opacity-40';
@@ -67,7 +68,7 @@ function errorText(err) {
     return err?.code && has(`ki.errors.${err.code}`) ? t(`ki.errors.${err.code}`, err.params || {}) : err?.message || String(err);
 }
 
-const ICON_CLOSE = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
+const ICON_CLOSE = icon('close', 'size-3.5');
 
 export class KiRender {
     /**

@@ -5,20 +5,21 @@
 // automatically when a scene with missing files is opened.
 import { t } from './i18n.js';
 import { floatWindow } from './float-window.js';
+import { icon } from './icons.js';
 
-const ICON_CLOSE = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
+const ICON_CLOSE = icon('close', 'size-3.5');
 const KIND_ICON = {
-    model: '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.4"><path d="M8 1l6 3.5v7L8 15l-6-3.5v-7z M8 8v7 M8 8l6-3.5 M8 8L2 4.5"/></svg>',
-    hdri: '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c-3 3-3 9 0 12M8 2c3 3 3 9 0 12"/></svg>',
-    file: '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.4"><path d="M4 1.5h5.5L13 5v9.5H4z M9.5 1.5V5H13"/></svg>',
-    texture: '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.4"><rect x="2" y="2" width="12" height="12" rx="1.5"/><path d="M2 11l3.5-3.5 3 3 2-2L14 12"/><circle cx="10.5" cy="5.5" r="1"/></svg>',
+    model: icon('model', 'size-3.5 stroke-[1.4]'),
+    hdri: icon('globe', 'size-3.5 stroke-[1.4]'),
+    file: icon('file', 'size-3.5'),
+    texture: icon('texture', 'size-3.5'),
 };
-const ICON_FOLDER = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.4" stroke-linejoin="round"><path d="M1.5 4V12.5a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V5.5a1 1 0 0 0-1-1H8L6.5 2.5h-4a1 1 0 0 0-1 1z"/></svg>';
-const ICON_DOWNLOAD = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v8M4.5 7 8 10.5 11.5 7M2.5 13.5h11"/></svg>';
+const ICON_FOLDER = icon('folder', 'size-3.5');
+const ICON_DOWNLOAD = icon('download', 'size-3.5');
 const BUTTON = 'rounded px-2 py-0.5 text-white/80 outline-none transition-colors hover:bg-white/15 hover:text-white';
 const ICON_BUTTON = 'shrink-0 rounded p-1 text-white/70 outline-none transition-colors hover:bg-white/15 hover:text-white disabled:pointer-events-none disabled:opacity-40';
-const ICON_CHECK = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5 6.5 12 13 4.5"/></svg>';
-const ICON_FAILED = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.6" stroke-linecap="round"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>';
+const ICON_CHECK = icon('check', 'size-3.5');
+const ICON_FAILED = icon('cross', 'size-3.5');
 const MB = 1024 * 1024;
 
 /**

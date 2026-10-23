@@ -17,8 +17,9 @@ import { MATERIAL_TYPES, materialType, typeShows, typeAllowsGraph } from './mate
 import { MATERIAL_PRESETS, PRESET_CATEGORIES, presetName, presetCategoryLabel, libraryComplete, loadLibraryPresets } from './material-presets.js';
 import { t, has } from './i18n.js';
 import { colorField, SELECT } from './ui-controls.js';
+import { icon } from './icons.js';
 
-const ICON_WARNING = '<svg viewBox="0 0 20 20" class="size-3.5 shrink-0 fill-amber-400 drop-shadow"><path d="M10 2.2 1.3 17.3h17.4L10 2.2Zm-.9 5.3h1.8v4.9H9.1V7.5Zm0 6.3h1.8v1.8H9.1v-1.8Z"/></svg>';
+const ICON_WARNING = icon('warning', 'size-3.5 shrink-0 fill-amber-400 drop-shadow');
 
 // file names of the pictures the material's image nodes wait for (none when the nodes were removed)
 function missingPictures(def) {
@@ -50,11 +51,11 @@ const LIST = 'max-h-[30vh] min-h-12 shrink-0 overflow-auto px-1 pb-1 select-none
 const VIEW_KEY = 'rindr.materials.view';
 const CATEGORY_KEY = 'rindr.materials.category';   // category filter of the library ('' = all)
 const VIEW_ICONS = {
-    list: '<svg viewBox="0 0 16 16" class="size-3.5 fill-current"><rect x="1" y="2.5" width="3" height="3" rx="1.5"/><rect x="6" y="3.25" width="9" height="1.5" rx=".75"/><rect x="1" y="6.5" width="3" height="3" rx="1.5"/><rect x="6" y="7.25" width="9" height="1.5" rx=".75"/><rect x="1" y="10.5" width="3" height="3" rx="1.5"/><rect x="6" y="11.25" width="9" height="1.5" rx=".75"/></svg>',
-    grid: '<svg viewBox="0 0 16 16" class="size-3.5 fill-current"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1"/><rect x="9" y="9" width="5.5" height="5.5" rx="1"/></svg>',
+    list: icon('view-list', 'size-3.5'),
+    grid: icon('view-grid', 'size-3.5'),
 };
-const ICON_RELOAD = '<svg viewBox="0 0 16 16" class="size-3.5 fill-none stroke-current" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13.2 8.6A5.2 5.2 0 1 1 11.6 4"/><path d="M12.4 1.6v3h-3"/></svg>';
-const ICON_CHECKER = '<svg viewBox="0 0 16 16" class="size-3.5 fill-current"><path d="M2 2h4v4H2zM10 2h4v4h-4zM6 6h4v4H6zM2 10h4v4H2zM10 10h4v4h-4z"/><rect x="2" y="2" width="12" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1"/></svg>';
+const ICON_RELOAD = icon('reload', 'size-3.5');
+const ICON_CHECKER = icon('checker', 'size-3.5');
 const INPUT = 'w-14 flex-none rounded bg-white/10 px-1.5 py-0.5 text-right tabular-nums text-white outline-none focus:bg-white/20';
 
 export class MaterialPanel {
@@ -502,7 +503,7 @@ export class MaterialPanel {
                 group = p.group;
                 const open = this.openGroups.has(group);
                 const head = el('button', 'mt-1 flex w-full items-center gap-1 text-left text-white/60 hover:text-white');
-                head.innerHTML = `<svg viewBox="0 0 16 16" class="size-3 fill-current ${open ? 'rotate-90' : ''}"><path d="M6 4l4 4-4 4z"/></svg>`;
+                head.innerHTML = icon('caret-right', `size-3 ${open ? 'rotate-90' : ''}`);
                 head.append(t(`materials.paramGroups.${group}`));
                 head.dataset.group = group;
                 frag.append(head);
