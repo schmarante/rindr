@@ -296,6 +296,7 @@ export function ensureTransform(object) {
         rotation: new THREE.Euler().setFromQuaternion(_q),
         scale: _s.clone(),
         explode: new THREE.Vector3(),
+        rest: object.matrix.clone(),   // matrix before any move (UV mapping projects at rest – uv-mapping.js)
     };
 }
 

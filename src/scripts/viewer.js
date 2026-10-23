@@ -8,7 +8,8 @@ import { ScreenFade } from './screen-fade.js';
 import { HdriRenderService } from './hdri/hdri-service.js';
 import { studioPreset, cloneHdri } from './hdri/hdri-model.js';
 import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
-import { TESS_PRESETS, normalizeQuality, abortStepImport, buildBVHIsolated, fetchStepFile, readStepFile, releaseStepFile, tessellateStep, ImportLimitError } from './step-importer.js';
+import { TESS_PRESETS, normalizeQuality, abortStepImport, buildBVHIsolated, buildGeometryBVHs, fetchStepFile, readStepFile, releaseStepFile, tessellateStep, ImportLimitError } from './step-importer.js';
+import { UvMapper } from './uv-mapping.js';
 import { IMPORT, KI, SPLATS, RASTER, SCENE, TRANSITION, LOD } from './config.js';
 import { importMeshFile, MissingFilesError, MESH_EXTENSIONS } from './mesh-importer.js';
 import { MaterialManager, FADE_MASK } from './material-manager.js';
@@ -894,7 +895,14 @@ const properties = new PropertiesPanel(document.getElementById('properties'), {
     onLightChange: () => { pathTracing.updateLights(); if (ground.enabled) environment.apply({ params: true }); pathTracing.updateCamera(); },
     onEnvironmentChange: opts => { environment.apply(opts); if (opts?.params) pathTracing.updateCamera(); },
     // slider being dragged (environment, light): reduced path tracing like when orbiting the camera
-    onSliderDrag: active => (active ? pathTracing.beginInteraction() : pathTracing.endInteraction()),
+    onSliderDrag: active => {
+        sliderDragging = active;
+        uvMapper.hold(active);   // UV mapping: projected once on release
+        if (active) pathTracing.beginInteraction();
+        else pathTracing.endInteraction();
+        // UV mapping dragged: the path tracer scene once at the end (raster preview meanwhile)
+        if (!active && ptAfterDrag) { ptAfterDrag = false; updatePathTracingScene(); }
+    },
     // dragging a number field: transforms like the gizmo (raster preview, path tracing scene once at the end),
     // camera fields like orbiting (reduced path tracing)
     onFieldDrag: (key, active) => {
@@ -958,6 +966,18 @@ const properties = new PropertiesPanel(document.getElementById('properties'), {
         get: entry => settings.partQuality[nodeOf(entry)] || '',
         inherited: entry => nodeQuality(currentPlan.nodes, currentPlan.nodes[nodeOf(entry)]?.parent ?? -1) || settings.meshQuality,
         set: (entry, q) => setPartQuality(nodeOf(entry), q),
+    },
+    // UV mapping per object (uv-mapping.js): own and inherited mapping of a model/assembly/part
+    uvMapping: {
+        available: entry => (entry.kind === 'node' || entry.kind === 'model') && UvMapper.meshesBelow(entry.object).length > 0,
+        get: entry => {
+            const own = uvMapper.get(entry.object);
+            const from = own ? null : uvMapper.effective(entry.object.parent);
+            // name of the node it comes from: model roots by their file (like the Scene Graph)
+            const rootName = root => displayName(runtimeModels().find(rm => rm.root === root)?.file.name) || t('sceneGraph.model');
+            return { own, inherited: from?.mapping || null, from: from?.owner ? (from.owner.userData.modelRoot ? rootName(from.owner) : from.owner.name || t('sceneGraph.unnamed')) : null };
+        },
+        set: (entry, mapping) => uvMapper.set(entry.object, mapping),
     },
 });
 // environment changed (HDRI, HDRI editor rendering, intensity, light boost, rotation): preview in the panel
@@ -1578,6 +1598,29 @@ materialManager.addEventListener('change', () => { clouds.invalidate(); wool.inv
 materialManager.addEventListener('update', () => { clouds.invalidate(); wool.invalidate(); grass.invalidate(); edges.invalidate(); });
 // edited material (alpha map, side …) can change the shadow; assignments are seen by the batcher's comparison
 materialManager.addEventListener('update', () => markShadowsDirty());
+// UV mapping per object: new geometries in place of the import ones (BVH + tangents in the import workers)
+const uvMapper = new UvMapper({
+    // tile size of the material on a mesh in mm (node graph output; without a graph the import tile)
+    tileOf: material => materialManager.get(material?.userData?.materialId)?.def.graph?.nodes?.find(n => n.type === 'output')?.params?.size ?? 100,
+    build: geometries => buildGeometryBVHs(geometries),
+    makeGeometry,
+    onApplied: () => {
+        invalidatePathTracing();
+        edges.invalidate();
+        markShadowsDirty();
+        contactShadow.markDirty();
+        // decal materials bake over the UV range of their meshes
+        for (const entry of materialManager.list) if (isUvMode(entry.def.graph)) graphApplier.apply(entry);
+        updateHighlight();
+        loadRender.force = true;
+        if (sliderDragging) ptAfterDrag = true;
+        else updatePathTracingScene();
+    },
+});
+let sliderDragging = false, ptAfterDrag = false;
+// cylinder/sphere: the repeats around follow the material's tile size
+materialManager.addEventListener('change', () => uvMapper.refreshMaterials());
+materialManager.addEventListener('update', () => uvMapper.refreshMaterials());
 // subsurface scattering: distance field per geometry with an SSS material (sss-field.js; built on the GPU by sss-sdf.js,
 // loaded on demand – WebGPU only). Checked after material changes and loading (next frame, one pass over the meshes)
 let sssCheck = true;
@@ -2669,16 +2712,22 @@ async function retessellateParts() {
         invalidatePathTracing();
         const geometries = [];
         const old = new Set();
+        const swapped = [];
         for (const m of result.meshes) {
             const mesh = byKey.get(m.key);
             old.add(mesh.geometry);
+            // own UV mapping: its import geometry goes too, the new one is the base from now on
+            if (mesh.userData.uvBase) old.add(mesh.userData.uvBase);
+            delete mesh.userData.uvBase;
             mesh.geometry = geometries[m.geometry] ??= makeGeometry(result.geometries[m.geometry]);
             mesh.matrix.fromArray(m.matrix);   // instancing: alignment to the shared geometry may change
             mesh.updateMatrixWorld();
+            swapped.push(mesh);
         }
         // instancing: unchanged solids may still use an old geometry of a changed one
-        for (const mesh of currentMeshes) old.delete(mesh.geometry);
+        for (const mesh of currentMeshes) { old.delete(mesh.geometry); old.delete(mesh.userData.uvBase); }
         old.forEach(g => { g.boundsTree = null; g.dispose(); });
+        uvMapper.rebased(swapped);
         changed.forEach(si => { solidQualityUsed[si] = target[si]; });
         appliedPartQuality = { ...settings.partQuality };
         await releaseLargeStep();
@@ -3571,6 +3620,8 @@ function disposeRoot(root) {
         if (c.isSplat) c.sorter.dispose();   // Gaussian splats: sort workers
         c.geometry.boundsTree = null;
         c.geometry.dispose();
+        const base = c.userData.uvBase;   // import geometry of a mesh with its own UV mapping (uv-mapping.js)
+        if (base) { base.boundsTree = null; base.dispose(); }
         // three.js (WebGPU) keeps every render object in renderer._objects._renderObjects (Set) until
         // 'dispose' is fired on the object itself – geometry.dispose() is not enough. Without this the
         // whole old model stayed in memory on every re-tessellation/model change (+450 MB per pass).
@@ -3795,7 +3846,8 @@ async function loadModel(reload = false, safe = false) {
         // (structure and mesh order stay the same)
         let keep = null;
         if (reload && rootGroup) {
-            keep = { materials: currentMeshes.map(m => m.material.userData.materialId), transforms: currentNodeGroups.map(g => g.userData.xf || null) };
+            keep = { materials: currentMeshes.map(m => m.material.userData.materialId), transforms: currentNodeGroups.map(g => g.userData.xf || null),
+                mappings: currentNodeGroups.map(g => g.userData.mapping || null), rootMapping: rootGroup.userData.mapping || null };
         }
         invalidatePathTracing();
         loadRender.active = true;
@@ -3970,6 +4022,12 @@ async function loadModel(reload = false, safe = false) {
         keep?.transforms.forEach((xf, i) => {
             if (xf && nodeGroups[i]) { nodeGroups[i].userData.xf = xf; applyTransform(nodeGroups[i]); }
         });
+        // and the UV mappings (uv-mapping.js)
+        if (keep && (keep.rootMapping || keep.mappings.some(Boolean))) {
+            if (keep.rootMapping) root.userData.mapping = keep.rootMapping;
+            keep.mappings.forEach((mapping, i) => { if (mapping && nodeGroups[i]) nodeGroups[i].userData.mapping = mapping; });
+            uvMapper.apply(root);
+        }
         if (reload) exploder.refresh();   // new groups: recompute explode directions
         materialManager.pruneUnused();
         // ground = lowest vertex. Not bbox.min.y: the boxes of rotated meshes (glTF nodes, rotated STEP
@@ -4542,6 +4600,7 @@ const sceneStateContext = {
     root: () => rootGroup,
     rootCenterOffset: () => rootGroup?.userData.centerOffset || new THREE.Vector3(),
     ensureTransform, applyTransform, refreshSceneGraph: () => refreshSceneGraph(),
+    applyMappings: root => uvMapper.apply(root),
     runtimeModels: () => runtimeModels(),
     missingModels: () => missingModels,
     // saved camera views (scene state)
@@ -4940,7 +4999,7 @@ if (new URLSearchParams(location.search).has('debug')) {
         // material node graphs: bake an input into a PNG / render a description on the thumbnail sphere (debug-graph.js)
         bakeGraph: (graph, opts) => import('./debug-graph.js').then(m => m.bakeGraphImage(graphApplier, graph, opts)),
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel.thumbs, def)),
-        batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+        batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 }
 
 // --- Resize ---

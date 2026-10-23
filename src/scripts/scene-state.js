@@ -47,6 +47,10 @@ function modelState(rm, sceneGraph) {
     // root: translation relative to the automatic centring
     if (rootXf) transforms.model = { offset: vecs(rootXf.offset.clone().sub(rm.root.userData.centerOffset || new THREE.Vector3())), rotation: rot(rootXf), ...scaleOf(rootXf) };
     rm.nodeGroups.forEach((g, i) => { const xf = g.userData.xf; if (xf) transforms['n' + i] = { offset: vecs(xf.offset), rotation: rot(xf), ...scaleOf(xf) }; });
+    // UV mapping per object (uv-mapping.js): model root 'model', groups 'n<i>'
+    const mappings = {};
+    if (rm.root.userData.mapping) mappings.model = { ...rm.root.userData.mapping };
+    rm.nodeGroups.forEach((g, i) => { if (g?.userData.mapping) mappings['n' + i] = { ...g.userData.mapping }; });
     // material assignments: only deviations from the import default
     const assignments = {};
     for (const m of rm.meshes) {
@@ -63,6 +67,7 @@ function modelState(rm, sceneGraph) {
         hidden: own(sceneGraph.hiddenModel),
         deleted: own(sceneGraph.deleted),
         assignments,
+        ...(Object.keys(mappings).length ? { mappings } : {}),
         ...(rm.morphs && Object.keys(rm.morphs).length ? { morphs: rm.morphs } : {}),
         ...(rm.animation ? { animation: rm.animation } : {}),
         ...(rm.splatLook ? { splatLook: rm.splatLook } : {}),   // Gaussian splats: light (baked/surface/volume), override material
@@ -124,6 +129,15 @@ export function applyModelState(ctx, rm, chunk, idMap, warnings) {
             }
             ctx.applyTransform(o);
         }
+        // UV mappings (older scenes: none) – projected once for the whole model
+        const mappings = chunk.mappings || {};
+        let mapped = false;
+        for (const [key, o] of all) {
+            if (!o) continue;
+            const m = mappings[key];
+            if (m) { o.userData.mapping = { ...m }; mapped = true; } else if (o.userData.mapping) { delete o.userData.mapping; mapped = true; }
+        }
+        if (mapped) ctx.applyMappings?.(rm.root);
     }
     return {
         hidden: (chunk.hidden || []).map(k => addKey(k, rm.prefix)),

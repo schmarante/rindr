@@ -160,6 +160,25 @@ function atlasCapacityPatch() {
   };
 }
 
+// Stable kernel text (Oct. 2026, user: mapping changes took long in HQ): the texture info uniform array of the BVH
+// data is created anew with every path tracer scene and was unnamed → three names it NodeBuffer_<node id>, the id
+// differs per scene → the megakernel's WGSL differed only in that name and missed the browser's shader cache: every
+// scene rebuild (UV mapping, part quality, added model) compiled ~10 s instead of ~0.1 s. The library's own comment
+// says the node "must be named textureInfo" – it just never set the name.
+function stableKernelPatch() {
+  return {
+    name: 'rindr-stable-kernel',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.replace(/\\/g, '/').split('?')[0];
+      if (!file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/PathtracerBVHComputeData.js')) return null;
+      const from = `const textureInfo = uniformArray( textureAtlas.textureInfo, 'uvec4' );`;
+      if (code.split(from).length !== 2) this.error('rindr-stable-kernel: textureInfo uniform not found exactly once in PathtracerBVHComputeData.js (three-gpu-pathtracer changed?)');
+      return { code: code.replace(from, () => `const textureInfo = uniformArray( textureAtlas.textureInfo, 'uvec4' ).setName( 'textureInfo' );   // RINDR: stable WGSL name`), map: null };
+    },
+  };
+}
+
 // Material stand-ins in three-gpu-pathtracer (src/scripts/pt-stand-in.js, RindrMaterial in toon.js – fails loudly if
 // the library changed, check on every update): the material packing reads userData.ptStandIn over each material.
 // - subsurface look: translucent share as rough transmission, gloss as clearcoat, colour absorbed over the
@@ -509,7 +528,7 @@ export default defineConfig({
     headers: isolationHeaders,
   },
   vite: {
-    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), ptStandInPatch(), glassBouncesPatch(), cloudPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch()],
+    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), ptStandInPatch(), glassBouncesPatch(), cloudPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch()],
     server: { headers: isolationHeaders },
     preview: { headers: isolationHeaders },
     worker: { format: 'es' },
