@@ -9,9 +9,12 @@
 //   master → client  scene        { sceneId, state, files }       scene state + model files ({ path, file }); the master
 //                                 follows the bytes sent per client (transport send option onProgress, rtc.js)
 //   client → master  scene-ready  { sceneId } / scene-error { sceneId, message }
-//   master → client  job          { jobId, sceneId, bucket: { id, x, y, w, h }, fullW, fullH, samples, matte }
-//                                 matte: grey value of a plain background (transparent image passes) or null
-//   client → master  progress     { jobId, bucketId, p }  ·  result { jobId, bucketId, data: Float32Array }
+//   master → client  job          { jobId, sceneId, bucket: { id, x, y, w, h }, fullW, fullH, samples, matte, passes }
+//                                 matte: grey value of a plain background (transparent image passes) or null;
+//                                 passes: the bucket's light passes along (light-passes.js) – true, or 'matte'
+//                                 (transparent PNG: only MATTE_PASSES)
+//   client → master  progress     { jobId, bucketId, p }  ·  result { jobId, bucketId, data: Float32Array, passes? }
+//                                 passes: means pixel-major (w·h·PASS.COUNT·rgb, Float32Array; 'matte': w·h·2·rgb)
 //                                 partial { jobId, bucketId, data, samples }   intermediate state at 1, 2, 4 … samples
 //                                 job-error { jobId, bucketId, message }
 //   master → client  cancel       { jobId }                       stop the bucket, forget the job

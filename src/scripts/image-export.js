@@ -5,7 +5,8 @@
 // the render clients (docs/distributed.md) – the window closes so the labelled buckets can be watched, status and ✕
 // bottom left, the file is saved when the image is done. Panel style like the other windows, no darkening.
 // The image itself comes from the viewer (ctx.exportImage → canvas; transparency: exportImage/composeMatte in viewer.js;
-// ctx.distributed.render).
+// ctx.distributed.render). EXR/PSD: one layer per light pass – ctx.renderPasses renders and saves them; with it the
+// transparent PNG too (one render, alpha from the transparency pass – returned, saved here).
 import { t } from './i18n.js';
 import { dialogOpen } from './dialog.js';
 import { icon } from './icons.js';
@@ -24,6 +25,7 @@ export const SAMPLE_CHOICES = [16, 32, 64, 128, 256, 512, 1024, 2048];
 
 export function createImageExport(ctx) {
     const state = { format: 'png', transparent: true, scale: 1, samples: 0, distributed: false, busy: false };
+    const layered = () => !!ctx.renderPasses && (state.format === 'exr' || state.format === 'psd');
     const SCALES = [1, 2, 3, 4];
     const root = document.createElement('div');
     root.className = 'pointer-events-none fixed inset-0 z-40 flex items-center justify-center p-4 text-xs text-white/90';
@@ -59,7 +61,7 @@ export function createImageExport(ctx) {
         // format
         const formats = document.createElement('div');
         formats.className = 'flex gap-1';
-        for (const f of ['png', 'jpg']) {
+        for (const f of ctx.renderPasses ? ['png', 'jpg', 'exr', 'psd'] : ['png', 'jpg']) {
             const b = document.createElement('button');
             b.className = `${BTN} ${state.format === f ? 'bg-sky-500/40 text-white' : 'bg-white/10 text-white/80 hover:bg-white/20'}`;
             b.textContent = f.toUpperCase();
@@ -68,6 +70,13 @@ export function createImageExport(ctx) {
             formats.append(b);
         }
         body.append(row(t('imageExport.format'), formats));
+        // EXR/PSD: what the layers are
+        if (layered()) {
+            const hint = document.createElement('div');
+            hint.className = 'text-white/40';
+            hint.textContent = t('imageExport.passesLayered');
+            body.append(hint);
+        }
         // transparent background (PNG) – also distributed (two distributed passes in front of different backgrounds)
         if (state.format === 'png') {
             const label = document.createElement('label');
@@ -82,7 +91,7 @@ export function createImageExport(ctx) {
             text.append(t('imageExport.transparent'));
             const hint = document.createElement('div');
             hint.className = 'text-white/40';
-            hint.textContent = t('imageExport.transparentHint');
+            hint.textContent = t(ctx.renderPasses ? 'imageExport.transparentHintPasses' : 'imageExport.transparentHint');
             text.append(hint);
             label.append(box, text);
             body.append(label);
@@ -182,9 +191,11 @@ export function createImageExport(ctx) {
 
     // the window gets out of the way: progress and ✕ in the status bottom left (viewer.js), the file comes at the end
     async function run() {
-        if (state.distributed) return runDistributed();
         const { format, scale, samples } = state;
         const transparent = format === 'png' && state.transparent;
+        // transparent PNG: one render with the passes it needs (else two renders in front of black and grey)
+        if (layered() || (transparent && ctx.renderPasses)) return runPasses();
+        if (state.distributed) return runDistributed();
         close();
         let canvas;
         try {
@@ -214,6 +225,20 @@ export function createImageExport(ctx) {
         const type = format === 'png' ? 'image/png' : 'image/jpeg';
         const blob = canvas instanceof Blob ? canvas : await new Promise(resolve => canvas.toBlob(resolve, type, 0.92));
         await saveBlob(blob, `${ctx.getName() || 'rindr'}.${format}`);
+    }
+
+    // EXR/PSD: the light passes rendered (distributed or here), the file saved at the end; transparent PNG: returns it
+    async function runPasses() {
+        const { format, scale } = state;
+        close();
+        let png;
+        try {
+            png = await ctx.renderPasses(scale, state.samples || ctx.samples(), state.distributed, format);
+        } catch (err) {
+            if (err?.name !== 'AbortError') ctx.onError?.(err);
+            return;
+        }
+        if (png) await saveBlob(png, `${ctx.getName() || 'rindr'}.png`);
     }
 
     return {

@@ -3331,6 +3331,8 @@ const imageExport = lazy(async () => (await import('./image-export.js')).createI
         render: (scale, samples, transparent) => renderDistributedImage(scale, samples, transparent),
         manage: () => { setSetupOpen(true); setup.show('distributed'); },
     },
+    // EXR/PSD with a layer per light pass: rendered as buckets – on this computer or distributed – then saved
+    renderPasses: renderMaster && pathTracing.lightPassesSupported && ((scale, samples, distributed, format) => renderLightPasses(scale, samples, distributed, format)),
 }));
 // render (teapot) right next to the view choice
 viewModeBar.addCompanion({ icon: ICON_TEAPOT, title: t('toolbar.render'), onClick: () => { if (rootGroup) imageExport.get().then(dialog => dialog.open()); else showStatus(t('status.loadModelFirst')); } });
@@ -5245,7 +5247,7 @@ if (new URLSearchParams(location.search).has('debug')) {
         // material node graphs: bake an input into a PNG / render a description on the thumbnail sphere (debug-graph.js)
         bakeGraph: (graph, opts) => import('./debug-graph.js').then(m => m.bakeGraphImage(graphApplier, graph, opts)),
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel.thumbs, def)),
-        batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+        batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 }
 
 // --- Resize ---
@@ -5350,7 +5352,8 @@ function updatePathTracingStatus() {
             break;
         case 'denoising':
             value = t('pathtracing.percent', { value: pct });
-            detail = samples;
+            // light passes: one after the other
+            detail = s.passes ? t('lightMix.status.denoising', { n: Math.min(s.passes.done + 1, s.passes.total), total: s.passes.total }) : samples;
             break;
         case 'done':
             value = t('pathtracing.percent', { value: 100 });
@@ -5782,14 +5785,19 @@ function initDistributed() {
                 return pathTracing.renderRegion(region, samples, options);
             },
         },
-        onBucket: (bucket, data) => distDisplay.put(bucket, data),
+        onBucket: (bucket, data, final, passes) => {
+            // light passes (light-mix.js) into their textures
+            if (passes && passMix) passMix.put(bucket, passes);
+            distDisplay.put(bucket, data);
+        },
         onChange: () => distChanged(),
         onDone: stats => {
             controls.enabled = true;
             distJob?.resolve({ data: distDisplay.data, width: distDisplay.width, height: distDisplay.height });
             distJob = null;
             const names = [...stats.perClient].map(([id, n]) => `${id === LOCAL_ID ? t('setup.distributed.thisComputer') : renderMaster.clients.get(id)?.name || id}: ${n}`);
-            distLastResult = t('setup.distributed.done', { time: (stats.ms / 1000).toFixed(1), buckets: stats.buckets, who: names.join(' · ') });
+            distLastResult = renderMaster.job?.localOnly ? t('setup.distributed.doneLocal', { time: (stats.ms / 1000).toFixed(1), buckets: stats.buckets })
+                : t('setup.distributed.done', { time: (stats.ms / 1000).toFixed(1), buckets: stats.buckets, who: names.join(' · ') });
             distChanged();
         },
     });
@@ -6026,6 +6034,132 @@ async function renderDistributedImage(scale, samples, transparent = false) {
         }
     }
 }
+// Render window, EXR/PSD (docs/pathtracer.md "Licht-Passes"): the buckets with their light passes – on this computer alone
+// (localOnly) or distributed – into their GPU textures (light-mix.js), the image injected as the path tracer's finished
+// one; the denoiser then denoises the passes instead of the image (the picture shows their sum), afterwards the file is
+// written with one layer per pass (light-mix-export.js) and saved.
+// Transparent PNG (format 'png'): the same buckets with only the picture without its background and the transparency
+// (MATTE_PASSES) – one render instead of two in front of black and grey (exportPasses, still the way without the
+// megakernel): the mix shows the picture in front of black, then in front of grey (grey · transparency), both captured
+// through the image chain like the shots of two renders → composeMatte (composeMix). Returns the PNG; afterwards the
+// rendered picture with its background is injected again – the view keeps the render like after an opaque export.
+let lightMix = null;      // LightMix (reused; its textures live as long as its picture is shown)
+let passMix = null;       // the mix receiving a running job's passes
+async function renderLightPasses(scale, samples, distributed, format) {
+    const matte = format === 'png';
+    releaseExportScale();   // the screen size again before measuring it
+    const mode = viewMode;
+    const keep = mode === 'hq' && ['rendering', 'denoise-loading', 'denoising', 'done'].includes(pathTracing.getStatus().phase)
+        ? await pathTracing.snapshotImage().catch(() => null) : null;
+    await ensurePathTracer();
+    await pathTracerSettled();
+    const ratio = renderer.getPixelRatio();
+    if (scale !== 1) { renderer.setPixelRatio(ratio * scale); lens.setPixelScale(scale); }
+    let outcome = null, release = null;
+    const render = distRender = { cancelled: false };
+    const size = () => {
+        const buffer = renderer.getDrawingBufferSize(new THREE.Vector2());
+        const rs = pathTracing.pathTracer.renderScale;
+        return { w: Math.floor(rs * buffer.x), h: Math.floor(rs * buffer.y) };
+    };
+    try {
+        loadRender.force = true;
+        await nextFrame(); await nextFrame();   // canvas and path tracer at the export size
+        const [{ LightMix }, { PASS, MATTE_PASSES, PASS_BYTES_PER_PIXEL }] = await Promise.all([import('./light-mix.js'), import('./light-passes.js')]);
+        const { w, h } = size();
+        // the passes on the GPU (at most PASS.COUNT half-float textures of the picture's size) within the device's budget
+        const need = w * h * 8 * (matte ? MATTE_PASSES.length : PASS.COUNT);
+        if (need > memoryBudget() / 2) throw new Error(t('lightMix.tooLarge', { size: formatBytes(need, getLocale()) }));
+        // a mix still shown ends first – begin() frees its textures, the picture would sample destroyed ones (GPU error)
+        pathTracing.setLightMix(null);
+        lightMix ??= new LightMix(renderer);
+        lightMix.begin(w, h, lightSlotNames(), { layout: matte ? MATTE_PASSES : null });
+        // the kernel with the passes compiled first (status "preparing the path tracer") – then the buckets start at once
+        await pathTracing.prepareLightPasses(() => render.cancelled);
+        if (render.cancelled) throw new DOMException('Render cancelled', 'AbortError');
+        passMix = lightMix;
+        const preview = keep && keep.w === w && keep.h === h ? { data: keep.data, width: keep.w, height: keep.h } : null;
+        // on this computer alone: buckets as large as a share of the memory budget allows for the kernel's pass buffer
+        // (128–512 px) – small ones left most of the GPU idle (960 × 540, 128 samples: 9.1 s with 128 px, 5.8 s with 512)
+        const local = Math.floor(Math.sqrt(memoryBudget() / 32 / PASS_BYTES_PER_PIXEL) / 64) * 64;
+        const image = await runDistributedJob(size, samples, preview, { passes: matte ? 'matte' : true, localOnly: !distributed,
+            ...(distributed ? {} : { bucketSize: Math.min(Math.max(local, 128), 512) }) });
+        passMix = null;
+        if (render.cancelled) throw new DOMException('Render cancelled', 'AbortError');
+        await pathTracing.injectImage(image.data, image.width, image.height, samples);
+        pathTracing.setLightMix(lightMix);
+        release = lightMix.hold();   // the passes stay until the file is written, even when a restart ends the mix
+        endDistributedView();
+        controls.enabled = false;   // the camera stays until then (a move would end the mix)
+        outcome = 'done';
+        // the passes denoised (status: purple, "pass n/total"; not waiting for the fade of the picture shown before) –
+        // another restart (scene changed) ends the mix: its passes are saved as they are
+        while (pathTracing.lightMix === lightMix && !lightMix.complete && pathTracing.getStatus().phase !== 'done') {
+            if (render.cancelled) throw new DOMException('Render cancelled', 'AbortError');
+            const st = pathTracing.getStatus();
+            if (st.phase === 'error') throw new Error(st.error || t('viewer.ki.ptError'));
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        if (!matte) return await saveLayered(lightMix, format);
+        const png = await composeMix(lightMix);
+        release();
+        release = null;
+        // the view keeps the render: its picture with the background (denoised as usual) instead of the mix
+        await pathTracing.injectImage(image.data, image.width, image.height, samples);
+        return png;
+    } catch (err) {
+        if (!render.cancelled && err?.name !== 'AbortError') throw err;
+        if (outcome !== 'done') outcome = 'cancelled';
+        throw new DOMException('Render cancelled', 'AbortError');
+    } finally {
+        distRender = null;
+        passMix = null;
+        controls.enabled = true;
+        release?.();
+        if (outcome !== 'done') lightMix?.disposeTextures();
+        if (scale !== 1) {
+            if (outcome === 'done') holdExportScale(ratio);   // the picture stays at the export size (holdExportScale)
+            else restoreExportScale(ratio);
+        }
+        loadRender.force = true;
+        if (outcome === 'cancelled' && mode !== 'hq') setViewMode(mode);
+    }
+}
+// the transparent PNG from a matte mix: in front of black (with the image look, and neutral) and in front of grey
+async function composeMix(mix) {
+    const { grey, greyY } = matteGrey();
+    try {
+        mix.setBackground(0);
+        pathTracing.showNow();   // no fade between the two backgrounds
+        const black = await captureNeutral();
+        const color = await exportFrame();
+        mix.setBackground(grey);
+        pathTracing.showNow();
+        const greyShot = await captureNeutral();
+        return composeMatte(black, greyShot, greyY, color);
+    } finally {
+        mix.setBackground(0);
+    }
+}
+// names of the light slots (light-passes.js): the path tracer's lights in its order – beyond the last slot they share it
+function lightSlotNames() {
+    const lights = [];
+    scene.traverseVisible(o => { if (o.isRectAreaLight || o.isSpotLight || o.isPointLight || o.isDirectionalLight) lights.push(o); });
+    const names = lights.slice(0, 4).map((l, i) => l.name || t('lightMix.light', { n: i + 1 }));
+    if (lights.length > 4) names[3] = t('lightMix.moreLights');
+    return names;
+}
+// the passes and the helper passes as one file with layers (EXR, PSD), straight into the downloads
+async function saveLayered(mix, format) {
+    const name = sceneFileName?.replace(/\.scene\.json$|\.json$/i, '') || model?.name.replace(/\.[^.]+$/, '') || 'rindr';
+    const [{ encodeLightMix }, helpers] = await Promise.all([import('./light-mix-export.js'), pathTracing.helperPasses(mix.width, mix.height)]);
+    const blob = await encodeLightMix(mix, helpers, renderer, format);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${name}.${format}`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
 // one raster frame of the view (fisheye included) into the bucket display's HDR target
 function drawDistPreview(target) {
     renderer.setRenderTarget(target);
@@ -6111,11 +6245,14 @@ function updateDistStatus() {
     const running = renderMaster.running;
     const workers = new Set([...job.pending.values()].map(p => p.client)).size;
     const elapsed = ((running ? performance.now() : job.t0 + (job.ms || 0)) - job.t0) / 1000;
+    // only this computer (light passes without distributing): no "distributed" in the status
     let detail = running
-        ? t('setup.distributed.statusRunning', { done: job.done, total: job.total, workers, time: formatRenderTime(elapsed * 1000) })
+        ? job.localOnly ? t('setup.distributed.statusRunningLocal', { done: job.done, total: job.total, time: formatRenderTime(elapsed * 1000) })
+            : t('setup.distributed.statusRunning', { done: job.done, total: job.total, workers, time: formatRenderTime(elapsed * 1000) })
         : distLastResult || '';
     if (distPass && running) detail = `${t(`imageExport.passBackground.${distPass.n === 0 ? 'black' : 'grey'}`)} · ${detail}`;
-    const label = distPass ? t('setup.distributed.titlePass', { n: distPass.n + 1, total: distPass.total }) : t('setup.distributed.title');
+    const label = distPass ? t('setup.distributed.titlePass', { n: distPass.n + 1, total: distPass.total })
+        : job.localOnly ? t('render.running') : t('setup.distributed.title');
     const value = t('pathtracing.percent', { value: Math.floor(job.done / job.total * 100) });
     // the scene on its way to each client: one bar per client in its colour – bytes sent (computers in the network), then
     // loading until it reports ready (tabs of this browser get the files at once)

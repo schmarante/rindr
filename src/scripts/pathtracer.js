@@ -20,9 +20,11 @@ import { ImageFade } from './image-fade.js';
 import { fisheyeParams } from './fisheye.js';
 import { PT_MOTION } from './pt-motion.js';
 import { GLASS_SHADOW } from './glass-shadow.js';
+import { GLASS_SPLIT } from './glass-split.js';
 import { t } from './i18n.js';
 import { debugLog } from './log.js';
 import { setBucketRegion } from './distributed/bucket.js';
+import { preparePassBuffer, setPassesEnabled, readPasses } from './light-passes.js';
 
 // environments up to this size get their importance-sampling table from the library directly (updateEnvironment)
 const SMALL_ENV_PIXELS = 512 * 512;
@@ -89,7 +91,10 @@ export class PathTracingView {
         this.glassShadow = { ...PATHTRACING.glassShadow };   // shadows of glass (setGlassShadow, glass-shadow.js)
         this.sceneSize = 1;             // size of the scene (viewer) – the fringe fades relative to it
         this._applyGlassShadow();
+        GLASS_SPLIT.enabled.value = PATHTRACING.glassSplit ? 1 : 0;
         this._blend = { last: 0, frame: 0, view: new Matrix4(), proj: new Matrix4(), rest: 0, prepared: false };
+        this.lightMix = null;           // light mix of a render with light passes (setLightMix)
+        this.onLightMixEnd = null;      // called when it ends (viewer: closes its window)
     }
 
     // Large compute shaders (megakernel ~110 KB WGSL) via createComputePipelineAsync. three.js creates compute
@@ -167,6 +172,7 @@ export class PathTracingView {
         // OIDN's albedo/normal guides from the same kernel instead of the library's raster pass (perspective camera:
         // did not fit the fisheye – noise stayed, ghost edges –, nor depth of field or mirrors/glass)
         this.denoiseGuides = new GuideKernel({ ...PATHTRACING.denoiseMotion, samples: PATHTRACING.denoiseGuideSamples });
+        this._GuideKernel = GuideKernel;   // helper passes of a light pass render (helperPasses)
         this.denoiser._renderAuxiliaryBuffers = (width, height) => {
             const guides = this.denoiseGuides, pt = this.pathTracer;
             guides.trace(this.renderer, pt._bvhData, width, height, pt.camera);
@@ -178,8 +184,10 @@ export class PathTracingView {
         const fsr = this.upscaler;
         this._imageChain = {
             init: renderer => fsr.init(renderer),
-            dispose: () => { fsr.dispose?.(); this.kuwahara.dispose(); this.motionDenoiser.dispose(); this.guides.dispose(); this.denoiseGuides.dispose(); this.imageFade.dispose(); },
+            dispose: () => { fsr.dispose?.(); this.kuwahara.dispose(); this.motionDenoiser.dispose(); this.guides.dispose(); this.denoiseGuides.dispose(); this._helpers?.dispose(); this.imageFade.dispose(); },
             upscale: (texture, camera) => {
+                // light mix of a render with light passes (light-mix.js): its picture instead of the path tracer's
+                if (this.lightMix) texture = this.lightMix.texture() ?? texture;
                 texture = this._filter(texture);
                 if (this.upscaleEnabled) texture = fsr.upscale(texture, camera);
                 return this._fade(texture, camera);
@@ -187,7 +195,12 @@ export class PathTracingView {
         };
         // the denoise waits until the guide kernel is compiled (_prepareDenoiser)
         const denoiseUpdate = this.denoiser.update.bind(this.denoiser);
-        this.denoiser.update = target => (this._denoisePrep && !this._denoisePrep.done ? this.denoiser.texture : denoiseUpdate(target));
+        this.denoiser.update = target => {
+            if (this._denoisePrep && !this._denoisePrep.done) return this.denoiser.texture;
+            // light passes: each pass is denoised instead of the image (the mix is made of them)
+            if (this.lightMix) { this._denoiseLightMix(); return this.denoiser.texture; }
+            return denoiseUpdate(target);
+        };
         pt.setDenoiser(this.denoiseEnabled ? this.denoiser : null);
         pt.setUpscaler(this._imageChain);
         // restart while the image is shown (environment, materials, lights, objects …): the raster image used to cover
@@ -199,6 +212,7 @@ export class PathTracingView {
             if (this._maxSamplesLater != null) { const v = this._maxSamplesLater; this._maxSamplesLater = null; pt.maxSamples = v; }
             reset();
             this._restarts = (this._restarts || 0) + 1;   // image filter cache (_filter)
+            if (this.lightMix) this.setLightMix(null);   // a new picture: the mix is over
             if (this.ready && !this._motion && !this.interacting) {
                 this._restarted = true;
                 this.onRestart?.();
@@ -283,6 +297,12 @@ export class PathTracingView {
     setGlassShadow(options) {
         Object.assign(this.glassShadow, options);
         this._applyGlassShadow();
+        this.reset();
+    }
+
+    /** Reflection and refraction both traced at the first glass hit (glass-split.js) */
+    setGlassSplit(on) {
+        GLASS_SPLIT.enabled.value = on ? 1 : 0;
         this.reset();
     }
 
@@ -495,8 +515,10 @@ export class PathTracingView {
      * region = { x, y, w, h, fullW, fullH } (pixels, y from the top); signal: AbortSignal; onProgress(0…1);
      * onPartial(pixels, samplesSoFar): intermediate states at 1, 2, 4, 8 … samples (user's wish: a preview of the bucket
      * sooner than its last sample – doubling keeps the readbacks few: 7 for 128 samples)
+     * passes: also the light passes (light-passes.js) – returns { data, passes } then (passes: means, pixel-major
+     * w·h·PASS.COUNT·rgb, rows top to bottom; 'matte': only MATTE_PASSES of a transparent PNG)
      */
-    async renderRegion(region, samples, { signal, onProgress, onPartial } = {}) {
+    async renderRegion(region, samples, { signal, onProgress, onPartial, passes = false } = {}) {
         if (!this.ready) throw new Error('path tracer not ready');
         const { x, y, w, h, fullW, fullH } = region;
         const pt = this.pathTracer, backend = pt._pathTracer, camera = pt.camera;
@@ -512,10 +534,15 @@ export class PathTracingView {
             setBucketRegion(region);
             backend.setSize(w, h);
             backend.maxSamples = samples;
+            // the kernel variant with the passes (or back to the normal one) – a new node: compiled asynchronously
+            // the first time (the loop below waits)
+            backend.kernel.setLightPasses?.(!!passes);
+            if (passes) { preparePassBuffer(w * h); setPassesEnabled(true); }
             pt.updateCamera();   // projection with the offset, reset (seed from the start like a full-frame render)
             const progress = () => backend._completedSamples + backend._tileProgress;
             let nextPartial = 1;
-            while (progress() < samples) {
+            // a compile started by this loop (kernel variant) skips the dispatches but counts them: go on until it is done
+            while (progress() < samples || this._compiling || this._compiled) {
                 if (signal?.aborted) throw new DOMException('Bucket aborted', 'AbortError');
                 if (this._compiling) { await wait(50); continue; }   // kernel compiling asynchronously: wait
                 if (this._compiled) { this._compiled = false; pt.reset(); }   // skipped dispatches counted as samples
@@ -535,8 +562,10 @@ export class PathTracingView {
                     while (nextPartial <= done) nextPartial *= 2;
                 }
             }
-            return await this._readOutput(backend.outputTarget, w, h);
+            const data = await this._readOutput(backend.outputTarget, w, h);
+            return passes ? { data, passes: await readPasses(this.renderer, w, h, samples, passes === 'matte') } : data;
         } finally {
+            setPassesEnabled(false);
             camera.clearViewOffset();
             // the aspect from before – unless it was set meanwhile (window resized while this bucket ran: the old one
             // would distort the view until the next resize)
@@ -569,6 +598,7 @@ export class PathTracingView {
     async injectImage(data, w, h, samples) {
         if (!this.ready) throw new Error('path tracer not ready');
         const pt = this.pathTracer, backend = pt._pathTracer, gpu = this.renderer.backend;
+        backend.kernel.setLightPasses?.(false);   // the rounds below play through the normal kernel
         if (!pt.material.initialized) { pt.material.init(this.renderer); pt.material.initialized = true; }
         pt.maxSamples = samples;
         backend.setSize(w, h);
@@ -592,6 +622,98 @@ export class PathTracingView {
         await gpu.device.queue.onSubmittedWorkDone();
     }
 
+    /** light passes need the megakernel (its patched variant – light-passes.js) */
+    get lightPassesSupported() {
+        return this.supported && PATHTRACING.megakernel;
+    }
+
+    /**
+     * Light mix of a render with light passes (light-mix.js) – shown instead of the path tracer's picture until the next
+     * restart; the denoiser denoises its passes (_denoiseLightMix) instead of the image. null ends it. Set right after
+     * injectImage (that restart would end it).
+     */
+    setLightMix(mix) {
+        const before = this.lightMix;
+        this.lightMix = mix || null;
+        this._mixDenoise = null;
+        if (before && before !== mix) { this._mixAbort?.abort(); before.disposeTextures(); this.onLightMixEnd?.(); }
+        if (mix) this.denoiser.reset();   // denoise again: its passes instead of the image
+    }
+
+    // the light passes through OIDN, one after the other, with the same guides (traced at the picture's size) – the
+    // denoiser counts as running meanwhile (status, pass segments), complete at the end; a restart aborts (reset)
+    _denoiseLightMix() {
+        const d = this.denoiser, mix = this.lightMix;
+        if (d._running || d._complete || !mix) return;
+        d._running = true;
+        const abort = this._mixAbort = new AbortController();
+        d._abort = () => abort.abort();
+        this._mixDenoise = { n: 0, total: 1 };
+        (async () => {
+            const pt = this.pathTracer;
+            const guides = this.denoiseGuides;
+            guides.trace(this.renderer, pt._bvhData, mix.width, mix.height, pt.camera);
+            const unet = await d._initUNet(true);
+            if (abort.signal.aborted) return;
+            await mix.denoise(unet, guides.albedo, guides.normal, {
+                signal: abort.signal,
+                onProgress: (p, n, total) => { this._mixDenoise = { n, total }; },
+            });
+        })().catch(err => {
+            if (err?.name !== 'AbortError') console.warn('[Pathtracer] light pass denoise failed:', err);
+        }).finally(() => {
+            if (abort.signal.aborted || this.lightMix !== mix) return;
+            d._running = false;
+            d._complete = true;
+            d._abort = null;
+            this._mixDenoise = null;
+        });
+    }
+
+    /**
+     * The kernel variant with the light passes compiled (asynchronously, once per scene data) before a job – its buckets
+     * would otherwise wait for it one by one. Returns when it is ready; the normal kernel comes back with the next render().
+     */
+    async prepareLightPasses(cancelled = () => false) {
+        const pt = this.pathTracer, backend = pt._pathTracer;
+        if (!backend.kernel?.setLightPasses) return;
+        if (!pt.material.initialized) { pt.material.init(this.renderer); pt.material.initialized = true; }
+        this.regionBusy = true;
+        try {
+            if (!backend.kernel.setLightPasses(true)) return;   // already the variant (its node compiled)
+            // one dispatch creates its pipeline (a finished image dispatches nothing – start over)
+            backend.reset();
+            this._tracing = true;
+            try { backend.update(); } finally { this._tracing = false; }
+            for (let i = 0; this._compiling && i < 6000 && !cancelled(); i++) await new Promise(resolve => setTimeout(resolve, 50));
+            this._compiled = false;
+        } finally {
+            this.regionBusy = false;
+        }
+    }
+
+    /**
+     * Helper passes of the picture (pt-guides.js, aov): depth, coverage, ids, world normal, albedo – traced at w × h with
+     * the path tracer's camera (several rays per pixel like the denoiser's guides). Returns the guide kernel with its
+     * textures (position, normal, albedo).
+     */
+    async helperPasses(w, h) {
+        const pt = this.pathTracer;
+        const helpers = this._helpers ??= new this._GuideKernel({ ...PATHTRACING.denoiseMotion, samples: PATHTRACING.helperPassSamples, aov: true });
+        // the first dispatch creates the pipeline – asynchronously (_ownCompile), the dispatch is skipped meanwhile
+        const own = this._ownCompile = [];
+        try {
+            const { kernel, dispatch } = helpers.update(pt._bvhData, w, h, pt.camera);
+            this.renderer.compute(kernel, dispatch);
+        } finally {
+            this._ownCompile = null;
+        }
+        await Promise.all(own);
+        helpers.trace(this.renderer, pt._bvhData, w, h, pt.camera);
+        await this.renderer.backend.device.queue.onSubmittedWorkDone();
+        return helpers;
+    }
+
     // Render one frame. Returns false if path tracing is not possible (yet).
     // rasterize: draws the raster image. As long as the path tracer has no complete image yet
     // (fadeState < 1), it is drawn AFTER the path tracer and covers it completely.
@@ -601,6 +723,8 @@ export class PathTracingView {
     render(rasterize) {
         if (!this.enabled || !this.ready || this.interacting || this.error || this.suspended || this.regionBusy) return false;
         const pt = this.pathTracer;
+        // after buckets with light passes: the normal kernel again (cached – compiled once)
+        if (pt._pathTracer.kernel?.setLightPasses?.(false)) pt.reset();
         // kernel compiling asynchronously: raster image meanwhile; afterwards start over (the frames without
         // dispatch were counted as samples)
         if (this._compiling) { rasterize(); return true; }
@@ -808,6 +932,11 @@ export class PathTracingView {
         }
         if (cover) this.onRestart?.();
         return this.imageFade.render(texture, cover ? 1 : k, Math.max(size.x, 1), Math.max(size.y, 1));
+    }
+
+    /** the next frame shows the picture at once (no fade – the transparent PNG captures a changed mix right away) */
+    showNow() {
+        this._blend.last = -Infinity;
     }
 
     _fadeSettled() {
@@ -1068,9 +1197,12 @@ export class PathTracingView {
             return { ...status, phase: 'denoise-loading', progress: 0 };
         }
         if (this.denoiseEnabled && this.denoiser.running) {
+            // light passes: one after the other (the tile progress is that of the current pass)
+            const m = this._mixDenoise;
+            const progress = m ? Math.min((m.n + this.denoiseProgress) / Math.max(m.total, 1), 1) : this.denoiseProgress;
             return this.denoiseLoading
                 ? { ...status, phase: 'denoise-loading', progress: 0 }
-                : { ...status, phase: 'denoising', progress: this.denoiseProgress };
+                : { ...status, phase: 'denoising', progress, passes: m ? { done: m.n, total: m.total } : undefined };
         }
         status.phase = 'rendering';
         return status;

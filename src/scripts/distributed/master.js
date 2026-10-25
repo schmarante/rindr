@@ -79,8 +79,8 @@ export class RenderMaster {
             const wasLost = c.lost;
             Object.assign(c, { name: msg.name, gpu: msg.gpu, lastSeen: performance.now(), lost: false, busyOther: !!msg.master && msg.master !== this.id });
             c.sceneId = msg.master === this.id || msg.sceneFrom === this.id ? msg.sceneId : null;
-            // a running job: a new (or returning) free client gets the scene
-            if (this.running && !c.busyOther && c.sceneId !== this.job.sceneId && !c.sending) this._sendScene(c);
+            // a running job: a new (or returning) free client gets the scene (not for a job of this computer alone)
+            if (this.running && !this.job.localOnly && !c.busyOther && c.sceneId !== this.job.sceneId && !c.sending) this._sendScene(c);
             if (wasLost || this.running) this._dispatch();
             this.hooks.onChange?.();
             return;
@@ -108,7 +108,7 @@ export class RenderMaster {
             const p = job.pending.get(msg.bucketId);
             if (p && p.client === c.id) this.hooks.onBucket(p.bucket, msg.data, false);   // preview, the final one follows
         } else if (msg.type === 'result') {
-            this._result(c, msg.bucketId, msg.data);
+            this._result(c, msg.bucketId, msg.data, msg.passes);
         } else if (msg.type === 'job-error') {
             console.warn(`[Distributed] ${c.name}: bucket ${msg.bucketId} failed – ${msg.message}`);
             this._requeue(c);
@@ -154,20 +154,22 @@ export class RenderMaster {
 
     /**
      * Start a job: full image fullW × fullH, samples per pixel, bucket size; matte: grey value of a plain background
-     * (passes of a transparent image) or null. The scene goes to every free client – keepScene: the scene of the job
-     * before (unchanged – e.g. the second pass of a transparent image), clients holding it start at once. The own
-     * computer starts at once when it renders along.
+     * (passes of a transparent image) or null; passes: the buckets come with their light passes (light-passes.js). The
+     * scene goes to every free client – keepScene: the scene of the job before (unchanged – e.g. the second pass of a
+     * transparent image), clients holding it start at once. The own computer starts at once when it renders along;
+     * localOnly: only the own computer (a render with light passes without distributing – the buckets carry them).
      */
-    start({ fullW, fullH, samples, bucketSize, matte = null, keepScene = false }) {
+    start({ fullW, fullH, samples, bucketSize, matte = null, keepScene = false, passes = false, localOnly = false }) {
         const previous = keepScene ? this.job : null;
         this.cancel();
         const queue = makeBuckets(fullW, fullH, bucketSize);
-        this.job = { jobId: newId(), sceneId: previous?.sceneId ?? newId(), fullW, fullH, samples, matte, queue, pending: new Map(), done: 0,
-            total: queue.length, t0: performance.now(), finished: false, scene: previous?.scene ?? this.hooks.captureScene(), perClient: new Map() };
+        this.job = { jobId: newId(), sceneId: previous?.sceneId ?? newId(), fullW, fullH, samples, matte, passes, localOnly, queue, pending: new Map(), done: 0,
+            total: queue.length, t0: performance.now(), finished: false, perClient: new Map(),
+            scene: localOnly ? null : previous?.scene ?? this.hooks.captureScene() };
         for (const c of this.clients.values()) {
             c.bucket = null;
             c.done = 0;
-            if (!c.lost && !c.busyOther && c.sceneId !== this.job.sceneId) this._sendScene(c);
+            if (!localOnly && !c.lost && !c.busyOther && c.sceneId !== this.job.sceneId) this._sendScene(c);
         }
         this.hooks.onChange?.();
         this._dispatch();
@@ -192,14 +194,14 @@ export class RenderMaster {
     _dispatch() {
         const job = this.job;
         if (!job || job.finished) return;
-        if (this.renderLocal && !this._localBusy && job.queue.length) this._renderLocal();
+        if ((this.renderLocal || job.localOnly) && !this._localBusy && job.queue.length) this._renderLocal();
         for (const c of this.clients.values()) {
-            if (!job.queue.length) break;
+            if (!job.queue.length || job.localOnly) break;
             if (c.lost || c.busyOther || c.bucket || c.sceneId !== job.sceneId) continue;
             const bucket = job.queue.shift();
             c.bucket = bucket;
             job.pending.set(bucket.id, { bucket, client: c.id, progress: 0, color: c.color, name: c.name });
-            this._send(c.id, { type: 'job', jobId: job.jobId, sceneId: job.sceneId, bucket, fullW: job.fullW, fullH: job.fullH, samples: job.samples, matte: job.matte });
+            this._send(c.id, { type: 'job', jobId: job.jobId, sceneId: job.sceneId, bucket, fullW: job.fullW, fullH: job.fullH, samples: job.samples, matte: job.matte, passes: job.passes });
         }
         this.hooks.onChange?.();
     }
@@ -214,7 +216,7 @@ export class RenderMaster {
         c.bucket = null;
     }
 
-    _result(c, bucketId, data) {
+    _result(c, bucketId, data, passes) {
         const job = this.job;
         const p = job.pending.get(bucketId);
         if (!p || p.client !== c.id) return;   // late result of a bucket that went to someone else
@@ -223,7 +225,7 @@ export class RenderMaster {
         c.done++;
         job.done++;
         job.perClient.set(c.id, (job.perClient.get(c.id) || 0) + 1);
-        this.hooks.onBucket(p.bucket, data);
+        this.hooks.onBucket(p.bucket, data, true, passes);
         if (job.done === job.total) this._finish();
         else this._dispatch();
     }
@@ -234,23 +236,25 @@ export class RenderMaster {
         const abort = this._localAbort = new AbortController();
         const self = { id: LOCAL_ID, name: this.hooks.local.name, color: CLIENT_COLORS[0] };
         try {
-            while (this.renderLocal && !job.finished && job.queue.length && !abort.signal.aborted) {
+            while ((this.renderLocal || job.localOnly) && !job.finished && job.queue.length && !abort.signal.aborted) {
                 const bucket = job.queue.shift();
                 const info = { bucket, client: LOCAL_ID, progress: 0, color: self.color, name: self.name };
                 job.pending.set(bucket.id, info);
                 this.hooks.onChange?.();
-                let data;
+                let data, passes;
                 try {
-                    data = await this.hooks.local.renderRegion({ x: bucket.x, y: bucket.y, w: bucket.w, h: bucket.h, fullW: job.fullW, fullH: job.fullH },
-                        job.samples, { signal: abort.signal, matte: job.matte, onProgress: p => { info.progress = p; this.hooks.onChange?.(); },
+                    const out = await this.hooks.local.renderRegion({ x: bucket.x, y: bucket.y, w: bucket.w, h: bucket.h, fullW: job.fullW, fullH: job.fullH },
+                        job.samples, { signal: abort.signal, matte: job.matte, passes: job.passes, onProgress: p => { info.progress = p; this.hooks.onChange?.(); },
                             onPartial: partial => { if (!job.finished) this.hooks.onBucket(bucket, partial, false); } });
+                    data = out.data ?? out;
+                    passes = out.passes;
                 } catch (err) {
                     job.pending.delete(bucket.id);
                     if (!job.finished) job.queue.unshift(bucket);
                     if (err?.name !== 'AbortError') {
                         console.error('[Distributed] own bucket:', err?.message || err);
                         this.renderLocal = false;   // do not retry endlessly – the clients carry on
-                        this.hooks.onLocalError?.(err);
+                        this.hooks.onLocalError?.(err, job);
                     }
                     break;
                 }
@@ -259,7 +263,7 @@ export class RenderMaster {
                 job.done++;
                 job.perClient.set(LOCAL_ID, (job.perClient.get(LOCAL_ID) || 0) + 1);
                 this.localDone = (this.localDone || 0) + 1;
-                this.hooks.onBucket(bucket, data);
+                this.hooks.onBucket(bucket, data, true, passes);
                 if (job.done === job.total) { this._finish(); break; }
                 this._dispatch();
             }

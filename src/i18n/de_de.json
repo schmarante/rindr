@@ -1895,11 +1895,13 @@
             },
             "progress": "{done} / {total} Buckets",
             "statusRunning": "{done} / {total} Buckets · {workers} rendern · {time}",
+            "statusRunningLocal": "{done} / {total} Buckets · {time}",
             "titlePass": "Verteilt (Pass {n}/{total})",
             "sending": "Sendet {percent} % · {sent} / {total}",
             "loadingScene": "Lädt die Szene …",
             "close": "Schließen",
             "done": "Verteilt gerendert in {time} s – {buckets} Buckets ({who})",
+            "doneLocal": "Gerendert in {time} s – {buckets} Buckets",
             "startHint": "Gestartet wird über „Rendern“ (Teekanne in der Leiste unten) – dort auch Größe, Samples und Format.",
             "busy": "Es läuft schon ein verteilter Auftrag.",
             "pair": "Rechner koppeln …",
@@ -2132,6 +2134,8 @@
         "format": "Format",
         "transparent": "Transparenter Hintergrund",
         "transparentHint": "Modelle, Bodenschatten, Glas, Tiefenschärfe und Bloom/Glare bleiben erhalten. Alpha ist vormultipliziert (mit Schwarz) – in Compositing-Programmen so interpretieren. Es wird zweimal gerendert – auch verteilt.",
+        "transparentHintPasses": "Modelle, Bodenschatten, Glas, Tiefenschärfe und Bloom/Glare bleiben erhalten. Alpha ist vormultipliziert (mit Schwarz) – in Compositing-Programmen so interpretieren. Ein Durchgang: Das Alpha kommt aus einem eigenen Pass – auch verteilt.",
+        "passesLayered": "Mit Ebenen je Lichtquelle (sichtbar, addiert – zusammen das Bild), je Lichtart und Schatten sowie Hilfs-Passes (Alpha, Tiefe, Normalen, Albedo, Objekt- und Material-ID). Dauert länger: jeder Pass wird einzeln entrauscht. Die Datei wird nach dem Rendern gespeichert.",
         "size": "{width} × {height} px",
         "preparing": "Bild wird vorbereitet…",
         "export": "Rendern",
@@ -2157,6 +2161,32 @@
         "passBackground": {
             "black": "vor Schwarz",
             "grey": "vor Grau"
+        }
+    },
+    "lightMix": {
+        "light": "Licht {n}",
+        "moreLights": "Weitere Lichter",
+        "tooLarge": "Die Licht-Passes dieser Bildgröße brauchen bis zu {size} Grafikspeicher – zu viel für dieses Gerät. Bitte kleiner rendern.",
+        "pass": {
+            "environment": "Umgebung (HDRI)",
+            "background": "Hintergrund",
+            "emission": "Eigenleuchten",
+            "diffuse": "Diffus",
+            "reflection": "Spiegelung",
+            "refraction": "Brechung",
+            "directEmission": "Eigenleuchten direkt",
+            "directBackground": "Hintergrund direkt",
+            "shadow": "Schatten",
+            "alpha": "Alpha",
+            "cutout": "Freigestellt",
+            "depth": "Tiefe",
+            "normal": "Normalen",
+            "albedo": "Albedo",
+            "objectId": "Objekt-ID",
+            "materialId": "Material-ID"
+        },
+        "status": {
+            "denoising": "Entrausche Pass {n}/{total}"
         }
     },
     "bim": {

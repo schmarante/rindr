@@ -326,6 +326,483 @@ function glassShadowPatch() {
   };
 }
 
+// Glass split (src/scripts/glass-split.js – fails loudly if the library changed, check on every update): at the first
+// glass hits of the camera ray (entry and exit face) the reflection is traced as a path of its own instead of being
+// picked by chance.
+// - GltfCompliantMaterial.bsdfSample: the lobe random number is stratified at the end of the reflection side
+//   (GLASS_SPLIT.mode / share)
+// - megakernel: an outer loop runs the bounce loop again for each stored reflection ray (small stack); every variable
+//   of a path (incl. those of other patches: glass shadow, shadow catcher, glass/film bounces) is declared anew inside it.
+//   Runs after rindr-glass-shadow (takes over gsRough for the reflection).
+const GLASS_SPLIT_MODULE = fileURLToPath(new URL('./src/scripts/glass-split.js', import.meta.url));
+const GLASS_SPLIT_STRATA = `
+				// RINDR glass split (glass-split.js): split point = end of the reflection side – clearcoat, specular and
+				// the reflected share of the glass lobe at the microfacet of directionUV (the same one the glass lobe uses)
+				if ( \${ __SPLIT.mode } != 0u ) {
+
+					let rsAlphaB = surf.roughness * surf.roughness;
+					let rsAlpha = vec2( mix( rsAlphaB, 1.0, surf.anisotropy * surf.anisotropy ), rsAlphaB );
+					let rsWh = \${ ggxDirectionFunc }( wo, rsAlpha, directionUV );
+					let rsFresnel = \${ this.transmissionFresnel }( select( dot( wo, rsWh ), wo.z, surf.thinWall ), surf );
+					let rsSplit = cdfSpecular + ( cdfTransmission - cdfSpecular ) * rsFresnel.reflectProbability;
+					\${ __SPLIT.share } = select( 0.0, rsSplit / cdfTotal, cdfTotal > 0.0 );
+					if ( \${ __SPLIT.mode } == 3u ) {
+
+						return result;
+
+					}
+					let rsU = lobeSample / max( cdfTotal, 1e-30 );
+					lobeSample = select( rsSplit + rsU * ( cdfTotal - rsSplit ), rsU * rsSplit, \${ __SPLIT.mode } == 1u );
+
+				}
+`;
+const GLASS_SPLIT_SCATTER = `
+						// RINDR glass split (glass-split.js): glass hit on the camera ray's chain of refractions (up to
+						// \${ __SPLIT_MAX } per pixel – entry and exit face) – the reflection stratum goes onto the stack as a path
+						// of its own, this path continues with the refraction stratum; each weighted by its stratum's width
+						var rsWeight = 1.0;
+						if ( rsSplits < \${ __SPLIT_MAX }u && isFullyTransmissive && surface.transmission > 0.0 && \${ __SPLIT.enabled } != 0u ) {
+
+							\${ __SPLIT.mode } = 3u;
+							_ = \${ bsdfSampleFn }( view, surface );
+							let rsShare = \${ __SPLIT.share };
+							\${ __SPLIT.mode } = 0u;
+							if ( rsShare > 1e-4 && rsShare < 0.9999 ) {
+
+								rsSplits ++;
+								\${ __SPLIT.mode } = 1u;
+								let rsRefl = \${ bsdfSampleFn }( view, surface );
+								if ( ! \${ isTerminatingScatterFunc }( rsRefl ) ) {
+
+									var rsRay: \${ rayStruct };
+									rsRay.origin = \${ offsetRayOriginFunc }( vertexData.position.xyz, rsRefl.direction, hitResult.normal );
+									rsRay.direction = rsRefl.direction;
+									rsRay.maxDist = 0.0;
+									rsRays[ rsTop ] = rsRay;
+									rsThroughputs[ rsTop ] = throughputColor * rsRefl.color / rsRefl.pdf * rsShare;
+									rsPdfs[ rsTop ] = rsRefl.pdf;
+									rsMinPdfs[ rsTop ] = min( minPdf, rsRefl.pdf );
+									rsWavelengths[ rsTop ] = dispersionWavelength;
+									rsRough[ rsTop ] = gsRough || ( ! rsRefl.isTransmissive && rsRefl.pdf < 4.0 );
+									rsCounts[ rsTop ] = vec4u( bounce + 1u, transparentBounce, glassBounce, filmBounce );
+									rsTop ++;
+
+								}
+								\${ __SPLIT.mode } = 2u;
+								rsWeight = 1.0 - rsShare;
+
+							}
+
+						}
+						var scatterRec = \${ bsdfSampleFn }( view, surface );
+						\${ __SPLIT.mode } = 0u;
+						scatterRec.color *= rsWeight;
+`;
+// most splits per pixel sample: entry and exit face of a glass body (each adds a path)
+const GLASS_SPLIT_MAX = 2;
+function glassSplitPatch() {
+  return {
+    name: 'rindr-glass-split',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.replace(/\\/g, '/').split('?')[0];
+      const name = file.split('/').pop();
+      const replaceOnce = (from, to) => {
+        const n = typeof from === 'string' ? code.split(from).length - 1 : (code.match(new RegExp(from.source, 'g')) || []).length;
+        if (n !== 1) this.error(`rindr-glass-split: ${from} not found exactly once in ${name} (three-gpu-pathtracer changed?)`);
+        code = code.replace(from, to);
+      };
+      const head = `import { GLASS_SPLIT as __SPLIT } from ${JSON.stringify(GLASS_SPLIT_MODULE)};\nconst __SPLIT_MAX = ${GLASS_SPLIT_MAX};\n`;
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/materials/GltfCompliantMaterial.js')) {
+        replaceOnce(/\n(\t+)let lobeSample = (\$\{ rand1 \}\( \$\{ RNG_INDEX_SCATTER_TYPE \} \) \* cdfTotal;\n\t+let directionUV = \$\{ rand2 \}\( \$\{ RNG_INDEX_SCATTER_DIRECTION \} \);\n)/,
+          (_, tab, rest) => `\n${tab}var lobeSample = ${rest}` + GLASS_SPLIT_STRATA);
+        return { code: `import { GLASS_SPLIT as __SPLIT } from ${JSON.stringify(GLASS_SPLIT_MODULE)};\n` + code, map: null };
+      }
+      if (!file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) return null;
+      // outer loop: each pass declares every path variable anew, a pass from the stack then takes over its reflection
+      replaceOnce(/\n(\t+)var resultColor = vec4f\( 0, 0, 0, 1 \);\n/, (m, tab) => `${m}
+${tab}// RINDR glass split (glass-split.js): reflections at glass hits, traced after this path (stack)
+${tab}var rsRays: array<\${ rayStruct }, \${ __SPLIT_MAX }>;
+${tab}var rsThroughputs: array<vec3f, \${ __SPLIT_MAX }>;
+${tab}var rsPdfs: array<f32, \${ __SPLIT_MAX }>;
+${tab}var rsMinPdfs: array<f32, \${ __SPLIT_MAX }>;
+${tab}var rsWavelengths: array<f32, \${ __SPLIT_MAX }>;
+${tab}var rsRough: array<bool, \${ __SPLIT_MAX }>;
+${tab}var rsCounts: array<vec4u, \${ __SPLIT_MAX }>;   // first bounce, transparent, glass and film bounces
+${tab}var rsTop = 0u;
+${tab}var rsSplits = 0u;
+${tab}var rsFrom = 0u;   // bounce the pass starts with (0 = the camera ray)
+${tab}for ( var rsPass = 0u; rsPass <= \${ __SPLIT_MAX }u; rsPass ++ ) {
+`);
+      replaceOnce(/\n(\t+)for \( var bounce = 0u; bounce < maxBounces \+ glassBounce \+ filmBounce; bounce \+\+ \) \{/, (m, tab) => `
+${tab}if ( rsPass > 0u ) {
+
+${tab}\trsTop --;
+${tab}\tray = rsRays[ rsTop ];
+${tab}\tthroughputColor = rsThroughputs[ rsTop ];
+${tab}\tbsdfPdf = rsPdfs[ rsTop ];
+${tab}\tminPdf = rsMinPdfs[ rsTop ];
+${tab}\tisFullyTransmissive = false;
+${tab}\tdispersionWavelength = rsWavelengths[ rsTop ];
+${tab}\tgsRough = rsRough[ rsTop ];
+${tab}\trsFrom = rsCounts[ rsTop ].x;
+${tab}\ttransparentBounce = rsCounts[ rsTop ].y;
+${tab}\tglassBounce = rsCounts[ rsTop ].z;
+${tab}\tfilmBounce = rsCounts[ rsTop ].w;
+
+${tab}}
+${tab}for ( var bounce = rsFrom; bounce < maxBounces + glassBounce + filmBounce; bounce ++ ) {`);
+      replaceOnce(/\n(\t+)let scatterRec = \$\{ bsdfSampleFn \}\( view, surface \);\n/, () => GLASS_SPLIT_SCATTER);
+      replaceOnce(/\n(\t+)let nextSampleCount = sampleCount \+ 1;/, (m, tab) => `
+${tab}\tif ( rsTop == 0u ) {
+
+${tab}\t\tbreak;
+
+${tab}\t}
+
+${tab}}
+${m}`);
+      return { code: head + code, map: null };
+    },
+  };
+}
+
+// Light passes (src/scripts/light-passes.js – fails loudly if the library changed, check on every update): every
+// contribution to a sample also goes into the pass of its source (light slot, environment, background, emission) and of
+// its kind (diffuse, reflection, refraction after the first scatter – before it: emission / background seen directly),
+// plus the shadow pass – in a second variant of the kernel's shader (the normal one stays unchanged; setLightPasses()
+// switches). Everything per pixel in the bucket buffer (light-passes.js). Runs last: after rindr-glass-split (its stack
+// carries the kind of a reflection path) and rindr-nan-guard (the passes see the sample before the guard replaces it).
+// - GltfCompliantMaterial: bsdfLobes (a copy of bsdfEval keeping the lobe kinds apart) in its data for the kernel
+// - megakernel: lpOn / lpB (this pixel in the bucket buffer), lpSplit (the path has scattered: its kind weights are stored)
+const LIGHT_PASSES_MODULE = fileURLToPath(new URL('./src/scripts/light-passes.js', import.meta.url));
+// pass indices as in light-passes.js (PASS)
+const LP = { ENV: 4, BG: 5, EMISSION: 6, DIFFUSE: 7, DIRECT_EMISSION: 10, DIRECT_BG: 11, SHADOW: 12, TRANSPARENCY: 13, LAST_LIGHT: 3 };
+// the share of the background a contribution of it carries (transparency pass – alpha = 1 − the sum)
+const lpT = (tab, value) => `
+${tab}if ( lpOn ) {
+
+${tab}	\${ __LP_ADD }( lpB, ${LP.TRANSPARENCY}u, ${value} );
+
+${tab}}`;
+const LP_MIRROR_T = '\${ __LP_GET3 }( lpB, \${ __LP.SLOT.MT }u )';
+// one-hot kind weights (diffuse, reflection, refraction)
+const lpKind = k => `array<vec3f, 3>( ${[0, 1, 2].map(i => `vec3f( ${i === k ? 1 : 0}.0 )`).join(', ')} )`;
+// kind weights of the lobes for a direction (bsdfLobes, added to the material by this plugin)
+const lpLobes = dir => `\${ __LP_RATIO }( \${ bsdfLobesFn }( view, ${dir}, surface ) )`;
+const lpW = slot => `\${ __LP_GETW }( lpB, \${ __LP.SLOT.${slot} }u )`;
+const lpSetW = (slot, w) => `\${ __LP_SETW }( lpB, \${ __LP.SLOT.${slot} }u, ${w} );`;
+// add `value` (vec3f expression, evaluated once) to pass `src` and to the kinds: the path's weights after its first scatter,
+// before it the pass `direct` or the weights `directW`; mirror: the weights of the ground reflection counted ahead
+function lpAdd(tab, src, value, { direct = null, directW = null, sign = '', mirror = false } = {}) {
+  const otherwise = direct !== null ? `\${ __LP_ADD }( lpB, ${direct}u, lpC );` : `\${ __LP_KINDS }( lpB, ${directW}, lpC );`;
+  const kinds = mirror ? `${tab}\t\${ __LP_KINDS }( lpB, ${lpW('MW')}, lpC );`
+    : `${tab}\tif ( lpSplit ) {
+
+${tab}\t\t\${ __LP_KINDS }( lpB, ${lpW('W')}, lpC );
+
+${tab}\t} else {
+
+${tab}\t\t${otherwise}
+
+${tab}\t}`;
+  return `
+${tab}if ( lpOn ) {
+
+${tab}\tlet lpC = ${sign}( ${value} );
+${tab}\t\${ __LP_ADD }( lpB, ${src}, lpC );
+${kinds}
+
+${tab}}`;
+}
+const lpClear = tab => `
+${tab}if ( lpOn ) {
+
+${tab}\t\${ __LP_CLEAR }( lpB );
+
+${tab}}`;
+// the first scatter of the path: its kind from now on
+const lpClassify = (tab, weights) => `
+${tab}if ( lpOn && ! lpSplit ) {
+
+${tab}\t${lpSetW('W', weights)}
+${tab}\tlpSplit = true;
+
+${tab}}`;
+const lpLightSlot = index => `select( min( ${index}, ${LP.LAST_LIGHT}u ), ${LP.ENV}u, envActive && ${index} == lightsCount )`;
+function lightPassesPatch() {
+  return {
+    name: 'rindr-light-passes',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.replace(/\\/g, '/').split('?')[0];
+      const name = file.split('/').pop();
+      const replaceN = (from, to, n = 1) => {
+        const count = typeof from === 'string' ? code.split(from).length - 1 : (code.match(new RegExp(from.source, 'g')) || []).length;
+        if (count !== n) this.error(`rindr-light-passes: ${from} found ${count}× instead of ${n}× in ${name} (three-gpu-pathtracer or another patch changed?)`);
+        code = typeof from === 'string' ? code.split(from).join(typeof to === 'function' ? to(from) : to) : code.replace(new RegExp(from.source, n > 1 ? 'g' : ''), to);
+      };
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/materials/GltfCompliantMaterial.js')) {
+        // bsdfLobes( worldWo, worldWi, surf ): the value of each lobe kind for a direction – a copy of bsdfEval that keeps
+        // them apart (only called while passes render; recording them inside bsdfEval cost ~7 % with the passes off)
+        const start = code.indexOf('this._bsdfEvalFunc = wgslTagFn/* wgsl */`');
+        const end = code.indexOf('`;', start);
+        if (start < 0 || end < 0) this.error('rindr-light-passes: bsdfEval not found in GltfCompliantMaterial.js (three-gpu-pathtracer changed?)');
+        let lobes = code.slice(start, end + 2).replace('this._bsdfEvalFunc', 'const lpEvalLobes');
+        const swap = (from, to) => {
+          if (lobes.split(from).length !== 2) this.error(`rindr-light-passes: ${from} not found exactly once in bsdfEval (three-gpu-pathtracer changed?)`);
+          lobes = lobes.replace(from, () => to);
+        };
+        swap('fn bsdfEval( ctx: ${ bxdfContextStruct }, surf: ${ surfaceRecordStruct } ) -> vec3f {', 'fn bsdfEvalLobes( ctx: ${ bxdfContextStruct }, surf: ${ surfaceRecordStruct } ) -> array<vec3f, 3> {');
+        swap('var result = vec3f( 0.0 );', 'var result = vec3f( 0.0 );\n\t\t\t\tvar lobes = array<vec3f, 3>( vec3f( 0.0 ), vec3f( 0.0 ), vec3f( 0.0 ) );');
+        swap('return result;', 'return lobes;');
+        const lobe = (statement, k) => swap(statement, `{ let lpE = ${statement.slice('result += '.length, -1)}; result += lpE; lobes[ ${k} ] += lpE; }`);
+        lobe('result += surf.clearcoat * clearcoatFresnel * clearcoatSpecular;', 1);
+        lobe('result += attenuation * surf.sheen * ${ sheenColorFunc }( ctx.V, ctx.L, ctx.H, surf );', 0);
+        lobe('result += ( 1.0 - surf.metalness ) * surf.transmission * refraction * surf.color;', 2);
+        lobe('result += attenuation * ( 1.0 - surf.metalness ) * surf.transmission * reflection;', 1);
+        lobe('result += attenuation * mix( ( 1.0 - surf.transmission ) * dielectric, metallic, surf.metalness );', 1);
+        lobe('result += attenuation * diffuse;', 0);
+        // the half vector as bsdfEvalPdf builds it; delta transmission (matched IOR) has no value there: all refraction
+        const method = `
+	// RINDR light passes (astro.config.mjs, rindr-light-passes): lobe kinds for a direction – diffuse, reflection, refraction
+	getBsdfLobesNode() {
+
+		if ( this._bsdfLobesNode ) return this._bsdfLobesNode;
+		${lobes}
+		this._bsdfLobesNode = wgslTagFn/* wgsl */\`
+
+			fn bsdfLobes( worldWo: vec3f, worldWi: vec3f, surf: \${ surfaceRecordStruct } ) -> array<vec3f, 3> {
+
+				let wo = normalize( surf.normalInvBasis * worldWo );
+				let wi = normalize( surf.normalInvBasis * worldWi );
+				let isTransmission = wi.z < 0.0;
+				if ( isTransmission && \${ isMatchedIorFunc }( surf.eta ) ) {
+
+					return array<vec3f, 3>( vec3f( 0.0 ), vec3f( 0.0 ), vec3f( 1.0 ) );
+
+				}
+				var wh: vec3f;
+				if ( ! isTransmission ) {
+
+					wh = normalize( wo + wi );
+
+				} else if ( surf.thinWall ) {
+
+					wh = normalize( wo + vec3f( wi.xy, - wi.z ) );
+
+				} else {
+
+					wh = normalize( wi + wo * surf.eta );
+					wh *= sign( wh.z );
+
+				}
+				var ctx: \${ bxdfContextStruct };
+				ctx.V = wo;
+				ctx.L = wi;
+				ctx.H = wh;
+				ctx.VdotH = saturate( dot( wo, wh ) );
+				return \${ lpEvalLobes }( ctx, surf );
+
+			}
+
+		\`;
+		return this._bsdfLobesNode;
+
+	}
+
+	getData() {
+
+		return { ...super.getData(), bsdfLobes: this.getBsdfLobesNode() };
+
+	}
+`;
+        const close = code.lastIndexOf('\n}');
+        if (close < 0) this.error('rindr-light-passes: class end not found in GltfCompliantMaterial.js');
+        code = code.slice(0, close) + '\n' + method + code.slice(close);
+        return { code, map: null };
+      }
+      if (!file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) return null;
+      const head = `import { LIGHT_PASSES as __LP, LOBE_RATIO_WGSL as __LP_RATIO, LP_ADD_WGSL as __LP_ADD, LP_ADD_KINDS_WGSL as __LP_KINDS, LP_GET_W_WGSL as __LP_GETW, LP_SET_W_WGSL as __LP_SETW, LP_CLEAR_WGSL as __LP_CLEAR, LP_END_WGSL as __LP_END, LP_MSRC_WGSL as __LP_MSRC, LP_SET_MSRC_WGSL as __LP_SETMSRC, LP_GET3_WGSL as __LP_GET3, LP_SET3_WGSL as __LP_SET3 } from ${JSON.stringify(LIGHT_PASSES_MODULE)};\n`;
+      // a second variant of the kernel's shader with the passes – the normal one stays as it is (with the passes in it,
+      // cold compile took ~25 s instead of ~12 s): built and compiled on the first render with passes, setLightPasses()
+      // switches (the parameters – uniforms, buffers, scene data – are shared)
+      const open = 'const shader = wgslTagFn/* wgsl */`';
+      const close = '`;\n\n\t\tsuper( shader( params ) );';
+      const from = code.indexOf(open), to = code.indexOf(close, from);
+      if (from < 0 || to < 0) this.error('rindr-light-passes: kernel shader not found in PathTracerMegaKernel.js (three-gpu-pathtracer changed?)');
+      const module = code;
+      code = module.slice(from + open.length, to);
+      // the pixel's block; this sample's passes from 0
+      replaceN(/\n(\t+)var resultColor = vec4f\( 0, 0, 0, 1 \);\n/, (m, tab) => `${m}
+${tab}// RINDR light passes (light-passes.js): this pixel's block of the bucket buffer
+${tab}let lpPixel = ( targetDimensions.y - 1u - indexUV.y ) * targetDimensions.x + indexUV.x;
+${tab}let lpOn = \${ __LP.enabled } != 0u && lpPixel < \${ __LP.capacity };
+${tab}let lpB = lpPixel;${lpClear(tab)}
+`);
+      // per path (pass of the glass split's outer loop); a stacked reflection path takes its kind from the stack
+      replaceN(/\n(\t+)var filmBounce = 0u;\n/, (m, tab) => `${m}${tab}var lpSplit = false;\n`);
+      replaceN(/\n(\t+)filmBounce = rsCounts\[ rsTop \]\.w;\n/, (m, tab) => `${m}${tab}lpSplit = true;
+${tab}if ( lpOn ) {
+
+${tab}\t\${ __LP_SETW }( lpB, \${ __LP.SLOT.W }u, \${ __LP_GETW }( lpB, \${ __LP.SLOT.SW }u + rsTop * 9u ) );
+
+${tab}}
+`);
+      replaceN(/\n(\t+)rsCounts\[ rsTop \] = vec4u\( bounce \+ 1u, transparentBounce, glassBounce, filmBounce \);\n/, (m, tab) => `${m}${tab}if ( lpOn ) {
+
+${tab}\tif ( lpSplit ) {
+
+${tab}\t\t\${ __LP_SETW }( lpB, \${ __LP.SLOT.SW }u + rsTop * 9u, ${lpW('W')} );
+
+${tab}\t} else {
+
+${tab}\t\t\${ __LP_SETW }( lpB, \${ __LP.SLOT.SW }u + rsTop * 9u, ${lpLobes('rsRefl.direction')} );
+
+${tab}\t}
+
+${tab}}
+`);
+      replaceN(/\n(\t+)scatterRec\.color \*= rsWeight;\n/, (m, tab) => `${m}${lpClassify(tab, lpLobes('scatterRec.direction'))}\n`);
+      // shadow catcher: ground reflection counted ahead / taken back, the ground, its mirror and bounce rays
+      replaceN(/\n(\t+)resultColor -= vec4f\( scMirrorBg, 0\.0 \);/, (m, tab) => `${m}${lpAdd(tab, '${ __LP_MSRC }( lpB )', 'scMirrorBg', { sign: '-', mirror: true })}${lpT(tab, `- ${LP_MIRROR_T}`)}`);
+      replaceN(/(scMirrorBg = scBase \* scSurf\.x \* scScale;\n)(\t+)(resultColor \+= vec4f\( scMirrorBg, 0\.0 \);)/, (m, before, tab, add) => `${before}${tab}if ( lpOn ) {
+
+${tab}\t\${ __LP_SETMSRC }( lpB, select( ${LP.ENV}u, ${LP.BG}u, bounce == 0u ) );
+${tab}\t\${ __LP_SET3 }( lpB, \${ __LP.SLOT.MT }u, select( vec3f( 0.0 ), scShadow * scSurf.z * scSurf.x * scScale, bounce == 0u ) );
+${tab}\tif ( lpSplit ) {
+
+${tab}\t\t${lpSetW('MW', lpW('W'))}
+
+${tab}\t} else {
+
+${tab}\t\t${lpSetW('MW', lpKind(1))}
+
+${tab}\t}
+
+${tab}}
+${tab}${add}${lpAdd(tab, '${ __LP_MSRC }( lpB )', 'scMirrorBg', { mirror: true })}${lpT(tab, LP_MIRROR_T)}`);
+      replaceN(/(if \( scMirrorTaken \) \{\n\n)(\t+)(resultColor \+= vec4f\( scMirrorBg, 0\.0 \);)/, (m, before, tab, add) => `${before}${tab}${add}${lpAdd(tab, '${ __LP_MSRC }( lpB )', 'scMirrorBg', { mirror: true })}${lpT(tab, LP_MIRROR_T)}`);
+      replaceN(/\n(\t+)resultColor = vec4f\( scBase \* \( 1\.0 - scSurf\.x \), 1\.0 \);/, (m, tab) => `${lpClear(tab)}${m}${lpAdd(tab, `${LP.BG}u`, 'scBase * ( 1.0 - scSurf.x )', { direct: LP.DIRECT_BG })}
+${tab}if ( lpOn ) {
+
+${tab}\t\${ __LP_ADD }( lpB, ${LP.SHADOW}u, scBg.rgb * scSurf.z * ( 1.0 - scSurf.x ) * max( vec3f( 1.0 ) - scShadow, vec3f( 0.0 ) ) );
+
+${tab}}${lpT(tab, 'scShadow * scSurf.z * ( 1.0 - scSurf.x )')}`);
+      replaceN(/\n(\t+)resultColor \+= vec4f\( scBase \* \( 1\.0 - scSurf\.x \), 0\.0 \);/, (m, tab) => `${m}${lpAdd(tab, `${LP.ENV}u`, 'scBase * ( 1.0 - scSurf.x )', { direct: LP.DIRECT_BG })}`);
+      replaceN(/\n(\t+)throughputColor \*= scSurf\.x \* scScale;/, (m, tab) => `${m}${lpClassify(tab, lpKind(1))}`);
+      replaceN(/\n(\t+)throughputColor \*= scAlbedo \* [^\n]*/, (m, tab) => `${m}${lpClassify(tab, lpKind(0))}`);
+      // volumes: a scattering event is a diffuse first scatter; baked splat colour and glow count as emission
+      replaceN(/\n(\t+)vmScattered = true;/, (m, tab) => `${m}${lpClassify(tab, lpKind(0))}`);
+      const wrap = (line, src, options) => replaceN(new RegExp(`\\n(\\t+)${line.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), (m, tab) => {
+        const value = line.slice('resultColor += vec4f( '.length, -', 0.0 );'.length);
+        return `\n${tab}{\n\n${tab}\tlet lpV = ${value};\n${tab}\tresultColor += vec4f( lpV, 0.0 );${lpAdd(`${tab}\t`, src, 'lpV', options)}\n\n${tab}}`;
+      });
+      wrap('resultColor += vec4f( ${ clampPathContributionFunc }( throughputColor * vmSc, bounce, clampDirect, clampIndirect ), 0.0 );', `${LP.EMISSION}u`, { direct: LP.DIRECT_EMISSION });
+      wrap('resultColor += vec4f( ${ clampPathContributionFunc }( throughputColor * ${ __SPLAT.glow }, bounce, clampDirect, clampIndirect ), 0.0 );', `${LP.EMISSION}u`, { direct: LP.DIRECT_EMISSION });
+      wrap('resultColor += vec4f( ${ clampPathContributionFunc }( vmDirect, bounce + 1u, clampDirect, clampIndirect ), 0.0 );', lpLightSlot('vmLightIndex'), { direct: LP.DIFFUSE });
+      wrap('resultColor += vec4f( ${ clampPathContributionFunc }( throughputColor * mbGlow * ( 1.0 - mbFresnel ), bounce, clampDirect, clampIndirect ), 0.0 );', `${LP.EMISSION}u`, { direct: LP.DIRECT_EMISSION });
+      // lights hit, emission
+      replaceN(/\n(\t+)resultColor \+= vec4f\( lightHit, 0\.0 \);/, (m, tab) => `${m}${lpAdd(tab, `min( li, ${LP.LAST_LIGHT}u )`, 'lightHit', { direct: LP.DIRECT_EMISSION })}`);
+      replaceN(/\n(\t+)resultColor \+= vec4f\( emission, 0\.0 \);/, (m, tab) => `${m}${lpAdd(tab, `${LP.EMISSION}u`, 'emission', { direct: LP.DIRECT_EMISSION })}`);
+      // direct light at a surface: kinds by its own evaluation (the lobes still hold it – the glass shadow ray evaluates
+      // no material); at the first surface the light lost to the shadow (light sampling alone, no MIS: an estimate of the
+      // occluded direct light by itself)
+      replaceN(/\n(\t+)if \( any\( gsShadow > vec3f\( 0\.0 \) \) \) \{(\n\n\t+var lightPdf = lightRec\.pdf;)/, (m, tab, rest) => `
+${tab}if ( lpOn && ! lpSplit ) {
+
+${tab}\t\${ __LP_ADD }( lpB, ${LP.SHADOW}u, \${ clampPathContributionFunc }( throughputColor * lightRec.emission * evalRec.color * max( vec3f( 1.0 ) - gsShadow, vec3f( 0.0 ) ) * lightsDenom / lightRec.pdf, bounce + 1u, clampDirect, clampIndirect ) );
+
+${tab}}
+${tab}if ( any( gsShadow > vec3f( 0.0 ) ) ) {${rest}`);
+      replaceN(/(\( directLight, bounce \+ 1u, clampDirect, clampIndirect \);\n)(\t+)(resultColor \+= vec4f\( contribution, 0\.0 \);)/, (m, before, tab, add) => `${before}${tab}${add}${lpAdd(tab, lpLightSlot('lightIndex'), 'contribution', { directW: lpLobes('lightRec.direction') })}`);
+      // environment after a bounce, background (camera ray, through glass)
+      replaceN(/(\( environment, [^\n]*\n)(\t+)(resultColor \+= vec4f\( contribution, 0\.0 \);)/, (m, before, tab, add) => `${before}${tab}${add}${lpAdd(tab, `${LP.ENV}u`, 'contribution', { direct: LP.DIRECT_BG })}`);
+      replaceN(/\n(\t+)resultColor = vec4f\( background, bg\.a \);/, (m, tab) => `${lpClear(tab)}${m}${lpAdd(tab, `${LP.BG}u`, 'background', { direct: LP.DIRECT_BG })}${lpT(tab, 'vec3f( bg.a )')}`);
+      replaceN(/\n(\t+)resultColor = vec4f\(\n\t+resultColor\.rgb \+ background,\n[^\n]+\n\t+\);/, (m, tab) => `${m}${lpAdd(tab, `${LP.BG}u`, 'background', { direct: LP.DIRECT_BG })}${lpT(tab, 'select( bg.a, 0.0, transmissiveBackground == \${ TRANSMISSIVE_BACKGROUND_ENVIRONMENT }u ) * envMisWeight * throughputColor')}`, 3);
+      // the sample into the sums (before the NaN guard replaces an invalid one)
+      replaceN(/\n(\t+)\/\/ RINDR NaN guard /, (m, tab) => `
+${tab}// RINDR light passes (light-passes.js): this sample into the sums
+${tab}if ( lpOn ) {
+
+${tab}\t\${ __LP_END }( lpB, resultColor.a, f32( sampleCount ), any( ( bitcast<vec4u>( resultColor ) & vec4u( 0x7f800000u ) ) == vec4u( 0x7f800000u ) ) );
+
+${tab}}${m}`);
+      const passes = code;
+      code = module.slice(0, to) + `\`;
+		// RINDR light passes (astro.config.mjs, rindr-light-passes): the kernel variant with the passes
+		const shaderPasses = () => wgslTagFn/* wgsl */\`${passes}\`;
+		const bsdfLobesFn = proxyFn( 'material.value.bsdfLobes', params );
+
+		super( shader( params ) );
+		this._rindrShaders = { normal: this._fn, passes: null, make: () => shaderPasses()( params ), nodes: { normal: this.kernel } };` + module.slice(to + close.length);
+      const end = code.lastIndexOf('\n}');
+      code = code.slice(0, end) + `
+
+	// RINDR light passes: the normal kernel or the one with the passes – true if it changed. Both compute nodes are kept
+	// (switching back must not build and compile the normal one again – that restart threw the finished picture away)
+	// until a rebuild (scene data, material: setWorkgroupSize) makes the other one outdated.
+	setLightPasses( on ) {
+
+		const shaders = this._rindrShaders;
+		const key = on ? 'passes' : 'normal';
+		const fn = on ? ( shaders.passes ??= shaders.make() ) : shaders.normal;
+		if ( this._fn === fn ) return false;
+		this._fn = fn;
+		const kept = shaders.nodes;
+		if ( kept[ key ] ) {
+
+			this.kernel = kept[ key ];
+
+		} else {
+
+			this.setWorkgroupSize( ...this.workgroupSize );
+			shaders.nodes = { ...kept, [ key ]: this.kernel };
+
+		}
+		return true;
+
+	}
+
+	setWorkgroupSize( x, y, z ) {
+
+		super.setWorkgroupSize( x, y, z );
+		const shaders = this._rindrShaders;
+		if ( shaders ) shaders.nodes = { [ this._fn === shaders.normal ? 'normal' : 'passes' ]: this.kernel };
+		return this;
+
+	}
+` + code.slice(end);
+      return { code: head + code, map: null };
+    },
+  };
+}
+
+// Invalid samples (megakernel – fails loudly if the library changed, check on every update): the library rarely produces
+// inf/NaN (rough glass, independent of the glass split), such a sample would stay in the pixel's mean until the next
+// restart. The sample is dropped instead – the pixel keeps its mean (first sample: black). Checked on the bits: a
+// compiler may fold x != x away.
+function nanGuardPatch() {
+  return {
+    name: 'rindr-nan-guard',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.replace(/\\/g, '/').split('?')[0];
+      if (!file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) return null;
+      const from = /\n(\t+)let blendedColor = \$\{ weightedAlphaBlendFn \}\( prevColor, resultColor, /;
+      if ((code.match(new RegExp(from.source, 'g')) || []).length !== 1) this.error('rindr-nan-guard: accumulation not found exactly once in PathTracerMegaKernel.js (three-gpu-pathtracer changed?)');
+      code = code.replace(from, (m, tab) => `
+${tab}// RINDR NaN guard (astro.config.mjs): drop a sample with inf/NaN – exponent bits all set
+${tab}if ( any( ( bitcast<vec4u>( resultColor ) & vec4u( 0x7f800000u ) ) == vec4u( 0x7f800000u ) ) ) {
+
+${tab}\tresultColor = select( prevColor, vec4f( 0, 0, 0, 1 ), f32( sampleCount ) == 0.0 );
+
+${tab}}${m}`);
+      return { code, map: null };
+    },
+  };
+}
+
 // Cloud volumes (src/scripts/clouds.js, cloud-pt.js – fails loudly if the library changed, check on every update):
 // - megakernel: a hit on a volume box (cloud proxy ptVolume 3, splat volume ptVolume 6) runs the shared volume walk
 //   (volume-walk.patch.wgsl), right after the material is read; its light samples carry a //@glass-shadow marker
@@ -551,7 +1028,7 @@ export default defineConfig({
     headers: isolationHeaders,
   },
   vite: {
-    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), bucketPatch(), ptStandInPatch(), glassBouncesPatch(), cloudPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch()],
+    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), bucketPatch(), ptStandInPatch(), glassBouncesPatch(), cloudPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch(), glassSplitPatch(), nanGuardPatch(), lightPassesPatch()],
     server: { headers: isolationHeaders },
     preview: { headers: isolationHeaders },
     worker: { format: 'es' },

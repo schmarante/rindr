@@ -23,6 +23,17 @@
 //   normal: rgb view-space normal mapped to [0, 1] (as oidn-web takes it; background: facing the camera), a = 1
 //   albedo: rgb as above, background 1, a = 1
 //   position: not written (stays 1 × 1)
+//
+// Third use (`aov`): the helper passes of a render with light passes (light-mix.js) – the first surface itself (no
+// chain through mirrors/glass), `samples` rays per pixel like the OIDN guides:
+//   position: x depth (as the depth of field measures it), y coverage (alpha: share of rays on a surface – background
+//             and shadow catcher 0), z/w red and green of the material id colour
+//   normal:   xyz world normal (mean over the rays on a surface), w blue of the material id colour
+//   albedo:   rgb reflectance × coverage (premultiplied), a coverage
+//   ids:      rgb object id colour, a coverage
+// The id colours (idColor) are averaged over the rays like the image – edges antialiased and defocused (an id number
+// cannot be averaged: from the first ray alone the edges were hard). A fourth storage texture only here (WebGPU
+// guarantees 4 per shader stage).
 import { StorageTexture, FloatType, HalfFloatType, RGBAFormat, NearestFilter, Matrix4, Vector2 } from 'three/webgpu';
 import { uniform, globalId, textureStore } from 'three/tsl';
 import { proxy, proxyFn, wgslTagFn, rayStruct, ndcToCameraRay } from 'three-mesh-bvh/webgpu';
@@ -44,6 +55,17 @@ const guideRandom = wgslTagFn/* wgsl */`
     }
 `;
 
+// colour of an id (object or material index + 1): hue by the golden angle, bright and saturated
+const idColor = wgslTagFn/* wgsl */`
+    fn idColor( id: f32 ) -> vec3f {
+
+        let h = fract( id * 0.618033988749895 ) * 6.0;
+        let k = ( vec3f( 5.0, 3.0, 1.0 ) + h ) % 6.0;
+        return 0.9 - 0.9 * 0.75 * clamp( min( k, 4.0 - k ), vec3f( 0.0 ), vec3f( 1.0 ) );
+
+    }
+`;
+
 const storage = type => {
     const t = new StorageTexture(1, 1);
     t.type = type;
@@ -54,13 +76,18 @@ const storage = type => {
 };
 
 export class GuideKernel {
-    /** @param {{ maxChain?: number, specularRoughness?: number, samples?: number }} options – samples > 0: OIDN guides */
-    constructor({ maxChain = 4, specularRoughness = 0.1, samples = 0 } = {}) {
+    /** @param {{ maxChain?: number, specularRoughness?: number, samples?: number, aov?: boolean }} options – samples > 0: OIDN
+     *  guides, aov: helper passes (see above) */
+    constructor({ maxChain = 4, specularRoughness = 0.1, samples = 0, aov = false } = {}) {
         this.samples = samples;
+        this.aov = aov;
+        if (aov) maxChain = 1;
         this.position = storage(FloatType);
         this.normal = storage(HalfFloatType);
         this.albedo = storage(HalfFloatType);
         this.position.name = 'Guide position';
+        this.ids = storage(HalfFloatType);   // helper passes only (aov)
+        this.ids.name = 'Guide ids';
         this.normal.name = 'Guide normal';
         this.albedo.name = 'Guide albedo';
         this._size = new Vector2();
@@ -70,6 +97,7 @@ export class GuideKernel {
             bvhData: { value: null },
             globalIdBand: globalId,
             positionTarget: textureStore(this.position).toWriteOnly(),
+            idsTarget: textureStore(this.ids).toWriteOnly(),
             normalTarget: textureStore(this.normal).toWriteOnly(),
             albedoTarget: textureStore(this.albedo).toWriteOnly(),
             size: uniform(new Vector2()),
@@ -83,6 +111,7 @@ export class GuideKernel {
             samples: uniform(samples, 'uint'),
             viewMatrix: uniform(new Matrix4()),   // world → view (OIDN normals)
             aperture: uniform(new Vector2()),     // x radius (world units, 0 = sharp), y focus distance
+            aov: uniform(aov ? 1 : 0, 'uint'),
         };
         const raycastOutput = proxy('bvhData.value.fns.raycastFirstHit.outputType', p);
         const raycastFirstHit = proxyFn('bvhData.value.fns.raycastFirstHit', p);
@@ -91,7 +120,7 @@ export class GuideKernel {
 
         // same vertex/surface setup as the megakernel (PathTracerMegaKernel.js)
         const shader = wgslTagFn/* wgsl */`
-            fn compute( globalIdBand: vec3u, size: vec2u, rowOffset: u32, maxChain: u32, specularRoughness: f32, cocScale: f32, invFocus: f32, samples: u32 ) -> void {
+            fn compute( globalIdBand: vec3u, size: vec2u, rowOffset: u32, maxChain: u32, specularRoughness: f32, cocScale: f32, invFocus: f32, samples: u32, aov: u32 ) -> void {
 
                 let globalId = vec3u( globalIdBand.x, globalIdBand.y + rowOffset, globalIdBand.z );
                 if ( globalId.x >= size.x || globalId.y >= size.y ) {
@@ -109,6 +138,13 @@ export class GuideKernel {
                 var sumNormal = vec3f( 0.0 );
                 var sumAlbedo = vec3f( 0.0 );
                 let count = max( samples, 1u );
+                // helper passes (aov)
+                var sumCover = 0.0;
+                var sumDepth = 0.0;
+                var sumWorldNormal = vec3f( 0.0 );
+                var sumCoverAlbedo = vec3f( 0.0 );
+                var sumObject = vec3f( 0.0 );
+                var sumMaterial = vec3f( 0.0 );
 
                 for ( var s = 0u; s < count; s ++ ) {
 
@@ -168,6 +204,8 @@ export class GuideKernel {
                     var normal = vec4f( 0.0 );
                     var albedo = vec4f( 1.0 );
                     var firstDepth = - 1.0;
+                    var surfaceDepth = 0.0;
+                    var ids = vec2f( 0.0 );   // object, material index + 1 (0 = none)
                     var chain = 0u;
 
                     for ( var i = 0u; i < 16u; i ++ ) {
@@ -275,6 +313,8 @@ export class GuideKernel {
                         position = vec4f( camPos + primaryDir * travelled, 1.0 );
                         normal = vec4f( normalize( mirror * surface.normal ), 0.0 );
                         albedo = vec4f( tint * surface.color, 1.0 );
+                        surfaceDepth = select( dot( vertexData.position.xyz - camPos, forward ), travelled, isFisheye );
+                        ids = vec2f( f32( hit.objectIndex ), f32( objectInfo.materialIndex ) ) + 1.0;
                         break;
 
                     }
@@ -295,6 +335,16 @@ export class GuideKernel {
                     let guideNormal = select( normal.xyz, - ray.direction, position.w == 0.0 );
                     sumNormal += ( ${ p.viewMatrix } * vec4f( guideNormal, 0.0 ) ).xyz;
                     sumAlbedo += albedo.rgb;
+                    sumCover += position.w;
+                    sumDepth += surfaceDepth * position.w;
+                    sumWorldNormal += normal.xyz * position.w;
+                    sumCoverAlbedo += albedo.rgb * position.w;
+                    if ( aov != 0u && position.w > 0.0 ) {
+
+                        sumObject += ${ idColor }( ids.x );
+                        sumMaterial += ${ idColor }( ids.y );
+
+                    }
 
                     if ( samples == 0u ) {
 
@@ -308,8 +358,20 @@ export class GuideKernel {
 
                 }
 
-                // averaged (not normalized – OIDN takes averaged normals as they are)
                 let texel = vec2u( globalId.x, size.y - 1u - globalId.y );
+                if ( aov != 0u ) {
+
+                    let cover = sumCover / f32( count );
+                    let onSurface = max( sumCover, 1e-6 );
+                    let material = sumMaterial / f32( count );
+                    textureStore( ${ p.positionTarget }, texel, vec4f( sumDepth / onSurface, cover, material.rg ) );
+                    textureStore( ${ p.normalTarget }, texel, vec4f( sumWorldNormal / onSurface, material.b ) );
+                    textureStore( ${ p.albedoTarget }, texel, vec4f( sumCoverAlbedo / f32( count ), cover ) );
+                    textureStore( ${ p.idsTarget }, texel, vec4f( sumObject / f32( count ), cover ) );
+                    return;
+
+                }
+                // averaged (not normalized – OIDN takes averaged normals as they are)
                 textureStore( ${ p.normalTarget }, texel, vec4f( sumNormal / f32( count ) * 0.5 + 0.5, 1.0 ) );
                 textureStore( ${ p.albedoTarget }, texel, vec4f( min( sumAlbedo / f32( count ), vec3f( 1.0 ) ), 1.0 ) );
 
@@ -355,7 +417,7 @@ export class GuideKernel {
         }
         if (this._size.x !== width || this._size.y !== height) {
             this._size.set(width, height);
-            for (const key of this.samples ? ['normal', 'albedo'] : ['position', 'normal', 'albedo']) {
+            for (const key of this.aov ? ['position', 'normal', 'albedo', 'ids'] : this.samples ? ['normal', 'albedo'] : ['position', 'normal', 'albedo']) {
                 const old = this[key];
                 const t = this[key] = old.clone();
                 old.dispose();
@@ -380,6 +442,7 @@ export class GuideKernel {
 
     dispose() {
         this.position.dispose();
+        this.ids.dispose();
         this.normal.dispose();
         this.albedo.dispose();
     }

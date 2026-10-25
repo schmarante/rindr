@@ -100,9 +100,10 @@ export class RenderClient {
         try {
             await previous;
             if (abort.signal.aborted) return;   // replaced while waiting
-            const data = await this.hooks.renderRegion({ x, y, w, h, fullW: msg.fullW, fullH: msg.fullH }, msg.samples, {
+            const out = await this.hooks.renderRegion({ x, y, w, h, fullW: msg.fullW, fullH: msg.fullH }, msg.samples, {
                 signal: abort.signal,
                 matte: msg.matte ?? null,
+                passes: msg.passes || false,
                 onPartial: (data, done) => this._send({ type: 'partial', jobId: msg.jobId, bucketId: id, data, samples: done }),
                 onProgress: p => {
                     this._status('rendering', { bucket: msg.bucket, progress: p });
@@ -114,7 +115,8 @@ export class RenderClient {
             });
             if (abort.signal.aborted) return;
             this.done++;
-            this._send({ type: 'result', jobId: msg.jobId, bucketId: id, data });
+            // with light passes: { data, passes } (light-passes.js)
+            this._send({ type: 'result', jobId: msg.jobId, bucketId: id, data: out.data ?? out, passes: out.passes });
         } catch (err) {
             if (err?.name !== 'AbortError') {
                 console.error('[Render client] bucket:', err);

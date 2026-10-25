@@ -61,7 +61,7 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 | `docs/splats.md` | Gaussian Splats – `src/scripts/splat/`. |
 | `docs/animation.md` | Animation und Morph Targets – `src/scripts/animation.js`. |
 | `docs/rendering.md` | Raster-Darstellung – Darstellungsarten, Batcher (`render-batcher.js`), Cluster-LOD großer Modelle (`lod/`), Schatten, Einblenden, Hervorhebung, Schnittebene, eigene Render-Durchgänge. |
-| `docs/pathtracer.md` | Pathtracer (HQ) – `src/scripts/pathtracer.js` (three-gpu-pathtracer WebGPU, Vite-Patches in astro.config.mjs). |
+| `docs/pathtracer.md` | Pathtracer (HQ) – `src/scripts/pathtracer.js` (three-gpu-pathtracer WebGPU, Vite-Patches in astro.config.mjs); Licht-Passes für EXR/PSD (`light-passes.js`, `light-mix*.js`). |
 | `docs/camera-lens.md` | Kamera, Tiefenschärfe, Fisheye, Objektiv-Effekte, Stil-Filter – `dof.js`, `fisheye.js`, `lens-effects.js`, `style-filters.js`, `volume-shafts.js`, Kamera-Teile von `viewer.js`/`properties.js`. |
 | `docs/hdri-editor.md` | HDRI-Editor – eigene prozedurale HDRIs (`src/scripts/hdri/`): Modell, Generator, Pins, Sonne & Himmel, Export, Fenster. |
 | `docs/environment.md` | Umgebung, HDRI, Boden – `environment.js`, `ground.js`, `background-dome.js`, `contact-shadow.js`, `shadow-catcher.js`. |
@@ -72,7 +72,7 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 | `docs/export-ki.md` | Bild-Export und KI-Rendering – `image-export.js`, `png-encode.js`, `ki-render.js`, `ki-gemini.js`. |
 | `docs/memory.md` | Speicher und Gerätegrenzen – `memory-budget.js` (Budget aus den Gerätedaten, Worker-Zahl, Speicher-Schranke), `load-guard.js` (Absturz erkennen, sparsamer Modus), Dialoge/Hinweise bei zu großen Modellen (`notice.js`, `choiceDialog`). |
 | `docs/distributed.md` | Distributed Rendering – `src/scripts/distributed/`: Master/Render-Clients, Buckets (`pathTracing.renderRegion`), Verteilung, Ausfall, beschriftete Anzeige, Rechner im Netz (WebRTC, Kopplung per Code – `rtc.js`); Stand und nächste Stufen. |
-| `docs/vision.md` | Zukunftsvisionen (Distributed Rendering – Umsetzung siehe `docs/distributed.md`; Licht-Passes / Light Mix, EXR- und PSD-Export mit Ebenen) |
+| `docs/vision.md` | Zukunftsvisionen (Distributed Rendering – Umsetzung siehe `docs/distributed.md`; Licht-Passes / Light Mix, EXR- und PSD-Export – umgesetzt, siehe `docs/pathtracer.md`) |
 
 ## Stand (2026-10-14)
 
@@ -100,7 +100,6 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 - Logik ohne Browser: Node-Skripte im Scratchpad (Beispiele in den docs-Dateien).
 
 ## Offen
-- **Zukünftige Themen (Nutzer, Okt. 2026):** Licht-Passes je Lichtquelle (Light Mix inkl. HDRI, live nach dem Rendern regeln), danach nach Lichtart; Export mehrlagig als EXR und PSD (32 Bit) – Plan in `docs/vision.md`.
 - **Geplant (Nutzer, Okt. 2026):**
   - HDRI per Drag & Drop: `.hdr`/`.exr` ins Fenster ziehen → wird geladen und sofort als Umgebung gewählt (heute nur `public/hdr/` per Build-Liste bzw. `?hdr=`; Laden über `environment.selectFile` gibt es schon – beim Relink genutzt). Drop-Logik: HDRI-Datei allein = Umgebung, kein Modell-Ersetzen/Hinzufügen; Szenen-Zustand/Asset-Fenster müssen die Datei als Asset führen. Format-Texte ergänzen.
   - Decals/Aufkleber: nur über das Material (Bild-Node, Kacheln aus → UV-Modus); Drag & Drop aufs Teil mit Bearbeiten auf dem Objekt verworfen (Nutzer: zu langsam, stört die UI – Details `docs/materials.md`). Projektion (Variante 3) zurückgestellt.
@@ -152,8 +151,14 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 [X] Ergebnis entrauschen/exportieren (Render-Knopf), Zwischenstände je Bucket
 [X] Stufe 2: Rechner im lokalen Netz per WebRTC, Kopplung per Link + Antwort-Code (ohne Vermittlungsskript), Szene samt Modelldateien über den Kanal
 [X] Übertragungsanzeige: Balken je Client am Master (gesendete MB, dann „Lädt die Szene …“), MB auch am Client
-[X] Transparentes PNG auch verteilt (zwei Durchgänge vor Schwarz/Grau, Szene nur einmal übertragen)
+[X] Transparentes PNG auch verteilt – seit Okt. 2026 ein Render mit Durchlässigkeits-Pass statt zwei Durchgängen vor Schwarz/Grau (die bleiben ohne Megakernel)
 [ ] Szenen-Übertragung aufbereiteter Daten / Szene auf den Clients behalten, QR-Code für den Link
+
+### LICHT-PASSES (Okt. 2026 – `docs/pathtracer.md` „Licht-Passes“, `docs/export-ki.md`)
+[X] Pass je Lichtquelle (Lichter, HDRI, Hintergrund, Eigenleuchten) – Ebenen addieren sich zum Bild; nachträgliches Mischen im Fenster wieder entfernt (Nutzer: „bringt uns nicht viel“)
+[X] Pass je Lichtart (Diffus, Spiegelung, Brechung, Eigenleuchten/Hintergrund direkt), Schatten-Pass
+[X] Hilfs-Passes: Alpha, Tiefe, Normalen, Albedo, Objekt-/Material-ID
+[X] Export EXR (mehrlagig) und PSD (32 Bit, Ebenen addierend) direkt nach dem Rendern; auch verteilt gerendert – PSD in der Bildbearbeitung noch zu prüfen
 
 ### KI RENDERING
 [X] Neben dem HQ-Button soll noch ein KI-Button rein der das aktuelle HQ-Bild an eine Bildgenerierung-KI schickt.
