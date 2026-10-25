@@ -10,12 +10,16 @@ export const PATHTRACING = {
     filterGlossyFactor: 1,      // glossy filter 0–1: dampens glossy noise (fireflies), slightly softer
     denoise: true,              // OIDN denoising after maxSamples
     denoiseGuideSamples: 8,     // rays per pixel of OIDN's albedo/normal guides (antialiasing, depth of field; pt-guides.js)
+    helperPassSamples: 64,      // rays per pixel of the helper passes of EXR/PSD (alpha, depth, ids – their antialiasing)
     // shadows of glass (glass-shadow.js): 'transparent' = light passes (Fresnel, colour, absorption), 'opaque' = black
     glassShadow: {
         mode: 'transparent',
         fringe: 0.3,            // colour fringe 0–1: spectrum spread (IOR ±15 % red ↔ blue at 1, pathtracer.js; 0 = off)
         range: 0.5,             // the fringe fades over this share of the scene size (behind the glass)
     },
+    // first glass hit of the camera ray: reflection and refraction both traced (glass-split.js) – clean glass and
+    // reflections on it after few samples, one more path where glass is seen; false = picked by chance (library)
+    glassSplit: true,
     upscale: true,              // FSR upscaling (only useful with renderScale < 1)
     sharpness: 1,               // FSR sharpness 0–2
 

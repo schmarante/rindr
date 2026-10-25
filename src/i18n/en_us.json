@@ -1895,11 +1895,13 @@
             },
             "progress": "{done} / {total} buckets",
             "statusRunning": "{done} / {total} buckets · {workers} rendering · {time}",
+            "statusRunningLocal": "{done} / {total} buckets · {time}",
             "titlePass": "Distributed (Pass {n}/{total})",
             "sending": "Sending {percent} % · {sent} / {total}",
             "loadingScene": "Loading the scene …",
             "close": "Close",
             "done": "Rendered distributed in {time} s – {buckets} buckets ({who})",
+            "doneLocal": "Rendered in {time} s – {buckets} buckets",
             "startHint": "Started from “Render” (teapot in the bottom bar) – size, samples and format are there too.",
             "busy": "A distributed job is already running.",
             "pair": "Pair computer …",
@@ -2132,6 +2134,8 @@
         "format": "Format",
         "transparent": "Transparent background",
         "transparentHint": "Models, ground shadow, glass, depth of field and bloom/glare are kept. Alpha is premultiplied (with black) – interpret it that way in compositing software. Renders twice – distributed too.",
+        "transparentHintPasses": "Models, ground shadow, glass, depth of field and bloom/glare are kept. Alpha is premultiplied (with black) – interpret it that way in compositing software. One render: the alpha comes from a pass of its own – distributed too.",
+        "passesLayered": "With layers per light source (visible, added – together the image), per light kind and shadow plus helper passes (alpha, depth, normals, albedo, object and material id). Takes longer: every pass is denoised on its own. The file is saved after rendering.",
         "size": "{width} × {height} px",
         "preparing": "Preparing image…",
         "export": "Render",
@@ -2157,6 +2161,32 @@
         "passBackground": {
             "black": "in front of black",
             "grey": "in front of grey"
+        }
+    },
+    "lightMix": {
+        "light": "Light {n}",
+        "moreLights": "Further lights",
+        "tooLarge": "The light passes at this image size need up to {size} of graphics memory – too much for this device. Please render smaller.",
+        "pass": {
+            "environment": "Environment (HDRI)",
+            "background": "Background",
+            "emission": "Emission",
+            "diffuse": "Diffuse",
+            "reflection": "Reflection",
+            "refraction": "Refraction",
+            "directEmission": "Emission direct",
+            "directBackground": "Background direct",
+            "shadow": "Shadow",
+            "alpha": "Alpha",
+            "cutout": "Cut out",
+            "depth": "Depth",
+            "normal": "Normals",
+            "albedo": "Albedo",
+            "objectId": "Object id",
+            "materialId": "Material id"
+        },
+        "status": {
+            "denoising": "Denoising pass {n}/{total}"
         }
     },
     "bim": {
