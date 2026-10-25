@@ -88,7 +88,7 @@ aus den Poren (offene Poren rauer); lackiert = Klarlack über glatterer Basis. M
 
 ### Ausgelassen
 - Glass Block, CMU Screen, Brick Screen: Geometrie (Durchbrüche/Glas), nicht als Oberfläche sinnvoll.
-- Adobe, Norman One-Third Running: zu ähnlich zu den vorhandenen Ziegeln (Läuferverband, Farbe/Verband im Node umstellbar).
+- Lehmziegel, Norman One-Third Running: zu ähnlich zu den vorhandenen Ziegeln (Läuferverband, Farbe/Verband im Node umstellbar).
 - Terrazzo (Finishes): nicht mein Bereich; Flagstone, Cobble Stone, Riverstone-Pflaster, Pavers (SiteWork): Außenbereich.
 - Amethyst/Edelsteine: kein Naturstein-Belag.
 - Control Joints Black: reine Fugenfarbe.
