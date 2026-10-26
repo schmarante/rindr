@@ -1668,7 +1668,14 @@
         "running": "Rendering",
         "cancel": "Cancel rendering – back to the view before",
         "stopHq": "Stop path tracing – back to “{mode}”",
-        "runningPass": "Rendering (pass {n}/{total})"
+        "runningPass": "Rendering (pass {n}/{total})",
+        "saving": {
+            "helpers": "Helper passes: depth, normals, albedo, ids",
+            "layer": "{format} layer {name} ({n}/{total})",
+            "merged": "{format}: composite image",
+            "writing": "Writing {format}",
+            "compose": "Composing the transparent picture"
+        }
     },
     "status": {
         "growingGrass": "Growing grass …",
@@ -1763,7 +1770,8 @@
             "rendering": "Path tracing",
             "denoiseLoading": "Loading denoiser (OIDN)",
             "denoising": "Denoising (OIDN)",
-            "done": "Done"
+            "done": "Done",
+            "saving": "Preparing the file"
         },
         "samples": "{samples} / {maxSamples} samples",
         "percent": "{value} %",
@@ -1779,7 +1787,17 @@
             "renderingDenoise": "{samples} · then denoise",
             "denoiseLoading": "Loading AI network…",
             "doneDenoised": "{samples} · denoised",
-            "motionSamples": "Resolution {value} % · {samples}"
+            "motionSamples": "Resolution {value} % · {samples}",
+            "compiling": "Compiling {list} · {time}"
+        },
+        "compile": {
+            "kernel": "path tracing kernel",
+            "kernelSize": "path tracing kernel ({size} KB)",
+            "kernelPasses": "path tracing kernel with light passes",
+            "kernelPassesSize": "path tracing kernel with light passes ({size} KB)",
+            "denoiseGuides": "denoiser guides",
+            "motionDenoiser": "motion denoiser",
+            "helperPasses": "helper passes"
         }
     },
     "toolbar": {
@@ -2187,10 +2205,12 @@
             "normal": "Normals",
             "albedo": "Albedo",
             "objectId": "Object id",
-            "materialId": "Material id"
+            "materialId": "Material id",
+            "picture": "Picture without background"
         },
         "status": {
-            "denoising": "Denoising pass {n}/{total}"
+            "denoising": "Denoising pass {n}/{total}",
+            "denoisingPass": "Denoising {name} ({n}/{total})"
         }
     },
     "bim": {

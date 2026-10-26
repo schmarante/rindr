@@ -34,6 +34,10 @@
 // The id colours (idColor) are averaged over the rays like the image – edges antialiased and defocused (an id number
 // cannot be averaged: from the first ray alone the edges were hard). A fourth storage texture only here (WebGPU
 // guarantees 4 per shader stage).
+// Gaussian splats (splat-volume.js: a density grid, no surface) – for the helper passes the ray marches the density
+// between its hits: where half the light is gone (optical depth ln 2) counts as the surface – depth there, normal
+// against the density gradient, the splats' colour as albedo, an id colour of their own (index 0). The other guides
+// keep looking through the volume (the denoiser).
 import { StorageTexture, FloatType, HalfFloatType, RGBAFormat, NearestFilter, Matrix4, Vector2 } from 'three/webgpu';
 import { uniform, globalId, textureStore } from 'three/tsl';
 import { proxy, proxyFn, wgslTagFn, rayStruct, ndcToCameraRay } from 'three-mesh-bvh/webgpu';
@@ -41,6 +45,75 @@ import { offsetRayOriginFunc } from 'three-gpu-pathtracer/src/webgpu/nodes/utils
 import { FISHEYE_RAY } from './fisheye.js';
 import { EDGE_WGSL } from './materials/edges.js';
 import { WOOL_PT } from './materials/wool-pt.js';
+import { SPLAT_PT } from './splat/splat-pt.js';
+
+const S = SPLAT_PT;
+
+// splat volume along a stretch of the ray (o + d·t, t < segment), optical depth `tau` so far: x = distance where it
+// reaches ln 2 (−1: not on this stretch), y = optical depth at the end of the stretch. Steps of 1/256 of the box.
+const splatMarch = wgslTagFn/* wgsl */`
+    fn guideSplatMarch( o: vec3f, d: vec3f, segment: f32, tau: f32, jitter: f32 ) -> vec2f {
+
+        let lo = ( ${ S.inverse } * vec4f( o, 1.0 ) ).xyz;
+        let ld = ( ${ S.inverse } * vec4f( d, 0.0 ) ).xyz;
+        let inv = 1.0 / ( ld + vec3f( 1e-12 ) );
+        let a = ( vec3f( - 0.5 ) - lo ) * inv;
+        let b = ( vec3f( 0.5 ) - lo ) * inv;
+        let t0 = max( max( max( min( a.x, b.x ), min( a.y, b.y ) ), min( a.z, b.z ) ), 0.0 );
+        let t1 = min( min( min( max( a.x, b.x ), max( a.y, b.y ) ), max( a.z, b.z ) ), segment );
+        if ( t1 <= t0 ) {
+
+            return vec2f( - 1.0, tau );
+
+        }
+        let n = clamp( u32( ceil( ( t1 - t0 ) * length( ld ) * 256.0 ) ), 1u, 1024u );
+        let step = ( t1 - t0 ) / f32( n );
+        var depth = tau;
+        for ( var i = 0u; i < n; i ++ ) {
+
+            let t = t0 + ( f32( i ) + jitter ) * step;
+            depth += ${ S.density }( lo + ld * t ) * ${ S.sigma } * step;
+            if ( depth >= 0.6931472 ) {
+
+                return vec2f( t, depth );
+
+            }
+
+        }
+        return vec2f( - 1.0, depth );
+
+    }
+`;
+
+// world normal of the splats at a local point: against the density gradient (not normalized; 0 inside a flat region)
+const splatNormal = wgslTagFn/* wgsl */`
+    fn guideSplatNormal( lo: vec3f ) -> vec3f {
+
+        let h = 1.0 / 160.0;
+        let g = vec3f(
+            ${ S.density }( lo + vec3f( h, 0.0, 0.0 ) ) - ${ S.density }( lo - vec3f( h, 0.0, 0.0 ) ),
+            ${ S.density }( lo + vec3f( 0.0, h, 0.0 ) ) - ${ S.density }( lo - vec3f( 0.0, h, 0.0 ) ),
+            ${ S.density }( lo + vec3f( 0.0, 0.0, h ) ) - ${ S.density }( lo - vec3f( 0.0, 0.0, h ) ) );
+        let inv = ${ S.inverse };
+        return - ( transpose( mat3x3f( inv[ 0 ].xyz, inv[ 1 ].xyz, inv[ 2 ].xyz ) ) * g );
+
+    }
+`;
+
+// albedo of the splats: their colour, or the override material's like the volume walk (volume-walk.patch.wgsl)
+const splatAlbedo = wgslTagFn/* wgsl */`
+    fn guideSplatAlbedo( lo: vec3f ) -> vec3f {
+
+        let c = ${ S.color }( lo );
+        if ( ${ S.override } > 0.5 ) {
+
+            return ${ S.tint } * pow( clamp( dot( c, vec3f( 0.2126, 0.7152, 0.0722 ) ) / max( ${ S.mean }, 1e-4 ), 0.0, 4.0 ), ${ S.detail } );
+
+        }
+        return c;
+
+    }
+`;
 
 // 4 uniform random numbers per pixel (pcg4d, Jarzynski & Olano 2020) – rotation of the sample sequence
 const guideRandom = wgslTagFn/* wgsl */`
@@ -205,8 +278,9 @@ export class GuideKernel {
                     var albedo = vec4f( 1.0 );
                     var firstDepth = - 1.0;
                     var surfaceDepth = 0.0;
-                    var ids = vec2f( 0.0 );   // object, material index + 1 (0 = none)
+                    var ids = vec2f( 0.0 );   // object, material index + 1 (0: the splats)
                     var chain = 0u;
+                    var splatTau = 0.0;       // helper passes: optical depth of the splats so far
 
                     for ( var i = 0u; i < 16u; i ++ ) {
 
@@ -214,6 +288,34 @@ export class GuideKernel {
                         if ( ! ${ raycastFirstHit }( ray, &hit ) ) {
 
                             break;
+
+                        }
+
+                        // helper passes: the splats up to this hit – half the light gone = their surface
+                        if ( aov != 0u && ${ S.active } > 0.5 ) {
+
+                            let march = ${ splatMarch }( ray.origin, ray.direction, hit.dist, splatTau, jitter.w );
+                            splatTau = march.y;
+                            if ( march.x >= 0.0 ) {
+
+                                let sp = ray.origin + ray.direction * march.x;
+                                let lo = ( ${ S.inverse } * vec4f( sp, 1.0 ) ).xyz;
+                                var sn = ${ splatNormal }( lo );
+                                sn = select( - ray.direction, normalize( sn ), dot( sn, sn ) > 1e-12 );
+                                sn = select( sn, - sn, dot( sn, ray.direction ) > 0.0 );   // facing the camera
+                                travelled += march.x;
+                                position = vec4f( sp, 1.0 );
+                                normal = vec4f( sn, 0.0 );
+                                albedo = vec4f( ${ splatAlbedo }( lo ), 1.0 );
+                                surfaceDepth = select( dot( sp - camPos, forward ), travelled, isFisheye );
+                                if ( firstDepth < 0.0 ) {
+
+                                    firstDepth = surfaceDepth;
+
+                                }
+                                break;
+
+                            }
 
                         }
 
@@ -410,8 +512,10 @@ export class GuideKernel {
      */
     update(bvhData, width, height, camera) {
         const p = this.params;
-        if (bvhData !== this._bvhData) {
+        // new scene data, or its ray test built anew (kernel features: wool added or removed – pathtracer.js)
+        if (bvhData !== this._bvhData || bvhData.fns.raycastFirstHit !== this._raycast) {
             this._bvhData = bvhData;
+            this._raycast = bvhData.fns.raycastFirstHit;
             p.bvhData.value = bvhData;
             this._build();
         }

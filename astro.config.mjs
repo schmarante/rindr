@@ -6,6 +6,12 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 
+// Kernel features (src/scripts/kernel-features.js): the code of a feature is marked, the kernel is built with the
+// features the scene needs (featureTag drops the rest) – otherwise: the library's code it replaced (or nothing)
+const KERNEL_FEATURES_MODULE = fileURLToPath(new URL('./src/scripts/kernel-features.js', import.meta.url));
+const KERNEL_FEATURE_TAG_MODULE = fileURLToPath(new URL('./src/scripts/kernel-feature-tag.js', import.meta.url));
+const gate = (features, code, otherwise = '') => `/*@if:${features}*/${code}${otherwise ? `/*@else*/${otherwise}` : ''}/*@endif*/`;
+
 // Patches three-gpu-pathtracer's megakernel (fails loudly if the library changed – check on every update):
 // - shadow catcher (src/scripts/shadow-catcher.js): matte branch → src/scripts/shadow-catcher.patch.wgsl, incl. ground
 //   reflection / puddles (src/scripts/ground-reflection.js: GROUND_SURFACE_WGSL)
@@ -53,7 +59,7 @@ function shadowCatcherPatch() {
       }
       if (!file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) return null;
       if (!anchor.test(code)) this.error('rindr-shadow-catcher: matte branch not found in PathTracerMegaKernel.js (three-gpu-pathtracer changed?)');
-      code = code.replace(anchor, () => readFileSync(SHADOW_CATCHER_PATCH, 'utf8'));
+      code = code.replace(anchor, m => gate('ground', readFileSync(SHADOW_CATCHER_PATCH, 'utf8'), m));
       // background dome: the three lookups by ray direction
       // ground reflection, model only (shadow-catcher.patch.wgsl): the reflection ray's next segment decides –
       // a miss ends the path (the ground was already counted), a hit takes the counted ground back
@@ -239,12 +245,16 @@ function ptStandInPatch() {
         code = code.replace(from, to);
       };
       if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/PathtracerBVHComputeData.js')) {
-        replaceOnce('const m = materials[ i ];', () => 'const m = __ptStandIn( materials[ i ] );');
+        // kernel features (kernel-features.js): what the materials need, collected while their data is packed
+        replaceOnce('// features.reset();', () => '__kernelFeatures.begin();');
+        replaceOnce('const m = materials[ i ];', () => 'const m = __kernelFeatures.see( __ptStandIn( materials[ i ] ), materials[ i ] );');
+        replaceOnce(/\n(\t+)this\.getRootObject\(\)\.traverse\( o => \{\n/, (m, tab) => `\n${tab}__kernelFeatures.shown.clear();${m}${tab}\t__kernelFeatures.object( o );\n`);
         replaceOnce(/(intArray\[ index \+\+ \] = Number\( m\.transparent \);\n\t+intArray\[ index \+\+ \] = )0;/, (_, head) => `${head}getField( m, 'ptVolume', 0 );`);
-        return { code: `import { ptStandIn as __ptStandIn } from ${JSON.stringify(PT_STAND_IN_MODULE)};\n` + code, map: null };
+        return { code: `import { ptStandIn as __ptStandIn } from ${JSON.stringify(PT_STAND_IN_MODULE)};\n`
+          + `import { kernelFeatures as __kernelFeatures } from ${JSON.stringify(KERNEL_FEATURES_MODULE)};\n` + code, map: null };
       }
       if (file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) {
-        replaceOnce(/\n(\t+)\/\/ emission, clamped at the depth of the segment that found it/, m => '\n' + MARBLE_EMISSION + m.slice(1));
+        replaceOnce(/\n(\t+)\/\/ emission, clamped at the depth of the segment that found it/, m => '\n' + gate('marble', MARBLE_EMISSION) + m.slice(1));
         return { code: `import { MARBLE_WGSL as __MARBLE } from ${JSON.stringify(MARBLE_MODULE)};\n` + code, map: null };
       }
       return null;
@@ -288,9 +298,28 @@ function glassShadowPatch() {
     transform(code, id) {
       const file = id.replace(/\\/g, '/').split('?')[0];
       if (!file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) return null;
-      const snippet = ({ origin, dir, maxDist, normal, primary }) => readFileSync(GLASS_SHADOW_PATCH, 'utf8')
+      // kernel features: without glass and volumes in the scene a plain occlusion test (every hit blocks – what the
+      // snippet does then as well)
+      const snippet = ({ origin, dir, maxDist, normal, primary }) => gate('glass,volume', readFileSync(GLASS_SHADOW_PATCH, 'utf8')
         .replace(/\$ORIGIN/g, origin).replace(/\$DIR/g, dir).replace(/\$MAXDIST/g, maxDist)
-        .replace(/\$NORMAL/g, normal).replace(/\$PRIMARY/g, primary);
+        .replace(/\$NORMAL/g, normal).replace(/\$PRIMARY/g, primary), `
+											var gsShadow = vec3f( 1.0 );
+											var gsGlass = false;
+											{
+
+												var gsRay: \${ rayStruct };
+												gsRay.origin = \${ offsetRayOriginFunc }( ${origin}, ${dir}, ${normal} );
+												gsRay.direction = ${dir};
+												gsRay.maxDist = ${maxDist};
+												var gsHit: \${ raycastOutput };
+												if ( \${ raycastFirstHitFn }( gsRay, &gsHit ) ) {
+
+													gsShadow = vec3f( 0.0 );
+
+												}
+
+											}
+`) + '\n';
       const replaceOnce = (from, to) => {
         const n = typeof from === 'string' ? code.split(from).length - 1 : (code.match(new RegExp(from.source, 'g')) || []).length;
         if (n !== 1) this.error(`rindr-glass-shadow: ${from} not found exactly once in PathTracerMegaKernel.js (three-gpu-pathtracer changed?)`);
@@ -452,7 +481,7 @@ ${tab}\tfilmBounce = rsCounts[ rsTop ].w;
 
 ${tab}}
 ${tab}for ( var bounce = rsFrom; bounce < maxBounces + glassBounce + filmBounce; bounce ++ ) {`);
-      replaceOnce(/\n(\t+)let scatterRec = \$\{ bsdfSampleFn \}\( view, surface \);\n/, () => GLASS_SPLIT_SCATTER);
+      replaceOnce(/\n(\t+)let scatterRec = \$\{ bsdfSampleFn \}\( view, surface \);\n/, m => gate('glass', GLASS_SPLIT_SCATTER, m));
       replaceOnce(/\n(\t+)let nextSampleCount = sampleCount \+ 1;/, (m, tab) => `
 ${tab}\tif ( rsTop == 0u ) {
 
@@ -729,51 +758,113 @@ ${tab}\t\${ __LP_END }( lpB, resultColor.a, f32( sampleCount ), any( ( bitcast<v
 
 ${tab}}${m}`);
       const passes = code;
-      code = module.slice(0, to) + `\`;
+      // kernel features (kernel-features.js): both templates through featureTag – one shader per combination of the
+      // scene's features and the passes
+      code = module.slice(0, from) + 'const shader = features => __featureTag( features )/* wgsl */`' + module.slice(from + open.length, to) + `\`;
 		// RINDR light passes (astro.config.mjs, rindr-light-passes): the kernel variant with the passes
-		const shaderPasses = () => wgslTagFn/* wgsl */\`${passes}\`;
+		const shaderPasses = features => __featureTag( features )/* wgsl */\`${passes}\`;
 		const bsdfLobesFn = proxyFn( 'material.value.bsdfLobes', params );
 
-		super( shader( params ) );
-		this._rindrShaders = { normal: this._fn, passes: null, make: () => shaderPasses()( params ), nodes: { normal: this.kernel } };` + module.slice(to + close.length);
+		super( shader( __kernelFeatures.current )( params ) );
+		this._rindrShaders = { make: ( features, passes ) => ( passes ? shaderPasses : shader )( features )( params ), passes: false, key: '',
+			fns: new Map(), nodes: new Map() };
+		this._rindrShaders.key = __kernelFeatures.key();
+		this._rindrShaders.fns.set( this._rindrShaders.key, this._fn );
+		this._rindrShaders.nodes.set( this._rindrShaders.key, this.kernel );` + module.slice(to + close.length);
       const end = code.lastIndexOf('\n}');
       code = code.slice(0, end) + `
 
-	// RINDR light passes: the normal kernel or the one with the passes – true if it changed. Both compute nodes are kept
-	// (switching back must not build and compile the normal one again – that restart threw the finished picture away)
-	// until a rebuild (scene data, material: setWorkgroupSize) makes the other one outdated.
-	setLightPasses( on ) {
+	// RINDR kernel variants: the scene's features (kernel-features.js) × light passes on/off. Each shader function is
+	// made once; its compute node is kept until a rebuild (scene data, material: setWorkgroupSize) makes the others
+	// outdated – switching back to a kept one does not compile again (that restart threw a finished picture away).
+	_rindrKey() {
+
+		return __kernelFeatures.key() + ( this._rindrShaders.passes ? '|passes' : '' );
+
+	}
+
+	_rindrFn( key ) {
 
 		const shaders = this._rindrShaders;
-		const key = on ? 'passes' : 'normal';
-		const fn = on ? ( shaders.passes ??= shaders.make() ) : shaders.normal;
-		if ( this._fn === fn ) return false;
-		this._fn = fn;
-		const kept = shaders.nodes;
-		if ( kept[ key ] ) {
+		let fn = shaders.fns.get( key );
+		if ( ! fn ) {
 
-			this.kernel = kept[ key ];
+			fn = shaders.make( new Set( __kernelFeatures.current ), shaders.passes );
+			shaders.fns.set( key, fn );
+
+		}
+		return fn;
+
+	}
+
+	// the variant for the current features and passes – true if the kernel changed
+	_rindrSelect() {
+
+		const shaders = this._rindrShaders;
+		const key = this._rindrKey();
+		if ( key === shaders.key ) return false;
+		shaders.key = key;
+		this._fn = this._rindrFn( key );
+		const kept = shaders.nodes.get( key );
+		if ( kept ) {
+
+			this.kernel = kept;
 
 		} else {
 
-			this.setWorkgroupSize( ...this.workgroupSize );
-			shaders.nodes = { ...kept, [ key ]: this.kernel };
+			super.setWorkgroupSize( ...this.workgroupSize );
+			shaders.nodes.set( key, this.kernel );
 
 		}
 		return true;
 
 	}
 
+	// RINDR light passes: the kernel with the passes or without – true if it changed
+	setLightPasses( on ) {
+
+		this._rindrShaders.passes = !! on;
+		return this._rindrSelect();
+
+	}
+
+	get lightPasses() {
+
+		return this._rindrShaders.passes;
+
+	}
+
+	// the scene's features changed (material data packed again) – true if the kernel changed
+	updateFeatures() {
+
+		return this._rindrSelect();
+
+	}
+
+	get featureKey() {
+
+		return this._rindrShaders.key;
+
+	}
+
 	setWorkgroupSize( x, y, z ) {
 
-		super.setWorkgroupSize( x, y, z );
 		const shaders = this._rindrShaders;
-		if ( shaders ) shaders.nodes = { [ this._fn === shaders.normal ? 'normal' : 'passes' ]: this.kernel };
+		if ( shaders ) {
+
+			// new scene data: every kept node is outdated – the variant for the features now
+			shaders.nodes = new Map();
+			shaders.key = this._rindrKey();
+			this._fn = this._rindrFn( shaders.key );
+
+		}
+		super.setWorkgroupSize( x, y, z );
+		if ( shaders ) shaders.nodes.set( shaders.key, this.kernel );
 		return this;
 
 	}
 ` + code.slice(end);
-      return { code: head + code, map: null };
+      return { code: head + `import { featureTag as __featureTag } from ${JSON.stringify(KERNEL_FEATURE_TAG_MODULE)};\nimport { kernelFeatures as __kernelFeatures } from ${JSON.stringify(KERNEL_FEATURES_MODULE)};\n` + code, map: null };
     },
   };
 }
@@ -831,7 +922,7 @@ function cloudPatch() {
         return { code, map: null };
       }
       if (!file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) return null;
-      replaceOnce(/\n\t+materialInfo\.opacity \*= objectInfo\.color\.a;\n/, m => m + readFileSync(VOLUME_WALK_PATCH, 'utf8'), 'PathTracerMegaKernel.js');
+      replaceOnce(/\n\t+materialInfo\.opacity \*= objectInfo\.color\.a;\n/, m => m + gate('volume', readFileSync(VOLUME_WALK_PATCH, 'utf8')), 'PathTracerMegaKernel.js');
       return { code: `import { CLOUD_PT as __CLOUD } from ${JSON.stringify(CLOUD_PT_MODULE)};\nimport { SPLAT_PT as __SPLAT } from ${JSON.stringify(SPLAT_PT_MODULE)};\nimport { VOLUME_PT as __VOL } from ${JSON.stringify(VOLUME_PT_MODULE)};\n` + code, map: null };
     },
   };
@@ -885,13 +976,15 @@ function woolPatch() {
         // fibre length of the object the ray is in (local units, 0: no wool)
         replaceOnce("const baseOpacityScalar = float( 1.0 ).toVar( 'bvh_baseOpacity' );", m => `${m}
 		const woolLength = float( 0.0 ).toVar( 'bvh_woolLength' );`);
-        replaceOnce(/\n(\t+)var triResult = \$\{ intersectRayTriangle \}\( ray, a, b, c, 0\.0 \);/, m => '\n' + readFileSync(WOOL_HIT_PATCH, 'utf8') + m.slice(1));
+        replaceOnce(/\n(\t+)var triResult = \$\{ intersectRayTriangle \}\( ray, a, b, c, 0\.0 \);/, m => '\n' + gate('wool', readFileSync(WOOL_HIT_PATCH, 'utf8')) + m.slice(1));
+        // the ray test is built right after the material data (kernel features collected): without wool no fibre test
+        replaceOnce('intersectRangeFn: wgslTagFn/* wgsl */`', () => 'intersectRangeFn: __featureTag()/* wgsl */`');
         replaceOnce(/\n(\t+)let material = \$\{ storage\.materials \}\[ object\.materialIndex \];/, (m, tab) => `${m}\n${tab}\${ woolLength } = select( 0.0, material.iridescenceThicknessMinimum / \${ scratchRayScalar }, material.fogVolume == 4 );`);
         replaceOnce(/\n(\t+)\$\{ scratchRayScalar \} = 1\.0;\n\t+\$\{ baseOpacityScalar \} = 1\.0;/, (m, tab) => `${m}\n${tab}\${ woolLength } = 0.0;`);
-        return { code: head + code, map: null };
+        return { code: head + `import { featureTag as __featureTag } from ${JSON.stringify(KERNEL_FEATURE_TAG_MODULE)};\n` + code, map: null };
       }
       if (file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) {
-        replaceOnce(/\n\t+vertexData\.position = objectInfo\.matrixWorld \* vertexData\.position;\n/, m => m + WOOL_SHADE);
+        replaceOnce(/\n\t+vertexData\.position = objectInfo\.matrixWorld \* vertexData\.position;\n/, m => m + gate('wool', WOOL_SHADE));
         return { code: head + code, map: null };
       }
       return null;
@@ -922,7 +1015,7 @@ function soapPatch() {
       if (!file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) return null;
       const from = /\n\t+vertexData\.position = objectInfo\.matrixWorld \* vertexData\.position;\n/;
       if ((code.match(new RegExp(from.source, 'g')) || []).length !== 1) this.error(`rindr-soap: ${from} not found exactly once in PathTracerMegaKernel.js (three-gpu-pathtracer changed?)`);
-      code = code.replace(from, m => m + SOAP_FILM);
+      code = code.replace(from, m => m + gate('soap', SOAP_FILM));
       // a ray crosses two films per bubble – passing a soap film does not use up the bounce budget (up to
       // SOAP_PT.filmBounces; the loop limit comes from rindr-glass-bounces, which runs before)
       const loop = /\n(\t+)for \( var bounce = 0u; bounce < maxBounces \+ glassBounce; bounce \+\+ \) \{/;
@@ -978,7 +1071,7 @@ function edgesPatch() {
         return { code: `import { edgeBase as __edgeBase } from ${JSON.stringify(EDGES_MODULE)};\n` + code, map: null };
       }
       if (file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) {
-        replaceOnce(/\n\t+var vertexData = \$\{ sampleTrianglePointFn \}\( hitResult\.barycoord, hitResult\.indices\.xyz \);\n/, m => m + EDGE_NORMAL);
+        replaceOnce(/\n\t+var vertexData = \$\{ sampleTrianglePointFn \}\( hitResult\.barycoord, hitResult\.indices\.xyz \);\n/, m => m + gate('edges', EDGE_NORMAL));
         return { code: `import { EDGE_WGSL as __EDGES, EDGE_BOUNCES as __EDGE_BOUNCES } from ${JSON.stringify(EDGES_MODULE)};\n` + code, map: null };
       }
       return null;

@@ -1668,7 +1668,14 @@
         "running": "Rendern",
         "cancel": "Rendern abbrechen – zurück zur Ansicht davor",
         "stopHq": "Pathtracing beenden – zurück zu „{mode}“",
-        "runningPass": "Rendern (Pass {n}/{total})"
+        "runningPass": "Rendern (Pass {n}/{total})",
+        "saving": {
+            "helpers": "Hilfs-Passes: Tiefe, Normalen, Albedo, IDs",
+            "layer": "{format}-Ebene {name} ({n}/{total})",
+            "merged": "{format}: Gesamtbild",
+            "writing": "Schreibe {format}",
+            "compose": "Setze das transparente Bild zusammen"
+        }
     },
     "status": {
         "growingGrass": "Gras wächst …",
@@ -1763,7 +1770,8 @@
             "rendering": "Pathtracing läuft",
             "denoiseLoading": "Lade Denoiser (OIDN)",
             "denoising": "Entrausche (OIDN)",
-            "done": "Fertig"
+            "done": "Fertig",
+            "saving": "Datei wird vorbereitet"
         },
         "samples": "{samples} / {maxSamples} Samples",
         "percent": "{value} %",
@@ -1779,7 +1787,17 @@
             "renderingDenoise": "{samples} · danach Denoise",
             "denoiseLoading": "KI-Netz wird geladen…",
             "doneDenoised": "{samples} · entrauscht",
-            "motionSamples": "Auflösung {value} % · {samples}"
+            "motionSamples": "Auflösung {value} % · {samples}",
+            "compiling": "Kompiliere {list} · {time}"
+        },
+        "compile": {
+            "kernel": "Pathtracing-Kernel",
+            "kernelSize": "Pathtracing-Kernel ({size} KB)",
+            "kernelPasses": "Pathtracing-Kernel mit Licht-Passes",
+            "kernelPassesSize": "Pathtracing-Kernel mit Licht-Passes ({size} KB)",
+            "denoiseGuides": "Entrauscher-Hilfsdaten",
+            "motionDenoiser": "Bewegungs-Entrauscher",
+            "helperPasses": "Hilfs-Passes"
         }
     },
     "toolbar": {
@@ -2187,10 +2205,12 @@
             "normal": "Normalen",
             "albedo": "Albedo",
             "objectId": "Objekt-ID",
-            "materialId": "Material-ID"
+            "materialId": "Material-ID",
+            "picture": "Bild ohne Hintergrund"
         },
         "status": {
-            "denoising": "Entrausche Pass {n}/{total}"
+            "denoising": "Entrausche Pass {n}/{total}",
+            "denoisingPass": "Entrausche {name} ({n}/{total})"
         }
     },
     "bim": {

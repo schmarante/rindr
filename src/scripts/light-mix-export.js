@@ -4,18 +4,9 @@
 // with the first layered save.
 import { t } from './i18n.js';
 import { PASS, SOURCE_PASSES, KIND_PASSES } from './light-passes.js';
-import { readTexture } from './light-mix.js';
+import { readTexture, passLabel } from './light-mix.js';
 import { encodeExr, exrName } from './exr-encode.js';
 import { encodePsd } from './psd-encode.js';
-
-/** label of a pass (light slots: the scene's light names) */
-function passLabel(index, lights = []) {
-    if (index < 4) return lights[index] || t('lightMix.light', { n: index + 1 });
-    const key = { [PASS.ENVIRONMENT]: 'environment', [PASS.BACKGROUND]: 'background', [PASS.EMISSION]: 'emission',
-        [PASS.DIFFUSE]: 'diffuse', [PASS.REFLECTION]: 'reflection', [PASS.REFRACTION]: 'refraction',
-        [PASS.DIRECT_EMISSION]: 'directEmission', [PASS.DIRECT_BACKGROUND]: 'directBackground', [PASS.SHADOW]: 'shadow' }[index];
-    return t(`lightMix.pass.${key}`);
-}
 
 /**
  * The layers of a mix: { key, name, read(y0, rows) → RGBA float, kind: 'light' | 'helper', visible, blend, channels }
@@ -79,7 +70,7 @@ function layersOf(mix, helpers, renderer) {
 }
 
 /**
- * Save the mix as `format` ('exr' | 'psd') – returns the Blob. onProgress(0…1)
+ * Save the mix as `format` ('exr' | 'psd') – returns the Blob. onProgress(0…1, step) – PSD: the layer being written
  */
 export async function encodeLightMix(mix, helpers, renderer, format, onProgress) {
     const { width, height, layers } = layersOf(mix, helpers, renderer);

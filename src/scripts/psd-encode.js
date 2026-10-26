@@ -82,7 +82,8 @@ function nameBlocks(extra, name) {
  * @param {number} height
  * @param {{ name: string, blend?: 'add'|'normal', hidden?: boolean, read: () => Promise<Float32Array> }[]} layers bottom first
  * @param {() => Promise<Float32Array>} merged the composite image (RGBA float)
- * @param {{ onProgress?: (p: number) => void }} [options]
+ * @param {{ onProgress?: (p: number, step?: { name?: string, n?: number, total?: number, merged?: boolean }) => void }} [options]
+ *   step: the layer about to be written (or the composite image)
  * @returns {Promise<Blob>}
  */
 export async function encodePsd(width, height, layers, merged, { onProgress } = {}) {
@@ -90,6 +91,7 @@ export async function encodePsd(width, height, layers, merged, { onProgress } = 
     const records = [];
     for (let l = 0; l < layers.length; l++) {
         const layer = layers[l];
+        onProgress?.(l / (layers.length + 1), { name: layer.name, n: l + 1, total: layers.length });
         const rgba = await layer.read();
         const channels = [];
         for (const [id, component] of [[-1, 3], [0, 0], [1, 1], [2, 2]]) {
@@ -98,7 +100,6 @@ export async function encodePsd(width, height, layers, merged, { onProgress } = 
             channels.push({ id, data });
         }
         records.push({ layer, channels });
-        onProgress?.((l + 1) / (layers.length + 1));
     }
 
     // layer info (inside 'Lr32')
@@ -159,6 +160,7 @@ export async function encodePsd(width, height, layers, merged, { onProgress } = 
     file.u32(info.length);
     for (const p of info.parts) file.push(p);
     // merged image: raw, planar R, G, B
+    onProgress?.(layers.length / (layers.length + 1), { merged: true });
     const composite = await merged();
     file.u16(0);
     for (const component of [0, 1, 2]) file.push(channelBytes(composite, width, height, component));
