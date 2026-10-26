@@ -15,7 +15,13 @@
 // Fields of the stand-in (no other use on this material): color = override colour (white without), sheen = override
 // on, sheenColor = glow, metalness = 1 relit / 0 baked, roughness = σ of density 1 (per world unit), clearcoat = mean
 // brightness, ior = structure, anisotropy = phase g, iridescence = 1 hidden from camera rays.
+// Traced Gaussians (gaussian-bvh-worker.js, gaussian-pt.js – docs/splats.md "Gaussian Ray Tracing"): built instead of
+// the grid when they fit on the device; every look is then traced exactly (ptGaussians in the stand-in → kernel feature
+// 'gaussians', the grid's medium off) and the guides use them too. The grid stays the fallback (too large for the
+// device, ?gaussians=0).
 import * as THREE from 'three/webgpu';
+import { GAUSS } from './gaussian-data.js';
+import { memoryBudget } from '../memory-budget.js';
 import { MeshBVH } from 'three-mesh-bvh';
 import { uniform } from 'three/tsl';
 import { debugLog } from '../log.js';
@@ -48,7 +54,9 @@ export const SPLAT_UNIFORMS = {
     active: uniform(0), inverse: uniform(new THREE.Matrix4()), sigma: uniform(0), relit: uniform(0), override: uniform(0),
     tint: uniform(new THREE.Color(1, 1, 1)), glow: uniform(new THREE.Color(0, 0, 0)), mean: uniform(0.2), detail: uniform(1),
     primary: uniform(1),
+    grid: uniform(0),   // the grid is baked and the splats are shown (helper passes, pt-guides.js)
 };
+const GAUSSIANS = typeof location === 'undefined' || new URLSearchParams(location.search).get('gaussians') !== '0';
 
 const BOX = new THREE.BoxGeometry(1, 1, 1);
 BOX.boundsTree = new MeshBVH(BOX);   // the path tracer needs it before setScene
@@ -67,12 +75,18 @@ export class SplatVolume {
         this.sigma = 0;              // per data unit
         this.ready = false;
         this.baking = null;          // Promise while the worker runs
+        this.gauss = GAUSS;          // debugging (?debug: __viewer.splatVolume.gauss)
         this._standIn({});
     }
 
     /** the splats of the scene (null: none) – the volume is baked again on the next ensure() */
     attach(splat) {
         SPLAT_UNIFORMS.active.value = 0;
+        SPLAT_UNIFORMS.grid.value = 0;
+        GAUSS.on.value = 0;
+        this._setGaussians(null);   // the previous splats' buffer (up to hundreds of MB on the GPU)
+        this.traced = false;
+        this.gridBaked = false;
         this.proxy.removeFromParent();
         this.splat = splat;
         this.ready = false;
@@ -102,32 +116,97 @@ export class SplatVolume {
         // grid box: all splats, far floaters capped at 5× the robust core (data space)
         const core = splat.geometry.boundingBox, center = core.getCenter(new THREE.Vector3()), half = core.getSize(new THREE.Vector3()).multiplyScalar(2.5);
         const box = splat.fullBox.clone().intersect(new THREE.Box3(center.clone().sub(half), center.clone().add(half)));
-        const result = await new Promise((resolve, reject) => {
-            const worker = new Worker(new URL('./splat-volume-worker.js', import.meta.url), { type: 'module' });
-            worker.onmessage = e => {
-                if (e.data.progress !== undefined) { this.onProgress?.(e.data.progress); return; }
-                worker.terminate();
-                resolve(e.data);
-            };
-            worker.onerror = e => { worker.terminate(); reject(e.error ?? new Error(e.message)); };
-            worker.postMessage({ a: splat.data.a, b, count: splat.count, min: box.min.toArray(), max: box.max.toArray(), n: SPLAT_GRID, block: SPLAT_BLOCK });
-        });
+        this._renderer = renderer;
+        // traced Gaussians if they fit (gaussian-bvh-worker.js) – then no grid; otherwise (or failed) the grid
+        const gaussians = this._gaussiansFit(renderer, splat)
+            ? await this._buildGaussians(splat, b).catch(err => { console.warn('[Splats] Gaussian BVH failed – grid instead:', err); return null; })
+            : null;
         if (splat !== this.splat) return false;
-        SPLAT_TEXTURES.density.image.data = result.density;
-        SPLAT_TEXTURES.color.image.data = result.color;
-        SPLAT_TEXTURES.majorant.image.data = result.majorant;
-        for (const tex of Object.values(SPLAT_TEXTURES)) tex.needsUpdate = true;
-        this.sigma = result.sigma;
-        box.min.fromArray(result.min);   // narrowed to where the splats' mass is (worker)
-        box.max.fromArray(result.max);
+        if (gaussians?.count) {
+            this._setGaussians(gaussians.data);
+            GAUSS.shRange.value = splat.data.shRange ?? 1;
+            this.traced = true;
+            this.gridBaked = false;
+            this.sigma = 0;
+            // the marker box (proxy): the BVH root – every Gaussian's visible extent (data space)
+            const root = new Float32Array(gaussians.data.buffer, 8 * 4, 6);
+            box.min.set(root[0], root[1], root[2]);
+            box.max.set(root[3], root[4], root[5]);
+            debugLog(`[Splats] Gaussian BVH: ${gaussians.count} splats, ${gaussians.nodes} nodes, ${(gaussians.data.byteLength / 2 ** 20).toFixed(1)} MB in ${gaussians.ms} ms (worker)`);
+        } else {
+            const result = await new Promise((resolve, reject) => {
+                const worker = new Worker(new URL('./splat-volume-worker.js', import.meta.url), { type: 'module' });
+                worker.onmessage = e => {
+                    if (e.data.progress !== undefined) { this.onProgress?.(e.data.progress); return; }
+                    worker.terminate();
+                    resolve(e.data);
+                };
+                worker.onerror = e => { worker.terminate(); reject(e.error ?? new Error(e.message)); };
+                worker.postMessage({ a: splat.data.a, b, count: splat.count, min: box.min.toArray(), max: box.max.toArray(), n: SPLAT_GRID, block: SPLAT_BLOCK });
+            });
+            if (splat !== this.splat) return false;
+            SPLAT_TEXTURES.density.image.data = result.density;
+            SPLAT_TEXTURES.color.image.data = result.color;
+            SPLAT_TEXTURES.majorant.image.data = result.majorant;
+            for (const tex of Object.values(SPLAT_TEXTURES)) tex.needsUpdate = true;
+            this.traced = false;
+            this.gridBaked = true;
+            this.sigma = result.sigma;
+            box.min.fromArray(result.min);   // narrowed to where the splats' mass is (worker)
+            box.max.fromArray(result.max);
+            debugLog(`[Splats] path tracer volume ${SPLAT_GRID}³ baked in ${Math.round(performance.now() - t0)} ms (σ max ${result.sigma.toPrecision(3)} per data unit)`);
+        }
         box.getCenter(this.proxy.position);
         box.getSize(this.proxy.scale);
         this.proxy.updateMatrixWorld(true);
         this.proxy.visible = true;
         this.ready = true;
         this.sync();
-        debugLog(`[Splats] path tracer volume ${SPLAT_GRID}³ baked in ${Math.round(performance.now() - t0)} ms (σ max ${result.sigma.toPrecision(3)} per data unit)`);
         return true;
+    }
+
+    // the Gaussians' buffer (null: a small empty one) – the previous one is freed on the GPU. three.js frees attributes
+    // only with their geometry (nobody listens to an attribute's 'dispose'): through the renderer's attribute store, as
+    // it does then (the next dispatch binds the new buffer)
+    _setGaussians(data) {
+        const old = GAUSS.data.value;
+        GAUSS.data.value = new THREE.StorageBufferAttribute(data ?? new Float32Array(16), 4);
+        if (old) this._renderer?._attributes?.delete(old);
+    }
+
+    // the traced Gaussians fit on this device: their buffer (64 bytes per splat + ~0.7 BVH nodes of 32 bytes – measured,
+    // + the SH words)
+    // within a quarter of the memory budget and the GPU's largest storage binding; otherwise the grid only
+    _gaussiansFit(renderer, splat) {
+        if (!GAUSSIANS) return false;
+        const count = splat.count;
+        const bytes = count * (87 + (splat.attrs.sh && splat.data.shCoeffs ? splat.data.shWords * 4 : 0));
+        const binding = renderer.backend?.device?.limits?.maxStorageBufferBindingSize ?? 128 * 2 ** 20;
+        const fits = bytes <= Math.min(binding, memoryBudget() * 0.25);
+        if (!fits) debugLog(`[Splats] Gaussian BVH skipped: ~${(bytes / 2 ** 20).toFixed(0)} MB for ${count} splats (binding ${(binding / 2 ** 20).toFixed(0)} MB, budget ${(memoryBudget() / 2 ** 20).toFixed(0)} MB) – grid only`);
+        return fits;
+    }
+
+    // BVH + packed data of the Gaussians (gaussian-bvh-worker.js)
+    async _buildGaussians(splat, b) {
+        // SH bands into the same buffer (the CPU copy is dropped after the first draws – read back from the GPU)
+        const sh = splat.attrs.sh && splat.data.shCoeffs
+            ? splat.data.sh ?? new Uint32Array(await this._renderer.getArrayBufferAsync(splat.attrs.sh)) : null;
+        return new Promise((resolve, reject) => {
+            const worker = new Worker(new URL('./gaussian-bvh-worker.js', import.meta.url), { type: 'module', name: 'splat-bvh' });
+            worker.onmessage = e => {
+                if (e.data.progress !== undefined) { this.onProgress?.(e.data.progress); return; }
+                worker.terminate();
+                resolve(e.data);
+            };
+            worker.onerror = e => { worker.terminate(); reject(e.error ?? new Error(e.message)); };
+            worker.postMessage({ a: splat.data.a, b, count: splat.count, sh, shWords: splat.data.shWords, shCoeffs: splat.data.shCoeffs });
+        });
+    }
+
+    /** the splats are traced (Gaussians built and fitting) – every look; scans' camera rays stay with the raster */
+    get gaussians() {
+        return !!this.traced;
     }
 
     /** stand-in values from the splats' look and scale (call before the path tracer packs its materials) */
@@ -139,7 +218,7 @@ export class SplatVolume {
         const worldPerData = (Math.abs(scale.x) + Math.abs(scale.y) + Math.abs(scale.z)) / 3 || 1;
         const look = splat.look;
         this._standIn({ relit: look.mode !== 'baked', material: look.material, meanLuma: look.meanLuma.value, sigma: this.sigma / worldPerData,
-            primary: this.primary });
+            primary: this.primary, gaussians: this.gaussians });
         const pt = this.material.userData.ptStandIn, u = SPLAT_UNIFORMS;
         u.sigma.value = pt.roughness;
         u.relit.value = pt.metalness;
@@ -157,10 +236,18 @@ export class SplatVolume {
         const u = SPLAT_UNIFORMS;
         let shown = this.ready && this.proxy.visible;
         for (let o = this.splat; o && shown; o = o.parent) shown = o.visible;   // hidden in the Scene Graph: a parent
-        u.active.value = shown ? 1 : 0;
-        if (!u.active.value) return;
+        const traced = shown && this.gaussians;
+        u.grid.value = shown && this.gridBaked ? 1 : 0;
+        u.active.value = shown && !traced ? 1 : 0;   // the grid's medium in the volume walk
+        GAUSS.on.value = traced ? 1 : 0;
+        if (!shown) return;
         this.proxy.updateWorldMatrix(true, false);
         u.inverse.value.copy(this.proxy.matrixWorld).invert();
+        if (traced) {
+            GAUSS.inverse.value.copy(this.splat.matrixWorld).invert();
+            GAUSS.primary.value = this.primary ? 1 : 0;
+            GAUSS.mode.value = { baked: 0, surface: 1 }[this.splat.look.mode] ?? 2;
+        }
     }
 
     /** the grid is seen by the camera (object splats); scans are drawn by the raster over the path traced image */
@@ -168,13 +255,13 @@ export class SplatVolume {
         return !this.splat?.userData.environment;
     }
 
-    _standIn({ relit = false, material = null, meanLuma = 0.2, sigma = 0, primary = true }) {
+    _standIn({ relit = false, material = null, meanLuma = 0.2, sigma = 0, primary = true, gaussians = false }) {
         const tint = new THREE.Color(material?.color ?? '#ffffff');
         const glow = new THREE.Color(material?.emissive ?? '#000000').multiplyScalar(material?.emissiveIntensity ?? 1);
         this.material.userData.ptStandIn = {
             ptVolume: 6, color: { r: tint.r, g: tint.g, b: tint.b }, sheen: material ? 1 : 0, sheenColor: { r: glow.r, g: glow.g, b: glow.b },
             metalness: relit ? 1 : 0, roughness: sigma, clearcoat: Math.max(meanLuma, 1e-3), ior: material?.detail ?? 1, anisotropy: 0,
-            iridescence: primary ? 0 : 1, transmission: 0, side: THREE.DoubleSide,
+            iridescence: primary ? 0 : 1, transmission: 0, side: THREE.DoubleSide, ptGaussians: gaussians ? 1 : 0,
         };
     }
 }

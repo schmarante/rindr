@@ -300,7 +300,7 @@ function glassShadowPatch() {
       if (!file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) return null;
       // kernel features: without glass and volumes in the scene a plain occlusion test (every hit blocks – what the
       // snippet does then as well)
-      const snippet = ({ origin, dir, maxDist, normal, primary }) => gate('glass,volume', readFileSync(GLASS_SHADOW_PATCH, 'utf8')
+      const snippet = ({ origin, dir, maxDist, normal, primary }) => gate('glass,volume,gaussians', readFileSync(GLASS_SHADOW_PATCH, 'utf8')
         .replace(/\$ORIGIN/g, origin).replace(/\$DIR/g, dir).replace(/\$MAXDIST/g, maxDist)
         .replace(/\$NORMAL/g, normal).replace(/\$PRIMARY/g, primary), `
 											var gsShadow = vec3f( 1.0 );
@@ -319,6 +319,13 @@ function glassShadowPatch() {
 												}
 
 											}
+`) + gate('gaussians', `
+											// traced Gaussian splats (gaussian-pt.js): the light passing them on the way
+											if ( \${ __GX.on } > 0.5 ) {
+
+												gsShadow *= \${ __GX.transmittance }( ${origin}, ${dir}, ${maxDist}, u32( \${ rand1 }( 214u ) * 4294967040.0 ) );
+
+											}
 `) + '\n';
       const replaceOnce = (from, to) => {
         const n = typeof from === 'string' ? code.split(from).length - 1 : (code.match(new RegExp(from.source, 'g')) || []).length;
@@ -328,7 +335,7 @@ function glassShadowPatch() {
       // markers of other patches: shadow catcher (shadow-catcher.patch.wgsl, rindr-shadow-catcher) and the light samples
       // of the volume walk (volume-walk.patch.wgsl, rindr-cloud) – both inserted before this plugin
       const markers = /\n\t*\/\/@glass-shadow ([^\n]+)/g;
-      if ((code.match(markers) || []).length !== 2) this.error('rindr-glass-shadow: expected 2 //@glass-shadow markers in PathTracerMegaKernel.js');
+      if ((code.match(markers) || []).length !== 3) this.error('rindr-glass-shadow: expected 3 //@glass-shadow markers in PathTracerMegaKernel.js (shadow catcher, volume walk, traced Gaussians)');
       code = code.replace(markers, (_, args) => {
         const [origin, dir, maxDist, normal, primary] = args.split('|').map(a => a.trim());
         return '\n' + snippet({ origin, dir, maxDist, normal, primary });
@@ -350,6 +357,7 @@ function glassShadowPatch() {
         () => `let contribution = select( \${ clampPathContributionFunc }( environment, bounce, clampDirect, clampIndirect ), vec3f( 0.0 ), ${drop} );`);
       replaceOnce('let lightHit = ${ clampPathContributionFunc }( lightRec.emission * throughputColor * misWeight, bounce, clampDirect, clampIndirect );',
         () => `let lightHit = select( \${ clampPathContributionFunc }( lightRec.emission * throughputColor * misWeight, bounce, clampDirect, clampIndirect ), vec3f( 0.0 ), ${drop} );`);
+      // __GX (traced Gaussians) is imported by rindr-gaussians, which runs before
       return { code: `import { GLASS_SHADOW as __GS } from ${JSON.stringify(GLASS_SHADOW_MODULE)};\n` + code, map: null };
     },
   };
@@ -711,7 +719,7 @@ ${tab}\t}
 
 ${tab}}
 ${tab}${add}${lpAdd(tab, '${ __LP_MSRC }( lpB )', 'scMirrorBg', { mirror: true })}${lpT(tab, LP_MIRROR_T)}`);
-      replaceN(/(if \( scMirrorTaken \) \{\n\n)(\t+)(resultColor \+= vec4f\( scMirrorBg, 0\.0 \);)/, (m, before, tab, add) => `${before}${tab}${add}${lpAdd(tab, '${ __LP_MSRC }( lpB )', 'scMirrorBg', { mirror: true })}${lpT(tab, LP_MIRROR_T)}`);
+      replaceN(/(if \( scMirrorTaken \) \{\n\n)(\t+)(resultColor \+= vec4f\( scMirrorBg, 0\.0 \);)/, (m, before, tab, add) => `${before}${tab}${add}${lpAdd(tab, '${ __LP_MSRC }( lpB )', 'scMirrorBg', { mirror: true })}${lpT(tab, LP_MIRROR_T)}`, 2);   // volume walk + the box of traced Gaussians (rindr-gaussians)
       replaceN(/\n(\t+)resultColor = vec4f\( scBase \* \( 1\.0 - scSurf\.x \), 1\.0 \);/, (m, tab) => `${lpClear(tab)}${m}${lpAdd(tab, `${LP.BG}u`, 'scBase * ( 1.0 - scSurf.x )', { direct: LP.DIRECT_BG })}
 ${tab}if ( lpOn ) {
 
@@ -731,6 +739,14 @@ ${tab}}${lpT(tab, 'scShadow * scSurf.z * ( 1.0 - scSurf.x )')}`);
       wrap('resultColor += vec4f( ${ clampPathContributionFunc }( throughputColor * ${ __SPLAT.glow }, bounce, clampDirect, clampIndirect ), 0.0 );', `${LP.EMISSION}u`, { direct: LP.DIRECT_EMISSION });
       wrap('resultColor += vec4f( ${ clampPathContributionFunc }( vmDirect, bounce + 1u, clampDirect, clampIndirect ), 0.0 );', lpLightSlot('vmLightIndex'), { direct: LP.DIFFUSE });
       wrap('resultColor += vec4f( ${ clampPathContributionFunc }( throughputColor * mbGlow * ( 1.0 - mbFresnel ), bounce, clampDirect, clampIndirect ), 0.0 );', `${LP.EMISSION}u`, { direct: LP.DIRECT_EMISSION });
+      wrap('resultColor += vec4f( ${ clampPathContributionFunc }( throughputColor * gxSeg.rgb, bounce, clampDirect, clampIndirect ), 0.0 );', `${LP.EMISSION}u`, { direct: LP.DIRECT_EMISSION });
+      wrap('resultColor += vec4f( ${ clampPathContributionFunc }( throughputColor * gxCaught, bounce, clampDirect, clampIndirect ), 0.0 );', `${LP.EMISSION}u`, { direct: LP.DIRECT_EMISSION });
+      // relit traced Gaussians: their glow is emission, their light sample a light slot, the scatter the path's first kind
+      wrap('resultColor += vec4f( ${ clampPathContributionFunc }( throughputColor * ${ __GX.glow }, bounce, clampDirect, clampIndirect ), 0.0 );', `${LP.EMISSION}u`, { direct: LP.DIRECT_EMISSION });
+      wrap('resultColor += vec4f( ${ clampPathContributionFunc }( gxDirect, bounce + 1u, clampDirect, clampIndirect ), 0.0 );', lpLightSlot('gxLightIndex'), { direct: LP.DIFFUSE });
+      replaceN(/\n(\t+)let gxScatter = true;/, (m, tab) => `${m}${lpClassify(tab, lpKind(0))}`);
+      // the background seen through traced Gaussians (rindr-gaussians)
+      replaceN(/\n(\t+)let gxBg = background \* throughputColor;\n/, (m, tab) => `${m}${lpAdd(tab, `${LP.BG}u`, 'gxBg', { direct: LP.DIRECT_BG })}${lpT(tab, 'vec3f( bg.a ) * throughputColor')}\n`);
       // lights hit, emission
       replaceN(/\n(\t+)resultColor \+= vec4f\( lightHit, 0\.0 \);/, (m, tab) => `${m}${lpAdd(tab, `min( li, ${LP.LAST_LIGHT}u )`, 'lightHit', { direct: LP.DIRECT_EMISSION })}`);
       replaceN(/\n(\t+)resultColor \+= vec4f\( emission, 0\.0 \);/, (m, tab) => `${m}${lpAdd(tab, `${LP.EMISSION}u`, 'emission', { direct: LP.DIRECT_EMISSION })}`);
@@ -905,6 +921,187 @@ const CLOUD_PT_MODULE = fileURLToPath(new URL('./src/scripts/materials/cloud-pt.
 const SPLAT_PT_MODULE = fileURLToPath(new URL('./src/scripts/splat/splat-pt.js', import.meta.url));
 const VOLUME_PT_MODULE = fileURLToPath(new URL('./src/scripts/volume-pt.js', import.meta.url));
 const VOLUME_WALK_PATCH = fileURLToPath(new URL('./src/scripts/volume-walk.patch.wgsl', import.meta.url));
+// Traced Gaussian splats (src/scripts/splat/gaussian-pt.js – docs/splats.md "Gaussian Ray Tracing"; kernel feature
+// 'gaussians', fails loudly if the library changed – check on every update):
+// - after each ray test: the Gaussians on the stretch up to the hit (or into the distance), front to back – baked colours
+//   light the path (emission), the throughput keeps what passes; scans (primary off) not for camera rays
+// - a hit on the splats' box (ptVolume 6) only marks them: stepped over like a transparent pass (before the volume walk,
+//   rindr-cloud – its splat medium is off then, SPLAT_UNIFORMS.active)
+// - shadow rays: their transmittance (rindr-glass-shadow appends it)
+const GAUSSIAN_PT_MODULE = fileURLToPath(new URL('./src/scripts/splat/gaussian-pt.js', import.meta.url));
+function gaussianPatch() {
+  return {
+    name: 'rindr-gaussians',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.replace(/\\/g, '/').split('?')[0];
+      if (!file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) return null;
+      const replaceOnce = (from, to) => {
+        const n = typeof from === 'string' ? code.split(from).length - 1 : (code.match(new RegExp(from.source, 'g')) || []).length;
+        if (n !== 1) this.error(`rindr-gaussians: ${from} not found exactly once in PathTracerMegaKernel.js (three-gpu-pathtracer changed?)`);
+        code = code.replace(from, to);
+      };
+      replaceOnce(/\n(\t+)let surfaceDist = select\( \$\{ LIGHT_FAR_DISTANCE \}, hitResult\.dist, didHit \);\n/, (m, tab) => m + gate('gaussians', `
+${tab}// RINDR traced Gaussian splats (gaussian-pt.js): the ones on this stretch
+${tab}if ( \${ __GX.on } > 0.5 && ( bounce > 0u || \${ __GX.primary } > 0.5 ) ) {
+
+${tab}\tif ( \${ __GX.mode } == 0u && bounce > 0u ) {
+
+${tab}\t\t// baked, after a bounce: the Gaussian that catches the ray lights the path, which ends there (expected value =
+${tab}\t\t// the blending, one traversal instead of every Gaussian on the way – like the grid's collision)
+${tab}\t\tlet gxC = \${ __GX.march }( ray.origin, ray.direction, surfaceDist, 2u, 1.0, u32( \${ rand1 }( 215u ) * 4294967040.0 ) );
+${tab}\t\tif ( gxC.x >= 0.0 ) {
+
+${tab}\t\t\tlet gxCaught = \${ __GX.light }( gxC.y, ray.direction );
+${tab}\t\t\tresultColor += vec4f( \${ clampPathContributionFunc }( throughputColor * gxCaught, bounce, clampDirect, clampIndirect ), 0.0 );
+${tab}\t\t\tbreak;
+
+${tab}\t\t}
+
+${tab}\t} else if ( \${ __GX.mode } == 0u ) {
+
+${tab}\t\t// baked, camera ray: their light front to back (no noise), the throughput keeps what passes
+${tab}\t\tlet gxSeg = \${ __GX.march }( ray.origin, ray.direction, surfaceDist, 0u, 1.0, u32( \${ rand1 }( 216u ) * 4294967040.0 ) );
+${tab}\t\tif ( gxSeg.a < 1.0 ) {
+
+${tab}\t\t\tresultColor += vec4f( \${ clampPathContributionFunc }( throughputColor * gxSeg.rgb, bounce, clampDirect, clampIndirect ), 0.0 );
+${tab}\t\t\tthroughputColor *= gxSeg.a;
+
+${tab}\t\t}
+
+${tab}\t} else {
+
+${tab}\t\t// relit: scattered at the Gaussian that catches the ray (probability = its response) – surface: diffuse around
+${tab}\t\t// its shortest axis, volume: in every direction; a light sample like the volume walk's
+${tab}\t\tlet gxE = \${ __GX.march }( ray.origin, ray.direction, surfaceDist, 2u, 1.0, u32( \${ rand1 }( 211u ) * 4294967040.0 ) );
+${tab}\t\tif ( gxE.x >= 0.0 ) {
+
+${tab}\t\t\tlet gxPos = ray.origin + ray.direction * gxE.x;
+${tab}\t\t\tlet gxSurface = \${ __GX.mode } == 1u;
+${tab}\t\t\tlet gxN = \${ __GX.normal }( gxE.y, ray.direction );
+${tab}\t\t\tresultColor += vec4f( \${ clampPathContributionFunc }( throughputColor * \${ __GX.glow }, bounce, clampDirect, clampIndirect ), 0.0 );
+${tab}\t\t\tthroughputColor *= min( \${ __GX.albedo }( gxE.y, ray.direction ), vec3f( 0.98 ) );
+${tab}\t\t\tlet gxScatter = true;
+${tab}\t\t\tisFullyTransmissive = false;
+${tab}\t\t\tgsRough = true;
+${tab}\t\t\tgsCaustic = false;
+${tab}\t\t\tif ( misEnabled != 0u && lightsDenom > 0.0 ) {
+
+${tab}\t\t\t\tlet gxL = \${ rand3 }( 212u );
+${tab}\t\t\t\tlet gxLightIndex = min( u32( gxL.x * lightsDenom ), u32( lightsDenom ) - 1u );
+${tab}\t\t\t\tvar gxLight: \${ lightRecordStruct };
+${tab}\t\t\t\tif ( envActive && gxLightIndex == lightsCount ) {
+
+${tab}\t\t\t\t\tlet gxEnv = \${ sampleEnvDir }( gxL.yz );
+${tab}\t\t\t\t\tgxLight.direction = gxEnv.direction;
+${tab}\t\t\t\t\tgxLight.emission = gxEnv.color;
+${tab}\t\t\t\t\tgxLight.pdf = gxEnv.pdf;
+${tab}\t\t\t\t\tgxLight.dist = \${ LIGHT_FAR_DISTANCE };
+${tab}\t\t\t\t\tgxLight.lightType = \${ ENVIRONMENT_LIGHT_TYPE };
+
+${tab}\t\t\t\t} else {
+
+${tab}\t\t\t\t\tgxLight = \${ randomLightSampleFn }( gxLightIndex, gxPos, gxL.yz );
+
+${tab}\t\t\t\t}
+${tab}\t\t\t\tlet gxCos = dot( gxN, gxLight.direction );
+${tab}\t\t\t\tlet gxPhase = select( 0.0795774715, max( gxCos, 0.0 ) * 0.318309886, gxSurface );
+${tab}\t\t\t\tif ( gxLight.pdf > 0.0 && gxPhase > 0.0 ) {
+
+${tab}\t\t\t\t\tlet gxShadowMax = gxLight.dist - \${ LIGHT_EPSILON };
+${tab}\t\t\t\t\t//@glass-shadow gxPos | gxLight.direction | gxShadowMax | gxLight.direction | false
+${tab}\t\t\t\t\tif ( any( gsShadow > vec3f( 0.0 ) ) ) {
+
+${tab}\t\t\t\t\t\tlet gxLightPdf = gxLight.pdf / lightsDenom;
+${tab}\t\t\t\t\t\tlet gxMis = select( 1.0, \${ misHeuristicFn }( gxLightPdf, gxPhase ), \${ isMISWeightLightFn }( gxLight.lightType ) && ! gsGlass );
+${tab}\t\t\t\t\t\tlet gxDirect = throughputColor * gxLight.emission * gxPhase * gxMis * gsShadow / gxLightPdf;
+${tab}\t\t\t\t\t\tresultColor += vec4f( \${ clampPathContributionFunc }( gxDirect, bounce + 1u, clampDirect, clampIndirect ), 0.0 );
+
+${tab}\t\t\t\t\t}
+
+${tab}\t\t\t\t}
+
+${tab}\t\t\t}
+${tab}\t\t\tlet gxU = \${ rand2 }( 213u );
+${tab}\t\t\tvar gxDir = \${ __GX.sphere }( gxU );
+${tab}\t\t\tvar gxPdf = 0.0795774715;
+${tab}\t\t\tif ( gxSurface ) {
+
+${tab}\t\t\t\tgxDir = \${ __GX.cosine }( gxN, gxU );
+${tab}\t\t\t\tgxPdf = max( dot( gxN, gxDir ), 1e-6 ) * 0.318309886;
+
+${tab}\t\t\t}
+${tab}\t\t\tbsdfPdf = gxPdf;
+${tab}\t\t\tminPdf = min( minPdf, gxPdf );
+${tab}\t\t\t// russian roulette from the 3rd bounce (the albedo only ever lowers the throughput; the library's own one
+${tab}\t\t\t// comes after a surface, which this event skips)
+${tab}\t\t\tif ( bounce >= 2u ) {
+
+${tab}\t\t\t\tlet gxKeep = clamp( max( max( throughputColor.r, throughputColor.g ), throughputColor.b ), 0.05, 0.98 );
+${tab}\t\t\t\tif ( \${ rand1 }( 217u ) > gxKeep ) {
+
+${tab}\t\t\t\t\tbreak;
+
+${tab}\t\t\t\t}
+${tab}\t\t\t\tthroughputColor /= gxKeep;
+
+${tab}\t\t\t}
+${tab}\t\t\tray.origin = gxPos;
+${tab}\t\t\tray.direction = gxDir;
+${tab}\t\t\tray.maxDist = 0.0;
+${tab}\t\t\t\${ rngNextBounce }();
+${tab}\t\t\tcontinue;
+
+${tab}\t\t}
+
+${tab}\t}
+
+${tab}}
+`));
+      replaceOnce(/\n(\t+)materialInfo\.opacity \*= objectInfo\.color\.a;\n/, (m, tab) => m + gate('gaussians', `
+${tab}// RINDR traced Gaussian splats: their box only marks them – stepped over like a transparent pass
+${tab}if ( materialInfo.fogVolume == 6 && \${ __GX.on } > 0.5 ) {
+
+${tab}	ray.origin = \${ offsetRayOriginFunc }( ray.origin + ray.direction * hitResult.dist, ray.direction, hitResult.normal );
+${tab}	if ( transparentBounce >= maxTransparentBounces ) {
+
+${tab}		break;
+
+${tab}	}
+${tab}	transparentBounce ++;
+${tab}	bounce --;
+${tab}	if ( scMirrorTaken ) {
+
+${tab}		resultColor += vec4f( scMirrorBg, 0.0 );
+${tab}		scMirrorPending = true;
+
+${tab}	}
+${tab}	\${ rngNextBounce }();
+${tab}	continue;
+
+${tab}}
+`));
+      // the camera ray missing everything: the library assigns the background – after Gaussians on the way their light
+      // stays and the background shows through what they let pass (alpha: their opacity over the background's)
+      replaceOnce(/\n(\t+)resultColor = vec4f\( background, bg\.a \);\n/, (m, tab) => `
+${tab}/*@if:gaussians*/
+${tab}if ( any( throughputColor < vec3f( 1.0 ) ) || any( resultColor.rgb > vec3f( 0.0 ) ) ) {
+
+${tab}\tlet gxBg = background * throughputColor;
+${tab}\tresultColor = vec4f( resultColor.rgb + gxBg, 1.0 - ( throughputColor.r + throughputColor.g + throughputColor.b ) / 3.0 * ( 1.0 - bg.a ) );
+
+${tab}} else {
+${tab}/*@endif*/
+${tab}resultColor = vec4f( background, bg.a );
+${tab}/*@if:gaussians*/
+${tab}}
+${tab}/*@endif*/
+`);
+      return { code: `import { GAUSS_PT as __GX } from ${JSON.stringify(GAUSSIAN_PT_MODULE)};\n` + code, map: null };
+    },
+  };
+}
+
 function cloudPatch() {
   return {
     name: 'rindr-cloud',
@@ -1121,7 +1318,7 @@ export default defineConfig({
     headers: isolationHeaders,
   },
   vite: {
-    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), bucketPatch(), ptStandInPatch(), glassBouncesPatch(), cloudPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch(), glassSplitPatch(), nanGuardPatch(), lightPassesPatch()],
+    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), bucketPatch(), ptStandInPatch(), glassBouncesPatch(), cloudPatch(), gaussianPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch(), glassSplitPatch(), nanGuardPatch(), lightPassesPatch()],
     server: { headers: isolationHeaders },
     preview: { headers: isolationHeaders },
     worker: { format: 'es' },

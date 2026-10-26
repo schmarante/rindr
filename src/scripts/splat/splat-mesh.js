@@ -30,7 +30,7 @@ import {
     unpackUnorm4x8, unpackSnorm4x8, mix, abs, modelViewMatrix, modelWorldMatrixInverse, cameraProjectionMatrix, cameraPosition,
     positionGeometry, screenSize, varyingProperty, exp, sqrt, max, min, normalize, length, dot, select, sRGBTransferEOTF, smoothstep,
     modelWorldMatrix, textureLoad, ivec2, clamp, step, pow, mrt, log, reflect, pmremTexture, sRGBTransferOETF, texture, uv, atan, acos,
-    floor, fract,
+    floor, fract, screenUV,
     acesFilmicToneMapping, agxToneMapping, neutralToneMapping, cineonToneMapping, reinhardToneMapping, linearToneMapping,
 } from 'three/tsl';
 import { SplatSorter } from './splat-sorter.js';
@@ -288,7 +288,7 @@ export class SplatMesh extends THREE.Mesh {
     //  composite – own pass of splat-composite.js: colour (premultiplied in the shader) + depth × alpha (MRT, for AO)
     //  env       – environment capture (splat-environment.js): like composite, in the order of sortEnv
     //  light     – opacity map of splat-opacity.js: every splat once, optical depth per depth slice, added up
-    _variant(kind, order, light = false) {
+    _variant(kind, order, light = false, map = null) {
         const m = createMaterial();
         m.premultipliedAlpha = false;   // MRT output: done in the shader
         m.blending = THREE.CustomBlending;
@@ -296,8 +296,12 @@ export class SplatMesh extends THREE.Mesh {
         m.blendSrc = m.blendSrcAlpha = THREE.OneFactor;
         m.blendDst = m.blendDstAlpha = kind === 'light' ? THREE.OneFactor : THREE.OneMinusSrcAlphaFactor;
         if (kind === 'light') m.depthTest = false;
+        if (kind === 'front') {
+            m.blending = THREE.NoBlending;
+            m.depthTest = m.depthWrite = true;
+        }
         m.name = `Gaussian Splats (${kind})`;
-        m.fragmentNode = this._fragmentNode(kind);
+        m.fragmentNode = this._fragmentNode(kind, map);
         this._setVertex(m, order, light);
         return m;
     }
@@ -318,13 +322,22 @@ export class SplatMesh extends THREE.Mesh {
         return this._variants.env;
     }
 
-    /** material for the light pass of splat-opacity.js; slices = { b0, b1 } uniforms (slice ends, 0…1 light depth) */
-    lightMaterial(slices) {
-        if (!this._variants.light) {
-            this._lightSlices = slices;
-            this._variants.light = this._variant('light', null, true);
+    /**
+     * materials for the light passes of a splat-opacity.js map (one pair per map – the main light's and the light
+     * shafts' have slices of their own): front = the nearest clearly covering splat per texel (depth test), light =
+     * optical depth into the slices relative to that front. map = { b0, b1 } slice ends (relative light depth), front
+     * (texture of the front pass)
+     */
+    lightMaterials(map) {
+        this._lightVariants ??= new Map();
+        let pair = this._lightVariants.get(map);
+        if (!pair) {
+            pair = { front: this._variant('front', null, true), light: this._variant('light', null, true, map) };
+            this._lightVariants.set(map, pair);
+            this._variants[`front${this._lightVariants.size}`] = pair.front;
+            this._variants[`light${this._lightVariants.size}`] = pair.light;
         }
-        return this._variants.light;
+        return pair;
     }
 
     /** draw with another material variant (and instance count) until the returned function restores the mesh */
@@ -338,7 +351,7 @@ export class SplatMesh extends THREE.Mesh {
         };
     }
 
-    _fragmentNode(kind) {
+    _fragmentNode(kind, map = null) {
         const { color: vColor, coord: vCoord, depth: vDepth } = this._vary;
         const alpha = Fn(() => {
             const d2 = dot(vCoord, vCoord);
@@ -348,11 +361,19 @@ export class SplatMesh extends THREE.Mesh {
             return min(a, kind === 'light' ? 0.995 : 0.99);
         })().toVar();
         if (kind === 'main') return vec4(vColor.rgb, alpha);
+        // front of the opacity map: the light depth of clearly covering splats (≥ 10 % – a smoke's haze counts), the
+        // depth test keeps the nearest
+        if (kind === 'front') {
+            Discard(alpha.lessThan(0.1));
+            return vec4(vColor.r, 0, 0, 1);
+        }
         if (kind === 'mrt') return mrt({ output: vec4(vColor.rgb.mul(alpha), alpha), splatDepth: vec4(vDepth.mul(alpha), 0, 0, alpha) });
-        // light: optical depth −ln(1 − α) into every slice that ends behind the splat (vColor.r = its light depth)
+        // light: optical depth −ln(1 − α) into every slice that ends behind the splat – its light depth relative to the
+        // front of this texel (deep opacity map: the slices follow the first surface, so a surface lies at the start of
+        // a slice instead of anywhere in it – with fixed slices a relit skull showed bands across the light)
         const od = log(float(1).sub(alpha)).negate();
-        const t = vec4(vColor.r);
-        return mrt({ output: step(t, this._lightSlices.b0).mul(od), slices: step(t, this._lightSlices.b1).mul(od) });
+        const t = vec4(vColor.r.sub(texture(map.front, screenUV).r));
+        return mrt({ output: step(t, map.b0).mul(od), slices: step(t, map.b1).mul(od) });
     }
 
     _vertexNode(order, light) {

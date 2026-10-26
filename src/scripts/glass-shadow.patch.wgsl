@@ -47,12 +47,14 @@
 
 														let gsObject = transforms[ gsHit.objectIndex ];
 														let gsMaterial = ( *materials )[ gsObject.materialIndex ];
-														/*@if:volume*/
+														/*@if:volume,gaussians*/
 														if ( ( gsMaterial.fogVolume == 3 || gsMaterial.fogVolume == 6 ) && gsI < 15u ) {
 
 															// volumes (clouds, splats; volume-pt.js): at the first box on this ray the transmittance of every
 															// medium along the rest of it at once – from the start if it begins inside one; later box faces
-															// are only stepped over (nested boxes counted once)
+															// are only stepped over (nested boxes counted once). Traced Gaussians: the box is only stepped
+															// over (their transmittance is multiplied in after this loop – kernel features)
+															/*@if:volume*/
 															if ( ! gsMedia ) {
 
 																gsMedia = true;
@@ -70,6 +72,7 @@
 																}
 
 															}
+															/*@endif*/
 															gsTravel += gsHit.dist;
 															let gsBoxPos = gsRay.origin + gsRay.direction * gsHit.dist;
 															gsRay.origin = ${ offsetRayOriginFunc }( gsBoxPos, gsDir, gsHit.normal );

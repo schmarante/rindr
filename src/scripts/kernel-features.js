@@ -10,6 +10,7 @@
 
 export const KERNEL_FEATURES = [
     'volume',   // cloud volumes and the splat volume (ptVolume 3, 6): volume walk, media in shadow rays
+    'gaussians',   // traced Gaussian splats (ptVolume 6 with ptGaussians – baked look; gaussian-pt.js)
     'glass',    // transmission: glass shadows (shadow rays through glass), glass split
     'wool',     // wool fibres (ptVolume 4): fibre hits in the ray test, their shading
     'soap',     // soap film (ptVolume 5)
@@ -41,7 +42,8 @@ export const kernelFeatures = {
         if (!this.shown.has(material)) return m;
         const add = f => this.current.add(f);
         const volume = m.ptVolume ?? 0;
-        if (volume === 3 || volume === 6) add('volume');
+        if (volume === 6 && m.ptGaussians) add('gaussians');
+        else if (volume === 3 || volume === 6) add('volume');
         else if (volume === 4) add('wool');
         else if (volume === 5) add('soap');
         else if (volume === 2) add('marble');
