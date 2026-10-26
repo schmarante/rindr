@@ -217,7 +217,8 @@ const afterPaint = () => (document.hidden ? Promise.resolve() : new Promise(reso
 const scene = new THREE.Scene();
 
 // PhysicalCamera (PerspectiveCamera + aperture/focus plane) for depth of field in the path tracer
-const camera = new PhysicalCamera(45, window.innerWidth / window.innerHeight, 0.01, 1000);
+const DEFAULT_VIEW_ANGLE = 45;   // the start camera's field of view (key P returns to it)
+const camera = new PhysicalCamera(DEFAULT_VIEW_ANGLE, window.innerWidth / window.innerHeight, 0.01, 1000);
 const dof = new DepthOfField(camera);
 // camera position is computed automatically after loading
 
@@ -1093,6 +1094,15 @@ window.addEventListener('keydown', e => {
         else setViewMode(e.key === '2' ? 'default' : 'hq');
     }
     if (key === 'u' && !e.ctrlKey && !e.metaKey && !e.altKey) toggleUi();
+    // C: the next saved camera view (file cameras included) – like clicking it in the Scene Graph; P: back to the
+    // perspective of 45° (the camera stays, the angle blends; a file camera's clip start ends)
+    if (key === 'c' && !e.ctrlKey && !e.metaKey && !e.altKey && cameraViews.length) {
+        const at = selection?.kind === 'view' ? cameraViews.indexOf(selection.view) : -1;
+        sceneGraph.select(viewEntry(cameraViews[(at + 1) % cameraViews.length]));
+    }
+    if (key === 'p' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        flyToView({ position: camera.position.toArray(), target: controls.target.toArray(), fov: DEFAULT_VIEW_ANGLE, roll: 0 });
+    }
     // a selected joint (skeleton view): its gizmo
     if ((e.key === 'w' || e.key === 'W') && skeletonView.selected >= 0) skeletonView.setMode('translate');
     else if (e.key === 'w' || e.key === 'W') { transformer.setMode('translate'); properties.show(selection); }
