@@ -23,8 +23,8 @@ self.onmessage = async ({ data }) => {
             geometries.push(parts);
             self.postMessage({ type: 'progress', done: g + 1, total });
         }
-        const { unitMm, nodes, materials, textures, unsupported } = described;
-        self.postMessage({ type: 'done', scene: { unitMm, nodes, materials, textures, unsupported }, geometries }, transfer);
+        const { unitMm, renderAspect, nodes, materials, textures, unsupported } = described;
+        self.postMessage({ type: 'done', scene: { unitMm, renderAspect, nodes, materials, textures, unsupported }, geometries }, transfer);
     } catch (err) {
         self.postMessage({ type: 'error', message: err.message });
     }

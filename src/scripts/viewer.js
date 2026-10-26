@@ -1829,6 +1829,41 @@ function setCameraViews(list, { select = null } = {}) {
     if (select) sceneGraph.select(viewEntry(select));
     else if (selection?.kind === 'view' && !cameraViews.includes(selection.view)) sceneGraph.select(null);
 }
+// Cameras of an imported file (MAX, FBX, glTF – importedCamera in mesh-importer.js; user: "recognise the cameras … and
+// create them as new cameras") → saved views, appended. They are in the model's space: through its root (centred,
+// placed) into the scene; boxCenter = centre of the model in the root's space (a camera without target orbits the point
+// of its view ray nearest to it – also one whose target is implausibly close: some exporters put the point looked at
+// 1 unit ahead). Field of view: the file's frame (fovAxis, aspect = its render size) fits into the
+// window – the vertical angle shows its whole height and width. Loaded twice: no second copy.
+function addImportedViews(cameras, root, boxCenter) {
+    if (!cameras?.length) return;
+    root.updateMatrixWorld(true);
+    const m = root.matrixWorld, windowAspect = camera.aspect || 1;
+    const center = boxCenter.clone().applyMatrix4(m);
+    const added = [];
+    for (const c of cameras) {
+        const position = new THREE.Vector3().fromArray(c.position).applyMatrix4(m);
+        const dir = new THREE.Vector3().fromArray(c.direction).transformDirection(m);
+        let target = c.target ? new THREE.Vector3().fromArray(c.target).applyMatrix4(m) : null;
+        if (target && target.distanceTo(position) < 0.02 * center.distanceTo(position)) target = null;
+        if (!target) {
+            const along = center.clone().sub(position).dot(dir);
+            target = position.clone().addScaledVector(dir, along > 0 ? along : center.distanceTo(position) || 1000);
+        }
+        const tan = Math.tan(THREE.MathUtils.degToRad(c.fov) / 2), a = c.aspect || windowAspect;
+        let tv = c.fovAxis === 'v' ? tan : c.fovAxis === 'd' ? tan / Math.sqrt(1 + a * a) : tan / a;
+        if (c.aspect) tv = Math.max(tv, tv * c.aspect / windowAspect);
+        const view = {
+            name: c.name || t('cameraViews.name', { n: cameraViewSeq + 1 }), position: position.toArray(), target: target.toArray(),
+            fov: THREE.MathUtils.radToDeg(2 * Math.atan(tv)), roll: rollFromUp(target.clone().sub(position), new THREE.Vector3().fromArray(c.up).transformDirection(m)),
+        };
+        if (cameraViews.some(v => v.name === view.name && new THREE.Vector3().fromArray(v.position).distanceTo(position) < 1e-3)) continue;
+        added.push({ id: ++cameraViewSeq, ...view });
+    }
+    if (!added.length) return;
+    setCameraViews([...cameraViews, ...added]);
+    flashStatus(t('status.camerasImported', { count: added.length }), 4000);
+}
 // A different view angle (e.g. a nearly orthographic side view ↔ perspective, user: "switching between the two jumps
 // quite a bit" – the angle was set at once, the camera then flew straight from ~16× the distance): the angle blends like
 // in the view cube's flight, the distance follows it (the picture at the orbit centre keeps its size, blended between
@@ -4229,6 +4264,7 @@ async function loadModel(reload = false, safe = false) {
         root.userData.centerOffset = root.position.clone();
         root.userData.unmovedBox = bbox.clone().translate(root.position);   // placement of further models
         root.updateMatrixWorld(true);
+        if (!reload) addImportedViews(result.cameras, root, center);
         if (!reload) {
             camera.position.sub(center);
             controls.target.sub(center);
@@ -4727,6 +4763,7 @@ async function loadExtraModel(source, { sceneIndex, placement: savedPlacement } 
         const unmovedBox = centred.clone().translate(placement);
         slicer.group.add(holder);
         holder.updateMatrixWorld(true);
+        addImportedViews(result.cameras, root, bbox.getCenter(new THREE.Vector3()));
         const size = source.file?.size ?? source.main?.size ?? null;
         extraModels.push({ id, name, source, size, sceneIndex, missingTextures: result.missing || [], root, holder, unmovedBox, meshes: meshList, nodeGroups: groups,
             content: { name, importNodes: nodes, groups, partCounts, root, id, warn: (result.missing || []).length } });
