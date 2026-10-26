@@ -3,8 +3,11 @@
 // map instead (opacity shadow map): every splat is drawn once from the main light (orthographic camera), its optical
 // depth −ln(1 − α) added into each of 8 depth slices that end behind it (two RGBA half-float targets, MRT, additive).
 // A receiver at light depth t interpolates the optical depth between the slice ends → transmittance exp(−od).
-// The slices span the receivers (models, relit splats) – splats in front of them (a canopy) count fully, splats behind
-// not at all; inside the receivers' depth range at 1/8 of it.
+// Deep opacity map (user: stripes across a relit skull under a light from above): a front pass first keeps per texel
+// the light depth of the nearest clearly covering splat; the slices are measured from there (relative depth), so they
+// follow the first surface – with fixed slices a surface lay anywhere inside a slice and the linear ramp gave it a
+// share of its own slice's optical depth depending on where: bands across the light. The slices span 1/8 each of the
+// receivers' depth range behind the front (the last one everything further), splats in front of it count fully.
 // Models: transmittanceNode() on the main light's shadow (viewer.js: dirLight1.shadow.shadowNode = shadow × it).
 // Drawn only when something changed (markDirty: light, models, splats moved/relit) and after the frame.
 import * as THREE from 'three/webgpu';
@@ -20,10 +23,15 @@ export class SplatOpacity {
         this.target.textures[0].name = 'output';
         this.target.textures[1].name = 'slices';
         for (const tex of this.target.textures) tex.minFilter = tex.magFilter = THREE.LinearFilter;
+        // the front: light depth of the nearest clearly covering splat (1 = none) – nearest filtering (blending depths
+        // across a silhouette would put the front in the air)
+        this.front = new THREE.RenderTarget(size, size, { type: THREE.FloatType, format: THREE.RedFormat, depthBuffer: true });
+        this.front.texture.minFilter = this.front.texture.magFilter = THREE.NearestFilter;
         this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
         this.enabled = uniform(0);
         this.matrix = uniform(new THREE.Matrix4());      // world → light clip space (WebGPU depth 0…1)
-        this.slices = { b0: uniform(new THREE.Vector4()), b1: uniform(new THREE.Vector4()) };   // slice ends (light depth)
+        this.slices = { b0: uniform(new THREE.Vector4()), b1: uniform(new THREE.Vector4()) };   // slice ends (light depth behind the front)
+        this.map = { ...this.slices, front: this.front.texture };   // what the splats' light materials read (splat-mesh.js)
         this.bias = uniform(0);                           // receivers sample this much nearer (light depth)
         this.active = false;
         this.dirty = true;
@@ -53,7 +61,7 @@ export class SplatOpacity {
             const inside = smoothstep(0, 0.04, edge.x).mul(smoothstep(0, 0.04, edge.y));
             const sample = tex => (vertex ? texture(tex, uv).level(0) : texture(tex, uv));
             const c0 = sample(this.target.textures[0]).toVar(), c1 = sample(this.target.textures[1]).toVar();
-            const t = lp.z.sub(this.bias).toVar();
+            const t = lp.z.sub(this.bias).sub(sample(this.front.texture).r).toVar();   // behind the front
             // piecewise linear through (0, 0), (b_k, c_k): ramp of every slice clamped to 0…1
             const ends = [this.slices.b0.x, this.slices.b0.y, this.slices.b0.z, this.slices.b0.w, this.slices.b1.x, this.slices.b1.y, this.slices.b1.z, this.slices.b1.w];
             const values = [c0.x, c0.y, c0.z, c0.w, c1.x, c1.y, c1.z, c1.w];
@@ -142,10 +150,10 @@ export class SplatOpacity {
         cam.near = Math.min(splatNear, near) - pad;   // may lie behind the camera position (orthographic)
         cam.far = Math.max(far, splatFar) + pad;
         cam.updateProjectionMatrix();
-        // slice ends: evenly over the receivers' depth range (light depth 0…1); the last one at the far plane
+        // slice ends behind the front: 1/8 of the receivers' depth range each (light depth 0…1); the last one everything
         const span = cam.far - cam.near;
         const start = (near - pad - cam.near) / span, end = Math.min((far + pad - cam.near) / span, 1);
-        const ends = Array.from({ length: SLICES }, (_, k) => (k === SLICES - 1 ? 1 : start + (end - start) * (k + 1) / SLICES));
+        const ends = Array.from({ length: SLICES }, (_, k) => (k === SLICES - 1 ? 2 : (end - start) * (k + 1) / SLICES));
         this.slices.b0.value.set(ends[0], ends[1], ends[2], ends[3]);
         this.slices.b1.value.set(ends[4], ends[5], ends[6], ends[7]);
         this.bias.value = (end - start) / SLICES * 0.35;
@@ -153,17 +161,25 @@ export class SplatOpacity {
         const hidden = [];
         for (const o of scene.children) if (o.visible && !keep.includes(o)) { o.visible = false; hidden.push(o); }
         for (const o of hide) if (o?.visible) { o.visible = false; hidden.push(o); }
-        const restore = splat.useVariant(splat.lightMaterial(this.slices), splat.count);
+        const variants = splat.lightMaterials(this.map);
+        let restore = splat.useVariant(variants.front, splat.count);
         const saved = { background: scene.background, backgroundNode: scene.backgroundNode, target: renderer.getRenderTarget(),
             clear: renderer.getClearColor(new THREE.Color()), alpha: renderer.getClearAlpha(), mask: cam.layers.mask, autoClear: renderer.autoClear };
         scene.background = null;
         scene.backgroundNode = null;
         cam.layers.mask = splat.layers.mask;
         try {
+            // the front (nearest covering splat, depth test), then the optical depths relative to it
+            renderer.setRenderTarget(this.front);
+            renderer.setClearColor(0xffffff, 1);
+            renderer.clear();
+            renderer.autoClear = false;
+            renderer.render(scene, cam);
+            restore();
+            restore = splat.useVariant(variants.light, splat.count);
             renderer.setRenderTarget(this.target);
             renderer.setClearColor(0x000000, 0);
             renderer.clear();
-            renderer.autoClear = false;
             this.zero.render(renderer);
             renderer.render(scene, cam);
         } finally {
@@ -182,6 +198,7 @@ export class SplatOpacity {
 
     dispose() {
         this.target.dispose();
+        this.front.dispose();
         this.zero.material.dispose();
     }
 }

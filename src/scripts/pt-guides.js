@@ -37,7 +37,8 @@
 // Gaussian splats (splat-volume.js: a density grid, no surface) – for the helper passes the ray marches the density
 // between its hits: where half the light is gone (optical depth ln 2) counts as the surface – depth there, normal
 // against the density gradient, the splats' colour as albedo, an id colour of their own (index 0). The other guides
-// keep looking through the volume (the denoiser).
+// keep looking through the grid. Traced Gaussians (gaussian-pt.js) the same way for every guide: the Gaussian where
+// half the light is gone, its shortest axis as normal, its colour as albedo.
 import { StorageTexture, FloatType, HalfFloatType, RGBAFormat, NearestFilter, Matrix4, Vector2 } from 'three/webgpu';
 import { uniform, globalId, textureStore } from 'three/tsl';
 import { proxy, proxyFn, wgslTagFn, rayStruct, ndcToCameraRay } from 'three-mesh-bvh/webgpu';
@@ -46,6 +47,7 @@ import { FISHEYE_RAY } from './fisheye.js';
 import { EDGE_WGSL } from './materials/edges.js';
 import { WOOL_PT } from './materials/wool-pt.js';
 import { SPLAT_PT } from './splat/splat-pt.js';
+import { GAUSS_PT } from './splat/gaussian-pt.js';
 
 const S = SPLAT_PT;
 
@@ -280,7 +282,8 @@ export class GuideKernel {
                     var surfaceDepth = 0.0;
                     var ids = vec2f( 0.0 );   // object, material index + 1 (0: the splats)
                     var chain = 0u;
-                    var splatTau = 0.0;       // helper passes: optical depth of the splats so far
+                    var splatTau = 0.0;       // helper passes: optical depth of the splats so far (grid)
+                    var gxTrans = 1.0;        // light passing the traced Gaussians so far
 
                     for ( var i = 0u; i < 16u; i ++ ) {
 
@@ -291,8 +294,34 @@ export class GuideKernel {
 
                         }
 
-                        // helper passes: the splats up to this hit – half the light gone = their surface
-                        if ( aov != 0u && ${ S.active } > 0.5 ) {
+                        // the splats up to this hit – half the light gone = their surface. Traced Gaussians for every guide
+                        // (the denoiser keeps their detail; not on scans' camera rays – the raster draws those), the grid
+                        // for the helper passes only (it is coarse)
+                        if ( ${ GAUSS_PT.on } > 0.5 && ${ GAUSS_PT.primary } > 0.5 ) {
+
+                            let gm = ${ GAUSS_PT.march }( ray.origin, ray.direction, hit.dist, 1u, gxTrans, 0u );
+                            gxTrans = gm.z;
+                            if ( gm.x >= 0.0 ) {
+
+                                travelled += gm.x;
+                                let sp = ray.origin + ray.direction * gm.x;
+                                position = vec4f( camPos + primaryDir * travelled, 1.0 );
+                                normal = vec4f( normalize( mirror * ${ GAUSS_PT.normal }( gm.y, ray.direction ) ), 0.0 );
+                                // albedo: the base colours blended front to back (the path tracer picks one by chance – their
+                                // average; with the single Gaussian at half transmittance the denoiser kept that noise as detail)
+                                let ga = ${ GAUSS_PT.march }( ray.origin, ray.direction, hit.dist, 3u, 1.0, 0u );
+                                albedo = vec4f( tint * select( ${ GAUSS_PT.color }( gm.y ), ga.rgb / ( 1.0 - ga.a ), ga.a < 0.999 ), 1.0 );
+                                surfaceDepth = select( dot( sp - camPos, forward ), travelled, isFisheye );
+                                if ( firstDepth < 0.0 ) {
+
+                                    firstDepth = surfaceDepth;
+
+                                }
+                                break;
+
+                            }
+
+                        } else if ( aov != 0u && ${ S.grid } > 0.5 ) {
 
                             let march = ${ splatMarch }( ray.origin, ray.direction, hit.dist, splatTau, jitter.w );
                             splatTau = march.y;

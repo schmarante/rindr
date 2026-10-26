@@ -48,6 +48,7 @@ import { kiSettings } from './ki-gemini.js';
 import { PhysicalCamera } from 'three-gpu-pathtracer/src/objects/PhysicalCamera.js';
 import { captureState, applyState, matchesModel, sceneModels, SCENE_FORMAT } from './scene-state.js';
 import { encodePng } from './png-encode.js';
+import { LightHelper } from './light-helper.js';
 import { setFisheye, RasterFisheye, patchRaycaster, viewAngle, setViewAngle, fisheyeEnabled, fisheyeProject, PERSPECTIVE_LIMIT, MIN_VIEW_ANGLE } from './fisheye.js';
 import { PropertiesPanel } from './properties.js';
 import { Slicer, isClosedGeometry } from './slicer.js';
@@ -826,6 +827,9 @@ transformer.addEventListener('dragstart', () => { controls.enabled = false; path
 let fieldDragging = false;   // a number field of the panel is being dragged (properties.js draggable)
 transformer.addEventListener('dragend', e => { controls.enabled = true; pathTracing.resumeAfterEdit(e.detail.kind); });
 transformer.overlayScene.add(slicer.helper);
+// the selected directional light: its rays through the scene (light-helper.js)
+const lightHelper = new LightHelper();
+transformer.overlayScene.add(lightHelper.object);
 transformer.addEventListener('change', e => {
     if (e.detail.kind === 'slicer') { slicer.update(); return; }   // also live while dragging
     if (transformer.controls.dragging || fieldDragging) return;   // while dragging (gizmo or number field), update only at the end
@@ -5791,6 +5795,7 @@ function renderFrame() {
         return;
     }
     highlighter.render();
+    lightHelper.update(selection?.kind === 'light' && transformer.object ? selection.object : null);
     // gizmo on top of everything
     if (transformer.object && rasterFisheye.active) {
         rasterFisheye.render(renderer, camera, cam => renderer.render(transformer.overlayScene, cam), { overlay: true });
