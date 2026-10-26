@@ -18,7 +18,7 @@ import { BucketDisplay } from './distributed/display.js';
 import { localTransport, newId, gpuName, formatSize } from './distributed/protocol.js';
 import { hubTransport, channelTransport, answerOffer } from './distributed/rtc.js';
 import { buildDistributedSection, clientView } from './distributed/settings.js';
-import { IMPORT, KI, SPLATS, RASTER, SCENE, TRANSITION, LOD } from './config.js';
+import { IMPORT, KI, SPLATS, RASTER, SCENE, TRANSITION, LOD, SKELETON } from './config.js';
 import { importMeshFile, MissingFilesError, MESH_EXTENSIONS } from './mesh-importer.js';
 import { MaterialManager, FADE_MASK } from './material-manager.js';
 import { MATERIAL_PRESETS, presetName } from './material-presets.js';
@@ -64,6 +64,7 @@ import { GROUND_SURFACE } from './ground-reflection.js';
 import { BackgroundDome } from './background-dome.js';
 import { ContactShadow } from './contact-shadow.js';
 import { ModelAnimation, createPlaybar } from './animation.js';
+import { SkeletonView, setBoneState } from './skeleton-view.js';
 import { confirmDialog, choiceDialog, dialogOpen } from './dialog.js';
 import { showNotice } from './notice.js';
 import { triangleLimits, deviceMemoryGB, memoryBudget, BYTES_PER_TRIANGLE, formatBytes, setSafeMode } from './memory-budget.js';
@@ -830,6 +831,31 @@ transformer.overlayScene.add(slicer.helper);
 // the selected directional light: its rays through the scene (light-helper.js)
 const lightHelper = new LightHelper();
 transformer.overlayScene.add(lightHelper.object);
+// skeleton of an animated/skinned model (skeleton-view.js): joints clickable, own gizmo; dragging shows the puppet live
+// (GPU skinning), release bakes the pose (like scrubbing) + one undo step per drag
+const skeletonView = new SkeletonView(camera, renderer.domElement, transformer.overlayScene);
+patchRaycaster(skeletonView.controls.getRaycaster());
+skeletonView.addEventListener('dragstart', e => {
+    finishPoseBlend();
+    controls.enabled = false;
+    if (animPlaying) setAnimPlaying(false);
+    pathTracing.pauseForEdit();
+    e.detail.anim.startLive();
+});
+skeletonView.addEventListener('change', () => { loadRender.dirty = true; });
+skeletonView.addEventListener('dragend', e => {
+    controls.enabled = true;
+    settleAnimation([{ anim: e.detail.anim }]);
+    loadRender.dirty = true;
+    properties.show(selection);   // "reset pose" appears
+});
+skeletonView.addEventListener('edit', e => {
+    const { anim, bone, before, after } = e.detail;
+    anim.handPosed = true;
+    anim.activePose = null;
+    const set = state => { stopAnimation(); setBoneState(bone, state); settleAnimation([{ anim }]); loadRender.dirty = true; };
+    history.record({ label: t('viewer.undo.bone', { name: bone.name }), undo: () => set(before), redo: () => set(after) });
+});
 transformer.addEventListener('change', e => {
     if (e.detail.kind === 'slicer') { slicer.update(); return; }   // also live while dragging
     if (transformer.controls.dragging || fieldDragging) return;   // while dragging (gizmo or number field), update only at the end
@@ -929,6 +955,7 @@ const properties = new PropertiesPanel(document.getElementById('properties'), {
     onCameraChange: () => pathTracing.updateCamera(),
     get cameraViews() { return cameraViewApi; },   // defined further down
     get morphs() { return morphApi; },   // defined further down
+    get skeleton() { return skeletonApi; },
     get hdriEditor() { return hdriApi; },   // defined further down
     onHdriError: (name, err) => { console.error(`HDRI ${name}: ${err.message}`); flashStatus(t('sceneState.hdriError', { name: environment.customName(name) ?? name, message: err.message }), 6000); },
     missingModels: { relink: () => assetsWindow.show(), remove: entry => removeMissingModel(entry) },
@@ -1063,8 +1090,11 @@ window.addEventListener('keydown', e => {
         else setViewMode(e.key === '2' ? 'default' : 'hq');
     }
     if (key === 'u' && !e.ctrlKey && !e.metaKey && !e.altKey) toggleUi();
-    if (e.key === 'w' || e.key === 'W') { transformer.setMode('translate'); properties.show(selection); }
-    if (e.key === 'e' || e.key === 'E') { transformer.setMode('rotate'); properties.show(selection); }
+    // a selected joint (skeleton view): its gizmo
+    if ((e.key === 'w' || e.key === 'W') && skeletonView.selected >= 0) skeletonView.setMode('translate');
+    else if (e.key === 'w' || e.key === 'W') { transformer.setMode('translate'); properties.show(selection); }
+    if ((e.key === 'e' || e.key === 'E') && skeletonView.selected >= 0) skeletonView.setMode('rotate');
+    else if (e.key === 'e' || e.key === 'E') { transformer.setMode('rotate'); properties.show(selection); }
     // S: scale (was R – R is the right view now, user's choice)
     if (key === 's' && !e.ctrlKey && !e.metaKey && !e.altKey) { transformer.setMode('scale'); properties.show(selection); }
     // views like the view cube: T top, F front, B back, D bottom (down), L left, R right
@@ -1072,6 +1102,7 @@ window.addEventListener('keydown', e => {
     if (view) flyToDirection(new THREE.Vector3(...view));
     if (key === 'x' && !e.ctrlKey && !e.metaKey && !e.altKey && !splatMesh) toggleExplode();
     if (e.key === 'Escape') {
+        if (skeletonView.selected >= 0) selectBone(-1);
         if (focusPick) endFocusPick();
         else if (nodeEditor.now?.isOpen) nodeEditor.now.close(); else sceneGraph.select(null);
     }
@@ -1095,12 +1126,12 @@ function runtimeModels() {
     const list = [];
     if (rootGroup && model) list.push({ main: true, root: rootGroup, nodeGroups: currentNodeGroups, meshes: currentMeshes, prefix: '',
         file: { name: model.name, type: model.type, size: model.size ?? null }, holder: null, sceneIndex: mainSceneIndex, source: model,
-        morphs: animations.find(a => a.owner === 'main')?.anim.morphValues(), animation: animState('main'),
+        morphs: animations.find(a => a.owner === 'main')?.anim.morphValues(), animation: animState('main'), pose: poseState('main'), poses: poseListState('main'),
         // Gaussian splats: their look (light, override material) – saved with the scene
         splatLook: splatMesh ? { mode: splatMesh.look.mode, material: splatMesh.look.material && { ...splatMesh.look.material } } : null });
     for (const x of extraModels) list.push({ main: false, id: x.id, root: x.root, nodeGroups: x.nodeGroups, meshes: x.meshes, prefix: `x${x.id}:`,
         file: { name: x.source.name, type: x.source.type, size: x.size ?? null }, holder: x.holder, sceneIndex: x.sceneIndex, source: x.source,
-        morphs: animations.find(a => a.owner === x.id)?.anim.morphValues(), animation: animState(x.id) });
+        morphs: animations.find(a => a.owner === x.id)?.anim.morphValues(), animation: animState(x.id), pose: poseState(x.id), poses: poseListState(x.id) });
     return list;
 }
 const sameFile = (a, b) => !!a && !!b && a.name === b.name && (a.size == null || b.size == null || a.size === b.size);
@@ -1525,14 +1556,22 @@ const quadMenu = new QuadMenu();
 function openQuadMenu(x, y) {
     if (!rootGroup) return;
     const hasSel = isModelEntry(selection);   // without a selection: only "Show all"
-    const canTransform = hasSel && !!gizmoTarget(selection);
-    const mode = m => ({
+    // a selected joint (skeleton view): the transform panel switches its gizmo – move/rotate, no scaling
+    const joint = skeletonView.selectedBone;
+    const canTransform = joint ? true : hasSel && !!gizmoTarget(selection);
+    const mode = m => joint ? {
+        label: t(`quadMenu.${m}`),
+        shortcut: { translate: 'W', rotate: 'E', scale: 'S' }[m],
+        active: m !== 'scale' && skeletonView.mode === m,
+        disabled: m === 'scale',
+        onClick: () => { skeletonView.setMode(m); loadRender.dirty = true; },
+    } : {
         label: t(`quadMenu.${m}`),
         shortcut: { translate: 'W', rotate: 'E', scale: 'S' }[m],
         active: canTransform && transformer.mode === m,
         disabled: !canTransform,
         onClick: () => { transformer.setMode(m); properties.show(selection); },
-    });
+    };
     quadMenu.open(x, y, [
         {
             title: t('quadMenu.display'), quadrant: 'tr', items: [
@@ -1541,7 +1580,7 @@ function openQuadMenu(x, y) {
                 { label: t('quadMenu.hideSelection'), shortcut: 'H', disabled: !hasSel, onClick: hideSelection },
             ],
         },
-        { title: t('quadMenu.transform'), quadrant: 'br', items: [mode('translate'), mode('rotate'), mode('scale')] },
+        { title: joint ? t('quadMenu.joint', { name: joint.name }) : t('quadMenu.transform'), quadrant: 'br', items: [mode('translate'), mode('rotate'), mode('scale')] },
     ]);
 }
 let rightDown = null;
@@ -1552,8 +1591,13 @@ renderer.domElement.addEventListener('pointerup', e => {
     const moved = Math.hypot(e.clientX - rightDown.x, e.clientY - rightDown.y);
     rightDown = null;
     if (moved > 4) return;   // right-dragged = camera panned
+    // skeleton shown: a joint under the pointer is selected first (the menu then works on it)
+    if (skeletonView.visible) {
+        const joint = skeletonView.pick(e.clientX, e.clientY);
+        if (joint >= 0 && joint !== skeletonView.selected) selectBone(joint);
+    }
     // without a selection: select the object under the pointer (empty space: menu without selection)
-    if (!isModelEntry(selection)) {
+    if (!isModelEntry(selection) && skeletonView.selected < 0) {
         const mesh = pickSelectable(e);
         const entry = mesh ? sceneGraph.entryForObject(mesh) : null;
         if (entry) sceneGraph.select(entry);
@@ -1774,6 +1818,7 @@ const sceneGraph = new SceneGraph(document.getElementById('scene-graph'), {
     onSelect: entry => {
         if (entry?.kind === 'view' && entry !== selection) flyToView(entry.view);   // click on a saved view: fly there
         selection = entry;
+        if (skeletonView.selected >= 0) skeletonView.select(-1);
         transformer.attach(gizmoTarget(entry), entry?.kind ?? null);
         properties.show(entry);
         updateSlicerHelper();
@@ -1781,6 +1826,12 @@ const sceneGraph = new SceneGraph(document.getElementById('scene-graph'), {
         updateHighlight();
     },
     onWarn: () => assetsWindow.show(),
+    // skeleton marker of a model: select it and show/hide its bones
+    onSkeleton: entry => {
+        if (selection !== entry) sceneGraph.select(entry);
+        skeletonApi.show(entry, !skeletonApi.shown(entry));
+        properties.show(selection);
+    },
     onHover: entry => { hovered = entry; updateHighlight(); },
     onActivate: entry => { if (isModelEntry(entry)) frameObject(entry.object); },
     onVisibilityEdit: (before, after) => history.record({
@@ -1951,6 +2002,7 @@ const playbar = createPlaybar(document.getElementById('playbar'), {
     onPlay: play => setAnimPlaying(play),
     onScrub: time => {
         if (!animScrubbing) {
+            finishPoseBlend();
             animScrubbing = true;
             setAnimPlaying(false);
             pathTracing.pauseForEdit();
@@ -1974,8 +2026,10 @@ function addAnimation(anim, owner) {
 // models with animation clips (the play bar); models with morph targets only are in `animations` too
 const clipAnims = () => animations.filter(a => a.anim.clips.length);
 function removeAnimations(owner) {
+    finishPoseBlend();
     for (let i = animations.length - 1; i >= 0; i--) {
         if (owner !== undefined && animations[i].owner !== owner) continue;
+        if (skeletonView.anim === animations[i].anim) hideSkeleton();
         animations[i].anim.dispose();
         animations.splice(i, 1);
     }
@@ -2002,6 +2056,7 @@ function setAnimPlaying(play) {
     // playing = raster only: in HQ switch to Default for the time being (otherwise zooming/orbiting resumed
     // the path tracer, which does not show the running animation) – back to HQ on pause
     if (play && viewMode === 'hq') { setViewMode('default'); hqBeforePlay = true; }
+    if (play) finishPoseBlend();
     if (play) { animLast = performance.now(); pathTracing.pauseForEdit(); clipAnims().forEach(a => a.anim.startLive()); }
     else settleAnimation();
     if (!play && hqBeforePlay) { hqBeforePlay = false; setViewMode('hq'); }
@@ -2071,7 +2126,181 @@ const morphApi = {
         history.record({ label: t('viewer.undo.morphReset'), undo: () => apply(before), redo: () => apply({}) });
     },
 };
+// --- Skeleton (skinned models): bones + joints shown on top, a clicked joint gets its own gizmo (skeleton-view.js) ---
+function selectBone(index) {
+    skeletonView.select(index);
+    // the model gizmo makes room for the joint's
+    if (index >= 0) transformer.attach(null, null);
+    else transformer.attach(gizmoTarget(selection), selection?.kind ?? null);
+    properties.show(selection);
+    loadRender.dirty = true;
+}
+function hideSkeleton() {
+    if (skeletonView.selected >= 0) selectBone(-1);
+    skeletonView.hide();
+    loadRender.dirty = true;
+}
+// pose of the bones (all others back to the pose at import); a model with clips keeps its clip pose without one
+function applyPose(anim, values, { partial = false } = {}) {
+    stopAnimation();
+    anim.setPose(values, { partial });
+    anim.handPosed = Object.keys(values).length > 0;
+    anim.activePose = null;
+    if (!Object.keys(values).length && anim.clips.length) anim.setTime(anim.time);
+    settleAnimation([{ anim }]);
+    loadRender.dirty = true;
+}
+// soft transition into a pose (pose list, undo/redo, reset): the bones run from the current posture to the target
+// (positions linear, rotations slerp, smoothstep over SKELETON.poseBlendMs) – the puppet live meanwhile, at the end the
+// exact pose baked (applyPose). Time counted per frame, at most 50 ms each: the first live frame compiles the skinning
+// shaders (a stall) – by wall clock the blend had jumped half-way. Playing, scrubbing or dragging a joint finishes a
+// running blend first.
+let poseBlend = null;
+const _qa = new THREE.Quaternion(), _qb = new THREE.Quaternion();
+function blendPose(anim, values, { partial = false, onDone } = {}) {
+    finishPoseBlend();
+    stopAnimation();
+    const ms = SKELETON.poseBlendMs;
+    if (!(ms > 0)) { applyPose(anim, values, { partial }); onDone?.(); return; }
+    const from = anim.bones.map(b => [...b.position.toArray(), ...b.quaternion.toArray()]);
+    pathTracing.pauseForEdit();
+    anim.startLive();
+    let to = anim.poseTargets(values, { partial });
+    if (!Object.keys(values).length && anim.clips.length) {
+        // back to the clip's pose at the current time: computed on the puppet, then the start posture again
+        anim.setPose({});
+        anim.setTime(anim.time);
+        to = anim.bones.map(b => [...b.position.toArray(), ...b.quaternion.toArray()]);
+        anim.bones.forEach((b, i) => { b.position.fromArray(from[i], 0); b.quaternion.fromArray(from[i], 3); });
+    }
+    poseBlend = { anim, values, partial, from, to, elapsed: 0, last: null, ms, onDone };
+    loadRender.dirty = true;
+}
+function stepPoseBlend(now) {
+    if (!poseBlend) return;
+    const { anim, from, to, ms } = poseBlend;
+    if (poseBlend.last !== null) poseBlend.elapsed += Math.min(now - poseBlend.last, 50);
+    poseBlend.last = now;
+    const t = Math.min(poseBlend.elapsed / ms, 1), e = t * t * (3 - 2 * t);
+    anim.bones.forEach((b, i) => {
+        const a = from[i], z = to[i];
+        if (!z) return;
+        b.position.set(a[0] + (z[0] - a[0]) * e, a[1] + (z[1] - a[1]) * e, a[2] + (z[2] - a[2]) * e);
+        b.quaternion.slerpQuaternions(_qa.fromArray(a, 3), _qb.fromArray(z, 3), e);
+    });
+    loadRender.dirty = true;
+    if (t >= 1) finishPoseBlend();
+}
+function finishPoseBlend() {
+    if (!poseBlend) return;
+    const { anim, values, partial, onDone } = poseBlend;
+    poseBlend = null;
+    applyPose(anim, values, { partial });   // exact target, baked (its settle resumes the path tracer paused above)
+    onDone?.();
+}
+const skeletonApi = {
+    available: entry => entry?.kind === 'model' && !!animOf(entry)?.bones.length,
+    shown: entry => !!animOf(entry) && skeletonView.anim === animOf(entry),
+    show(entry, on) {
+        const anim = animOf(entry);
+        if (!anim) return;
+        if (on) { if (skeletonView.selected >= 0) selectBone(-1); skeletonView.show(anim); loadRender.dirty = true; refreshSceneGraph(); }
+        else if (skeletonView.anim === anim) { hideSkeleton(); refreshSceneGraph(); }
+    },
+    joint: () => skeletonView.selectedBone?.name ?? null,
+    // with clips the bones are away from the import pose anyway – only a hand-made pose counts
+    posed: entry => { const anim = animOf(entry); return !!anim && (anim.clips.length ? !!anim.handPosed : Object.keys(anim.poseValues()).length > 0); },
+    reset(entry) {
+        const anim = animOf(entry);
+        if (!anim) return;
+        const before = anim.poseValues({ round: false });
+        if (!Object.keys(before).length) return;
+        const apply = values => blendPose(anim, values, { onDone: () => properties.show(selection) });
+        apply({});
+        history.record({ label: t('viewer.undo.poseReset'), undo: () => apply(before), redo: () => apply({}) });
+    },
+};
+// pose list of the skeleton section: poses of the file + own ones ({ name, values }); applying, saving, renaming and
+// deleting are undo steps
+const poseOf = (anim, id) => [...anim.filePoses, ...anim.userPoses].find(p => p.id === id);
+let poseSeq = 0;
+// apply a pose of the list; `before` = the pose to undo to (all bones away from the import pose)
+function usePose(anim, pose) {
+    const before = anim.poseValues({ round: false }), beforeActive = anim.activePose;
+    const apply = () => blendPose(anim, pose.values, { partial: !!pose.partial, onDone: () => { anim.activePose = pose.id; properties.show(selection); } });
+    apply();
+    history.record({
+        label: t('viewer.undo.poseApply', { name: pose.name }),
+        undo: () => blendPose(anim, before, { onDone: () => { anim.activePose = beforeActive; properties.show(selection); } }),
+        redo: apply,
+    });
+}
+function setUserPoses(anim, list) {
+    anim.userPoses = list;
+    properties.show(selection);
+}
+Object.assign(skeletonApi, {
+    poses(entry) {
+        const anim = animOf(entry);
+        if (!anim) return [];
+        return [...anim.filePoses.map(p => ({ id: p.id, name: p.name, user: false })), ...anim.userPoses.map(p => ({ id: p.id, name: p.name, user: true }))]
+            .map(p => ({ ...p, active: anim.activePose === p.id }));
+    },
+    apply(entry, id) {
+        const anim = animOf(entry), pose = anim && poseOf(anim, id);
+        if (pose) usePose(anim, pose);
+    },
+    // the current pose (also a point in time of a clip) under a new name
+    save(entry) {
+        const anim = animOf(entry);
+        if (!anim) return;
+        const before = anim.userPoses;
+        const pose = { id: `user:${++poseSeq}`, name: t('properties.skeleton.poseName', { n: before.length + 1 }), values: anim.poseValues({ round: false }) };
+        const after = [...before, pose];
+        setUserPoses(anim, after);
+        anim.activePose = pose.id;
+        properties.show(selection);
+        history.record({ label: t('viewer.undo.poseSave'), undo: () => setUserPoses(anim, before), redo: () => setUserPoses(anim, after) });
+        return pose.id;
+    },
+    rename(entry, id, name) {
+        const anim = animOf(entry);
+        const pose = anim?.userPoses.find(p => p.id === id);
+        name = name.trim();
+        if (!pose || !name || name === pose.name) return;
+        const before = anim.userPoses, after = before.map(p => (p === pose ? { ...p, name } : p));
+        setUserPoses(anim, after);
+        history.record({ label: t('viewer.undo.poseRename'), undo: () => setUserPoses(anim, before), redo: () => setUserPoses(anim, after) });
+    },
+    remove(entry, id) {
+        const anim = animOf(entry);
+        if (!anim?.userPoses.some(p => p.id === id)) return;
+        const before = anim.userPoses, after = before.filter(p => p.id !== id);
+        setUserPoses(anim, after);
+        history.record({ label: t('viewer.undo.poseDelete'), undo: () => setUserPoses(anim, before), redo: () => setUserPoses(anim, after) });
+    },
+});
+// scene state: own poses of a model (the file's come with the file)
+function poseListState(owner) {
+    const anim = animations.find(a => a.owner === owner)?.anim;
+    const round = values => Object.fromEntries(Object.entries(values).map(([k, v]) => [k, v.map(x => +x.toPrecision(7))]));
+    return anim?.userPoses.length ? anim.userPoses.map(p => ({ name: p.name, values: round(p.values) })) : undefined;
+}
+function setModelPoses(rm, list) {
+    const anim = animations.find(a => a.owner === (rm.main ? 'main' : rm.id))?.anim;
+    if (!anim?.bones.length) return;
+    anim.userPoses = list.map(p => ({ id: `user:${++poseSeq}`, name: String(p.name || ''), values: p.values || {} }));
+}
+// scene state: hand-made pose of a model with a skeleton (bones away from the pose at import)
+function setModelPose(rm, values) {
+    const anim = animations.find(a => a.owner === (rm.main ? 'main' : rm.id))?.anim;
+    if (anim?.bones.length) applyPose(anim, values);
+}
 // scene state: clip + point in time of an animated model
+function poseState(owner) {
+    const anim = animations.find(a => a.owner === owner)?.anim;
+    return anim?.bones.length ? anim.poseValues() : undefined;
+}
 function animState(owner) {
     const anim = animations.find(a => a.owner === owner)?.anim;
     return anim?.clips.length ? { clip: anim.clipIndex, time: +anim.time.toFixed(3) } : undefined;
@@ -2142,6 +2371,14 @@ function refreshSceneGraph() {
     const morphCount = owner => animations.find(a => a.owner === owner)?.anim.morphs.size || 0;
     if (primaryContent) primaryContent.morphs = morphCount('main');
     for (const x of extraModels) if (x.content) x.content.morphs = morphCount(x.id);
+    // skeleton marker: number of bones, lit while the skeleton view shows that model
+    const skeleton = (content, owner) => {
+        const anim = animations.find(a => a.owner === owner)?.anim;
+        content.bones = anim?.bones.length || 0;
+        content.skeletonShown = !!anim && skeletonView.anim === anim;
+    };
+    if (primaryContent) skeleton(primaryContent, 'main');
+    for (const x of extraModels) if (x.content) skeleton(x.content, x.id);
     const entries = sceneEntries;
     bcfUi.update();
     sceneGraph.setContent(entries, primaryContent, extraModels.map(x => x.content), missingModels.map(m => m.name));
@@ -2597,7 +2834,7 @@ renderer.domElement.addEventListener('dblclick', e => {
 
 let pointerDown = null;
 renderer.domElement.addEventListener('pointerdown', e => {
-    pointerDown = transformer.busy ? null : { x: e.clientX, y: e.clientY };   // a click on the gizmo is not a selection
+    pointerDown = transformer.busy || skeletonView.busy ? null : { x: e.clientX, y: e.clientY };   // a click on the gizmo is not a selection
 });
 renderer.domElement.addEventListener('pointerup', e => {
     if (!pointerDown || e.button !== 0) return;
@@ -2612,6 +2849,12 @@ renderer.domElement.addEventListener('pointerup', e => {
         setFocus(dof.depthOf(hit.point), { label: t('viewer.undo.focusByClick') });
         properties.show(selection);
         return;
+    }
+    // skeleton shown: a joint near the pointer is selected before anything behind it
+    if (skeletonView.visible) {
+        const joint = skeletonView.pick(e.clientX, e.clientY);
+        if (joint >= 0) { selectBone(joint); return; }
+        if (skeletonView.selected >= 0) selectBone(-1);
     }
     const mesh = pickSelectable(e);
     const entry = mesh ? sceneGraph.entryForObject(mesh) : null;
@@ -4872,6 +5115,8 @@ const sceneStateContext = {
     // Gaussian splats of a restored scene: their saved look (scene-state.js applyModelState)
     setSplatLook: look => { if (splatMesh && look) setSplatLook({ mode: look.mode, material: look.material ?? null }, { record: false }); },
     setModelAnimation,
+    setModelPose,
+    setModelPoses,
     scene, camera, controls, renderer, environment, lightsGroup, pathTracing, slicer, sceneGraph, materialManager, settings, dof, lens, toneMappings: TONE_MAPPINGS,
     lights: () => lightsGroup.children.filter(l => l.isLight),
     meshes: () => currentMeshes,
@@ -5289,7 +5534,7 @@ if (new URLSearchParams(location.search).has('debug')) {
         // material node graphs: bake an input into a PNG / render a description on the thumbnail sphere (debug-graph.js)
         bakeGraph: (graph, opts) => import('./debug-graph.js').then(m => m.bakeGraphImage(graphApplier, graph, opts)),
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel.thumbs, def)),
-        batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+        skeletonView, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 }
 
 // --- Resize ---
@@ -5556,6 +5801,7 @@ function renderFrame() {
     const frameStart = performance.now();
     batcher.newFrame();
     stepAnimation(frameStart);
+    stepPoseBlend(frameStart);
     updateFlight();
     updateSplatSpin(frameStart);
     exploder.update(frameStart);
@@ -5796,10 +6042,12 @@ function renderFrame() {
     }
     highlighter.render();
     lightHelper.update(selection?.kind === 'light' && transformer.object ? selection.object : null);
-    // gizmo on top of everything
-    if (transformer.object && rasterFisheye.active) {
+    skeletonView.update();
+    // gizmo (and skeleton) on top of everything
+    const overlay = transformer.object || skeletonView.visible;
+    if (overlay && rasterFisheye.active) {
         rasterFisheye.render(renderer, camera, cam => renderer.render(transformer.overlayScene, cam), { overlay: true });
-    } else if (transformer.object) {
+    } else if (overlay) {
         const autoClear = renderer.autoClear;
         renderer.autoClear = false;
         renderer.clearDepth();

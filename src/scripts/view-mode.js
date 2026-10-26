@@ -51,7 +51,8 @@ export class ViewModeBar {
         this.onSelect = onSelect;
         this.mode = 'default';
         this.unavailable = [];
-        root.className = 'pointer-events-auto absolute bottom-5 left-1/2 flex -translate-x-1/2 gap-1 rounded-full bg-black/60 p-1 text-xs text-white/80 backdrop-blur-sm';
+        // z-10: its menus open upwards over the play bar (animation.js, later in the page – was drawn on top)
+        root.className = 'pointer-events-auto absolute bottom-5 left-1/2 z-10 flex -translate-x-1/2 gap-1 rounded-full bg-black/60 p-1 text-xs text-white/80 backdrop-blur-sm';
         // the choice and its companions (teapot) together – actions and tool groups go after this box
         this.box = document.createElement('span');
         this.box.className = 'flex items-center gap-1';

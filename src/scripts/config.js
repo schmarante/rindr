@@ -111,6 +111,12 @@ export const TRANSITION = {
     ms: 300,               // duration (smoothstep), 0 = jump as before
 };
 
+// Skeleton (skeleton-view.js, pose list): applying a pose blends the bones from the current posture into it (smoothstep,
+// live on the GPU, baked at the end); 0 = jump
+export const SKELETON = {
+    poseBlendMs: 450,
+};
+
 // Raster view (Basic/Default): meshes with the same geometry + material are drawn as one InstancedMesh
 // (render-batcher.js) – large assemblies need hundreds instead of thousands of draw calls. Test: ?batching=0
 export const RASTER = {

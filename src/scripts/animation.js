@@ -76,6 +76,25 @@ export class ModelAnimation {
                 this.morphs.get(name).push({ mesh, index, targets: its.map(it => it.target) });
             }
         }
+        // bones of the skinned meshes (skeleton view, skeleton-view.js) and their pose at import (reset, scene state)
+        const bones = new Set();
+        for (const mesh of this.live.keys()) for (const b of mesh.skeleton?.bones || []) bones.add(b);
+        this.bones = [...bones];
+        this.restPose = this.bones.map(b => [...b.position.toArray(), ...b.quaternion.toArray()]);
+        // scene-state key per bone: its name, the k-th of the same name "name~k"
+        const seen = new Map();
+        this.boneKeys = this.bones.map(b => { const k = seen.get(b.name) || 0; seen.set(b.name, k + 1); return k ? `${b.name}~${k}` : b.name; });
+        // pose list (skeleton view): poses stored in the file (USD: SkelAnimations without time samples – their joints
+        // only, applied partially) and poses saved by the user ({ name, values } like poseValues – scene state)
+        const index = new Map(this.bones.map((b, i) => [b, i]));
+        this.filePoses = (root.userData.filePoses || []).map((p, i) => {
+            const values = {};
+            for (const { bone, value } of p.bones) if (index.has(bone)) values[this.boneKeys[index.get(bone)]] = value;
+            return { id: `file:${i}`, name: p.name, values, partial: true };
+        }).filter(p => Object.keys(p.values).length);
+        delete root.userData.filePoses;
+        this.userPoses = [];
+        this.activePose = null;   // id of the pose last applied, as long as nothing moved since
         this.isLive = false;
         this.mixer = new THREE.AnimationMixer(root);
         this.clipIndex = 0;
@@ -100,6 +119,7 @@ export class ModelAnimation {
         this.action?.stop();
         if (!this.clips.length) { this.action = null; return; }   // morph targets only
         this.clipIndex = Math.min(Math.max(index, 0), this.clips.length - 1);
+        this.handPosed = false;   // skeleton view: a pose made by hand – the new clip drives the bones
         this.action = this.mixer.clipAction(this.clips[this.clipIndex]);
         this.action.setLoop(THREE.LoopRepeat, Infinity);
         this.action.play();
@@ -161,6 +181,7 @@ export class ModelAnimation {
     /** Jump to a time (s) and copy the pose (rigid parts; deformed ones only when not live) */
     setTime(t) {
         if (!this.action) return;
+        this.activePose = null;
         this.action.time = Math.min(Math.max(t, 0), this.duration);
         this.mixer.update(0);
         this.apply(!this.isLive);
@@ -200,8 +221,52 @@ export class ModelAnimation {
         return changed;
     }
 
+    /** Matrices of the puppet current (detached when not live – nothing else updates them then) */
+    updatePuppetMatrices() {
+        if (!this.container.parent) this.container.updateMatrixWorld(true);
+    }
+
+    /** Scene matrix of an object of the puppet (live: its matrixWorld; detached: model root · its matrixWorld) */
+    sceneMatrix(object, out) {
+        if (this.container.parent) return out.copy(object.matrixWorld);
+        return out.multiplyMatrices(this.modelRoot.matrixWorld, object.matrixWorld);
+    }
+
+    /** Bones moved away from their pose at import: { key: [px, py, pz, qx, qy, qz, qw] } – rounded to 7 digits for the
+     *  scene state, exact for undo and saved poses */
+    poseValues({ round = true } = {}) {
+        const out = {};
+        this.bones.forEach((b, i) => {
+            const now = [...b.position.toArray(), ...b.quaternion.toArray()];
+            if (now.some((v, k) => Math.abs(v - this.restPose[i][k]) > 1e-6)) out[this.boneKeys[i]] = round ? now.map(v => +v.toPrecision(7)) : now;
+        });
+        return out;
+    }
+
+    /** All bones to the given pose (missing keys: pose at import – partial: unchanged); true if something changed – visible
+     *  after settle() */
+    setPose(values = {}, { partial = false } = {}) {
+        let changed = false;
+        this.bones.forEach((b, i) => {
+            const v = values[this.boneKeys[i]] || (partial ? null : this.restPose[i]);
+            if (!v) return;
+            const now = [...b.position.toArray(), ...b.quaternion.toArray()];
+            if (now.every((x, k) => x === v[k])) return;
+            b.position.fromArray(v, 0);
+            b.quaternion.fromArray(v, 3);
+            changed = true;
+        });
+        return changed;
+    }
+
+    /** Target of setPose() per bone: [px, py, pz, qx, qy, qz, qw], null = stays (partial) */
+    poseTargets(values = {}, { partial = false } = {}) {
+        return this.bones.map((b, i) => values[this.boneKeys[i]] || (partial ? null : this.restPose[i]));
+    }
+
     /** Advance by dt (s) */
     update(dt) {
+        this.activePose = null;
         this.mixer.update(dt);
         this.apply(!this.isLive);
     }

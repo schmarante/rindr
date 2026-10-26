@@ -1090,6 +1090,10 @@
             "one": "{count} texture missing – see Assets",
             "other": "{count} textures missing – see Assets"
         },
+        "skeleton": {
+            "one": "Skeleton with {count} joint – click: show/hide",
+            "other": "Skeleton with {count} joints – click: show/hide"
+        },
         "morphTargets": {
             "one": "{count} morph target – sliders in the properties",
             "other": "{count} morph targets – sliders in the properties"
@@ -1441,6 +1445,22 @@
             "relink": "Link…",
             "remove": "Remove from scene",
             "hint": "The file of this model (or part of it) is missing. Link the file or remove the model from the scene."
+        },
+        "skeleton": {
+            "title": "Skeleton",
+            "show": "Show",
+            "showTitle": "Show bones and joints",
+            "hint": "Click a joint in the view – E rotates, W moves",
+            "joint": "Joint: {name} (E rotate, W move)",
+            "reset": "Reset pose",
+            "poses": "Poses",
+            "savePose": "Save pose",
+            "savePoseTitle": "Add the current posture to the list as a pose of your own",
+            "poseName": "Pose {n}",
+            "applyPose": "Apply pose “{name}”",
+            "applyFilePose": "Apply pose “{name}” from the file",
+            "renamePose": "Rename pose",
+            "deletePose": "Delete pose"
         },
         "morphs": {
             "title": "Morph targets",
@@ -1858,6 +1878,7 @@
         "hideUnselected": "Hide unselected",
         "hideSelection": "Hide selection",
         "transform": "Transform",
+        "joint": "Joint {name}",
         "translate": "Move",
         "rotate": "Rotate",
         "scale": "Scale",
@@ -1992,6 +2013,12 @@
                 "one": "Delete view",
                 "other": "Delete {count} views"
             },
+            "poseApply": "Pose “{name}”",
+            "poseSave": "Save pose",
+            "poseRename": "Rename pose",
+            "poseDelete": "Delete pose",
+            "bone": "Joint “{name}”",
+            "poseReset": "Reset pose",
             "morph": "Morph target “{name}”",
             "morphReset": "Reset morph targets",
             "instance": {
