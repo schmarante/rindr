@@ -18,7 +18,7 @@ import { IMPORT_SLOTS } from './material-graph.js';
 import { debugLog } from './log.js';
 
 // IFC (BIM) goes the same way but has its own importer (ifc/ifc-importer.js, web-ifc – loaded on demand)
-export const MESH_EXTENSIONS = ['glb', 'gltf', 'fbx', 'max', 'c4d', '3mf', 'usd', 'usda', 'usdc', 'usdz', 'stl', 'ifc', 'ifczip'];
+export const MESH_EXTENSIONS = ['glb', 'gltf', 'fbx', 'max', 'c4d', 'obj', '3mf', 'usd', 'usda', 'usdc', 'usdz', 'stl', 'ifc', 'ifczip'];
 const USD_FORMATS = ['usd', 'usda', 'usdc', 'usdz'];   // usd-importer.js (loaded on demand)
 
 // The loaders are loaded only with the first glTF/FBX (~170 KB that a STEP-only session never needs).
@@ -270,6 +270,21 @@ async function load(source, ext, renderer, onStatus = () => {}, preloaded = null
             object = built.object;
             object.userData.c4d = { cameras: built.cameras, unsupported: built.unsupported };
             scale = built.scale;   // project unit → mm
+        } else if (ext === 'obj') {
+            // OBJ: own reader in a worker (obj/obj-parse.js – files of hundreds of MB), materials from the MTL files it
+            // names (dropped / next to the model, through the resolver); no unit – metres like glTF (Blender writes them)
+            const scene = await readObjLean(buffer.slice(0), { onStatus });
+            const { buildObj, parseMtl } = await import('./obj/obj-build.js');
+            const mtl = {};
+            for (const lib of scene.mtllibs) {
+                const url = manager.resolveURL(lib);
+                if (url === 'data:,') { missing.add(lib); continue; }
+                const res = await fetch(url).catch(() => null);
+                if (res?.ok) Object.assign(mtl, parseMtl(await res.text())); else missing.add(lib);
+            }
+            onStatus(t('import.mesh.buildingGeometries'));
+            object = buildObj(scene, mtl, manager, source.name.replace(/\.[^.]+$/, ''), { linear: scene.writer === 'blender' });
+            scale = 1000;   // m → mm
         } else if (ext === 'fbx') {
             const loader = new FBXLoader(manager);
             object = loader.parse(buffer, '');
@@ -290,10 +305,43 @@ async function load(source, ext, renderer, onStatus = () => {}, preloaded = null
             scale = 1000;   // m -> mm
         }
         await idle();
+        dropGreyNormalMaps(object);
         return { object, scale, missing };
     } finally {
         release();
     }
+}
+
+// A "normal map" without the blue cast of one is no normal map – exporters connect height images to the normal input
+// (a bedroom scene through USD: every fabric glittered; in its source scene those images drove nothing). Checked on a
+// 16 × 16 copy of each image once: tangent-space normal maps have b well above r and g (measured +65 … +110), height maps
+// and stray photos not (−9 … 0) → left out. Used as a bump map instead they still glittered (UVs tiled ~900 times).
+function dropGreyNormalMaps(object) {
+    const verdict = new Map();
+    const grey = tex => {
+        const img = tex?.image;
+        if (!img?.width || typeof OffscreenCanvas === 'undefined') return false;
+        if (verdict.has(img)) return verdict.get(img);
+        let result = false;
+        try {
+            const canvas = new OffscreenCanvas(16, 16), ctx = canvas.getContext('2d', { willReadFrequently: true });
+            ctx.drawImage(img, 0, 0, 16, 16);
+            const d = ctx.getImageData(0, 0, 16, 16).data;
+            let blue = 0;
+            for (let i = 0; i < d.length; i += 4) blue += d[i + 2] - (d[i] + d[i + 1]) / 2;
+            result = blue / (d.length / 4) < 20;
+        } catch { /* image not readable (tainted) */ }
+        verdict.set(img, result);
+        return result;
+    };
+    object.traverse(o => {
+        if (!o.isMesh) return;
+        for (const m of [o.material].flat()) {
+            if (!m?.normalMap || !grey(m.normalMap)) continue;
+            m.normalMap = null;
+            m.needsUpdate = true;
+        }
+    });
 }
 
 /**
@@ -658,6 +706,22 @@ function importedCamera(name, world, { forward, up, target = null, distance = 0,
     };
 }
 const FORWARD_MINUS_Z = new THREE.Vector3(0, 0, -1), UP_Y = new THREE.Vector3(0, 1, 0);
+
+// --- OBJ (obj/obj-parse.js in a worker) ---
+
+function readObjLean(buffer, { onStatus }) {
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(new URL('./obj/obj-worker.js', import.meta.url), { type: 'module', name: 'obj' });
+        worker.onmessage = ({ data }) => {
+            if (data.type === 'progress') { onStatus(t('import.mesh.reading', { name: 'OBJ' }), data.done); return; }
+            worker.terminate();
+            if (data.type === 'error') reject(new Error(data.message));
+            else resolve(data.scene);
+        };
+        worker.onerror = e => { worker.terminate(); reject(new Error(e.message || 'OBJ worker failed')); };
+        worker.postMessage({ buffer }, [buffer]);
+    });
+}
 
 // --- C4D (c4d/c4d-parse.js in a worker) ---
 

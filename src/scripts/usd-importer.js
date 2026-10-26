@@ -273,6 +273,16 @@ USDComposer.prototype._applyMaterial = function (material, materialPath) {
     if (mdl) applyMdl(material, mdl, active.textures, this.basePath || '');
 };
 
+// UsdPreviewSurface colours are linear (OpenUSD's convention, what exporters write) – three read diffuse, emissive and
+// specular colour as sRGB: the walls of a bedroom scene came out a shade darker and browner than from the other formats
+// of the same scene. The conversion undone (white and black stay as they are).
+const originalPreviewSurface = USDComposer.prototype._applyPreviewSurface;
+USDComposer.prototype._applyPreviewSurface = function (material, shaderPath) {
+    const out = originalPreviewSurface.call(this, material, shaderPath);
+    if (active) for (const key of ['color', 'emissive', 'specularColor']) material[key]?.convertLinearToSRGB?.();
+    return out;
+};
+
 // textures of UsdPreviewSurface through the same loading (usd-mdl.js UsdTextures: files, package, server, size limit,
 // missing ones listed) – the composer loaded them by a path relative to the page for scenes opened by URL
 const originalLoadTexture = USDComposer.prototype._loadTexture;
