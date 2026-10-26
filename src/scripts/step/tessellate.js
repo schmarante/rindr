@@ -1155,7 +1155,8 @@ function repairRings(rings) {
     const keyOf = p => p[0].toFixed(9) + ',' + p[1].toFixed(9);
     const p3map = new Map();
     for (const R of rings) R.uv.forEach((p, i) => { if (R.p3[i]) p3map.set(keyOf(p), R.p3[i]); });
-    const ring = R => R.uv.map(p => [p[0], p[1]]);
+    const eps = ringsScale(rings) * 1e-9;
+    const ring = R => mergeClose(R.uv.map(p => [p[0], p[1]]), eps);
     let result;
     try {
         result = polygonClipping.difference([ring(rings[0])], ...rings.slice(1).map(R => [ring(R)]));
@@ -1170,6 +1171,31 @@ function repairRings(rings) {
     if (!polys.length) return null;
     const out = polys[0];
     out.multi = polys;
+    return out;
+}
+
+// Largest extent of the rings' uv box
+function ringsScale(rings) {
+    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+    for (const R of rings) for (const p of R.uv) {
+        if (p[0] < u0) u0 = p[0];
+        if (p[0] > u1) u1 = p[0];
+        if (p[1] < v0) v0 = p[1];
+        if (p[1] > v1) v1 = p[1];
+    }
+    return Math.max(u1 - u0, v1 - v0, 0) || 1;
+}
+
+// Consecutive points closer than eps → one (the first; also across the closing edge). A degenerate bound (a face
+// of a test model: 2486 points on 8 distinct spots, 2478 segments ~1e-16 long running back and forth) took
+// polygon-clipping 89 s; merged it is 8 points.
+function mergeClose(points, eps) {
+    const out = [];
+    for (const p of points) {
+        const q = out[out.length - 1];
+        if (!q || Math.abs(p[0] - q[0]) > eps || Math.abs(p[1] - q[1]) > eps) out.push(p);
+    }
+    while (out.length > 1 && Math.abs(out[0][0] - out[out.length - 1][0]) <= eps && Math.abs(out[0][1] - out[out.length - 1][1]) <= eps) out.pop();
     return out;
 }
 
