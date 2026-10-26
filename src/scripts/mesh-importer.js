@@ -10,6 +10,7 @@ import * as THREE from 'three/webgpu';
 import { boxProject, buildGeometryBVHs, orientTrianglesIsolated, UV_TILE } from './step-importer.js';
 import { isBinaryFbx } from './fbx/fbx-parse.js';
 import { isCompoundFile } from './max/max-parse.js';
+import { isC4dFile } from './c4d/c4d-parse.js';
 import { creaseCornerNormals } from './crease-normals.js';
 import { IMPORT } from './config.js';
 import { t } from './i18n.js';
@@ -17,7 +18,7 @@ import { IMPORT_SLOTS } from './material-graph.js';
 import { debugLog } from './log.js';
 
 // IFC (BIM) goes the same way but has its own importer (ifc/ifc-importer.js, web-ifc – loaded on demand)
-export const MESH_EXTENSIONS = ['glb', 'gltf', 'fbx', 'max', '3mf', 'usd', 'usda', 'usdc', 'usdz', 'stl', 'ifc', 'ifczip'];
+export const MESH_EXTENSIONS = ['glb', 'gltf', 'fbx', 'max', 'c4d', '3mf', 'usd', 'usda', 'usdc', 'usdz', 'stl', 'ifc', 'ifczip'];
 const USD_FORMATS = ['usd', 'usda', 'usdc', 'usdz'];   // usd-importer.js (loaded on demand)
 
 // The loaders are loaded only with the first glTF/FBX (~170 KB that a STEP-only session never needs).
@@ -102,7 +103,19 @@ export async function importMeshFile(source, { renderer, materialManager, onStat
         const { object, scale } = loaded;
         onStatus(t('import.mesh.buildingGeometries'));
         result = convert(object, scale, materialManager, source.name);
-        if (fbxCameraScene) result.cameras = fbxCameras(fbxCameraScene, scale);   // read by the lean reader        // animated file: keep the source object as a "puppet" (animation.js drives it and copies every frame)
+        if (fbxCameraScene) result.cameras = fbxCameras(fbxCameraScene, scale);   // read by the lean reader
+        if (object.userData.c4d) {
+            // C4D cameras look along their −Z after the mirroring, up = +Y; objects the reader does not build: notice
+            const { cameras, unsupported } = object.userData.c4d;
+            object.updateMatrixWorld(true);
+            result.cameras = cameras.map(c => importedCamera(c.name, c.object.matrixWorld, {
+                forward: FORWARD_MINUS_Z, up: UP_Y, target: c.target ? new THREE.Vector3().setFromMatrixPosition(c.target.matrixWorld) : null,
+                fov: c.fov, fovAxis: 'h', scale,
+            }));
+            if (unsupported.length) result.c4dSkipped = { count: unsupported.reduce((a, x) => a + x.count, 0), what: unsupported.map(x => x.name) };
+            delete object.userData.c4d;
+        }
+        // animated file: keep the source object as a "puppet" (animation.js drives it and copies every frame)
         const clips = (object.animations || []).filter(c => c.duration > 0 && c.tracks.length);
         // also without clips when there are morph targets (blend shapes: sliders in the properties panel) or a skeleton
         // (posed by hand in the skeleton view)
@@ -247,6 +260,16 @@ async function load(source, ext, renderer, onStatus = () => {}, preloaded = null
             for (const m of usd.missing) missing.add(m);
             object = usd.object;
             scale = usd.scale;
+        } else if (ext === 'c4d') {
+            // C4D: own reader in a worker (c4d/c4d-parse.js), built into three.js objects (c4d/c4d-build.js) – skinning
+            // and animation then go the way of FBX/glTF (puppet)
+            if (!isC4dFile(buffer)) throw new Error(t('import.c4d.notC4d'));
+            const scene = await readC4dLean(buffer.slice(0), { onStatus });
+            onStatus(t('import.mesh.buildingGeometries'));
+            const built = (await import('./c4d/c4d-build.js')).buildC4d(scene, manager, source.name.replace(/\.[^.]+$/, ''));
+            object = built.object;
+            object.userData.c4d = { cameras: built.cameras, unsupported: built.unsupported };
+            scale = built.scale;   // project unit → mm
         } else if (ext === 'fbx') {
             const loader = new FBXLoader(manager);
             object = loader.parse(buffer, '');
@@ -635,6 +658,22 @@ function importedCamera(name, world, { forward, up, target = null, distance = 0,
     };
 }
 const FORWARD_MINUS_Z = new THREE.Vector3(0, 0, -1), UP_Y = new THREE.Vector3(0, 1, 0);
+
+// --- C4D (c4d/c4d-parse.js in a worker) ---
+
+function readC4dLean(buffer, { onStatus }) {
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(new URL('./c4d/c4d-worker.js', import.meta.url), { type: 'module', name: 'c4d' });
+        worker.onmessage = ({ data }) => {
+            if (data.type === 'progress') { onStatus(t('import.mesh.reading', { name: 'C4D' }), data.done); return; }
+            worker.terminate();
+            if (data.type === 'error') reject(new Error(data.message));
+            else resolve(data.scene);
+        };
+        worker.onerror = e => { worker.terminate(); reject(new Error(e.message || 'C4D worker failed')); };
+        worker.postMessage({ buffer }, [buffer]);
+    });
+}
 
 // --- MAX (max/max-parse.js in a worker) ---
 
