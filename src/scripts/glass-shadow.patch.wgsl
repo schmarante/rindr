@@ -47,6 +47,7 @@
 
 														let gsObject = transforms[ gsHit.objectIndex ];
 														let gsMaterial = ( *materials )[ gsObject.materialIndex ];
+														/*@if:volume*/
 														if ( ( gsMaterial.fogVolume == 3 || gsMaterial.fogVolume == 6 ) && gsI < 15u ) {
 
 															// volumes (clouds, splats; volume-pt.js): at the first box on this ray the transmittance of every
@@ -86,6 +87,7 @@
 															continue;
 
 														}
+														/*@endif*/
 														if ( gsMode == 0u || gsMaterial.transmission <= 0.0 || gsMaterial.matte != 0 || gsI == 15u ) {
 
 															gsBlocked = true;

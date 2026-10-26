@@ -5327,6 +5327,7 @@ const PT_PHASES = {
     'denoise-loading': { label: 'pathtracing.phases.denoiseLoading', color: 'bg-fuchsia-400' },
     denoising:         { label: 'pathtracing.phases.denoising',      color: 'bg-fuchsia-400' },
     done:              { label: 'pathtracing.phases.done',           color: 'bg-emerald-400' },
+    saving:            { label: 'pathtracing.phases.saving',         color: 'bg-teal-400' },   // render job: file being written
 };
 const STATIC_PHASES = new Set(['done', 'waiting', 'unsupported', 'error', 'suspended']);
 const FULL_BAR_PHASES = new Set(['preview', 'bvh', 'compiling', 'denoise-loading', 'suspended']);   // motion: its resolution
@@ -5353,8 +5354,11 @@ function formatRenderTime(ms) {
     return t('pathtracing.minutes', { minutes: Math.floor(s / 60), seconds: String(Math.floor(s % 60)).padStart(2, '0') });
 }
 function updatePathTracingStatus() {
-    const s = prepare.shown ? { phase: 'bvh', progress: 0, samples: 0, maxSamples: 0 } : pathTracing.getStatus();
-    trackRenderTime(s);
+    // a render job writing its file (helper passes, layers): not done before the download (user)
+    const saving = distRender?.saving;
+    const s = prepare.shown ? { phase: 'bvh', progress: 0, samples: 0, maxSamples: 0 }
+        : saving ? { phase: 'saving', progress: saving.p, samples: 0, maxSamples: 0 } : pathTracing.getStatus();
+    if (!saving) trackRenderTime(s);
     const phase = PT_PHASES[s.phase];
     const pct = Math.floor(s.progress * 100);
     const samples = t('pathtracing.samples', { samples: Math.floor(s.samples), maxSamples: s.maxSamples });
@@ -5387,11 +5391,27 @@ function updatePathTracingStatus() {
         case 'denoise-loading':
             detail = t('pathtracing.detail.denoiseLoading');
             break;
-        case 'denoising':
+        case 'saving':
             value = t('pathtracing.percent', { value: pct });
-            // light passes: one after the other
-            detail = s.passes ? t('lightMix.status.denoising', { n: Math.min(s.passes.done + 1, s.passes.total), total: s.passes.total }) : samples;
+            detail = saving.text;
             break;
+        case 'compiling': {
+            // the shaders compiling now (the kernel with its size) – each one compile without progress of its own, the
+            // time so far (user: see what happens in the background)
+            const jobs = s.jobs?.length ? s.jobs : [{ key: 'kernel', bytes: 0 }];
+            const list = jobs.map(j => (j.bytes ? t(`pathtracing.compile.${j.key}Size`, { size: Math.round(j.bytes / 1024) }) : t(`pathtracing.compile.${j.key}`)));
+            detail = t('pathtracing.detail.compiling', { list: list.join(' · '), time: t('pathtracing.seconds', { value: Math.floor(s.compileMs / 1000) }) });
+            break;
+        }
+        case 'denoising': {
+            value = t('pathtracing.percent', { value: pct });
+            // light passes: one after the other, by name
+            const p = s.passes, n = p && Math.min(p.done + 1, p.total);
+            detail = !p ? samples : p.index != null && pathTracing.lightMix
+                ? t('lightMix.status.denoisingPass', { name: pathTracing.lightMix.label(p.index), n, total: p.total })
+                : t('lightMix.status.denoising', { n, total: p.total });
+            break;
+        }
         case 'done':
             value = t('pathtracing.percent', { value: 100 });
             detail = s.denoise ? t('pathtracing.detail.doneDenoised', { samples }) : samples;
@@ -5935,6 +5955,9 @@ function sceneFiles() {
 // render loop of a client or of the master showing buckets does not draw it meanwhile
 async function ensurePathTracer() {
     if (viewMode !== 'hq') setViewMode('hq');
+    // splats: their volume baked first (prepareSplatVolume hands the path tracer the scene with it afterwards) – a job
+    // started right away rendered the passes without the splats
+    if (splatVolume.baking && !splatVolume.ready) await splatVolume.baking;
     for (let i = 0; !pathTracing.ready; i++) {
         if (pathTracing.error) throw new Error(pathTracing.error);
         if (i > 1200) throw new Error('path tracer did not start');
@@ -6088,6 +6111,8 @@ async function renderLightPasses(scale, samples, distributed, format) {
     const mode = viewMode;
     const keep = mode === 'hq' && ['rendering', 'denoise-loading', 'denoising', 'done'].includes(pathTracing.getStatus().phase)
         ? await pathTracing.snapshotImage().catch(() => null) : null;
+    // only the kernel variant with the passes is compiled (the view's first sample too – not the normal one before it)
+    pathTracing.holdPassKernel(true);
     await ensurePathTracer();
     await pathTracerSettled();
     const ratio = renderer.getPixelRatio();
@@ -6137,7 +6162,8 @@ async function renderLightPasses(scale, samples, distributed, format) {
             if (st.phase === 'error') throw new Error(st.error || t('viewer.ki.ptError'));
             await new Promise(resolve => setTimeout(resolve, 50));
         }
-        if (!matte) return await saveLayered(lightMix, format);
+        if (!matte) return await saveLayered(lightMix, format, (text, p) => { render.saving = { text, p }; });
+        render.saving = { text: t('render.saving.compose'), p: 0 };
         const png = await composeMix(lightMix);
         release();
         release = null;
@@ -6149,6 +6175,7 @@ async function renderLightPasses(scale, samples, distributed, format) {
         if (outcome !== 'done') outcome = 'cancelled';
         throw new DOMException('Render cancelled', 'AbortError');
     } finally {
+        pathTracing.holdPassKernel(false);
         distRender = null;
         passMix = null;
         controls.enabled = true;
@@ -6187,10 +6214,15 @@ function lightSlotNames() {
     return names;
 }
 // the passes and the helper passes as one file with layers (EXR, PSD), straight into the downloads
-async function saveLayered(mix, format) {
+// onStatus(text, 0…1): the step for the status (helper passes, the layer being written)
+async function saveLayered(mix, format, onStatus) {
     const name = sceneFileName?.replace(/\.scene\.json$|\.json$/i, '') || model?.name.replace(/\.[^.]+$/, '') || 'rindr';
+    const FORMAT = format.toUpperCase();
+    onStatus?.(t('render.saving.helpers'), 0);
     const [{ encodeLightMix }, helpers] = await Promise.all([import('./light-mix-export.js'), pathTracing.helperPasses(mix.width, mix.height)]);
-    const blob = await encodeLightMix(mix, helpers, renderer, format);
+    const blob = await encodeLightMix(mix, helpers, renderer, format, (p, step) => onStatus?.(
+        step?.name ? t('render.saving.layer', { format: FORMAT, name: step.name, n: step.n, total: step.total })
+            : step?.merged ? t('render.saving.merged', { format: FORMAT }) : t('render.saving.writing', { format: FORMAT }), p));
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = `${name}.${format}`;

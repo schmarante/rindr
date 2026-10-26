@@ -25,6 +25,7 @@ import { t } from './i18n.js';
 import { debugLog } from './log.js';
 import { setBucketRegion } from './distributed/bucket.js';
 import { preparePassBuffer, setPassesEnabled, readPasses } from './light-passes.js';
+import { kernelFeatures } from './kernel-features.js';
 
 // environments up to this size get their importance-sampling table from the library directly (updateEnvironment)
 const SMALL_ENV_PIXELS = 512 * 512;
@@ -77,6 +78,7 @@ export class PathTracingView {
         this._filterState = { spp: 0, view: new Matrix4(), proj: new Matrix4(), w: 0, h: 0, k: 1 };
         this._motionReady = false;      // motion denoiser compiled once for this scene (_prepareMotionDenoiser)
         this._ownCompile = null;        // promise list: compute pipelines created meanwhile compile asynchronously
+        this._compileJobs = new Set();  // shaders compiling now { key, bytes } – named in the status (_trackCompile)
         this._restarted = false;        // reset with the view kept (HDRI, material, light …): show the first sample at once
         this._tsPending = false;        // a timestamp read is running (_readTimestamps)
         this._frameMs = 0;              // GPU time of the last refining frame (≈ one megakernel tile)
@@ -94,6 +96,8 @@ export class PathTracingView {
         GLASS_SPLIT.enabled.value = PATHTRACING.glassSplit ? 1 : 0;
         this._blend = { last: 0, frame: 0, view: new Matrix4(), proj: new Matrix4(), rest: 0, prepared: false };
         this.lightMix = null;           // light mix of a render with light passes (setLightMix)
+        this._passHold = null;          // kernel variant with the passes kept: true during a job (holdPassKernel), then
+                                        // the restart count of its picture – the next restart goes back to the normal one
         this.onLightMixEnd = null;      // called when it ends (viewer: closes its window)
     }
 
@@ -115,7 +119,10 @@ export class PathTracingView {
             const list = [];
             create(pipeline, bindings, list);
             const t0 = performance.now();
+            if (!this._compiling) this._compileStart = t0;   // status: time compiling so far
             this._compiling++;
+            // the path tracer's kernel – its variant with the light passes or the normal one
+            this._trackCompile(this.pathTracer?._pathTracer?.kernel?.lightPasses ? 'kernelPasses' : 'kernel', Promise.all(list), pipeline.computeProgram.code.length);
             Promise.all(list).then(() => {
                 this._compiling--;
                 this._compiled = true;
@@ -128,6 +135,13 @@ export class PathTracingView {
             if (backend.get(pipeline).pipeline) compute(group, node, bindings, pipeline, dispatchSize);
             else this._skips = (this._skips || 0) + 1;   // timing of these frames is meaningless (_readTimestamps)
         };
+    }
+
+    // a shader compiling (key: pathtracing.compile.<key> in the status, bytes: its WGSL) until the promise settles
+    _trackCompile(key, promise, bytes = 0) {
+        const job = { key, bytes };
+        this._compileJobs.add(job);
+        Promise.resolve(promise).catch(() => {}).finally(() => this._compileJobs.delete(job));
     }
 
     /** Compute the environment's importance-sampling table in advance (worker), e.g. when idle after the start
@@ -344,6 +358,7 @@ export class PathTracingView {
                 this.pathTracer.useMegakernel(true);
                 this.pathTracer.updateMaterials();   // useMegakernel() does not carry over textures
             }
+            this._woolRay = kernelFeatures.current.has('wool');   // the ray test was built with or without the fibre test
             this.pathTracer.maxBounces = this.bounces;
             this.pathTracer.frameBudget = this.gpuCautious ? PATHTRACING.minFrameBudget : PATHTRACING.startFrameBudget;
             this._firstSample = performance.now();
@@ -487,12 +502,34 @@ export class PathTracingView {
     updateMaterials() {
         if (!this.ready) return;
         this.pathTracer.updateMaterials();
+        this._updateFeatures();
         // more textures than the pipeline has slots for (atlasCapacityPatch, astro.config.mjs): the placements of the
         // new ones would never reach the shader – rebuild the scene instead of drawing the wrong part of the atlas
         if (this._atlasInfoLength() > (this._atlasCapacity ?? Infinity)) {
             debugLog('[Pathtracer] texture atlas grew beyond its slots – rebuilding the scene');
             this.setScene(this.pathTracer.scene, this.pathTracer.camera);
         }
+    }
+
+    // the kernel for the features the materials need now (kernel-features.js – collected while updateMaterials packed
+    // them): another combination is another shader (compiled asynchronously, the browser caches each). Wool also changes
+    // the ray test (fibre hits): it is built anew, and the kernels using it (megakernel, denoiser guides) with it.
+    _updateFeatures() {
+        const pt = this.pathTracer, kernel = pt._pathTracer.kernel;
+        if (!kernel?.updateFeatures) return;
+        const wool = kernelFeatures.current.has('wool');
+        if (wool !== this._woolRay) {
+            this._woolRay = wool;
+            pt._bvhData.useTransparencyRaycastFn();
+            kernel.needsUpdate = true;   // every variant is built on the new ray test
+            this._denoisePrep = null;
+            this._motionPrep = null;
+            this._motionReady = false;
+        } else if (!kernel.updateFeatures()) {
+            return;
+        }
+        debugLog(`[Pathtracer] kernel features: ${kernelFeatures.key()}`);
+        pt.reset();
     }
 
     _atlasInfoLength() {
@@ -598,7 +635,7 @@ export class PathTracingView {
     async injectImage(data, w, h, samples) {
         if (!this.ready) throw new Error('path tracer not ready');
         const pt = this.pathTracer, backend = pt._pathTracer, gpu = this.renderer.backend;
-        backend.kernel.setLightPasses?.(false);   // the rounds below play through the normal kernel
+        // the rounds below play through the kernel there is (compiled; after a pass job its variant – holdPassKernel)
         if (!pt.material.initialized) { pt.material.init(this.renderer); pt.material.initialized = true; }
         pt.maxSamples = samples;
         backend.setSize(w, h);
@@ -657,7 +694,7 @@ export class PathTracingView {
             if (abort.signal.aborted) return;
             await mix.denoise(unet, guides.albedo, guides.normal, {
                 signal: abort.signal,
-                onProgress: (p, n, total) => { this._mixDenoise = { n, total }; },
+                onProgress: (p, n, total, index) => { this._mixDenoise = { n, total, index }; },
             });
         })().catch(err => {
             if (err?.name !== 'AbortError') console.warn('[Pathtracer] light pass denoise failed:', err);
@@ -671,8 +708,18 @@ export class PathTracingView {
     }
 
     /**
+     * A job with light passes: from now on the kernel variant with the passes for everything (the view's first sample,
+     * the buckets, injectImage) – the normal kernel is not compiled for it. on = false (job over): the variant stays
+     * for the picture shown until the next restart.
+     */
+    holdPassKernel(on) {
+        if (on) this._passHold = true;
+        else if (this._passHold === true) this._passHold = this._restarts;
+    }
+
+    /**
      * The kernel variant with the light passes compiled (asynchronously, once per scene data) before a job – its buckets
-     * would otherwise wait for it one by one. Returns when it is ready; the normal kernel comes back with the next render().
+     * would otherwise wait for it one by one. Returns when it is ready (holdPassKernel: usually already there).
      */
     async prepareLightPasses(cancelled = () => false) {
         const pt = this.pathTracer, backend = pt._pathTracer;
@@ -708,6 +755,7 @@ export class PathTracingView {
         } finally {
             this._ownCompile = null;
         }
+        this._trackCompile('helperPasses', Promise.all(own));
         await Promise.all(own);
         helpers.trace(this.renderer, pt._bvhData, w, h, pt.camera);
         await this.renderer.backend.device.queue.onSubmittedWorkDone();
@@ -723,8 +771,11 @@ export class PathTracingView {
     render(rasterize) {
         if (!this.enabled || !this.ready || this.interacting || this.error || this.suspended || this.regionBusy) return false;
         const pt = this.pathTracer;
-        // after buckets with light passes: the normal kernel again (cached – compiled once)
-        if (pt._pathTracer.kernel?.setLightPasses?.(false)) pt.reset();
+        // a job with light passes renders everything with their kernel variant (passes off it traces the same as the
+        // normal one) – compiled once instead of both; its picture stays, the next restart goes back to the normal kernel
+        const hold = this._passHold === true || (this._passHold !== null && this._passHold === this._restarts);
+        if (!hold) this._passHold = null;
+        if (pt._pathTracer.kernel?.setLightPasses?.(hold)) pt.reset();
         // kernel compiling asynchronously: raster image meanwhile; afterwards start over (the frames without
         // dispatch were counted as samples)
         if (this._compiling) { rasterize(); return true; }
@@ -840,6 +891,7 @@ export class PathTracingView {
             const { kernel, dispatch } = this.denoiseGuides.update(key, Math.max(size.x, 1), Math.max(size.y, 1), pt.camera);
             this.renderer.compute(kernel, dispatch);
             job = Promise.all(own);
+            this._trackCompile('denoiseGuides', job);
         } catch (err) {
             console.warn('[Pathtracer] denoiser precompile failed:', err);
         } finally {
@@ -981,6 +1033,7 @@ export class PathTracingView {
             this._ownCompile = null;
             this._filterState.w = 0;   // trace the guides again at the first use
             job = Promise.all([Promise.all(own), this.motionDenoiser.compile(source, this.guides)]);
+            this._trackCompile('motionDenoiser', job);
         } catch (err) {
             console.warn('[Pathtracer] motion denoiser precompile failed:', err);
         } finally {
@@ -1173,7 +1226,11 @@ export class PathTracingView {
 
         const pt = this.pathTracer;
         if (this.interacting) return { ...status, phase: 'preview' };
-        if (this._compiling) return { ...status, phase: 'compiling' };
+        if (this._compiling) {
+            // which shaders (status text: one entry each, the kernel with its size) and for how long
+            return { ...status, phase: 'compiling', compileMs: performance.now() - this._compileStart,
+                jobs: [...this._compileJobs].map(j => ({ key: j.key, bytes: j.bytes })) };
+        }
         // orbiting: the preview accumulates while the camera rests with the mouse still pressed – the noise gets finer
         // (user); progress = its samples of the maximum, resolution = the preview's relative to standing still
         if (this._motion) {
@@ -1202,7 +1259,7 @@ export class PathTracingView {
             const progress = m ? Math.min((m.n + this.denoiseProgress) / Math.max(m.total, 1), 1) : this.denoiseProgress;
             return this.denoiseLoading
                 ? { ...status, phase: 'denoise-loading', progress: 0 }
-                : { ...status, phase: 'denoising', progress, passes: m ? { done: m.n, total: m.total } : undefined };
+                : { ...status, phase: 'denoising', progress, passes: m ? { done: m.n, total: m.total, index: m.index } : undefined };
         }
         status.phase = 'rendering';
         return status;

@@ -6,6 +6,17 @@
 import * as THREE from 'three/webgpu';
 import { texture as textureNode, uniform, uv, vec3, vec4 } from 'three/tsl';
 import { PASS, SOURCE_PASSES, KIND_PASSES } from './light-passes.js';
+import { t } from './i18n.js';
+
+/** label of a pass (light slots: the scene's light names) */
+export function passLabel(index, lights = []) {
+    if (index < 4) return lights[index] || t('lightMix.light', { n: index + 1 });
+    const key = { [PASS.ENVIRONMENT]: 'environment', [PASS.BACKGROUND]: 'background', [PASS.EMISSION]: 'emission',
+        [PASS.DIFFUSE]: 'diffuse', [PASS.REFLECTION]: 'reflection', [PASS.REFRACTION]: 'refraction',
+        [PASS.DIRECT_EMISSION]: 'directEmission', [PASS.DIRECT_BACKGROUND]: 'directBackground', [PASS.SHADOW]: 'shadow',
+        [PASS.TRANSPARENCY]: 'alpha' }[index];
+    return t(`lightMix.pass.${key}`);
+}
 
 const USAGE = () => GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.STORAGE_BINDING;
 
@@ -106,6 +117,7 @@ export class LightMix {
         this.height = height;
         this.lights = lights;
         this.layout = layout ?? Array.from({ length: PASS.COUNT }, (_, i) => i);
+        this.matte = !!layout && !layout.some(i => i > 0 && i !== PASS.TRANSPARENCY);   // transparent PNG (MATTE_PASSES)
         this._grey.value = 0;
         if (!this._black) {
             const t = this.renderer.backend.device.createTexture({ size: [1, 1], format: 'rgba16float', usage: USAGE(), label: 'Light pass (empty)' });
@@ -175,6 +187,11 @@ export class LightMix {
         return this.layout.every(i => !this.has(i) || this.denoised[i]);
     }
 
+    /** label of a pass for the status (transparent PNG: its first slot is the picture without background) */
+    label(index) {
+        return this.matte && index === 0 ? t('lightMix.pass.picture') : passLabel(index, this.lights);
+    }
+
     /** the pass has light (> a trace of float noise) */
     has(index) {
         return this.peak[index] > 1e-6;
@@ -184,7 +201,7 @@ export class LightMix {
 
     /**
      * Each pass with light through OIDN with the same guides (albedo, normal: three textures) – sources first (they make
-     * up the mixed picture), then kinds and shadow. unet: oidn-web network (aux); onProgress(0…1, done, total);
+     * up the mixed picture), then kinds and shadow. unet: oidn-web network (aux); onProgress(0…1, done, total, pass);
      * signal: AbortSignal. Replaced passes show at once.
      */
     async denoise(unet, albedo, normal, { onProgress, signal } = {}) {
@@ -196,7 +213,7 @@ export class LightMix {
         for (let n = 0; n < order.length; n++) {
             if (signal?.aborted) throw new DOMException('Denoise aborted', 'AbortError');
             const index = order[n];
-            onProgress?.(n / order.length, n, order.length);
+            onProgress?.(n / order.length, n, order.length, index);
             const output = await new Promise((resolve, reject) => {
                 const abort = unet.tileExecute({
                     color: { data: this.textures[index], width, height },
