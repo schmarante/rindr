@@ -4001,7 +4001,8 @@ function updateSplatSpin(now) {
     camera.position.sub(controls.target).applyAxisAngle(THREE.Object3D.DEFAULT_UP, 2 * Math.PI * dt / splatSpin.period).add(controls.target);
 }
 // throttled rendering during import (see render loop)
-const loadRender = { active: false, dirty: false, force: false, last: 0 };
+const loadRender = { active: false, dirty: false, force: false, last: 0, cost: 0 };   // cost: main-thread ms of the last frame
+const IMPORT_RENDER_WAIT = 4;   // during an import: pause after a frame ≥ 4 × its main-thread cost (renderFrame)
 controls.addEventListener('change', () => { if (!flight) loadRender.force = true; else loadRender.dirty = true; });
 window.addEventListener('resize', () => { loadRender.force = true; });
 window.addEventListener('pointermove', () => { if (loadRender.active) loadRender.dirty = true; });
@@ -5577,7 +5578,10 @@ function renderFrame() {
     if (fading.size) loadRender.dirty = true;
     if (loadRender.active && !loadRender.force) {
         const now = performance.now();
-        const interval = flight || fading.size ? 33 : 100;   // fade-in ~30 fps
+        // fade-in ~30 fps – but a frame of a large model in the making costs the main thread a lot, which then feeds
+        // the import's workers too late (large assembly: drawing took half of the main thread, the workers idled):
+        // between frames at least IMPORT_RENDER_WAIT × the last frame's cost (drawing ≤ ~20 % of the main thread)
+        const interval = Math.max(flight || fading.size ? 33 : 100, loadRender.cost * IMPORT_RENDER_WAIT);
         if (!loadRender.dirty || now - loadRender.last < interval) { updatePathTracingStatus(); return; }
         loadRender.last = now;
     }
@@ -5800,6 +5804,7 @@ function renderFrame() {
     prepare.shown = false;   // the blocking frame is done
     checkOptimizeWait();
     updatePathTracingStatus();
+    loadRender.cost = loadRender.active ? performance.now() - frameStart : 0;
     debugStats?.frame(performance.now() - frameStart);
     // the preloader goes once frames really draw (pipelines compiled – until then a frame draws nothing and the page
     // showed flat dark between preloader and picture); at the latest 4 s after the first frame

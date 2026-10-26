@@ -34,6 +34,7 @@ const LEGACY_QUALITY = { 'Grob': 'coarse', 'Mittel': 'medium', 'Fein': 'fine', '
 export const normalizeQuality = q => (q in TESS_PRESETS ? q : LEGACY_QUALITY[q] || null);
 
 const FACES_PER_JOB = 16;
+const QUEUED = 3;   // requests waiting per worker while tessellating (tessellateStep)
 
 // Loads the file. With cross-origin isolation directly into a SharedArrayBuffer (read by all
 // workers without a copy) – otherwise the file would be in memory twice.
@@ -80,20 +81,33 @@ export async function readStepFile(blob, signal = null) {
 
 const createWorker = () => new Worker(new URL('./step/worker.js', import.meta.url), { type: 'module', name: 'step' });
 
-// Single request to a worker, answer as a promise (a worker only ever handles one request at a time).
+// Request to a worker, answer as a promise. A worker handles its messages one after the other and answers in that
+// order – several requests may wait in its queue (tessellateStep keeps the next job queued: the worker goes on at once
+// instead of waiting until the main thread, busy drawing the streamed parts, has taken the answer and sent a new job).
 // Pending requests are tracked: abortStepImport() rejects them with AbortError (terminated workers
 // never answer – the promises would hang forever otherwise).
 const inflight = new Set();
 function requestWorker(w, msg, transfer = []) {
     return new Promise((resolve, reject) => {
-        const entry = { w, reject };
+        const entry = { w, resolve, reject };
         inflight.add(entry);
-        const done = fn => v => { inflight.delete(entry); fn(v); };
-        w.onmessage = e => {
-            if (e.data.type === 'error') done(reject)(new Error(e.data.message));
-            else done(resolve)(e.data);
-        };
-        w.onerror = e => done(reject)(new Error(e.message || t('import.step.workerError')));
+        const queue = (w.rindrQueue ??= []);
+        queue.push(entry);
+        if (!w.onmessage) {
+            w.onmessage = e => {
+                const head = queue.shift();
+                if (!head) return;
+                inflight.delete(head);
+                if (e.data.type === 'error') head.reject(new Error(e.data.message));
+                else head.resolve(e.data);
+            };
+            w.onerror = e => {
+                for (const head of queue.splice(0)) {
+                    inflight.delete(head);
+                    head.reject(new Error(e.message || t('import.step.workerError')));
+                }
+            };
+        }
         w.postMessage(msg, transfer);
     });
 }
@@ -349,8 +363,8 @@ export async function tessellateStep(content, quality, onStatus = () => {}, { bv
     const instancer = bvh && instancing ? new Instancer(geometries) : null;
     const runBVH = async (w, si) => {
         const tb = performance.now();
-        // sequentially: a worker only ever handles one request (request() sets onmessage)
-        for (const g of solidGroups[si]) await buildBVH(w, geometries[g.geometry], instancer ? g.geometry + 1 : 0);
+        // all geometries of the solid at once (the worker answers in order – no wait between them)
+        await Promise.all(solidGroups[si].map(g => buildBVH(w, geometries[g.geometry], instancer ? g.geometry + 1 : 0)));
         bvhMs += performance.now() - tb;
         if (instancer) {
             // the same tessellation level is required (a coarse duplicate must not stand in for a fine part)
@@ -367,39 +381,65 @@ export async function tessellateStep(content, quality, onStatus = () => {}, { bv
     let next = 0, doneFaces = 0, errors = 0, triangles = 0, stopped = false;
     const t1 = performance.now();
     const fmt = n => n.toLocaleString(getLocale());
-    const status = () => onStatus(t('import.step.tessellating', { faces: fmt(doneFaces), totalFaces: fmt(totalFaces), solids: fmt(solidsDone), totalSolids: fmt(solidCount) }),
-        totalFaces ? doneFaces / totalFaces : 1);
+    // at most every 100 ms (formatting the numbers after every job cost the main thread ~2 % of a large import)
+    let statusAt = 0;
+    const status = () => {
+        const now = performance.now();
+        if (now - statusAt < 100) return;
+        statusAt = now;
+        onStatus(t('import.step.tessellating', { faces: fmt(doneFaces), totalFaces: fmt(totalFaces), solids: fmt(solidsDone), totalSolids: fmt(solidCount) }),
+            totalFaces ? doneFaces / totalFaces : 1);
+    };
+    const handleFaces = (job, r) => {
+        if (stopped) return;
+        let vo = 0, io = 0, eo = 0;
+        for (let k = 0; k < job.faces.length; k++) {
+            const nv = r.counts[k * 3], ni = r.counts[k * 3 + 1], ne = r.counts[k * 3 + 2];
+            if (nv > 0 && ni > 0) {
+                faceResults[job.si][job.start + k] = {
+                    positions: r.positions.subarray(vo * 3, (vo + nv) * 3),
+                    normals: r.normals.subarray(vo * 3, (vo + nv) * 3),
+                    indices: r.indices.subarray(io, io + ni),
+                    edges: r.edges.subarray(eo, eo + ne),
+                };
+            }
+            vo += nv; io += ni; eo += ne;
+        }
+        triangles += r.indices.length / 3;
+        if (limits && triangles > limits.limit) stopped = true;
+        if (stopped) return;
+        if (r.errors.length) {
+            errors += r.errors.length;
+            console.warn('[STEP] Faces could not be tessellated:', r.errors);
+        }
+        doneFaces += job.faces.length;
+        facesLeft[job.si] -= job.faces.length;
+        if (facesLeft[job.si] === 0) finishSolid(job.si);
+        status();
+    };
+    // QUEUED requests per worker: it answers in order and starts the next one at once – with one at a time it waited
+    // for the main thread (drawing the streamed parts) after every job, ~half of the time (large assembly, 8 workers)
     const runWorker = async w => {
-        for (;;) {
-            if (stopped) break;
-            if (bvhQueue.length) { await runBVH(w, bvhQueue.shift()); status(); continue; }
-            if (next >= jobs.length) break;
+        const pending = [];
+        const send = () => {
+            if (stopped) return null;
+            if (bvhQueue.length) return runBVH(w, bvhQueue.shift()).then(status);
+            if (next >= jobs.length) return null;
             const job = jobs[next++];
-            const r = await pool.request(w, { type: 'faces', job: 0, faces: job.faces, defl: job.defl, ang: job.ang });
-            let vo = 0, io = 0, eo = 0;
-            for (let k = 0; k < job.faces.length; k++) {
-                const nv = r.counts[k * 3], ni = r.counts[k * 3 + 1], ne = r.counts[k * 3 + 2];
-                if (nv > 0 && ni > 0) {
-                    faceResults[job.si][job.start + k] = {
-                        positions: r.positions.subarray(vo * 3, (vo + nv) * 3),
-                        normals: r.normals.subarray(vo * 3, (vo + nv) * 3),
-                        indices: r.indices.subarray(io, io + ni),
-                        edges: r.edges.subarray(eo, eo + ne),
-                    };
+            return pool.request(w, { type: 'faces', job: 0, faces: job.faces, defl: job.defl, ang: job.ang }).then(r => handleFaces(job, r));
+        };
+        try {
+            for (;;) {
+                while (pending.length < QUEUED) {
+                    const p = send();
+                    if (!p) break;
+                    pending.push(p);
                 }
-                vo += nv; io += ni; eo += ne;
+                if (!pending.length) break;
+                await pending.shift();
             }
-            triangles += r.indices.length / 3;
-            if (limits && triangles > limits.limit) stopped = true;
-            if (stopped) break;
-            if (r.errors.length) {
-                errors += r.errors.length;
-                console.warn('[STEP] Faces could not be tessellated:', r.errors);
-            }
-            doneFaces += job.faces.length;
-            facesLeft[job.si] -= job.faces.length;
-            if (facesLeft[job.si] === 0) finishSolid(job.si);
-            status();
+        } finally {
+            await Promise.allSettled(pending);   // no request stays open (the pool is reused)
         }
     };
     await Promise.all(pool.workers.map(runWorker));
