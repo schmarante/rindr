@@ -1033,7 +1033,17 @@ export default defineConfig({
     preview: { headers: isolationHeaders },
     worker: { format: 'es' },
     // bundle analysis: SOURCEMAP=1 npm run build → bytes per source module from the maps (CLAUDE.md "Bundle")
-    build: { sourcemap: !!process.env.SOURCEMAP },
+    build: {
+      sourcemap: !!process.env.SOURCEMAP,
+      rolldownOptions: {
+        onLog(level, log, handler) {
+          // three-mesh-bvh/webgpu re-exports closestPointToTriangle from two modules (WGSL and TSL version);
+          // the bundler drops the ambiguous name – nothing here imports it through the index
+          if (log.code === 'NAMESPACE_CONFLICT' && log.message.includes('three-mesh-bvh')) return;
+          handler(level, log);
+        },
+      },
+    },
     define: { __APP_VERSION__: JSON.stringify(appVersion()) },
     optimizeDeps: {
       // These packages create workers via `new URL(..., import.meta.url)` –

@@ -6,8 +6,10 @@
 //     materials, maps, parameter blocks …); the chunk id is an index into "ClassDirectory3" (class id, super class
 //     id, name), objects refer to each other by their position in that list (chunk 0x2034: slot order,
 //     0x2035: count + (slot, index) pairs)
-//   - "Config": scene settings (0x2090: system unit), "FileAssetMetaData3": external files (GUID → path)
-// Read here: nodes (name, parent, transform from Position/Rotation/Scale controllers, object offset, wire colour),
+//   - system unit: the Scene object (class 2222:0) > 0x8520 (u32 unit, f32 scale); "FileAssetMetaData3": external
+//     files (GUID → path)
+// Read here: nodes (name, parent, transform from Position/Rotation/Scale or Look At controllers, object offset, wire colour),
+// cameras (free, target, physical: field of view and its axis, target distance; render output aspect),
 // Editable Mesh / Editable Poly (vertices, faces, smoothing groups, material IDs, UV channel 1), materials
 // (Physical Material parameters, Multi/Sub-Object, the 24×24 preview swatch of any other material as colour) and
 // bitmap file names. Modifiers are not evaluated: objects whose stack changes the geometry (Shell, Extrude,
@@ -177,6 +179,8 @@ const CLASS = {
     smooth: cid(0x810, 0xf8613), uvwMap: cid(0x810, 0xf72b1), text: cid(0x40, 0x1993),
     extrude: cid(0x810, 0xa0), shell: cid(0x810, 0x3b9b1a16, 0x6d84e8d0), bend: cid(0x810, 0x10), ffd4: cid(0x810, 0x21325596, 0x2cd10bd8),
     turboSmooth: cid(0x810, 0xd727b3e, 0x491d29a7), noise: cid(0x810, 0xf997b124), editPoly: cid(0x810, 0x79aa6e1d, 0x71a075b7), optimize: cid(0x810, 0xc4d31),
+    freeCamera: cid(0x20, 0x1001), targetCamera: cid(0x20, 0x1002), physicalCamera: cid(0x20, 0x46697218, 0x28e8008d),
+    renderSettings: cid(0x1010, 0xee448b23), scene: cid(0x100, 0x2222),
 };
 // primitives rebuilt from their parameters (max-modifiers.js)
 const PRIMITIVES = new Map([
@@ -194,7 +198,7 @@ const BY_NAME = { Subdivide: { type: 'none' }, Tessellate: { type: 'none', appro
 const NOT_RENDERED = new Set([cid(0x10, 0x1020), cid(0x10, 0x628140f6, 0x3bdb0e0c)]);
 const SUPER = { geometry: 0x10, shape: 0x40, helper: 0x50, light: 0x30, camera: 0x20, modifier: 0x810 };
 
-// system unit (Config 0x2090) → mm
+// system unit (Scene object 0x8520) → mm
 const UNIT_MM = [25.4, 304.8, 1609344, 1, 10, 1000, 1e6];   // inches, feet, miles, mm, cm, m, km
 
 /**
@@ -221,13 +225,9 @@ export async function describeMax(buffer, gunzip) {
         return h ? { id: cid(cc.u32(h, 3), cc.u32(h, 1), cc.u32(h, 2)), superId: cc.u32(h, 3), name: cc.text(n) } : { id: '', superId: 0, name: '' };
     });
     // unit
+    // (until Oct. 2026 read from Config 0x2090 – a guess from two files; it stays 0 whatever the unit – checked with
+    // copies saved in other units: a file in centimetres came in 2.54× too large, one in inches 2.54× too small)
     let unitMm = UNIT_MM[0];
-    const config = await read('Config');
-    if (config) {
-        const k = new Chunks(config);
-        const u = (k.list() || []).find(c => c.id === 0x2090 && !c.container && k.size(c) >= 4);
-        if (u) unitMm = UNIT_MM[k.u32(u)] ?? unitMm;
-    }
     // external files: GUID → path (Bitmap textures)
     const assets = new Map();
     const assetBytes = await read('FileAssetMetaData3');
@@ -275,6 +275,12 @@ export async function describeMax(buffer, gunzip) {
         return out;
     };
     const ref = (i, slot) => refs(i).get(slot) ?? -1;
+    // system unit: type (0 inches, 1 feet, 2 miles, 3 mm, 4 cm, 5 m, 6 km) × scale (1 unit = scale × type)
+    objects.forEach((c, i) => {
+        if (idOf(i) !== CLASS.scene) return;
+        const u = sc.child(c, 0x8520);
+        if (u && sc.size(u) >= 8 && UNIT_MM[sc.u32(u)]) unitMm = UNIT_MM[sc.u32(u)] * (sc.f32(u, 1) > 0 ? sc.f32(u, 1) : 1);
+    });
     // left out: modifiers / object classes by name (counted per scene node), unknown transform controllers
     const unsupported = { modifiers: new Map(), objects: new Map(), controllers: new Map(), approx: new Map(), nodes: 0 };
     const count = (map, key) => map.set(key, (map.get(key) || 0) + 1);
@@ -336,7 +342,10 @@ export async function describeMax(buffer, gunzip) {
     const transformOf = i => {
         const id = idOf(i);
         if (id === CLASS.prs) { const s = scale(ref(i, 2)); return { position: position(ref(i, 0)), rotation: rotation(ref(i, 1)), scale: s.scale, scaleAxis: s.axis }; }
-        if (i >= 0 && id !== CLASS.lookAt && reportControllers) count(unsupported.controllers, classOf(i)?.name || '?');
+        // Look At (target cameras/lights): 0 target node, 1 position, 2 roll (radians), 3 scale – the orientation follows
+        // from the target (the importer builds it; lookAt.target: object index here, node index in the result)
+        if (id === CLASS.lookAt) return { position: position(ref(i, 1)), rotation: { quat: [0, 0, 0, 1] }, scale: [1, 1, 1], scaleAxis: [0, 0, 0, 1], lookAt: { target: ref(i, 0), roll: floatValue(ref(i, 2)) } };
+        if (i >= 0 && reportControllers) count(unsupported.controllers, classOf(i)?.name || '?');
         return { position: [0, 0, 0], rotation: { quat: [0, 0, 0, 1] }, scale: [1, 1, 1], scaleAxis: [0, 0, 0, 1] };
     };
 
@@ -595,6 +604,33 @@ export async function describeMax(buffer, gunzip) {
         return g;
     };
 
+    // --- cameras ---
+    // free / target camera: parameter block 1 in slot 0 (0 field of view in radians, 1 target distance, 8 its axis:
+    // 0 horizontal, 1 vertical, 2 diagonal); physical camera: parameter block 2 (0x14 field of view in degrees –
+    // horizontal, with lens breathing at the focus as MAX shows it; 0x04 film width mm, 0x05 focal length mm, 0x08 target
+    // distance). Others (render plugin cameras): 45° horizontal.
+    const cameraOf = obj => {
+        const id = idOf(obj);
+        if (id === CLASS.freeCamera || id === CLASS.targetCamera) {
+            const P = paramBlock1(ref(obj, 0));
+            return { fov: P.get(0) ?? Math.PI / 4, fovAxis: ['h', 'v', 'd'][P.get(8) ?? 0] || 'h', distance: P.get(1) ?? 0 };
+        }
+        if (id === CLASS.physicalCamera) {
+            const P = paramBlock(ref(obj, 0));
+            const film = pFloat(P, 0x04, 36), focal = pFloat(P, 0x05, 40), fov = pFloat(P, 0x14, 0);
+            return { fov: fov > 0 ? fov * Math.PI / 180 : 2 * Math.atan(film / 2 / focal), fovAxis: 'h', distance: pFloat(P, 0x08, 0) };
+        }
+        return { fov: Math.PI / 4, fovAxis: 'h', distance: 0 };
+    };
+    // render output size (render settings: 0x0110 > 0x2000 > 0x0190 width, 0x0200 height, 0x0210 pixel aspect) → aspect
+    let renderAspect = null;
+    objects.forEach((c, i) => {
+        if (renderAspect || idOf(i) !== CLASS.renderSettings) return;
+        const out = sc.child(sc.child(c, 0x0110), 0x2000);
+        const w = sc.child(out, 0x0190), h = sc.child(out, 0x0200), pa = sc.child(out, 0x0210);
+        if (w && h && sc.size(w) >= 4 && sc.size(h) >= 4 && sc.u32(h) > 0) renderAspect = sc.u32(w) / sc.u32(h) * (pa && sc.size(pa) >= 4 && sc.f32(pa) > 0 ? sc.f32(pa) : 1);
+    });
+
     // --- nodes ---
     const nodes = [], nodeOf = new Map();
     objects.forEach((c, i) => {
@@ -615,6 +651,7 @@ export async function describeMax(buffer, gunzip) {
                 scaleAxis: offScale && sc.size(offScale) >= 28 ? (([x, y, z, w]) => [-x, -y, -z, w])(sc.floats(offScale, 4, 12)) : [0, 0, 0, 1],
             },
             geometry: g,
+            camera: kind === SUPER.camera ? cameraOf(obj) : null,
             material: material(ref(i, 3)),
             wireColor: wire && sc.size(wire) >= 3 ? [sc.b[wire.start], sc.b[wire.start + 1], sc.b[wire.start + 2]].map(v => v / 255) : null,
         };
@@ -628,10 +665,15 @@ export async function describeMax(buffer, gunzip) {
     nodes.forEach((_, k) => visit(k));
     const remap = new Map(order.map((k, j) => [k, j]));
     const sorted = order.map(k => ({ ...nodes[k], parent: nodes[k].parent >= 0 ? remap.get(nodes[k].parent) : -1 }));
+    // look-at targets: object index → node index
+    for (const n of sorted) {
+        const look = n.transform.lookAt;
+        if (look) n.transform = { ...n.transform, lookAt: { ...look, target: nodeOf.has(look.target) ? remap.get(nodeOf.get(look.target)) : -1 } };
+    }
 
     const plain = map => [...map].map(([name, n]) => ({ name, count: n }));
     return {
-        unitMm, nodes: sorted, materials, textures, geometries,
+        unitMm, renderAspect, nodes: sorted, materials, textures, geometries,
         unsupported: { nodes: unsupported.nodes, modifiers: plain(unsupported.modifiers), objects: plain(unsupported.objects), controllers: plain(unsupported.controllers), approx: plain(unsupported.approx) },
         chunks: sc, objects,   // for buildMaxGeometry (not transferable – stays in the worker)
     };

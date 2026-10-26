@@ -18,7 +18,10 @@ self.onmessage = async ({ data }) => {
         const tree = readTree(buffer);
         const scene = describeScene(tree);
         if (fallback && (scene.hasAnimation || scene.hasDeformers)) {
-            self.postMessage({ type: 'fallback', buffer }, [buffer]);
+            // FBXLoader reads the models; the cameras come from here (their parents' and targets' transforms along)
+            const { models, cameras, upAxis, unitScaleFactor } = scene;
+            const cameraScene = cameras.length ? { models: models.map(({ parent, transform }) => ({ parent, transform })), cameras, upAxis, unitScaleFactor } : null;
+            self.postMessage({ type: 'fallback', buffer, cameraScene }, [buffer]);
             return;
         }
         // embedded textures: own buffers (the file buffer is not sent back)

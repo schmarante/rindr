@@ -66,7 +66,7 @@ export async function importMeshFile(source, { renderer, materialManager, onStat
     // binary FBX: own lean reader in a worker (typed arrays only – three.js' FBXLoader needs several times the
     // file size in JS heap, a large CAD export crashed the tab); animated/skinned files below
     // IMPORT.fbxLoaderMaxBytes still go to FBXLoader (it reads animation, skinning, blend shapes)
-    let buffer = null;
+    let buffer = null, fbxCameraScene = null;
     // MAX: own reader in a worker (max/max-parse.js)
     if (ext === 'max') {
         const data = await source.main.arrayBuffer();
@@ -88,7 +88,7 @@ export async function importMeshFile(source, { renderer, materialManager, onStat
             // ?fbxLean (testing): the lean reader also for animated files
             const fallback = buffer.byteLength <= IMPORT.fbxLoaderMaxBytes && !new URLSearchParams(globalThis.location?.search || '').has('fbxLean');
             const lean = await readFbxLean(buffer, { fallback, onStatus });
-            if (lean.buffer) buffer = lean.buffer;   // animated, small enough: three.js' loader
+            if (lean.buffer) { buffer = lean.buffer; fbxCameraScene = lean.cameraScene; }   // animated, small enough: three.js' loader
             else {
                 buffer = null;
                 ({ result, missing } = await convertLeanFbx(lean, source, materialManager));
@@ -102,7 +102,7 @@ export async function importMeshFile(source, { renderer, materialManager, onStat
         const { object, scale } = loaded;
         onStatus(t('import.mesh.buildingGeometries'));
         result = convert(object, scale, materialManager, source.name);
-        // animated file: keep the source object as a "puppet" (animation.js drives it and copies every frame)
+        if (fbxCameraScene) result.cameras = fbxCameras(fbxCameraScene, scale);   // read by the lean reader        // animated file: keep the source object as a "puppet" (animation.js drives it and copies every frame)
         const clips = (object.animations || []).filter(c => c.duration > 0 && c.tracks.length);
         // also without clips when there are morph targets (blend shapes): sliders in the properties panel
         result.animation = clips.length || result.links.some(l => hasMorphs(l.mesh)) ? { root: object, clips, scale, links: result.links } : null;
@@ -432,7 +432,13 @@ function convert(object, scale, materialManager, fileName = '') {
     const posedSource = new Map();   // posed geometry -> our vertex → source vertex
     visit(object, -1);
     for (const g of geometries) delete g.sourceVertex;   // not to the BVH worker
-    return { nodes, geometries, meshes, links };
+    // glTF cameras: look along −Z, vertical field of view, no target (FBX cameras: fbxCameras, from the own reader for
+    // both ways of loading)
+    const cameras = [];
+    if (/\.(gltf|glb)$/i.test(fileName)) object.traverseVisible(o => {
+        if (o.isPerspectiveCamera) cameras.push(importedCamera(o.name, o.matrixWorld, { forward: FORWARD_MINUS_Z, up: UP_Y, fov: o.fov, fovAxis: 'v', scale }));
+    });
+    return { nodes, geometries, meshes, links, cameras };
 }
 
 // Source material → id of an import material in the MaterialManager (once per source material)
@@ -468,12 +474,31 @@ function readFbxLean(buffer, { fallback, onStatus }) {
             if (data.type === 'progress') { onStatus(t('import.mesh.buildingGeometries'), data.done / data.total); return; }
             worker.terminate();
             if (data.type === 'error') reject(new Error(data.message));
-            else if (data.type === 'fallback') resolve({ buffer: data.buffer });
+            else if (data.type === 'fallback') resolve({ buffer: data.buffer, cameraScene: data.cameraScene });
             else resolve({ scene: data.scene, geometries: data.geometries });
         };
         worker.onerror = e => { worker.terminate(); reject(new Error(e.message || 'FBX worker failed')); };
         worker.postMessage({ buffer, fallback }, [buffer]);
     });
+}
+
+const fbxUp = scene => (scene.upAxis === 2 ? new THREE.Matrix4().makeRotationX(-Math.PI / 2) : new THREE.Matrix4());   // Z up → Y up (as FBXLoader)
+
+/**
+ * Cameras of an FBX scene description (fbx-parse.js) in the model's space – also for files FBXLoader loads (same up
+ * axis and unit). An FBX camera looks along its local +X with Y up. world: the models' world matrices if computed already
+ */
+function fbxCameras(scene, scale, world = null) {
+    if (!scene?.cameras?.length) return [];
+    const up = fbxUp(scene);
+    if (!world) {
+        world = [];
+        scene.models.forEach((m, i) => { world[i] = new THREE.Matrix4().multiplyMatrices(m.parent >= 0 ? world[m.parent] : up, fbxLocalMatrix(m.transform)); });
+    }
+    return scene.cameras.map(c => importedCamera(c.name, new THREE.Matrix4().multiplyMatrices(c.parent >= 0 ? world[c.parent] : up, fbxLocalMatrix(c.transform)), {
+        forward: new THREE.Vector3(1, 0, 0), up: UP_Y, target: c.target >= 0 ? new THREE.Vector3().setFromMatrixPosition(world[c.target]) : null,
+        distance: c.distance, fov: c.fov, fovAxis: c.fovAxis, aspect: c.aspect, scale,
+    }));
 }
 
 // FBX RotationOrder (extrinsic eXYZ …) → three.js (intrinsic) Euler order
@@ -549,8 +574,7 @@ async function convertLeanFbx({ scene, geometries: parts }, source, materialMana
         const top = scene.models.filter(m => m.parent < 0).length;
         const nodes = [];
         const base = top > 1 ? (nodes.push({ name: '', parent: -1 }), 1) : 0;
-        const up = new THREE.Matrix4();
-        if (scene.upAxis === 2) up.makeRotationX(-Math.PI / 2);   // Z up → Y up (as FBXLoader)
+        const up = fbxUp(scene);
         const world = [], visible = [];
         const geometries = [], meshes = [];
         const cache = new Map();   // lean geometry → our geometry indices (models sharing a geometry = instances)
@@ -584,12 +608,32 @@ async function convertLeanFbx({ scene, geometries: parts }, source, materialMana
                 instance++;
             }
         });
-        return { result: { nodes, geometries, meshes, animation: null }, missing };
+        return { result: { nodes, geometries, meshes, cameras: fbxCameras(scene, scale, world), animation: null }, missing };
     } finally {
         release();
         setTimeout(() => embedded.forEach(u => URL.revokeObjectURL(u)), 1000);
     }
 }
+
+// --- cameras of a file (MAX, FBX, glTF) → saved views in the viewer (docs/mesh-import.md "Kameras") ---
+
+/**
+ * One camera in the model's space (mm, Y up – like the meshes): { name, position, direction, target (null: unknown – the
+ * viewer picks a point in front of the model), up, fov (degrees along fovAxis 'h' | 'v' | 'd'), aspect (width / height
+ * of the file's frame, null = unknown) }. world: the camera's matrix (file units, Y up); forward / up: its view direction and up
+ * vector in its own space; target: the point looked at (world, file units), else `distance` along the view direction.
+ */
+function importedCamera(name, world, { forward, up, target = null, distance = 0, fov, fovAxis = 'h', aspect = null, scale }) {
+    const position = new THREE.Vector3().setFromMatrixPosition(world);
+    const dir = forward.clone().transformDirection(world);
+    let look = target?.clone() ?? (distance > 0 ? position.clone().addScaledVector(dir, distance) : null);
+    if (look && look.distanceToSquared(position) < 1e-12) look = null;
+    return {
+        name, position: position.multiplyScalar(scale).toArray(), direction: dir.toArray(), target: look ? look.multiplyScalar(scale).toArray() : null,
+        up: up.clone().transformDirection(world).toArray(), fov, fovAxis, aspect: aspect > 0 ? aspect : null,
+    };
+}
+const FORWARD_MINUS_Z = new THREE.Vector3(0, 0, -1), UP_Y = new THREE.Vector3(0, 1, 0);
 
 // --- MAX (max/max-parse.js in a worker) ---
 
@@ -740,7 +784,28 @@ async function convertMax({ scene, geometries: parts }, source, materialManager)
             }
             instance++;
         });
-        const result = { nodes, geometries, meshes, animation: null };
+        // cameras: MAX looks along local −Z with Y up; a Look At controller aims at its target node, level to the world's
+        // up (Z in MAX, Y here) and rolled about the view axis
+        const cameras = [];
+        scene.nodes.forEach((m, k) => {
+            if (!m.camera) return;
+            const look = m.transform.lookAt;
+            let matrix = world[k], target = null;
+            if (look && look.target >= 0) {
+                const position = new THREE.Vector3().setFromMatrixPosition(world[k]);
+                target = new THREE.Vector3().setFromMatrixPosition(world[look.target]);
+                const z = position.clone().sub(target).normalize();
+                const x = new THREE.Vector3(0, 1, 0).cross(z);
+                if (x.lengthSq() < 1e-12) x.set(1, 0, 0); else x.normalize();   // looking straight up/down
+                const y = z.clone().cross(x);
+                const c = Math.cos(look.roll || 0), s = Math.sin(look.roll || 0);
+                const xr = x.clone().multiplyScalar(c).addScaledVector(y, s), yr = y.multiplyScalar(c).addScaledVector(x, -s);
+                matrix = new THREE.Matrix4().makeBasis(xr, yr, z).setPosition(position);
+            }
+            cameras.push(importedCamera(m.name, matrix, { forward: FORWARD_MINUS_Z, up: UP_Y, target, distance: m.camera.distance,
+                fov: THREE.MathUtils.radToDeg(m.camera.fov), fovAxis: m.camera.fovAxis, aspect: scene.renderAspect, scale }));
+        });
+        const result = { nodes, geometries, meshes, cameras, animation: null };
         const u = scene.unsupported;
         if (u.nodes || u.objects.length) result.maxSkipped = { count: u.nodes, what: [...u.modifiers, ...u.objects].map(x => x.name) };
         if (u.approx?.length) result.maxApprox = { count: u.approx.reduce((a, x) => a + x.count, 0), what: u.approx.map(x => x.name) };

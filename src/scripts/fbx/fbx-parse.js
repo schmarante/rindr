@@ -139,23 +139,28 @@ export function describeScene(tree) {
         childrenOf.get(t).push({ id: f, kind, rel: rel ?? null });
     }
 
-    const models = [], modelIndex = new Map();
+    const models = [], modelIndex = new Map(), cameraModels = [];
+    const transformOf = p => {
+        const vec = (k, d) => (Array.isArray(p[k]?.value) ? p[k].value.slice(0, 3) : d);
+        return {
+            translation: vec('Lcl Translation', null), rotation: vec('Lcl Rotation', null), scale: vec('Lcl Scaling', null),
+            preRotation: vec('PreRotation', null), postRotation: vec('PostRotation', null),
+            rotationOffset: vec('RotationOffset', null), rotationPivot: vec('RotationPivot', null),
+            scalingOffset: vec('ScalingOffset', null), scalingPivot: vec('ScalingPivot', null),
+            rotationOrder: p.RotationOrder ? Number(p.RotationOrder.value) : 0,
+        };
+    };
     for (const [oid, o] of byId) {
         if (o.name !== 'Model') continue;
         const type = o.props[2];
+        if (type === 'Camera') cameraModels.push([oid, o]);
         if (type === 'Camera' || type === 'Light' || type === 'CameraSwitcher') continue;
         modelIndex.set(oid, models.length);
         const p = properties70(o);
         const vec = (k, d) => (Array.isArray(p[k]?.value) ? p[k].value.slice(0, 3) : d);
         models.push({
             id: oid, name: cleanName(o.props[1]) || '', parent: -1, geometries: [], materials: [],
-            transform: {
-                translation: vec('Lcl Translation', null), rotation: vec('Lcl Rotation', null), scale: vec('Lcl Scaling', null),
-                preRotation: vec('PreRotation', null), postRotation: vec('PostRotation', null),
-                rotationOffset: vec('RotationOffset', null), rotationPivot: vec('RotationPivot', null),
-                scalingOffset: vec('ScalingOffset', null), scalingPivot: vec('ScalingPivot', null),
-                rotationOrder: p.RotationOrder ? Number(p.RotationOrder.value) : 0,
-            },
+            transform: transformOf(p),
             geometric: {
                 translation: vec('GeometricTranslation', null), rotation: vec('GeometricRotation', null), scale: vec('GeometricScaling', null),
             },
@@ -229,13 +234,46 @@ export function describeScene(tree) {
     order.forEach((i, k) => { remap[i] = k; });
     const sorted = order.map(i => ({ ...models[i], parent: models[i].parent >= 0 ? remap[models[i].parent] : -1 }));
 
+    // cameras (the viewer makes saved views of them): transform and parent like a model, look-at target (a model), field
+    // of view of the attribute – ApertureMode 0 horizontal and vertical (FieldOfViewY), 1 horizontal, 2 vertical,
+    // 3 from FocalLength and the film (inches): FilmHeight with GateFit 1 (vertical), else FilmWidth (one exporter writes
+    // GateFit 2 even for a camera fitted vertically – the file says horizontal then); AspectWidth/Height = render size;
+    // free cameras: distance to InterestPosition (the point looked at – some exporters put it 1 unit ahead)
+    const cameras = cameraModels.map(([oid, o]) => {
+        const attr = (childrenOf.get(oid) || []).map(c => byId.get(c.id)).find(a => a?.name === 'NodeAttribute');
+        const a = attr ? properties70(attr) : {};
+        const num = (k, d) => (a[k] !== undefined && !Array.isArray(a[k].value) && Number.isFinite(Number(a[k].value)) ? Number(a[k].value) : d);
+        const vec = k => (Array.isArray(a[k]?.value) ? a[k].value.slice(0, 3).map(Number) : null);
+        const mode = num('ApertureMode', 1);
+        let fov = num('FieldOfView', 45), fovAxis = mode === 2 ? 'v' : 'h';
+        if (mode === 0) { fov = num('FieldOfViewY', fov); fovAxis = 'v'; }
+        if (mode === 3) {
+            const vertical = num('GateFit', 2) === 1;
+            const focal = num('FocalLength', 0), film = num(vertical ? 'FilmHeight' : 'FilmWidth', 0) * 25.4;
+            if (focal > 0 && film > 0) { fov = 2 * Math.atan(film / 2 / focal) * 180 / Math.PI; fovAxis = vertical ? 'v' : 'h'; }
+        }
+        const parent = (parentsOf.get(oid) || []).find(pid => modelIndex.has(pid));
+        const lookAt = (childrenOf.get(oid) || []).find(c => c.rel === 'LookAtProperty' && modelIndex.has(c.id));
+        const position = vec('Position'), interest = vec('InterestPosition');
+        return {
+            name: cleanName(o.props[1]) || '', parent: parent ? remap[modelIndex.get(parent)] : -1, transform: transformOf(properties70(o)),
+            target: lookAt ? remap[modelIndex.get(lookAt.id)] : -1, fov, fovAxis,
+            aspect: num('AspectHeight', 0) > 0 ? num('AspectWidth', 0) / num('AspectHeight', 0) : null,
+            distance: position && interest ? Math.hypot(interest[0] - position[0], interest[1] - position[1], interest[2] - position[2]) : 0,
+        };
+    });
+
     let hasAnimation = false, hasDeformers = false;
+    const stillModels = new Set();   // cameras, lights
+    for (const [oid, o] of byId) if (o.name === 'Model' && ['Camera', 'Light', 'CameraSwitcher'].includes(o.props[2])) stillModels.add(oid);
+    for (const [oid, o] of byId) if (o.name === 'NodeAttribute' && ['Camera', 'Light', 'CameraSwitcher'].includes(o.props[2])) stillModels.add(oid);
     for (const o of byId.values()) {
         if (o.name === 'Deformer' && (o.props[2] === 'Skin' || o.props[2] === 'BlendShape')) hasDeformers = true;
-        if (o.name === 'AnimationCurve') hasAnimation = true;
+        // animation of cameras and lights alone (exporters key them) leaves the models still – no reason for FBXLoader
+        if (o.name === 'AnimationCurveNode' && (parentsOf.get(id(o.props[0])) || []).some(p => !stillModels.has(p))) hasAnimation = true;
     }
     return {
-        models: sorted, materials, textures, geometryIds,
+        models: sorted, cameras, materials, textures, geometryIds,
         geometryNodes: geometryIds.map(g => byId.get(g)),
         upAxis: settings.UpAxis ? Number(settings.UpAxis.value) : 1,
         upAxisSign: settings.UpAxisSign ? Number(settings.UpAxisSign.value) : 1,

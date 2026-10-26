@@ -1719,6 +1719,10 @@
         "splatsTooMany": "Zu viele Splats für diese Grafikkarte ({count})",
         "noSplats": "Die Datei enthält keine Splats",
         "viewSaved": "„{name}“ gespeichert",
+        "camerasImported": {
+            "one": "{count} Kamera aus der Datei übernommen (unter „Kamera“)",
+            "other": "{count} Kameras aus der Datei übernommen (unter „Kamera“)"
+        },
         "viewOverwritten": "„{name}“ überschrieben",
         "modelIncomplete": "{name} unvollständig – fehlt: {files}. Dateien ins Fenster ziehen oder im Asset-Fenster verknüpfen",
         "relinked": {
