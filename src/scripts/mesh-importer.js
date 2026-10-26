@@ -18,7 +18,7 @@ import { IMPORT_SLOTS } from './material-graph.js';
 import { debugLog } from './log.js';
 
 // IFC (BIM) goes the same way but has its own importer (ifc/ifc-importer.js, web-ifc – loaded on demand)
-export const MESH_EXTENSIONS = ['glb', 'gltf', 'fbx', 'max', 'c4d', 'obj', '3mf', 'usd', 'usda', 'usdc', 'usdz', 'stl', 'ifc', 'ifczip'];
+export const MESH_EXTENSIONS = ['glb', 'gltf', 'fbx', 'max', 'c4d', 'blend', 'obj', '3mf', 'usd', 'usda', 'usdc', 'usdz', 'stl', 'ifc', 'ifczip'];
 const USD_FORMATS = ['usd', 'usda', 'usdc', 'usdz'];   // usd-importer.js (loaded on demand)
 
 // The loaders are loaded only with the first glTF/FBX (~170 KB that a STEP-only session never needs).
@@ -104,6 +104,14 @@ export async function importMeshFile(source, { renderer, materialManager, onStat
         onStatus(t('import.mesh.buildingGeometries'));
         result = convert(object, scale, materialManager, source.name);
         if (fbxCameraScene) result.cameras = fbxCameras(fbxCameraScene, scale);   // read by the lean reader
+        if (object.userData.blend) {
+            // Blender cameras look along −Z, up +Y; modifiers are not applied (the saved meshes are their input)
+            const { cameras, modifiers } = object.userData.blend;
+            object.updateMatrixWorld(true);
+            result.cameras = cameras.map(c => importedCamera(c.name, c.object.matrixWorld, { forward: FORWARD_MINUS_Z, up: UP_Y, fov: c.fov, fovAxis: c.fovAxis, aspect: c.aspect, scale, near: c.near }));
+            if (modifiers.length) result.blendModifiers = modifiers;
+            delete object.userData.blend;
+        }
         if (object.userData.c4d) {
             // C4D cameras look along their −Z after the mirroring, up = +Y; objects the reader does not build: notice
             const { cameras, unsupported } = object.userData.c4d;
@@ -270,6 +278,18 @@ async function load(source, ext, renderer, onStatus = () => {}, preloaded = null
             object = built.object;
             object.userData.c4d = { cameras: built.cameras, unsupported: built.unsupported };
             scale = built.scale;   // project unit → mm
+        } else if (ext === 'blend') {
+            // Blender: own reader in a worker (blend/blend-parse.js, the file's self description), packed images from the
+            // file; built into three.js objects (blend/blend-build.js)
+            const { isBlendFile } = await import('./blend/blend-file.js');
+            if (!isBlendFile(new Uint8Array(buffer, 0, 16))) throw new Error(t('import.blend.notBlend'));
+            const scene = await readBlendLean(buffer.slice(0), { onStatus });
+            onStatus(t('import.mesh.buildingGeometries'));
+            const built = (await import('./blend/blend-build.js')).buildBlend(scene, manager, source.name.replace(/\.[^.]+$/, ''));
+            object = built.object;
+            object.userData.blend = { cameras: built.cameras, modifiers: built.modifiers };
+            setTimeout(() => built.urls.forEach(u => URL.revokeObjectURL(u)), 30000);
+            scale = built.scale;
         } else if (ext === 'obj') {
             // OBJ: own reader in a worker (obj/obj-parse.js – files of hundreds of MB), materials from the MTL files it
             // names (dropped / next to the model, through the resolver); no unit – metres like glTF (Blender writes them)
@@ -695,7 +715,7 @@ async function convertLeanFbx({ scene, geometries: parts }, source, materialMana
  * of the file's frame, null = unknown) }. world: the camera's matrix (file units, Y up); forward / up: its view direction and up
  * vector in its own space; target: the point looked at (world, file units), else `distance` along the view direction.
  */
-function importedCamera(name, world, { forward, up, target = null, distance = 0, fov, fovAxis = 'h', aspect = null, scale }) {
+function importedCamera(name, world, { forward, up, target = null, distance = 0, fov, fovAxis = 'h', aspect = null, scale, near = 0 }) {
     const position = new THREE.Vector3().setFromMatrixPosition(world);
     const dir = forward.clone().transformDirection(world);
     let look = target?.clone() ?? (distance > 0 ? position.clone().addScaledVector(dir, distance) : null);
@@ -703,9 +723,26 @@ function importedCamera(name, world, { forward, up, target = null, distance = 0,
     return {
         name, position: position.multiplyScalar(scale).toArray(), direction: dir.toArray(), target: look ? look.multiplyScalar(scale).toArray() : null,
         up: up.clone().transformDirection(world).toArray(), fov, fovAxis, aspect: aspect > 0 ? aspect : null,
+        ...(near > 0 ? { near: near * new THREE.Vector3().setFromMatrixScale(world).x * scale } : {}),   // clip start, mm
     };
 }
 const FORWARD_MINUS_Z = new THREE.Vector3(0, 0, -1), UP_Y = new THREE.Vector3(0, 1, 0);
+
+// --- Blender (blend/blend-parse.js in a worker) ---
+
+function readBlendLean(buffer, { onStatus }) {
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(new URL('./blend/blend-worker.js', import.meta.url), { type: 'module', name: 'blend' });
+        worker.onmessage = ({ data }) => {
+            if (data.type === 'progress') { onStatus(t('import.mesh.reading', { name: 'Blender' }), data.done); return; }
+            worker.terminate();
+            if (data.type === 'error') reject(new Error(data.message));
+            else resolve(data.scene);
+        };
+        worker.onerror = e => { worker.terminate(); reject(new Error(e.message || 'Blender worker failed')); };
+        worker.postMessage({ buffer }, [buffer]);
+    });
+}
 
 // --- OBJ (obj/obj-parse.js in a worker) ---
 

@@ -36,6 +36,13 @@
             "textures": "Loading textures… {done}/{total}",
             "layersMissing": "The parts of the scene are in further USD files that are missing: {files} – drop the whole folder into the window"
         },
+        "blend": {
+            "notBlend": "Not a valid Blender file",
+            "modifiers": {
+                "title": "Modifiers not applied",
+                "message": "“{name}”: Blender modifiers ({what}) are not evaluated – the objects appear in their base shape. Apply them in Blender or export as glTF/FBX."
+            }
+        },
         "c4d": {
             "notC4d": "Not a valid C4D file",
             "skipped": {
@@ -1742,7 +1749,7 @@
         "notSceneOrMaterials": "{name}: neither a scene nor materials",
         "unsupportedFormat": "Format not supported ({extensions})",
         "dropHint": "Drag a file into the window",
-        "dropFormats": "STEP (.stp/.step) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · BIM (.ifc/.ifczip) · BCF issues (.bcfzip) · Gaussian splats (.ply/.sog)",
+        "dropFormats": "STEP (.stp/.step) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · BIM (.ifc/.ifczip) · BCF issues (.bcfzip) · Gaussian splats (.ply/.sog)",
         "qualityReduced": "Large model (≈ {triangles} triangles at “{from}”) – quality automatically reduced to “{to}”",
         "modelTooLarge": "Model too large: ≈ {triangles} triangles at “{quality}” (limit {limit}) – loading cancelled",
         "qualityTooFine": "“{quality}” is too fine for this model (≈ {triangles} triangles, limit {limit}) – quality stays “{previous}”",
@@ -2077,13 +2084,13 @@
     },
     "page": {
         "title": "RINDR – 3D viewer with path tracing in the browser",
-        "description": "Open STEP, glTF, FBX, MAX, C4D, OBJ, 3MF, STL, BIM (IFC, BCF) and Gaussian splats right in the browser – local, no upload, with material library and real-time path tracing.",
+        "description": "Open STEP, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, STL, BIM (IFC, BCF) and Gaussian splats right in the browser – local, no upload, with material library and real-time path tracing.",
         "ogImageAlt": "RINDR logo (cow head) with the caption “3D viewer in the browser”",
         "loading": "Starting RINDR …",
         "sceneGraph": "Scene Graph",
         "drop": {
             "title": "Drop file here",
-            "hint": "STEP (.stp/.step), glTF/GLB, FBX, MAX (.max), C4D (.c4d), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, BIM (.ifc/.ifczip), BCF issues (.bcfzip), Gaussian splats (.ply/.sog) – just drop textures and .bin files along with it",
+            "hint": "STEP (.stp/.step), glTF/GLB, FBX, MAX (.max), C4D (.c4d), Blender (.blend), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, BIM (.ifc/.ifczip), BCF issues (.bcfzip), Gaussian splats (.ply/.sog) – just drop textures and .bin files along with it",
             "addHint": "Several models: drop them together or one after another – they appear side by side",
             "replaceTitle": "Replace models",
             "replaceHint": "The loaded models are removed and replaced by the new file",
@@ -2098,7 +2105,7 @@
     },
     "about": {
         "title": "About",
-        "description": "Your Local 3D-File Viewer – STEP, glTF, FBX, MAX, C4D, OBJ, 3MF, USD, STL, BIM (IFC, BCF) and Gaussian splats right in the browser, with real-time path tracing.",
+        "description": "Your Local 3D-File Viewer – STEP, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, BIM (IFC, BCF) and Gaussian splats right in the browser, with real-time path tracing.",
         "author": "Author",
         "email": "Email",
         "version": "Version",

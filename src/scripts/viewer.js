@@ -440,6 +440,9 @@ renderer.onError = info => {
 };
 // During movement (mouse pressed, zoom) rasterizer, afterwards path tracing again
 controls.addEventListener('start', () => { releaseExportScale(); pathTracing.beginInteraction(); });
+// near plane of a file camera's clip start (flyToView) – given up when the user moves the camera
+let clipNear = null;
+controls.addEventListener('start', () => { if (clipNear) { clipNear = null; camera.near = Math.min(camera.near, camera.position.distanceTo(controls.target) * 0.001); camera.updateProjectionMatrix(); } });
 controls.addEventListener('end', () => pathTracing.endInteraction());
 controls.addEventListener('change', () => pathTracing.updateCamera());
 if (!pathTracing.supported) console.warn('WebGPU not available – path tracing disabled.');
@@ -1911,6 +1914,7 @@ function addImportedViews(cameras, root, boxCenter) {
         const view = {
             name: c.name || t('cameraViews.name', { n: cameraViewSeq + 1 }), position: position.toArray(), target: target.toArray(),
             fov: THREE.MathUtils.radToDeg(2 * Math.atan(tv)), roll: rollFromUp(target.clone().sub(position), new THREE.Vector3().fromArray(c.up).transformDirection(m)),
+            ...(c.near > 0 ? { near: c.near * new THREE.Vector3().setFromMatrixScale(m).x } : {}),
         };
         if (cameraViews.some(v => v.name === view.name && new THREE.Vector3().fromArray(v.position).distanceTo(position) < 1e-3)) continue;
         added.push({ id: ++cameraViewSeq, ...view });
@@ -1935,8 +1939,9 @@ function flyToView(view) {
     flight = {
         t0: performance.now(), duration: 600,
         fromPos, fromTarget, toPos, toTarget,
-        fromRoll: camera.userData.roll || 0, toRoll: view.roll || 0,
+        fromRoll: camera.userData.roll || 0, toRoll: view.roll || 0, clip: view.near ?? null,
     };
+    clipNear = null;
     if (Math.abs(lensScale(toFov) / lensScale(fromFov) - 1) > 0.01) {
         // direction in azimuth + elevation like the view cube (azimuth the shorter way) – a slerp along the great circle
         // reached a top view with the azimuth of the start and turned it round quickly in the last frames (user)
@@ -2700,6 +2705,9 @@ function updateFlight() {
     }
     controls.update();   // fires 'change' -> path tracing pauses during the flight
     if (u === 1) {
+        // a camera of the file with a clip start (one behind a wall that clips it away): the near plane there until the
+        // user moves the camera – raster and path tracer (its rays start on the near plane)
+        if (flight.clip > 0) { clipNear = flight.clip; camera.near = clipNear; camera.updateProjectionMatrix(); }
         if (flight.ortho) {
             orthoView = flight.ortho;
             // ~18× further away: near plane along (depth precision – far grows by itself, syncViewDependents)
@@ -4267,6 +4275,10 @@ function importNotices(result, name) {
         id: 'max-skipped', icon: 'info', title: t('import.max.skipped.title', { count: skipped.count }),
         message: t('import.max.skipped.message', { name: displayName(name), what: [...new Set(skipped.what)].join(', ') }),
     });
+    if (result.blendModifiers?.length) showNotice({
+        id: 'blend-modifiers', icon: 'info', title: t('import.blend.modifiers.title'),
+        message: t('import.blend.modifiers.message', { name: displayName(name), what: result.blendModifiers.join(', ') }),
+    });
     const c4d = result.c4dSkipped;
     if (c4d?.count) showNotice({
         id: 'c4d-skipped', icon: 'info', title: t('import.c4d.skipped.title', { count: c4d.count }),
@@ -5794,7 +5806,9 @@ function syncViewDependents() {
     // clipping planes follow the distance to the orbit centre (zooming far out/close in, flights to far views) –
     // they were only set when a model was framed: far at least 20×, near at most 1/100 of the distance
     const orbitDist = camera.position.distanceTo(controls.target);
-    if (camera.far < orbitDist * 20 || camera.near > orbitDist * 0.01) {
+    if (clipNear) {
+        if (camera.near !== clipNear || camera.far < clipNear * 20) { camera.near = clipNear; camera.far = Math.max(camera.far, clipNear * 100, orbitDist * 100); camera.updateProjectionMatrix(); }
+    } else if (camera.far < orbitDist * 20 || camera.near > orbitDist * 0.01) {
         camera.far = Math.max(camera.far, orbitDist * 100);
         camera.near = Math.min(camera.near, orbitDist * 0.001);
         camera.updateProjectionMatrix();
