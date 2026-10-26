@@ -75,6 +75,8 @@ function modelState(rm, sceneGraph) {
         ...(Object.keys(mappings).length ? { mappings } : {}),
         ...(rm.morphs && Object.keys(rm.morphs).length ? { morphs: rm.morphs } : {}),
         ...(rm.animation ? { animation: rm.animation } : {}),
+        ...(rm.pose ? { pose: rm.pose } : {}),   // skeleton: bones posed by hand (an empty object = pose at import)
+        ...(rm.poses ? { poses: rm.poses } : {}),   // skeleton: own poses of the pose list [{ name, values }]
         ...(rm.splatLook ? { splatLook: rm.splatLook } : {}),   // Gaussian splats: light (baked/surface/volume), override material
     };
 }
@@ -110,6 +112,9 @@ export function applyModelState(ctx, rm, chunk, idMap, warnings) {
     ctx.setModelMorphs?.(rm, chunk.morphs || {});
     // animation: clip + point in time
     if (chunk.animation) ctx.setModelAnimation?.(rm, chunk.animation);
+    // skeleton: the saved pose (after the clip time – it may hold the clip's pose too); older scenes: as it is
+    if (chunk.pose) ctx.setModelPose?.(rm, chunk.pose);
+    ctx.setModelPoses?.(rm, chunk.poses || []);   // own poses (pose list)
     // Gaussian splats: their look (older scenes: the default of the loaded splats stays)
     if (chunk.splatLook) ctx.setSplatLook?.(chunk.splatLook);
     // placement (additional models)

@@ -1090,6 +1090,10 @@
             "one": "{count} Textur fehlt – siehe Assets",
             "other": "{count} Texturen fehlen – siehe Assets"
         },
+        "skeleton": {
+            "one": "Skelett mit {count} Gelenk – anklicken: anzeigen/ausblenden",
+            "other": "Skelett mit {count} Gelenken – anklicken: anzeigen/ausblenden"
+        },
         "morphTargets": {
             "one": "{count} Morph Target – Regler in den Eigenschaften",
             "other": "{count} Morph Targets – Regler in den Eigenschaften"
@@ -1441,6 +1445,22 @@
             "relink": "Verknüpfen…",
             "remove": "Aus der Szene entfernen",
             "hint": "Die Datei dieses Modells (oder ein Teil davon) fehlt. Datei verknüpfen oder das Modell aus der Szene entfernen."
+        },
+        "skeleton": {
+            "title": "Skelett",
+            "show": "Anzeigen",
+            "showTitle": "Knochen und Gelenke einblenden",
+            "hint": "Gelenk im Bild anklicken – E dreht, W verschiebt",
+            "joint": "Gelenk: {name} (E drehen, W verschieben)",
+            "reset": "Pose zurücksetzen",
+            "poses": "Posen",
+            "savePose": "Pose speichern",
+            "savePoseTitle": "Die aktuelle Haltung als eigene Pose in die Liste aufnehmen",
+            "poseName": "Pose {n}",
+            "applyPose": "Pose „{name}“ anwenden",
+            "applyFilePose": "Pose „{name}“ aus der Datei anwenden",
+            "renamePose": "Pose umbenennen",
+            "deletePose": "Pose löschen"
         },
         "morphs": {
             "title": "Morph Targets",
@@ -1858,6 +1878,7 @@
         "hideUnselected": "Nicht ausgewählte ausblenden",
         "hideSelection": "Auswahl ausblenden",
         "transform": "Transformieren",
+        "joint": "Gelenk {name}",
         "translate": "Verschieben",
         "rotate": "Drehen",
         "scale": "Skalieren",
@@ -1992,6 +2013,12 @@
                 "one": "Ansicht löschen",
                 "other": "{count} Ansichten löschen"
             },
+            "poseApply": "Pose „{name}“",
+            "poseSave": "Pose speichern",
+            "poseRename": "Pose umbenennen",
+            "poseDelete": "Pose löschen",
+            "bone": "Gelenk „{name}“",
+            "poseReset": "Pose zurücksetzen",
             "morph": "Morph Target „{name}“",
             "morphReset": "Morph Targets zurücksetzen",
             "instance": {

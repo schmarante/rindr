@@ -28,6 +28,7 @@ const ICONS = {
     // instance of another part (duplicate.js – Shift + gizmo drag), linked: two overlapping squares
     instance: icon('instance', 'size-3'),
     morphs: icon('morphs', 'size-3.5'),
+    skeleton: icon('skeleton', 'size-3.5'),
     missing: icon('missing', 'size-3 text-amber-300'),
     model: icon('model', 'size-3 text-white/60'),
 };
@@ -42,13 +43,14 @@ export class SceneGraph {
      *   onActivate(entry)      double click on an entry
      *   onVisibilityEdit(before, after)  visibility changed by the user (Map key -> visible; undo)
      */
-    constructor(root, { onVisibility, onSelect, onHover, onActivate, onVisibilityEdit, onWarn } = {}) {
+    constructor(root, { onVisibility, onSelect, onHover, onActivate, onVisibilityEdit, onWarn, onSkeleton } = {}) {
         this.root = root;
         this.list = root.querySelector('[data-tree-list]');
         this.countEl = root.querySelector('[data-tree-count]');
         this.onVisibility = onVisibility || (() => {});
         this.onSelect = onSelect || (() => {});
         this.onWarn = onWarn || (() => {});   // click on ⚠ (missing files)
+        this.onSkeleton = onSkeleton || (() => {});   // click on the skeleton marker (show/hide the bones)
         this.onHover = onHover || (() => {});
         this.onActivate = onActivate || (() => {});
         this.onVisibilityEdit = onVisibilityEdit || (() => {});
@@ -162,7 +164,7 @@ export class SceneGraph {
         const parts = children.reduce((s, c) => s + c.parts, 0);
         if (!prefix) this.modelParts = parts;
         root.visible = !this.hiddenModel.has(prefix + 'model');
-        return { key: prefix + 'model', name: name || t('sceneGraph.model'), kind: 'model', object: root, parts, children, extra: id, warn: arguments[0].warn, morphs: arguments[0].morphs };
+        return { key: prefix + 'model', name: name || t('sceneGraph.model'), kind: 'model', object: root, parts, children, extra: id, warn: arguments[0].warn, morphs: arguments[0].morphs, bones: arguments[0].bones, skeletonShown: arguments[0].skeletonShown };
     }
 
     // Sub-surfaces of the solids of a part group: only solids (instances) with several meshes.
@@ -481,6 +483,15 @@ export class SceneGraph {
             m.title = t('sceneGraph.morphTargets', { count: entry.morphs });
             row.append(m);
         }
+        // model with a skeleton (skinned meshes): click shows/hides the bones (skeleton-view.js), lit while shown
+        if (entry.bones) {
+            const m = document.createElement('span');
+            m.dataset.action = 'skeleton';
+            m.className = 'shrink-0 cursor-pointer ' + (entry.skeletonShown ? 'text-sky-300' : 'text-emerald-300/80 hover:text-emerald-200');
+            m.innerHTML = ICONS.skeleton;
+            m.title = t('sceneGraph.skeleton', { count: entry.bones });
+            row.append(m);
+        }
         // model with missing textures / missing model file: warning sign (details in the asset window)
         if (entry.warn || entry.kind === 'missing') {
             const warn = document.createElement('span');
@@ -532,6 +543,8 @@ export class SceneGraph {
             this.setVisible(this.marked.has(entry) ? [...this.marked] : entry, visible);
         } else if (action === 'warn') {
             this.onWarn(entry);
+        } else if (action === 'skeleton') {
+            this.onSkeleton(entry);
         } else if (action === 'expand' && entry.children.length) {
             if (this.expanded.has(entry.key)) this.expanded.delete(entry.key);
             else this.expanded.add(entry.key);

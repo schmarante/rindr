@@ -104,8 +104,9 @@ export async function importMeshFile(source, { renderer, materialManager, onStat
         result = convert(object, scale, materialManager, source.name);
         if (fbxCameraScene) result.cameras = fbxCameras(fbxCameraScene, scale);   // read by the lean reader        // animated file: keep the source object as a "puppet" (animation.js drives it and copies every frame)
         const clips = (object.animations || []).filter(c => c.duration > 0 && c.tracks.length);
-        // also without clips when there are morph targets (blend shapes): sliders in the properties panel
-        result.animation = clips.length || result.links.some(l => hasMorphs(l.mesh)) ? { root: object, clips, scale, links: result.links } : null;
+        // also without clips when there are morph targets (blend shapes: sliders in the properties panel) or a skeleton
+        // (posed by hand in the skeleton view)
+        result.animation = clips.length || result.links.some(l => hasMorphs(l.mesh) || l.mesh.isSkinnedMesh) ? { root: object, clips, scale, links: result.links } : null;
         delete result.links;
     }
     if (missing.size) console.warn('[Import] Files not found:', [...missing]);

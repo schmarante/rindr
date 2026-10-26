@@ -22,6 +22,7 @@ const saveExpanded = () => { try { localStorage.setItem(EXPANDED_KEY, JSON.strin
 const BUTTON = 'rounded px-2 py-0.5 text-white/80 hover:bg-white/15';
 const BUTTON_ACTIVE = 'rounded bg-sky-500/40 px-2 py-0.5 text-white';
 const ICON_PENCIL = icon('pencil', 'size-3.5');
+const ICON_CLOSE = icon('close', 'size-3.5');
 
 // transform mode / reset as icons (the German labels ran out of the panel); label as title + aria-label
 const TRANSFORM_ICONS = {
@@ -62,6 +63,7 @@ export class PropertiesPanel {
         if (entry.kind === 'model' && this.ctx.exploder && !splats) parts.push(this._explodeRow());
         if (splats && (entry.kind === 'model' || entry.kind === 'node')) parts.push(...this._splatLookSection());
         if ((entry.kind === 'model' || entry.kind === 'node') && this.ctx.morphs?.list(entry).length) parts.push(...this._morphSection(entry));
+        if (this.ctx.skeleton?.available(entry)) parts.push(...this._skeletonSection(entry));
         const instance = entry.kind === 'node' && this.ctx.instances?.info(entry);
         if (instance) parts.push(this._instanceRow(entry, instance));
         if (!splats && this.ctx.uvMapping?.available(entry)) parts.push(...this._mappingSection(entry));
@@ -217,6 +219,79 @@ export class PropertiesPanel {
         reset.onclick = () => { api.reset(entry); this.show(this.entry); };
         rows.push(reset);
         return rows;
+    }
+
+    // Skeleton of a skinned model: show bones + joints, the clicked joint (its gizmo: E rotate, W move), pose reset
+    _skeletonSection(entry) {
+        const api = this.ctx.skeleton;
+        const shown = api.shown(entry);
+        const rows = [el('div', 'mt-2 mb-0.5 text-white/50', t('properties.skeleton.title'))];
+        rows.push(this._checkRow(t('properties.skeleton.show'), t('properties.skeleton.showTitle'), shown, v => { api.show(entry, v); this.show(this.entry); }));
+        if (shown) {
+            const joint = api.joint();
+            rows.push(el('div', 'mb-1 truncate text-white/60', joint ? t('properties.skeleton.joint', { name: joint }) : t('properties.skeleton.hint')));
+        }
+        rows.push(...this._poseList(entry));
+        const buttons = el('div', 'mt-1 flex flex-wrap gap-1');
+        const save = el('button', BUTTON, t('properties.skeleton.savePose'));
+        save.title = t('properties.skeleton.savePoseTitle');
+        save.onclick = () => { this._renaming = api.save(entry); this.show(this.entry); };
+        buttons.append(save);
+        if (api.posed(entry)) {
+            const reset = el('button', BUTTON, t('properties.skeleton.reset'));
+            reset.onclick = () => api.reset(entry);
+            buttons.append(reset);
+        }
+        rows.push(buttons);
+        return rows;
+    }
+
+    // poses of the file and own ones: click = apply (the last applied one is marked while nothing moved); own ones can
+    // be renamed (pencil, or right after saving) and deleted
+    _poseList(entry) {
+        const api = this.ctx.skeleton;
+        const poses = api.poses(entry);
+        if (!poses.length) return [];
+        const list = el('div', 'mt-1 flex flex-col gap-0.5');
+        for (const pose of poses) {
+            const row = el('div', 'flex min-w-0 items-center gap-1');
+            if (pose.user && this._renaming === pose.id) {
+                const name = el('input', INPUT.replace('text-right', 'text-left') + ' min-w-0 flex-1');
+                name.type = 'text';
+                name.value = pose.name;
+                let done = false;
+                const finish = ok => {
+                    if (done) return;
+                    done = true;
+                    this._renaming = null;
+                    if (ok) api.rename(entry, pose.id, name.value);
+                    this.show(this.entry);
+                };
+                name.addEventListener('keydown', e => { if (e.key === 'Enter') finish(true); if (e.key === 'Escape') { e.stopPropagation(); finish(false); } });
+                name.addEventListener('blur', () => finish(true));
+                row.append(name);
+                list.append(row);
+                requestAnimationFrame(() => { name.focus(); name.select(); });
+                continue;
+            }
+            const use = el('button', (pose.active ? BUTTON_ACTIVE : BUTTON) + ' min-w-0 flex-1 truncate text-left', pose.name);
+            use.title = t(pose.user ? 'properties.skeleton.applyPose' : 'properties.skeleton.applyFilePose', { name: pose.name });
+            use.onclick = () => api.apply(entry, pose.id);
+            row.append(use);
+            if (pose.user) {
+                const rename = el('button', BUTTON + ' shrink-0 px-1');
+                rename.innerHTML = ICON_PENCIL;
+                rename.title = rename.ariaLabel = t('properties.skeleton.renamePose');
+                rename.onclick = () => { this._renaming = pose.id; this.show(this.entry); };
+                const remove = el('button', BUTTON + ' shrink-0 px-1');
+                remove.innerHTML = ICON_CLOSE;
+                remove.title = remove.ariaLabel = t('properties.skeleton.deletePose');
+                remove.onclick = () => api.remove(entry, pose.id);
+                row.append(rename, remove);
+            }
+            list.append(row);
+        }
+        return [el('div', 'mt-1.5 text-white/40', t('properties.skeleton.poses')), list];
     }
 
     // Gaussian splats: lighting (as captured / relit as a surface / as a volume) and override material – a material
