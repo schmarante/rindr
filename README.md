@@ -8,7 +8,7 @@
 
 Your local 3D file viewer – with real-time path tracing, right in the browser.
 
-**STEP · glTF/GLB · FBX · MAX · C4D · 3MF · USD · STL · PLY · IFC · BCF · Gaussian splats (PLY/SOG)**
+**STEP · glTF/GLB · FBX · MAX · C4D · OBJ · 3MF · USD · STL · PLY · IFC · BCF · Gaussian splats (PLY/SOG)**
 
 <a href="https://schmarante.github.io/rindr/"><img src="https://img.shields.io/badge/%E2%96%B6%20Live%20demo-schmarante.github.io%2Frindr-2ea44f?style=for-the-badge" alt="Live demo"></a>
 
@@ -19,7 +19,7 @@ Drop a CAD model, a mesh, a BIM file or a Gaussian splat into the window and get
 - **Path tracing in real time (WebGPU)** – fast preview while you orbit, physically based rendering with AI denoising as soon as the camera stands still.
 - **Opens almost anything**
   - **STEP** via a custom CAD kernel: assemblies, colours, instancing, adjustable tessellation quality
-  - **glTF/GLB, FBX, STL, PLY**
+  - **glTF/GLB, FBX, STL, PLY**, **OBJ** (own reader for files of hundreds of MB, MTL materials)
   - **MAX (.max)** via an own reader: Editable Mesh/Poly, primitives, text and splines, common modifiers (Extrude, Shell, Bend, FFD, TurboSmooth …), instances, Physical Materials
   - **C4D (.c4d)** via an own reader: polygon objects with UVs and phong smoothing, joints and weights (skinning), keyframe animation, materials with colour and normal maps
   - **3MF** via an own reader: assemblies and instances, multi-part slicer projects, colours and textures
