@@ -23,6 +23,8 @@
 //  - transform ops by type, also suffixed ones ("xformOp:rotateX:unitsResolve") and every rotation order.
 //  - reference cycles are cut; missing layers count only when the composition needed them.
 //  - corners welded: the composer emits no index (three corners per triangle) – see weldAll.
+//  - skeletons across layers (rig, geometry and animation in separate files): bound once the stage is composed, clips
+//    of every layer on the root, starting at the stage's first time code – see bindAcrossLayers.
 //  - units: the composer scales by an authored metersPerUnit; without one USD means centimetres (spec default 0.01).
 //    Z up: the composer turns the root.
 // Materials: UsdPreviewSurface as far as the composer reads it; MDL shaders mapped onto physical materials with their
@@ -59,15 +61,21 @@ const join = (dir, rel) => normalize(rel.startsWith('/') ? rel : (dir ? dir + '/
 const ARC_KEY = /^(?:(prepend|append|add|delete|reorder)\s+)?(references|payload)$/;
 class UsdaReader extends USDAParser {
     parseText(text) {
-        // "over" prims: overrides of prims defined in a weaker layer (sublayers) – read as def, flattened later
-        const root = super.parseText(text.replace(/^([ \t]*)over\b/gm, '$1def'));
+        // "over" prims: overrides of prims defined in a weaker layer (sublayers) – read as def, flattened later.
+        // Metadata closing on the line of its block ("…\n) {" – variants written by the USD library): three read it as a
+        // block named ")" without closing the metadata, the following siblings nested inside – split into ")" and "{".
+        const root = super.parseText(text.replace(/^([ \t]*)over\b/gm, '$1def').replace(/^([ \t]*)\)[ \t]*\{[ \t]*$/gm, '$1)\n$1{'));
         this.header = root['#usda 1.0'] || {};
+        this.raw = root;
         return root;
     }
     parseData(text) {
         const parsed = super.parseData(text);
         const subLayers = [...String(this.header.subLayers || '').matchAll(/@([^@]+)@/g)].map(m => m[1]);
         if (subLayers.length) (parsed.specsByPath['/'] ||= { specType: 6, fields: {} }).fields.subLayers = subLayers;
+        // the stage's first time code (three reads no time range from text): clips start there
+        if (this.header.startTimeCode !== undefined) (parsed.specsByPath['/'] ||= { specType: 6, fields: {} }).fields.startTimeCode = parseFloat(this.header.startTimeCode);
+        textVariants(this, this.raw, parsed.specsByPath);
         return parsed;
     }
     // every form of the references / payload metadata (plain, prepend, append, add); delete/reorder dropped
@@ -83,6 +91,57 @@ class UsdaReader extends USDAParser {
         super._extractPrimData(rest0, path, primFields, ...rest);
         if (arcs.length) primFields.references = arcs;
     }
+}
+
+// variant sets of a text layer – three's text parser has none (`variantSet "x" = { "a" ( … ) { … } }` became an
+// attribute): specs like the crate's – the set ("/P/{x=}", its variants), each variant ("/P/{x=a}": its arcs and
+// attributes) and the prims inside it ("/P/{x=a}/Child"); the prim lists its sets (variantSetChildren). A skinned
+// character example picked its whole geometry by a variant's reference – "the file contains no faces".
+const TEXT_SPEC = { Attribute: 1, Prim: 6, Relationship: 8 };
+const TEXT_DEF = /^def\s+(?:(\w+)\s+)?"?([^"]+)"?$/;
+const TEXT_SET = /^variantSet\s+"([^"]+)"$/;
+const TEXT_VARIANT = /^"([^"]+)"$/;
+function textVariants(reader, raw, specs) {
+    // prims below a variant (create) or already known (the parser defined them) – and their variant sets
+    const walk = (data, path, create) => {
+        if (!data || typeof data !== 'object') return;
+        const children = [];
+        for (const key in data) {
+            const def = key.match(TEXT_DEF);
+            if (def) {
+                const child = path === '/' ? '/' + def[2] : `${path}/${def[2]}`;
+                if (create) {
+                    const fields = { typeName: def[1] || '' };
+                    reader._extractPrimData(data[key], child, fields, specs, TEXT_SPEC);
+                    specs[child] = { specType: TEXT_SPEC.Prim, fields };
+                    children.push(def[2]);
+                }
+                walk(data[key], child, create);
+                continue;
+            }
+            const set = key.match(TEXT_SET);
+            if (!set || path === '/' || typeof data[key] !== 'object') continue;
+            const names = [];
+            for (const vkey in data[key]) {
+                const variant = vkey.match(TEXT_VARIANT);
+                if (!variant) continue;
+                names.push(variant[1]);
+                const vpath = `${path}/{${set[1]}=${variant[1]}}`;
+                const fields = {};
+                reader._extractPrimData(data[key][vkey], vpath, fields, specs, TEXT_SPEC);
+                specs[vpath] = { specType: 10, fields };
+                walk(data[key][vkey], vpath, true);
+            }
+            const prim = specs[path];
+            if (prim && names.length) {
+                const sets = prim.fields.variantSetChildren ||= [];
+                if (!sets.includes(set[1])) sets.push(set[1]);
+                specs[`${path}/{${set[1]}=}`] = { specType: 11, fields: { variantChildren: names } };
+            }
+        }
+        if (create && children.length && specs[path]) specs[path].fields.primChildren = children;
+    };
+    walk(raw, '/', false);
 }
 
 // crate types (crateDataTypes.h)
@@ -142,9 +201,19 @@ class UsdcReader extends USDCParser {
 let active = null;   // { cache: Map, composers: USDComposer[] }
 const originalResolve = USDComposer.prototype._resolveReference;
 const originalCompose = USDComposer.prototype.compose;
+// Every object remembers the composers (layers) it was composed in – the one that built it and those whose references
+// brought it in: the animation bindings of a layer apply to its objects (two characters referencing different animation
+// layers over the same character files); clones of cached references copy the list.
 USDComposer.prototype.compose = function (...args) {
     active?.composers.push(this);   // texture promises of nested composers too
-    return originalCompose.apply(this, args);
+    if (active) this.usdLayerName = active.layerNames.get(args[0]);   // file name of the layer (pose names)
+    const group = originalCompose.apply(this, args);
+    if (active) {
+        if (!active.composerIds.has(this)) active.composerIds.set(this, active.composerIds.size + 1);
+        const id = active.composerIds.get(this);
+        group.traverse(o => { const list = o.userData.usdLayers ??= []; if (!list.includes(id)) list.push(id); });
+    }
+    return group;
 };
 // transform ops: three only knows the plain op names – suffixed ones ("xformOp:rotateX:unitsResolve",
 // "xformOp:translate:pivot2", common in exports of DCC tools) and rotations other than XYZ were skipped. The op stack
@@ -153,6 +222,9 @@ const opMatrix = new THREE.Matrix4(), opEuler = new THREE.Euler(), opQuat = new 
 const DEG = Math.PI / 180;
 const originalApplyTransform = USDComposer.prototype.applyTransform;
 USDComposer.prototype.applyTransform = function (obj, fields, attrs = {}) {
+    // a SkelRoot with references (its geometry through a variant) became a plain reference container – marked here, the
+    // skeletons of two characters are told apart by it (bindAcrossLayers)
+    if (fields?.typeName === 'SkelRoot') obj.userData.isSkelRoot = true;
     const data = { ...fields, ...attrs };
     const order = data.xformOpOrder;
     if (!Array.isArray(order) || !order.length) return originalApplyTransform.call(this, obj, fields, attrs);
@@ -225,11 +297,381 @@ USDComposer.prototype._buildGeometryWithSubsets = function (attrs, subsets, ...r
     return geometry;
 };
 
+// arcs authored on a selected variant (`variantSet "lod" = { "full" ( references = @…@ ) { } }`) belong to the prim –
+// three only read the prim's own; the variant's (as selected for this composition) are added
+const originalGetReferences = USDComposer.prototype._getReferences;
+const specPaths = new WeakMap();   // specsByPath → Map(spec → path)
+USDComposer.prototype._getReferences = function (spec) {
+    const own = originalGetReferences.call(this, spec);
+    if (!active || !this.specsByPath) return own;
+    let paths = specPaths.get(this.specsByPath);
+    if (!paths) {
+        paths = new Map(Object.entries(this.specsByPath).map(([path, sp]) => [sp, path]));
+        specPaths.set(this.specsByPath, paths);
+    }
+    const path = paths.get(spec);
+    if (!path || !spec.fields?.variantSetChildren?.length) return own;
+    for (const vp of this._getVariantPaths(path)) {
+        const variant = this.specsByPath[vp];
+        if (variant?.fields?.references) own.push(...originalGetReferences.call(this, variant));
+    }
+    return own;
+};
+
+// Skeletons across layers (a character: rig, geometry and walk cycle in three files): every referenced layer is
+// composed on its own, a mesh never met a skeleton of another layer – three warned and left a SkinnedMesh without one
+// (the import broke on it), the clip of the animation layer moved nothing. Collected here per load (skeletons, the
+// skel:skeleton targets, the clips of every composer) and bound once the stage is composed (bindAcrossLayers).
+const originalBuildSkeleton = USDComposer.prototype._buildSkeleton;
+USDComposer.prototype._buildSkeleton = function (path) {
+    const data = originalBuildSkeleton.call(this, path);
+    if (active && data) active.skeletons.push({ data, path: plainSkelPath(path), used: null });
+    return data;
+};
+const originalBindSkeletons = USDComposer.prototype._bindSkeletons;
+USDComposer.prototype._bindSkeletons = function () {
+    if (active) {
+        for (const path in this.specsByPath) {
+            if (!/\.(?:rel )?skel:skeleton$/.test(path)) continue;
+            const fields = this.specsByPath[path].fields;
+            const target = fields?.targetPaths?.[0] ?? fields?.default?.replace?.(/[<>]/g, '');
+            if (target) active.skelTargets.add(plainSkelPath(target));
+        }
+        // skel:animationSource: which animation drives the skeletons bound at or below that prim
+        for (const path in this.specsByPath) {
+            const m = path.match(/^(.*)\.(?:rel )?skel:animationSource$/);
+            if (!m) continue;
+            const fields = this.specsByPath[path].fields;
+            const target = fields?.targetPaths?.[0] ?? fields?.default?.replace?.(/[<>]/g, '');
+            if (target) active.animBindings.push({ composer: this, prim: plainSkelPath(m[1]), anim: plainSkelPath(target) });
+        }
+        // no skeleton in this layer: bound later – what binding needs goes with the mesh (also into cached clones)
+        if (!Object.keys(this.skeletons).length) {
+            for (const { mesh, skeletonPath, localJoints, geomBindTransform } of this.skinnedMeshes) {
+                mesh.userData.usdSkin = {
+                    skeletonPath: skeletonPath ? plainSkelPath(skeletonPath) : null,
+                    localJoints: localJoints ? [...localJoints] : null,
+                    geomBindTransform: geomBindTransform ? [...geomBindTransform].flat(2) : null,   // nested in text layers
+                };
+            }
+            this.skinnedMeshes.length = 0;
+        }
+    }
+    return originalBindSkeletons.call(this);
+};
+// SkelAnimation prims: read here instead of by three – also values without time samples (a pose stored as one value per
+// joint: three read only time samples, the character stood in its rest pose; a clip with time-sampled rotations and one
+// translation value lost the translations). Tracks are made per skeleton once the stage is composed (bindAcrossLayers):
+// they name the bones by uuid, each character gets its own animation (skel:animationSource) even with equal joint names.
+const ANIM_CHANNELS = [['rotations', 'quaternion', 4], ['translations', 'position', 3], ['scales', 'scale', 3]];
+const originalBuildAnimationClip = USDComposer.prototype._buildAnimationClip;
+USDComposer.prototype._buildAnimationClip = function (path) {
+    if (!active) return originalBuildAnimationClip.call(this, path);
+    const attrs = this._getAttributes(path);
+    if (!attrs.joints?.length) return null;
+    const channels = [];
+    for (const [attr, property, size] of ANIM_CHANNELS) {
+        const sampled = this._getTimeSampledAttribute(path, attr);
+        if (sampled?.times?.length) channels.push({ property, size, times: sampled.times.map(t => t / this.fps), values: sampled.values.map(flatValues) });
+        else if (attrs[attr]?.length) channels.push({ property, size, times: null, values: [flatValues(attrs[attr])] });
+    }
+    if (channels.length) active.anims.push({ composer: this, path: plainSkelPath(path), name: path.split('/').pop(), joints: [...attrs.joints], channels });
+    return null;
+};
+const flatValues = v => (typeof v[0] === 'number' || ArrayBuffer.isView(v) ? v : v.flat(2));
+
+const originalBuildAnimations = USDComposer.prototype._buildAnimations;
+USDComposer.prototype._buildAnimations = function () {
+    const clips = originalBuildAnimations.call(this);
+    if (active) for (const clip of clips) active.clips.push({ clip, fps: this.fps });
+    return clips;
+};
+
+// rigidly skinned meshes (eyes bound to one joint): joint indices/weights with constant interpolation – one tuple for
+// all points; three read it per point, every point but the first had weight 0 and collapsed to the origin when skinned.
+// The tuple is repeated per point.
+const originalGetAttributes = USDComposer.prototype._getAttributes;
+USDComposer.prototype._getAttributes = function (path) {
+    const attrs = originalGetAttributes.call(this, path);
+    const indices = attrs['primvars:skel:jointIndices'], weights = attrs['primvars:skel:jointWeights'], points = attrs.points;
+    if (!indices?.length || !weights?.length || !points?.length) return attrs;
+    const count = typeof points[0] === 'number' ? points.length / 3 : points.length;
+    const size = attrs['primvars:skel:jointIndices:elementSize'] ?? (indices.length < 4 ? indices.length : 4);
+    if (count < 2 || indices.length !== size || weights.length !== size) return attrs;
+    const expand = (tuple, Type) => {
+        const out = new Type(count * size);
+        for (let v = 0; v < count; v++) for (let k = 0; k < size; k++) out[v * size + k] = tuple[k];
+        return out;
+    };
+    attrs['primvars:skel:jointIndices'] = expand(indices, Int32Array);
+    attrs['primvars:skel:jointWeights'] = expand(weights, Float32Array);
+    attrs['primvars:skel:jointIndices:elementSize'] = size;
+    return attrs;
+};
+
+// orientation = "leftHanded" (clockwise faces – hair shells of a character): three ignored it, the front faces looked
+// inwards and only the backs of the shells showed (thin hair on top of the head) → winding reversed per triangle; the
+// normals three computed from the winding flipped with it (authored ones stay). doubleSided: noted for the materials.
+const originalBuildMesh = USDComposer.prototype._buildMesh;
+USDComposer.prototype._buildMesh = function (path, spec) {
+    const mesh = originalBuildMesh.call(this, path, spec);
+    if (!active || !mesh?.geometry) return mesh;
+    const attrs = this._getAttributes(path);
+    if (attrs.orientation === 'leftHanded') flipWinding(mesh.geometry, !(attrs.normals || attrs['primvars:normals']));
+    if (attrs.doubleSided === true) mesh.userData.usdDoubleSided = true;
+    return mesh;
+};
+function flipWinding(geometry, flipNormals) {
+    const index = geometry.index;
+    if (index) {
+        const a = index.array;
+        for (let i = 0; i + 2 < a.length; i += 3) { const t = a[i + 1]; a[i + 1] = a[i + 2]; a[i + 2] = t; }
+    } else {
+        // no index (the composer's usual output): corners 1 and 2 of every triangle swapped in every attribute
+        for (const attr of Object.values(geometry.attributes)) {
+            if (attr.isInterleavedBufferAttribute) continue;
+            const a = attr.array, n = attr.itemSize;
+            for (let v = 0; v + 2 < attr.count; v += 3) {
+                for (let k = 0; k < n; k++) { const t = a[(v + 1) * n + k]; a[(v + 1) * n + k] = a[(v + 2) * n + k]; a[(v + 2) * n + k] = t; }
+            }
+        }
+    }
+    const normal = geometry.getAttribute('normal');
+    if (flipNormals && normal && !normal.isInterleavedBufferAttribute) for (let i = 0; i < normal.array.length; i++) normal.array[i] = -normal.array[i];
+}
+
+// "/Rig/{rigComplexity=high}/Skel" (a prim inside a variant) → "/Rig/Skel"
+const plainSkelPath = path => path.replace(/\/?\{[^}]*\}\/?/g, '/').replace(/\/+/g, '/').replace(/(.)\/$/, '$1');
+
+// the composed stage: skinned meshes left unbound get their skeleton – the one whose path ends the mesh's (or a
+// skel:skeleton target's) path, else the one holding all the mesh's joints; one skeleton object per skinning root
+// (two characters from the same files: own bones each). Meshes without a match: plain meshes in their bind pose.
+// The clips of all layers go onto the root (time codes shifted to the stage's start), tracks of joints the stage does
+// not have are dropped (the mixer warned for each).
+function bindAcrossLayers(root, data, stage) {
+    const { skeletons, skelTargets } = data;
+    const pending = [];
+    root.traverse(o => { if (o.isSkinnedMesh && !o.skeleton && o.userData.usdSkin) pending.push(o); });
+    const endsWith = (path, tail) => path === tail || path.endsWith(tail.startsWith('/') ? tail : '/' + tail);
+    const matches = (entry, path) => path && (endsWith(path, entry.path) || endsWith(entry.path, path));
+    const holds = (entry, joints) => !joints?.length || joints.every(j => entry.data.joints.includes(j));
+    const used = new Set();
+    const remapped = new WeakSet();   // shared geometries (cached clones): skin indices remapped once
+    for (const mesh of pending) {
+        const { skeletonPath, localJoints, geomBindTransform } = mesh.userData.usdSkin;
+        delete mesh.userData.usdSkin;
+        const fits = skeletons.filter(s => holds(s, localJoints));
+        const entry = fits.find(s => matches(s, skeletonPath))
+            ?? fits.find(s => [...skelTargets].some(target => matches(s, target)))
+            ?? (fits.length === 1 || !skeletonPath ? fits[0] : null);
+        if (!entry) { unskin(mesh); continue; }
+        // the skinning root: the nearest SkelRoot above the mesh (else the stage) – its skeleton object of this entry
+        let skelRoot = mesh.parent;
+        while (skelRoot && skelRoot !== root && !skelRoot.userData.isSkelRoot) skelRoot = skelRoot.parent;
+        const owners = entry.owners ??= new Map();
+        let skeleton = owners.get(skelRoot);
+        if (!skeleton) {
+            skeleton = owners.size ? cloneSkeleton(entry.data.skeleton) : entry.data.skeleton;
+            owners.set(skelRoot, skeleton);
+            // bones below the first mesh of that root (three's convention: skeleton space = mesh space)
+            for (const bone of skeleton.bones) if (!bone.parent?.isBone) mesh.add(bone);
+        }
+        const skinIndex = mesh.geometry.getAttribute('skinIndex');
+        if (localJoints?.length && skinIndex && !remapped.has(mesh.geometry)) {
+            remapped.add(mesh.geometry);
+            const toGlobal = localJoints.map(j => Math.max(0, entry.data.joints.indexOf(j)));
+            const a = skinIndex.array;
+            for (let i = 0; i < a.length; i++) if (a[i] < toGlobal.length) a[i] = toGlobal[a[i]];
+            skinIndex.needsUpdate = true;
+        }
+        const bindMatrix = new THREE.Matrix4();
+        if (geomBindTransform?.length === 16) bindMatrix.fromArray(geomBindTransform);   // row-major USD = column-major array order
+        mesh.bind(skeleton, bindMatrix);
+        used.add(skeleton);
+    }
+    // skeletons bound by three inside one layer count as well (the mixer finds bones by name)
+    root.traverse(o => { if (o.isSkinnedMesh && o.skeleton) used.add(o.skeleton); });
+    if (used.size === 1) root.skeleton = [...used][0];   // bones before same-named prims (see USDComposer.compose)
+    else if (!used.size) root.skeleton = undefined;
+
+    const out = [...skeletalClips(root, used, data), ...transformClips(root, used, data.clips)];
+    // keys at the time codes (a walk cycle at 101…129) – the playbar starts at 0: the stage's first time code, else the
+    // earliest key
+    let shift = stage.startTimeCode !== undefined ? stage.startTimeCode / stage.fps : null;
+    if (shift === null && out.length) shift = Math.min(...out.flatMap(clip => clip.tracks.map(track => track.times[0])));
+    for (const clip of out) {
+        if (shift) for (const track of clip.tracks) track.shift(-shift);
+        clip.resetDuration();
+    }
+    root.animations = out;
+    root.traverse(o => { delete o.userData.usdLayers; });
+    return { skinned: pending.length, skeletons: used.size, clips: out.length, poses: data.posed || 0 };
+}
+
+// SkelAnimations → tracks on the bones of the skeletons they drive. A skeleton object is driven by the animation a
+// skel:animationSource names on its skinning root or above (in the layer that built that object); animations nobody
+// names drive every skeleton sharing joints with them. Joints by path (the skeleton's joint list), not by name. Values
+// without time samples: one key at the animation's first time – or, in an animation without any time samples, a pose
+// set on the bones right away (the pose at import then). Bound animations play together (one clip: the stage), unbound
+// ones are clips of their own.
+function skeletalClips(root, used, data) {
+    const { skeletons, anims, animBindings, composerIds } = data;
+    if (!anims.length || !used.size) return [];
+    const skels = [];
+    for (const skeleton of used) {
+        const entry = skeletons.find(e => e.data.skeleton === skeleton || [...(e.owners?.values() || [])].includes(skeleton));
+        if (!entry) continue;
+        let mesh = null;
+        root.traverse(o => { if (!mesh && o.isSkinnedMesh && o.skeleton === skeleton) mesh = o; });
+        skels.push({ skeleton, joints: entry.data.joints, path: entry.path, mesh });
+    }
+    const endsWith = (path, tail) => path === tail || path.endsWith(tail.startsWith('/') ? tail : '/' + tail);
+    // binding prim = the skeleton's own prim, or an object above its meshes composed in the binding's layer
+    const binds = (binding, s) => {
+        if (endsWith(s.path, binding.prim)) return true;
+        const name = binding.prim.split('/').pop(), layer = composerIds.get(binding.composer);
+        for (let o = s.mesh?.parent; o; o = o.parent) if (o.name === name && o.userData.usdLayers?.includes(layer)) return true;
+        return false;
+    };
+    const driven = new Map();   // anim → skels
+    for (const binding of animBindings) {
+        const anim = anims.find(a => a.composer === binding.composer && a.path === binding.anim)
+            ?? anims.find(a => endsWith(a.path, binding.anim) || endsWith(binding.anim, a.path));
+        if (!anim) continue;
+        const list = driven.get(anim) ?? [];
+        for (const s of skels) if (binds(binding, s) && !list.includes(s)) list.push(s);
+        driven.set(anim, list);
+    }
+    const stageTracks = [], out = [];
+    let stageName = null;
+    data.posed = 0;
+    // the skeletons' rest pose (before stored poses are set): joints a pose leaves out keep it
+    const rest = new Map();
+    for (const s of skels) for (const b of s.skeleton.bones) rest.set(b, [...b.position.toArray(), ...b.quaternion.toArray()]);
+    const poses = root.userData.filePoses = [];
+    const onlyOne = anims.length === 1 && !animBindings.length;
+    for (const anim of anims) {
+        const bound = driven.has(anim);
+        const targets = bound ? driven.get(anim) : skels.filter(s => anim.joints.some(j => s.joints.includes(j)));
+        const sampled = anim.channels.filter(c => c.times);
+        if (!sampled.length) {
+            // a stored pose: one entry of the pose list (all joints of its skeletons); set at once when an
+            // animationSource names it (or it is the file's only animation and nothing is bound) – the pose at import then
+            const bones = [];
+            for (const s of targets) {
+                const value = new Map(s.skeleton.bones.map(b => [b, [...rest.get(b)]]));
+                anim.joints.forEach((joint, j) => {
+                    const bone = s.skeleton.bones[s.joints.indexOf(joint)];
+                    if (!bone) return;
+                    for (const { property, size, values } of anim.channels) {
+                        const v = values[0];
+                        if (v.length < (j + 1) * size) continue;
+                        if (property === 'position') value.get(bone).splice(0, 3, ...Array.from(v.slice(j * 3, j * 3 + 3)));
+                        else if (property === 'quaternion') value.get(bone).splice(3, 4, ...Array.from(v.slice(j * 4, j * 4 + 4)));
+                        else if (bound || onlyOne) bone.scale.fromArray(v, j * 3);
+                    }
+                });
+                for (const [bone, v] of value) bones.push({ bone, value: v });
+            }
+            if (!bones.length) continue;
+            poses.push({ name: anim.name, layer: anim.composer.usdLayerName, bones });
+            if (bound || onlyOne) {
+                for (const { bone, value } of bones) { bone.position.fromArray(value, 0); bone.quaternion.fromArray(value, 3); }
+                data.posed++;
+            }
+            continue;
+        }
+        const t0 = Math.min(...sampled.map(c => c.times[0]));
+        const tracks = [];
+        for (const s of targets) {
+            anim.joints.forEach((joint, j) => {
+                const bone = s.skeleton.bones[s.joints.indexOf(joint)];
+                if (!bone) return;
+                for (const { property, size, times, values } of anim.channels) {
+                    const keys = times ?? [t0];
+                    const kt = [], kv = [];
+                    keys.forEach((t, k) => {
+                        const v = values[k];
+                        if (!v || v.length < (j + 1) * size) return;
+                        kt.push(t);
+                        for (let c = 0; c < size; c++) kv.push(v[j * size + c]);
+                    });
+                    if (!kt.length) continue;
+                    const Track = property === 'quaternion' ? THREE.QuaternionKeyframeTrack : THREE.VectorKeyframeTrack;
+                    tracks.push(new Track(`${bone.uuid}.${property}`, new Float32Array(kt), new Float32Array(kv)));
+                }
+            });
+        }
+        if (!tracks.length) continue;
+        if (bound) { stageTracks.push(...tracks); stageName ??= anim.name; } else out.push(new THREE.AnimationClip(anim.name, -1, tracks));
+    }
+    if (stageTracks.length) out.unshift(new THREE.AnimationClip(stageName, -1, stageTracks));
+    // pose names: the prim's; the same name twice (every layer calls it "SkelAnim") with the layer's file name
+    const count = new Map();
+    for (const p of poses) count.set(p.name, (count.get(p.name) || 0) + 1);
+    for (const p of poses) if (count.get(p.name) > 1 && p.layer) p.name = `${p.layer.replace(/\.[^.]+$/, '')} – ${p.name}`;
+    return out;
+}
+
+// three's clips from time-sampled transforms (other than skeletons), each once; tracks of objects the stage does not have
+// dropped (the mixer warned for each)
+function transformClips(root, used, clips) {
+    const names = new Set();
+    root.traverse(o => { if (o.name) names.add(o.name); });
+    for (const s of used) for (const b of s.bones) names.add(b.name);
+    const out = [];
+    for (const { clip } of clips) {
+        if (out.includes(clip)) continue;
+        clip.tracks = clip.tracks.filter(track => names.has(track.name.slice(0, track.name.lastIndexOf('.'))));
+        if (clip.tracks.length) out.push(clip);
+    }
+    return out;
+}
+
+// own bones for a second skinning root (same order, same rest pose, same inverse bind matrices)
+function cloneSkeleton(skeleton) {
+    const map = new Map();
+    for (const bone of skeleton.bones) {
+        if (bone.parent?.isBone) continue;
+        const copy = bone.clone(true);
+        const a = [], b = [];
+        bone.traverse(o => a.push(o));
+        copy.traverse(o => b.push(o));
+        a.forEach((o, i) => map.set(o, b[i]));
+    }
+    return new THREE.Skeleton(skeleton.bones.map(bone => map.get(bone)), skeleton.boneInverses.map(m => m.clone()));
+}
+
+// a skinned mesh without a skeleton → plain mesh: its points are the bind pose
+function unskin(mesh) {
+    const plain = new THREE.Mesh(mesh.geometry, mesh.material);
+    plain.name = mesh.name;
+    plain.userData = mesh.userData;
+    plain.visible = mesh.visible;
+    plain.position.copy(mesh.position);
+    plain.quaternion.copy(mesh.quaternion);
+    plain.scale.copy(mesh.scale);
+    for (const child of [...mesh.children]) plain.add(child);
+    mesh.geometry.deleteAttribute('skinIndex');
+    mesh.geometry.deleteAttribute('skinWeight');
+    const parent = mesh.parent;
+    if (parent) {
+        parent.children[parent.children.indexOf(mesh)] = plain;
+        plain.parent = parent;
+        mesh.parent = null;
+    }
+}
+
 // a reference resolving to one mesh is merged into the referencing prim – three took the first mesh of the group even
-// when it had siblings, and dropped those (a car body of 180 parts became one mesh)
+// when it had siblings, and dropped those (a car body of 180 parts became one mesh). Only a mesh without a transform of
+// its own: the merge sets the referencing prim's transform on it and dropped the mesh's (a kitchen scene: 329 props,
+// each mesh offset to its asset's origin with translate + pivot ops, 1–3 m off). Otherwise the container stays.
 const originalSingleMesh = USDComposer.prototype._findSingleMesh;
 USDComposer.prototype._findSingleMesh = function (group) {
-    return group.children.length === 1 ? originalSingleMesh.call(this, group) : null;
+    if (group.children.length !== 1) return null;
+    const candidate = group.children[0].isMesh ? group.children[0] : group.children[0].children?.length === 1 ? group.children[0].children[0] : null;
+    if (candidate?.isMesh && this._hasNonIdentityTransform(candidate)) return null;
+    return originalSingleMesh.call(this, group);
 };
 USDComposer.prototype._resolveReference = function (refValue, localVariants = {}) {
     if (!active) return originalResolve.call(this, refValue, localVariants);
@@ -250,14 +692,26 @@ USDComposer.prototype._resolveReference = function (refValue, localVariants = {}
     active.resolving.add(key);
     let group;
     try {
-        group = originalResolve.call(this, refValue, localVariants);
+        const segments = (refValue.match(/<([^>]+)>/)?.[1] || '').split('/').filter(Boolean);
+        if (segments.length > 1) {
+            // three looks for the target among the layer's top prims only – a nested one ("</Character/Hair", payloads of
+            // a character's parts) gave the whole layer, every part held all of them: the top prim (cached), then down
+            const top = this._resolveReference(`@${m[1]}@</${segments[0]}>`, localVariants);
+            let node = top?.children.length === 1 && top.children[0].name === segments[0] ? top.children[0] : top;
+            for (const name of segments.slice(1)) node = node?.children.find(child => child.name === name) ?? null;
+            if (node) {
+                node.removeFromParent();
+                group = new THREE.Group();
+                group.add(node);
+            } else group = null;
+        } else group = originalResolve.call(this, refValue, localVariants);
     } finally {
         active.resolving.delete(key);
     }
     // the referenced prim stands for the referencing one (USD): its children directly under it, unless it carries a
-    // transform of its own (kept as a level then)
+    // transform of its own or is a skinning root (kept as a level then – its skeletons are told apart by it)
     const only = group?.children.length === 1 && refValue.includes('<') ? group.children[0] : null;
-    if (only && !only.isMesh && only.position.lengthSq() === 0 && only.quaternion.w === 1 && only.scale.x === 1 && only.scale.y === 1 && only.scale.z === 1) {
+    if (only && !only.isMesh && !only.userData.isSkelRoot && only.position.lengthSq() === 0 && only.quaternion.w === 1 && only.scale.x === 1 && only.scale.y === 1 && only.scale.z === 1) {
         group = new THREE.Group();
         while (only.children.length) group.add(only.children[0]);
     }
@@ -380,14 +834,16 @@ export async function loadUsd(source, buffer, manager, onStatus = () => {}) {
         const url = new URL(relative(dirOf(normalize(rootPath)), join(layerDir, path)).split('/').map(p => (p === '..' ? p : encodeURIComponent(p))).join('/'), fetchBase);
         return { key: full, read: async () => { const res = await fetch(url).catch(() => null); return res?.ok ? res.blob() : null; } };
     });
-    active = { cache: new Map(), composers: [], missing: new Set(), resolving: new Set(), textures };
+    active = { cache: new Map(), composers: [], missing: new Set(), resolving: new Set(), textures, skeletons: [], skelTargets: new Set(), clips: [], anims: [], animBindings: [], composerIds: new Map(),
+        layerNames: new Map([...layers].map(([path, parsed]) => [parsed, path.split('/').pop()])) };
     const { composers, missing: missingSet } = active;
-    let object, hidden, overridden;
+    let object, hidden, overridden, skinning;
     try {
         const composer = new USDComposer(manager);
         object = composer.compose(root, assets, {}, dirOf(rootKey));
         hidden = hideComposed(object, hiddenPaths);
         overridden = overrideComposed(object, root, composer);
+        skinning = bindAcrossLayers(object, active, { startTimeCode: root.specsByPath['/']?.fields?.startTimeCode, fps: composer.fps });
     } finally {
         active = null;
     }
@@ -413,7 +869,7 @@ export async function loadUsd(source, buffer, manager, onStatus = () => {}) {
     }
     const missingTextures = textures.missingFor(new Set(materials));
     const missing = [...missingLayers, ...missingTextures];
-    const stats = { layers: layers.size, missing: missing.length, hiddenByOverrides: hidden, movedByOverrides: overridden, welded, materials: materials.length, textures: { ...texStats, missing: missingTextures.length }, metersPerUnit: authored ?? 0.01, upAxis: root.specsByPath['/']?.fields?.upAxis || 'Y' };
+    const stats = { layers: layers.size, missing: missing.length, hiddenByOverrides: hidden, movedByOverrides: overridden, welded, materials: materials.length, textures: { ...texStats, missing: missingTextures.length }, skinning, metersPerUnit: authored ?? 0.01, upAxis: root.specsByPath['/']?.fields?.upAxis || 'Y' };
     if (unread.size) console.warn('[USD] referenced layers not found:', [...unread].slice(0, 10), missingLayers.length ? '(needed)' : '(not needed by the composed stage)');
     debugLog('[USD]', stats);
     object.name ||= source.name.replace(/\.[^.]+$/, '');
@@ -630,6 +1086,11 @@ function shareMaterials(root) {
         o.material = Array.isArray(o.material) ? o.material.map(share) : share(o.material);
     });
     root.traverse(o => { if (o.isMesh) delete o.geometry.userData.usdSubsets; });
+    // doubleSided meshes (clothes, shoes): their materials both sides – unless a one-sided mesh shares it (the gums share
+    // the skin material with the body)
+    const single = new Set(), double = new Set();
+    root.traverse(o => { if (o.isMesh) for (const m of [o.material].flat()) if (m) (o.userData.usdDoubleSided ? double : single).add(m); });
+    for (const m of double) if (!single.has(m)) m.side = THREE.DoubleSide;
     for (const m of all) { delete m.userData.usdKey; delete m.userData.usdBound; }
     return [...all];
 }
@@ -710,5 +1171,5 @@ function weldGeometry(geometry) {
 // groups without anything drawable below them (material scopes, overrides of removed parts): out of the scene graph
 function dropEmpty(obj) {
     for (const c of [...obj.children]) if (!dropEmpty(c)) c.removeFromParent();
-    return obj.isMesh || obj.isLight || obj.isCamera || obj.children.length > 0;
+    return obj.isMesh || obj.isLight || obj.isCamera || obj.isBone || obj.children.length > 0;   // leaf bones belong to a skeleton
 }
