@@ -4258,13 +4258,19 @@ window.addEventListener('pointermove', () => { if (loadRender.active) loadRender
 // reload = re-tessellate the same STEP model (materials + transforms are kept). The old model stays
 // visible until the new one is done; when opening, the model builds up part by part.
 // What an import could not show completely (main and added models): FBX without animation, MAX objects whose
-// modifier stack we cannot rebuild (left out) or only approximate (Noise: own noise function) – named in a notice
+// modifier stack we cannot rebuild (left out) or only approximate (Noise: own noise function), C4D objects the reader
+// does not build (generators, splines …) – named in a notice
 function importNotices(result, name) {
     if (result.warnings?.includes('fbxStatic')) showNotice({ id: 'fbx-static', icon: 'info', title: t('memory.fbxStatic.title'), message: t('memory.fbxStatic.message', { name: displayName(name) }) });
     const skipped = result.maxSkipped;
     if (skipped?.count) showNotice({
         id: 'max-skipped', icon: 'info', title: t('import.max.skipped.title', { count: skipped.count }),
         message: t('import.max.skipped.message', { name: displayName(name), what: [...new Set(skipped.what)].join(', ') }),
+    });
+    const c4d = result.c4dSkipped;
+    if (c4d?.count) showNotice({
+        id: 'c4d-skipped', icon: 'info', title: t('import.c4d.skipped.title', { count: c4d.count }),
+        message: t('import.c4d.skipped.message', { name: displayName(name), what: [...new Set(c4d.what)].join(', ') }),
     });
     const approx = result.maxApprox;
     if (approx?.count) showNotice({

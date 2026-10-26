@@ -36,6 +36,16 @@
             "textures": "Lade Texturen… {done}/{total}",
             "layersMissing": "Die Teile der Szene liegen in weiteren USD-Dateien, die fehlen: {files} – den ganzen Ordner ins Fenster ziehen"
         },
+        "c4d": {
+            "notC4d": "Keine gültige C4D-Datei",
+            "skipped": {
+                "title": {
+                    "one": "Ein Objekt nicht dargestellt",
+                    "other": "{count} Objekte nicht dargestellt"
+                },
+                "message": "„{name}“ enthält Objekte, die rindr aus C4D noch nicht liest ({what}) – sie fehlen. In C4D „Grundobjekt konvertieren“ (Taste C) oder als FBX/glTF exportieren, dann sind sie dabei."
+            }
+        },
         "max": {
             "notMax": "Keine gültige MAX-Datei",
             "skipped": {
@@ -1732,7 +1742,7 @@
         "notSceneOrMaterials": "{name}: weder Szene noch Materialien",
         "unsupportedFormat": "Format nicht unterstützt ({extensions})",
         "dropHint": "Datei ins Fenster ziehen",
-        "dropFormats": "STEP (.stp/.step) · glTF/GLB · FBX · MAX (.max) · 3MF · USD (.usd/.usdz) · STL · PLY · BIM (.ifc/.ifczip) · BCF-Tickets (.bcfzip) · Gaussian Splats (.ply/.sog)",
+        "dropFormats": "STEP (.stp/.step) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · 3MF · USD (.usd/.usdz) · STL · PLY · BIM (.ifc/.ifczip) · BCF-Tickets (.bcfzip) · Gaussian Splats (.ply/.sog)",
         "qualityReduced": "Großes Modell (≈ {triangles} Dreiecke bei „{from}“) – Qualität automatisch auf „{to}“ gesenkt",
         "modelTooLarge": "Modell zu groß: ≈ {triangles} Dreiecke bei „{quality}“ (Grenze {limit}) – Laden abgebrochen",
         "qualityTooFine": "„{quality}“ ist für dieses Modell zu fein (≈ {triangles} Dreiecke, Grenze {limit}) – Qualität bleibt „{previous}“",
@@ -2067,13 +2077,13 @@
     },
     "page": {
         "title": "RINDR – 3D-Viewer mit Pathtracing im Browser",
-        "description": "STEP, glTF, FBX, MAX, 3MF, STL, BIM (IFC, BCF) und Gaussian Splats direkt im Browser öffnen – lokal, ohne Upload, mit Materialbibliothek und Echtzeit-Pathtracing.",
+        "description": "STEP, glTF, FBX, MAX, C4D, 3MF, STL, BIM (IFC, BCF) und Gaussian Splats direkt im Browser öffnen – lokal, ohne Upload, mit Materialbibliothek und Echtzeit-Pathtracing.",
         "ogImageAlt": "RINDR-Logo (Kuhkopf) mit dem Schriftzug „3D-Viewer im Browser“",
         "loading": "RINDR wird gestartet …",
         "sceneGraph": "Scene Graph",
         "drop": {
             "title": "Datei hier ablegen",
-            "hint": "STEP (.stp/.step), glTF/GLB, FBX, MAX (.max), 3MF, USD (.usd/.usdz), STL, PLY, BIM (.ifc/.ifczip), BCF-Tickets (.bcfzip), Gaussian Splats (.ply/.sog) – Texturen und .bin-Dateien einfach mit hineinziehen",
+            "hint": "STEP (.stp/.step), glTF/GLB, FBX, MAX (.max), C4D (.c4d), 3MF, USD (.usd/.usdz), STL, PLY, BIM (.ifc/.ifczip), BCF-Tickets (.bcfzip), Gaussian Splats (.ply/.sog) – Texturen und .bin-Dateien einfach mit hineinziehen",
             "addHint": "Mehrere Modelle: zusammen oder nacheinander hineinziehen – sie erscheinen nebeneinander",
             "replaceTitle": "Modelle ersetzen",
             "replaceHint": "Die geladenen Modelle werden entfernt und durch die neue Datei ersetzt",
@@ -2088,7 +2098,7 @@
     },
     "about": {
         "title": "Über",
-        "description": "Your Local 3D-File Viewer – STEP, glTF, FBX, MAX, 3MF, USD, STL, BIM (IFC, BCF) und Gaussian Splats direkt im Browser, mit Pathtracing in Echtzeit.",
+        "description": "Your Local 3D-File Viewer – STEP, glTF, FBX, MAX, C4D, 3MF, USD, STL, BIM (IFC, BCF) und Gaussian Splats direkt im Browser, mit Pathtracing in Echtzeit.",
         "author": "Autor",
         "email": "E-Mail",
         "version": "Version",
