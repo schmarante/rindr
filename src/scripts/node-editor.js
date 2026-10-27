@@ -2,7 +2,8 @@
 //  - All node types as a list on the left, by category: click = add, drag onto the canvas = add there
 //  - Preview in the node (texture, colour and value nodes: one tile of the result; output: the material sphere),
 //    eye in the header folds it away
-//  - Move nodes by their header, pan the view by dragging the background
+//  - Move nodes by their header, pan the view by dragging the background, zoom with the mouse wheel (around the
+//    pointer, 25–200 %)
 //  - Link: drag from an output (right) to an input (left); dragging an input detaches it
 //  - Clicking a link deletes it; × deletes a node
 //  - Unconnected inputs show their value directly in the node
@@ -28,6 +29,7 @@ const ICON_EYE_OFF = icon('eye-off', 'size-3.5');
 const PREVIEW_SIZE = 256;   // baked preview edge length (px)
 const NO_PREVIEW = new Set(['value', 'color']);   // show their content directly
 const NODE_MIME = 'application/x-rindr-node';   // node type dragged from the list
+const ZOOM_MIN = 0.25, ZOOM_MAX = 2;
 const PORT_COLORS = { float: 'bg-violet-300', color: 'bg-amber-300', vector: 'bg-teal-300' };
 const INPUT = 'w-14 flex-none rounded bg-white/10 px-1 py-0.5 text-right tabular-nums text-white outline-none focus:bg-white/20';
 
@@ -56,6 +58,7 @@ export class NodeEditor {
         this.materialId = null;
         this.graph = null;
         this.pan = { x: 0, y: 0 };
+        this.zoom = 1;   // view scale (kept while the editor lives; world coordinates = node coordinates)
         this.drag = null;
 
         root.innerHTML = `
@@ -115,8 +118,8 @@ export class NodeEditor {
             const type = e.dataTransfer.getData(NODE_MIME);
             if (!type || !NODE_TYPES[type]) return;
             e.preventDefault();
-            const r = this.canvas.getBoundingClientRect();
-            this.addNode(type, { x: e.clientX - r.left - this.pan.x - 90, y: e.clientY - r.top - this.pan.y - 14 });
+            const at = this._world(e);
+            this.addNode(type, { x: at.x - 90, y: at.y - 14 });
         });
         // an image file dragged onto a texture node: the image node takes it as its picture, the image node from the
         // file links it into its slot (missing) or replaces its picture. File drags over the editor stay here – the
@@ -153,6 +156,7 @@ export class NodeEditor {
         });
         root.querySelector('[data-close]').onclick = () => this.close();
         this.canvas.addEventListener('pointerdown', e => this._onPointerDown(e));
+        this.canvas.addEventListener('wheel', e => this._onWheel(e), { passive: false });
         window.addEventListener('pointermove', e => this._onPointerMove(e));
         window.addEventListener('pointerup', e => this._onPointerUp(e));
         manager.addEventListener('change', () => {
@@ -192,7 +196,7 @@ export class NodeEditor {
         // output on the right of the visible area
         const out = this.graph.nodes.find(n => n.type === 'output');
         const w = this.canvas.clientWidth || 900;
-        this.pan = { x: out ? w - out.x - 240 : 0, y: 0 };
+        this.pan = { x: out ? w - (out.x + 240) * this.zoom : 0, y: 0 };
         this.render();
     }
 
@@ -250,8 +254,8 @@ export class NodeEditor {
         const taken = this.graph.nodes.map(n => [n.x, n.y]);
         let x = 0, y = 0;
         search: for (let i = 0; !at && i < 40; i++) {
-            x = -this.pan.x + 30 + (i % 4) * 210;
-            y = -this.pan.y + 20 + Math.floor(i / 4) * 150;
+            x = -this.pan.x / this.zoom + 30 + (i % 4) * 210;
+            y = -this.pan.y / this.zoom + 20 + Math.floor(i / 4) * 150;
             for (const [tx, ty] of taken) if (Math.abs(tx - x) < 200 && Math.abs(ty - y) < 140) continue search;
             break;
         }
@@ -279,7 +283,7 @@ export class NodeEditor {
     // --- Rendering ---
 
     render() {
-        this.world.style.transform = `translate(${this.pan.x}px, ${this.pan.y}px)`;
+        this._applyView();
         this.world.querySelectorAll('[data-node]').forEach(n => n.remove());
         const linked = new Set(this.graph.links.map(l => l.to.node + ':' + l.to.port));
         for (const n of this.graph.nodes) this.world.append(this._nodeEl(n, linked));
@@ -543,8 +547,9 @@ export class NodeEditor {
     _portPos(node, port, dir) {
         const el = this.world.querySelector(`[data-port-node="${node}"][data-port="${port}"][data-dir="${dir}"]`);
         if (!el) return null;
+        // screen distance from the world's origin → world coordinates (the wires live in the scaled world)
         const r = el.getBoundingClientRect(), w = this.world.getBoundingClientRect();
-        return { x: r.left + r.width / 2 - w.left, y: r.top + r.height / 2 - w.top };
+        return { x: (r.left + r.width / 2 - w.left) / this.zoom, y: (r.top + r.height / 2 - w.top) / this.zoom };
     }
 
     _renderWires(temp) {
@@ -560,9 +565,34 @@ export class NodeEditor {
 
     // --- Interaktion ---
 
+    // pointer → world coordinates
     _local(e) {
         const w = this.world.getBoundingClientRect();
-        return { x: e.clientX - w.left, y: e.clientY - w.top };
+        return { x: (e.clientX - w.left) / this.zoom, y: (e.clientY - w.top) / this.zoom };
+    }
+
+    /** pointer → world coordinates through the canvas (also before the world is laid out) */
+    _world(e) {
+        const r = this.canvas.getBoundingClientRect();
+        return { x: (e.clientX - r.left - this.pan.x) / this.zoom, y: (e.clientY - r.top - this.pan.y) / this.zoom };
+    }
+
+    _applyView() {
+        this.world.style.transformOrigin = '0 0';
+        this.world.style.transform = `translate(${this.pan.x}px, ${this.pan.y}px) scale(${this.zoom})`;
+    }
+
+    // mouse wheel: zoom around the pointer – the world point under it stays there
+    _onWheel(e) {
+        if (!this.graph) return;
+        e.preventDefault();
+        const dy = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1);   // lines / pages → px
+        const zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, this.zoom * Math.exp(-dy * 0.0015)));
+        if (zoom === this.zoom) return;
+        const r = this.canvas.getBoundingClientRect(), at = this._world(e);
+        this.zoom = zoom;
+        this.pan = { x: e.clientX - r.left - at.x * zoom, y: e.clientY - r.top - at.y * zoom };
+        this._applyView();
     }
 
     _onPointerDown(e) {
@@ -608,10 +638,10 @@ export class NodeEditor {
         if (!d) return;
         if (d.kind === 'pan') {
             this.pan = { x: d.origin.x + e.clientX - d.start.x, y: d.origin.y + e.clientY - d.start.y };
-            this.world.style.transform = `translate(${this.pan.x}px, ${this.pan.y}px)`;
+            this._applyView();
         } else if (d.kind === 'node') {
-            d.node.x = d.origin.x + e.clientX - d.start.x;
-            d.node.y = d.origin.y + e.clientY - d.start.y;
+            d.node.x = d.origin.x + (e.clientX - d.start.x) / this.zoom;
+            d.node.y = d.origin.y + (e.clientY - d.start.y) / this.zoom;
             const el = this.world.querySelector(`[data-node="${d.node.id}"]`);
             el.style.left = d.node.x + 'px';
             el.style.top = d.node.y + 'px';
