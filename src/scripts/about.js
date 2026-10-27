@@ -24,7 +24,7 @@ const link = (href, text) => {
 
 /** @param {{ gpu?: string }} options  gpu = the graphics chip rendering (gpu-info.js gpuLabel) */
 export function buildAbout({ gpu = '' } = {}) {
-    const root = el('div', 'flex flex-col gap-3');
+    const root = el('div', 'flex flex-col gap-3 select-text');
 
     const head = el('div');
     // logo next to the name, white like bottom left (filter #logo-white in index.astro)

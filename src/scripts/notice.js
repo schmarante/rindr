@@ -39,7 +39,7 @@ export function showNotice({ id = null, icon = 'info', title, message = '', acti
     body.append(head);
     if (message) {
         const text = document.createElement('div');
-        text.className = 'mt-0.5 whitespace-pre-line text-white/70';
+        text.className = 'mt-0.5 whitespace-pre-line text-white/70 select-text';   // e.g. an error message to copy
         text.textContent = message;
         body.append(text);
     }

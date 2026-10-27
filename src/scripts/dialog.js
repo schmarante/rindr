@@ -64,7 +64,7 @@ function show({ title, message, buttons, icon, facts, cancelValue }) {
         if (ICONS[icon]) head.insertAdjacentHTML('beforeend', ICONS[icon]);
         head.append(document.createTextNode(title));
         const body = document.createElement('div');
-        body.className = 'whitespace-pre-line px-4 py-3 text-white/80';
+        body.className = 'whitespace-pre-line px-4 py-3 text-white/80 select-text';
         body.textContent = message;
         if (facts?.length) {
             const grid = document.createElement('div');
