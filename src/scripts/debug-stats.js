@@ -22,6 +22,7 @@
 
 import { t } from './i18n.js';
 import { workerRecords, busyTime, attributeWorkerMemory } from './worker-monitor.js';
+import { gpuLabel, looksIntegrated } from './gpu-info.js';
 
 const MB = 1024 * 1024;
 const WORKER_TILES = 16;   // workers shown at most (a STEP import starts one per core)
@@ -64,7 +65,7 @@ export class DebugStats {
         root.append(this.text, this.workerBox, this.scanText, this.scanButton);
         this.scanText.hidden = true;
         const info = adapter?.info;
-        this.gpuName = info ? [info.vendor, info.architecture, info.description].filter(Boolean).join(' ') || 'WebGPU' : t('debugStats.noWebGpu');
+        this.gpuName = info ? gpuLabel(info) + (looksIntegrated(info) ? ` (${t('debugStats.integrated')})` : '') : t('debugStats.noWebGpu');
         this.maxBuffer = adapter?.limits.maxBufferSize || 0;
         this.frames = 0;
         this.cpu = 0;

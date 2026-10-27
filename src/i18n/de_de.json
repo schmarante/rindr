@@ -1647,6 +1647,7 @@
             "isotropic": "         {count} isotrop (Kugel/Würfel – nicht vergleichbar)"
         },
         "noWebGpu": "WebGL2 (kein WebGPU)",
+        "integrated": "integriert",
         "millions": "{value} Mio.",
         "thousands": "{value} Tsd.",
         "fps": "fps      {fps}  ({ms} ms CPU/Bild)",
@@ -2109,6 +2110,8 @@
         "author": "Autor",
         "email": "E-Mail",
         "version": "Version",
+        "gpu": "Grafik",
+        "gpuNone": "WebGL2 (kein WebGPU)",
         "madeWith": "Designed with ❤️. Powered by Claude.",
         "openSource": "RINDR baut auf großartigen Open-Source-Projekten auf. Danke an alle, die daran mitarbeiten!",
         "runtime": "Im Viewer",
@@ -2506,6 +2509,12 @@
         }
     },
     "gpu": {
+        "integrated": {
+            "title": "Eingebaute Grafik im Einsatz",
+            "message": "rindr rechnet auf „{gpu}“ – vermutlich die im Prozessor eingebaute Grafik. Hat der Rechner eine eigene Grafikkarte, in den Systemeinstellungen den Browser der Grafikkarte zuordnen und den Browser danach ganz neu starten.",
+            "messageWindows": "rindr rechnet auf „{gpu}“ – vermutlich die im Prozessor eingebaute Grafik. Hat der Rechner eine eigene Grafikkarte: Windows-Einstellungen → System → Anzeige → Grafik → den Browser auswählen → Optionen → „Hohe Leistung“, danach den Browser ganz schließen und neu starten. Steckt der Bildschirm am Mainboard statt an der Grafikkarte, rechnet ebenfalls die eingebaute Grafik.",
+            "dismiss": "Nicht mehr anzeigen"
+        },
         "lost": {
             "title": "Grafikkarte zurückgesetzt",
             "message": "Die Grafikkarte war zu lange mit einer Aufgabe beschäftigt und wurde vom System zurückgesetzt – die Darstellung ist angehalten. Nach dem Neuladen rechnet rindr in kleineren Portionen.",

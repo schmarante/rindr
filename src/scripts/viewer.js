@@ -67,6 +67,7 @@ import { ModelAnimation, createPlaybar } from './animation.js';
 import { SkeletonView, setBoneState } from './skeleton-view.js';
 import { confirmDialog, choiceDialog, dialogOpen } from './dialog.js';
 import { showNotice } from './notice.js';
+import { gpuLabel, looksIntegrated } from './gpu-info.js';
 import { triangleLimits, deviceMemoryGB, memoryBudget, BYTES_PER_TRIANGLE, formatBytes, setSafeMode } from './memory-budget.js';
 import { beginLoad, endLoad, crashedLoad, markSafe, isSafe, clearSafe } from './load-guard.js';
 import { findOutliers, formatLength } from './outliers.js';   // patches the path tracer's background lookup – import before it is created
@@ -4875,7 +4876,7 @@ function setupGUI() {
         });
     }
 
-    setup.addSection('about', t('about.title')).append(buildAbout());
+    setup.addSection('about', t('about.title')).append(buildAbout({ gpu: adapter ? gpuLabel(adapter.info) : t('about.gpuNone') }));
 
     // save/load scene and undo/redo live in the bar at the bottom
 }
@@ -5549,6 +5550,21 @@ if (crashed) {
         message: t(reopen ? 'memory.crash.message' : 'memory.crash.messageDrop', { name: displayName(crashed.name) }) + `\n${t('memory.device')}: ${deviceMemoryText()}`,
         actions: reopen ? [{ label: t('memory.crash.reopen'), primary: true, onClick: reopen }] : [],
     });
+}
+// rendering on the processor's integrated graphics (gpu-info.js – a guess from vendor + architecture): say how to give
+// the browser the dedicated card; "don't show again" remembers this chip (another chip – e.g. the card after the
+// switch, or a new device – asks afresh)
+if (adapter && looksIntegrated(adapter.info) === true) {
+    const gpu = gpuLabel(adapter.info);
+    let dismissed = false;
+    try { dismissed = localStorage.getItem('rindr.gpuIntegratedHint') === gpu; } catch { /* storage blocked */ }
+    if (!dismissed) {
+        showNotice({
+            id: 'gpu-integrated', icon: 'info', title: t('gpu.integrated.title'),
+            message: t(/windows/i.test(navigator.userAgent) ? 'gpu.integrated.messageWindows' : 'gpu.integrated.message', { gpu }),
+            actions: [{ label: t('gpu.integrated.dismiss'), onClick: () => { try { localStorage.setItem('rindr.gpuIntegratedHint', gpu); } catch { /* storage blocked */ } } }],
+        });
+    }
 }
 if (MODEL_FILE && !(crashed?.url && crashed.name === MODEL_FILE)) {
     openModel(sourceForUrl(MODEL_FILE, MODEL_URL));

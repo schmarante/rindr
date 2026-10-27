@@ -22,7 +22,8 @@ const link = (href, text) => {
     return a;
 };
 
-export function buildAbout() {
+/** @param {{ gpu?: string }} options  gpu = the graphics chip rendering (gpu-info.js gpuLabel) */
+export function buildAbout({ gpu = '' } = {}) {
     const root = el('div', 'flex flex-col gap-3');
 
     const head = el('div');
@@ -40,6 +41,7 @@ export function buildAbout() {
     fact(t('about.author'), ABOUT.author || '–');
     if (ABOUT.email) fact(t('about.email'), link(`mailto:${ABOUT.email}`, ABOUT.email));
     fact(t('about.version'), version);
+    if (gpu) fact(t('about.gpu'), gpu);
     root.append(facts, el('div', 'text-white', t('about.madeWith')));
 
     const list = (title, items) => {
