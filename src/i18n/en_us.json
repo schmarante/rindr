@@ -1749,6 +1749,7 @@
         "notSceneOrMaterials": "{name}: neither a scene nor materials",
         "unsupportedFormat": "Format not supported ({extensions})",
         "dropHint": "Drag a file into the window",
+        "openFile": "Open file",
         "dropFormats": "STEP (.stp/.step) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · BIM (.ifc/.ifczip) · BCF issues (.bcfzip) · Gaussian splats (.ply/.sog)",
         "qualityReduced": "Large model (≈ {triangles} triangles at “{from}”) – quality automatically reduced to “{to}”",
         "modelTooLarge": "Model too large: ≈ {triangles} triangles at “{quality}” (limit {limit}) – loading cancelled",
