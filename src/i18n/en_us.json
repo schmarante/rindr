@@ -1647,6 +1647,7 @@
             "isotropic": "         {count} isotropic (sphere/cube – not comparable)"
         },
         "noWebGpu": "WebGL2 (no WebGPU)",
+        "integrated": "integrated",
         "millions": "{value} M",
         "thousands": "{value} k",
         "fps": "fps      {fps}  ({ms} ms CPU/frame)",
@@ -2109,6 +2110,8 @@
         "author": "Author",
         "email": "Email",
         "version": "Version",
+        "gpu": "Graphics",
+        "gpuNone": "WebGL2 (no WebGPU)",
         "madeWith": "Designed with ❤️. Powered by Claude.",
         "openSource": "RINDR is built on great open-source projects. Thanks to everyone who contributes to them!",
         "runtime": "In the viewer",
@@ -2506,6 +2509,12 @@
         }
     },
     "gpu": {
+        "integrated": {
+            "title": "Integrated graphics in use",
+            "message": "rindr renders on “{gpu}” – probably the graphics built into the processor. If the computer has a dedicated graphics card, assign the browser to it in the system settings and then restart the browser completely.",
+            "messageWindows": "rindr renders on “{gpu}” – probably the graphics built into the processor. If the computer has a dedicated graphics card: Windows Settings → System → Display → Graphics → choose the browser → Options → “High performance”, then close the browser completely and start it again. If the monitor is plugged into the mainboard instead of the graphics card, the built-in graphics render as well.",
+            "dismiss": "Don't show again"
+        },
         "lost": {
             "title": "Graphics card was reset",
             "message": "The graphics card was busy with one task for too long and was reset by the system – rendering has stopped. After reloading, rindr computes in smaller portions.",
