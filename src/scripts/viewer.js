@@ -21,7 +21,7 @@ import { buildDistributedSection, clientView } from './distributed/settings.js';
 import { IMPORT, KI, SPLATS, RASTER, SCENE, TRANSITION, LOD, SKELETON } from './config.js';
 import { importMeshFile, MissingFilesError, MESH_EXTENSIONS } from './mesh-importer.js';
 import { MaterialManager, FADE_MASK } from './material-manager.js';
-import { MATERIAL_PRESETS, presetName } from './material-presets.js';
+import { MATERIAL_PRESETS, presetName, loadLibraryPresets } from './material-presets.js';
 import { requestField, clearFields } from './materials/sss-field.js';
 import { MaterialPanel, MATERIAL_MIME } from './material-panel.js';
 import { MaterialThumbs } from './material-thumbs.js';
@@ -5578,6 +5578,8 @@ if (new URLSearchParams(location.search).has('debug')) {
         // material node graphs: bake an input into a PNG / render a description on the thumbnail sphere (debug-graph.js)
         bakeGraph: (graph, opts) => import('./debug-graph.js').then(m => m.bakeGraphImage(graphApplier, graph, opts)),
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel.thumbs, def)),
+        // all library presets (categories loaded on demand) – tests bake their node graphs
+        presets: () => loadLibraryPresets().then(() => MATERIAL_PRESETS),
         skeletonView, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 }
 

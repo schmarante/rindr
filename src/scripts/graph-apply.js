@@ -14,6 +14,9 @@ import { PARAMS } from './material-manager.js';
 import { UV_TILE } from './step-importer.js';
 
 const defaultParams = () => Object.fromEntries(PARAMS.map(p => [p.key, p.default]));
+// wait after a change before baking (changes in quick succession – a dragged value – bake once); baking is cheap
+// now that values do not compile anew (material-graph.js uniformConstants) – was 150 ms
+const BAKE_DELAY = 40;
 
 // input -> material property (value) / map / value when a map is set / sRGB map
 const SLOTS = {
@@ -44,6 +47,7 @@ export class GraphApplier {
         this.queue = Promise.resolve();
         this.pending = new Map();    // material ID -> timer
         this.waiting = new Set();    // material IDs with a bake run waiting in the queue
+        this.baking = new Set();     // material IDs being baked right now
     }
 
     /** Synchronous part; schedules the baking */
@@ -113,6 +117,22 @@ export class GraphApplier {
         await run;
     }
 
+    /**
+     * Resolves once no bake of this material is scheduled, waiting or running – its sphere thumbnail renders after
+     * that. Before, the thumbnail of a changed graph was rendered at once with the previous maps (the bake starts
+     * BAKE_DELAY later), kept under the new graph's key, and nothing asked again when the new maps came: the preview of
+     * the output node stayed behind (user: a checker into the colour, its fields changed – the sphere kept the old
+     * ones). A change during the wait schedules a new run, which is waited for too (at most `timeout` ms).
+     */
+    async settled(id, timeout = 15000) {
+        const end = performance.now() + timeout;
+        while (performance.now() < end) {
+            if (this.pending.has(id)) await new Promise(r => setTimeout(r, 40));
+            else if (this.waiting.has(id) || this.baking.has(id)) await this.queue;
+            else return;
+        }
+    }
+
     /** dispose the baked maps of a material that is thrown away (thumbnail of a preset) */
     release(material) {
         for (const tex of Object.values(material.userData.graphMaps || {})) tex.dispose();
@@ -130,10 +150,16 @@ export class GraphApplier {
             this.waiting.add(id);
             this.queue = this.queue.then(() => { this.waiting.delete(id); return this._bake(entry); })
                 .catch(err => console.error('[Material graph] Baking failed:', err));
-        }, 150));
+        }, BAKE_DELAY));
     }
 
     async _bake(entry) {
+        const id = entry.def.id;
+        this.baking.add(id);
+        try { await this._bakeMaps(entry); } finally { this.baking.delete(id); }
+    }
+
+    async _bakeMaps(entry) {
         const { material, def } = entry;
         const graph = def.graph;
         if (!graph) return;

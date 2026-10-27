@@ -392,7 +392,7 @@ export class NodeEditor {
     // bake the previews shortly after a change (one run at a time; a newer run makes older results stale)
     _schedulePreviews() {
         clearTimeout(this._previewTimer);
-        this._previewTimer = setTimeout(() => this._renderPreviews(), 120);
+        this._previewTimer = setTimeout(() => this._renderPreviews(), 40);   // was 120 ms – a preview takes a few ms now
     }
 
     async _renderPreviews() {

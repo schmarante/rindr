@@ -44,7 +44,7 @@ export const MAX_CELLS = 256;
  * Square cells: each octave is the previous one turned by 26.6° and scaled by √5 (integer matrix [[2,−1],[1,2]] –
  * keeps the tile period and hides the lattice axes). Stretched cells: octaves twice as fine, unrotated (streaks
  * must stay along u). Octaves are shifted against each other (otherwise all lattices meet at the tile corners) and
- * dropped once finer than MAX_CELLS.
+ * weighted 0 once finer than MAX_CELLS (kept in the shader, see the loop).
  */
 export function noiseSum(p, period, octaves, kind, seed, maxCells = MAX_CELLS) {
     const n = kind === 'regular' ? 1 : Math.max(1, octaves);
@@ -54,14 +54,16 @@ export function noiseSum(p, period, octaves, kind, seed, maxCells = MAX_CELLS) {
     let ma = 1, mb = 0;   // octave matrix [[ma, −mb], [mb, ma]] = (2 + i)^o
     for (let o = 0; o < n; o++) {
         const f = square ? Math.hypot(ma, mb) : 2 ** o;
-        if (o > 0 && Math.max(period[0], period[1]) * f > maxCells) break;
+        // an octave finer than maxCells gets the weight 0 instead of being left out: the shader then depends on the
+        // octave count only, not on the scale (a changed scale would compile anew – material-graph.js uniformConstants)
+        const on = !(o > 0 && Math.max(period[0], period[1]) * f > maxCells);
         const shift = vec2((o * 0.6180339) % 1 * 7, (o * 0.4142135) % 1 * 5);
         const v = square
             ? rotatedNoise(vec2(p.x.mul(ma).sub(p.y.mul(mb)), p.x.mul(mb).add(p.y.mul(ma))).add(shift), float(period[0]),
                 vec2(ma, mb), float(seed * 16 + o))
             : gradientNoise(p.mul(f).add(shift), vec2(period[0] * f, period[1] * f), float(seed * 16 + o));
-        sum = sum.add((kind === 'turbulence' ? abs(v).sub(0.25) : v).mul(amp));
-        a2 += amp * amp;
+        sum = sum.add((kind === 'turbulence' ? abs(v).sub(0.25) : v).mul(on ? amp : 0));
+        if (on) a2 += amp * amp;
         amp *= 0.5;
         [ma, mb] = [2 * ma - mb, ma + 2 * mb];
     }

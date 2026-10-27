@@ -12,7 +12,7 @@
 // random tone, soft transitions, fine striations, broken dark layer lines and optional elongated pores.
 // a = base, b = vein / dark layer colour, c = soft veining (veins) or layer lines and pores (banded).
 // Outputs: color, value (vein / layer mask 0..1 – for roughness or relief), pores (banded: 1 in a pore).
-import { Fn, float, vec2, vec3, vec4, abs, mix, clamp, smoothstep, max, min, pow, floor, fract, step } from 'three/tsl';
+import { Fn, float, uniform, vec2, vec3, vec4, abs, mix, clamp, smoothstep, max, min, pow, floor, fract, step } from 'three/tsl';
 import { T, C, tsl, coord, input, wrap, hash2, hash22, hash33, periodicNoise } from '../node-lib.js';
 import { fbmS, fbm2S, gnoise, gnoise2, worleyS, voronoiRegions } from './marble-noise.js';
 
@@ -123,7 +123,10 @@ export default {
         const jag = fbm2S(Q.mul(jf), per.mul(jf), 2, seed + 12);
         const px = s * st * V / BAKE * 1.5;   // ~1.5 texels in Voronoi cells (anti-aliasing)
         // vein network: x = f1, z = distance to the main veins, w = distance to the hairlines (in cells)
-        const w = voronoiRegions(Q.mul(V).add(jag.mul(1.2)), per.mul(V), id => veinCell(id, float(V / D), per.mul(D), float(seed + 20)));
+        // the cell function runs inside voronoiRegions' body: its values made out here, as uniforms (material-graph.js
+        // uniformConstants does not reach into that body)
+        const vd = uniform(V / D), nper = uniform(vec2(s * D, s * st * D)), vseed = uniform(seed + 20);
+        const w = voronoiRegions(Q.mul(V).add(jag.mul(1.2)), per.mul(V), id => veinCell(id, vd, nper, vseed));
         // ragged edges: the line width wobbles with a fine noise
         const rag = fbmS(Q.mul(V / 2).add(0.37), per.mul(V / 2), 2, seed + 18).mul(0.8).add(1);
         const lw = max(wvar.mul(rag).mul(width * 0.3), px);
