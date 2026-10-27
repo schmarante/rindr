@@ -22,6 +22,13 @@ const BUTTON = 'rounded px-2 py-0.5 text-white/80 hover:bg-white/15 disabled:opa
 const STORE_KEY = 'rindr.hdriEditor.window';
 
 const ICON_CLOSE = icon('close', 'size-3.5');
+const ICON_COPY = icon('copy', 'size-3.5'), ICON_DELETE = icon('delete', 'size-3.5'), ICON_PLUS = icon('plus', 'size-2.5');
+// pin types (shape + fill): circle, rectangle, gradient
+const PIN_ICONS = {
+    circle: icon('pin-circle', 'size-4'),
+    rect: icon('pin-rect', 'size-4'),
+    gradient: icon('pin-gradient', 'size-4'),
+};
 
 export class HdriEditor {
     /**
@@ -51,8 +58,8 @@ export class HdriEditor {
                 <button data-export="exr" class="${BUTTON}" title="${t('hdriEditor.exportExrTitle')}">.exr</button>
                 <span data-status class="ml-2 truncate text-white/40"></span>
                 <span class="ml-auto"></span>
-                <button data-duplicate class="${BUTTON}">${t('hdriEditor.duplicate')}</button>
-                <button data-delete class="${BUTTON} hover:text-red-300">${t('hdriEditor.delete')}</button>
+                <button data-duplicate class="${BUTTON} flex items-center py-1" title="${t('hdriEditor.duplicate')}" aria-label="${t('hdriEditor.duplicate')}">${ICON_COPY}</button>
+                <button data-delete class="${BUTTON} flex items-center py-1 hover:text-red-300" title="${t('hdriEditor.delete')}" aria-label="${t('hdriEditor.delete')}">${ICON_DELETE}</button>
                 <button data-close class="${BUTTON} flex items-center py-1" title="${t('hdriEditor.close')}">${ICON_CLOSE}</button>
             </div>
             <div class="flex min-h-0 flex-1">
@@ -394,7 +401,11 @@ export class HdriEditor {
         side.append(heading(t('hdriEditor.pins')));
         const add = el('div', 'mb-1.5 flex flex-wrap gap-1');
         for (const type of ['circle', 'rect', 'gradient']) {
-            const b = el('button', BUTTON + ' bg-white/5', t(`hdriEditor.add.${type}`));
+            // "+" and the pin type, the label as tooltip
+            const b = el('button', BUTTON + ' flex items-center gap-0.5 bg-white/5 py-1');
+            b.innerHTML = ICON_PLUS + PIN_ICONS[type];
+            b.title = t(`hdriEditor.add.${type}`);
+            b.setAttribute('aria-label', b.title);
             b.onclick = () => this._addPin(type);
             add.append(b);
         }
@@ -405,15 +416,20 @@ export class HdriEditor {
             const cb = el('input', CHECKBOX);
             cb.type = 'checkbox'; cb.checked = pin.enabled !== false; cb.title = t('hdriEditor.pinVisible');
             cb.onchange = () => { pin.enabled = cb.checked; this._change(); };
+            const kind = el('span', 'shrink-0 cursor-pointer text-white/50');
+            kind.innerHTML = PIN_ICONS[pinType(pin)];
+            kind.title = t(`hdriEditor.types.${pinType(pin)}`);
+            kind.onclick = () => this._select(pin.id);
             const label = el('span', 'min-w-0 flex-1 cursor-pointer truncate', pin.name || `${t(`hdriEditor.types.${pinType(pin)}`)} ${idx + 1}`);
             label.onclick = () => this._select(pin.id);
-            const dup = iconButton('⧉', t('hdriEditor.pinDuplicate'), () => {
+            const dup = iconButton(ICON_COPY, t('hdriEditor.pinDuplicate'), () => {
                 const copy = { ...JSON.parse(JSON.stringify(pin)), id: createPin('circle').id, azimuth: wrap180(pin.azimuth + 10) };
                 doc.pins.splice(idx + 1, 0, copy);
                 this.sel = copy.id; this._renderSide(); this._change();
             });
-            const del = iconButton('×', t('hdriEditor.pinDelete'), () => this._deletePin(pin.id));
-            r.append(cb, label, dup, del);
+            const del = iconButton(ICON_DELETE, t('hdriEditor.pinDelete'), () => this._deletePin(pin.id));
+            del.className = del.className.replace('hover:text-white', 'hover:text-red-300');
+            r.append(cb, kind, label, dup, del);
             list.append(r);
         });
         if (!doc.pins.length) list.append(hint(t('hdriEditor.noPins')));
@@ -645,9 +661,11 @@ function select(options, value, onChange) {
 function colorInput(value, onInput, onCommit) {
     return colorField(value, { onInput, onChange: () => onCommit() });
 }
-function iconButton(label, title, onClick) {
-    const b = el('button', 'size-5 shrink-0 rounded text-white/60 hover:bg-white/15 hover:text-white disabled:opacity-30', label);
+function iconButton(svg, title, onClick) {
+    const b = el('button', 'flex size-5 shrink-0 items-center justify-center rounded text-white/60 hover:bg-white/15 hover:text-white disabled:opacity-30');
+    b.innerHTML = svg;
     b.title = title;
+    b.setAttribute('aria-label', title);
     b.onclick = onClick;
     return b;
 }

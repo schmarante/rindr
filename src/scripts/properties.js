@@ -31,6 +31,20 @@ const TRANSFORM_ICONS = {
     scale: icon('scale', 'size-4'),           // small box growing to a large one
     reset: icon('reset', 'size-4'),           // arrow back to the origin
 };
+const ACTION_ICONS = {
+    flip: icon('flip', 'size-4'),         // mirror axis between two triangles (section plane: other side)
+    fly: icon('fly', 'size-4'),           // arrow heading off (fly to a saved view)
+    capture: icon('capture', 'size-4'),   // view finder (overwrite a view with the current camera)
+    delete: icon('delete', 'size-4'),
+};
+// icon button: the label as tooltip and for screen readers
+function actionButton(className, name, label, title = label) {
+    const b = el('button', className + ICON_BUTTON);
+    b.innerHTML = ACTION_ICONS[name];
+    b.title = title;
+    b.setAttribute('aria-label', label);
+    return b;
+}
 const ICON_BUTTON = ' flex items-center justify-center px-1.5 py-1';
 
 export class PropertiesPanel {
@@ -516,7 +530,7 @@ export class PropertiesPanel {
             b.onclick = () => tf.setValues({ rotation: rot });
             axes.append(b);
         }
-        const flip = el('button', BUTTON + ' ml-auto', t('properties.slicer.flip'));
+        const flip = actionButton(BUTTON + ' ml-auto', 'flip', t('properties.slicer.flip'));
         const doFlip = () => { slicer.flip(); this.ctx.onSlicerChange(); };
         flip.onclick = () => { doFlip(); this.ctx.record?.({ label: t('properties.slicer.undo.flip'), undo: doFlip, redo: doFlip }); };
         axes.append(flip);
@@ -539,17 +553,16 @@ export class PropertiesPanel {
         name.value = view.name;
         name.addEventListener('change', () => api.rename(view, name.value.trim() || view.name));
         name.addEventListener('keydown', e => { if (e.key === 'Enter') name.blur(); });
-        const button = (label, title, onClick) => {
-            const b = el('button', BUTTON, label);
-            b.title = title;
+        const button = (name, label, title, onClick, extra = '') => {
+            const b = actionButton(BUTTON + extra, name, label, title);
             b.onclick = onClick;
             return b;
         };
         const buttons = el('div', 'mt-1 flex flex-wrap gap-1');
         buttons.append(
-            button(t('properties.view.fly'), t('properties.view.flyTitle'), () => api.fly(view)),
-            button(t('properties.view.overwrite'), t('properties.view.overwriteTitle'), () => api.overwrite(view)),
-            button(t('properties.view.delete'), t('properties.view.deleteTitle'), () => api.remove(view)),
+            button('fly', t('properties.view.fly'), t('properties.view.flyTitle'), () => api.fly(view)),
+            button('capture', t('properties.view.overwrite'), t('properties.view.overwriteTitle'), () => api.overwrite(view)),
+            button('delete', t('properties.view.delete'), t('properties.view.deleteTitle'), () => api.remove(view), ' ml-auto hover:text-red-300'),
         );
         return [this._row(t('properties.view.name'), name), buttons, el('div', 'mt-1.5 text-white/40', t('properties.view.hint'))];
     }

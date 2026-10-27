@@ -45,6 +45,16 @@ export const mapLabel = key => (has(`materials.maps.${key}`) ? t(`materials.maps
 
 
 const BTN = 'rounded px-2 py-0.5 text-white/80 hover:bg-white/15 disabled:opacity-40 disabled:hover:bg-transparent';
+const ICON_BTN = BTN.replace('px-2 py-0.5', 'flex items-center justify-center p-1');
+const ACTION_ICONS = {
+    create: icon('material-new', 'size-4'),     // material ball with a plus (new material)
+    merge: icon('merge', 'size-4'),             // a dashed circle moving into a solid one (merge identical ones)
+    select: icon('select-objects', 'size-4'),   // dashed selection frame with a pointer
+    assign: icon('assign', 'size-4'),           // the material ball with a curved arrow down onto the selection
+    nodes: icon('nodes', 'size-4'),             // three connected nodes
+    copy: icon('copy', 'size-4'),
+    delete: icon('delete', 'size-4'),
+};
 const TAB = 'rounded px-2 py-0.5';
 // the list keeps its height (up to 30vh) – the material's settings below scroll instead of squeezing it away
 const LIST = 'max-h-[30vh] min-h-12 shrink-0 overflow-auto px-1 pb-1 select-none';
@@ -82,7 +92,7 @@ export class MaterialPanel {
             <div class="flex items-center justify-between gap-2 px-3 py-2">
                 <span class="font-medium">${t('materials.panel.title')}</span>
                 <span class="flex gap-1">
-                    <button data-act="merge" class="${BTN}" title="${t('materials.panel.mergeTitle')}" hidden>${t('materials.panel.merge')}</button>
+                    <button data-act="merge" class="${ICON_BTN}" title="${t('materials.panel.mergeTitle')}" aria-label="${t('materials.panel.merge')}" hidden>${ACTION_ICONS.merge}</button>
                     ${MATERIALS.importExport ? `<button data-act="import" class="${BTN}" title="${t('materials.panel.importTitle')}">${t('materials.panel.import')}</button>
                     <button data-act="export" class="${BTN}" title="${t('materials.panel.exportTitle')}">${t('materials.panel.export')}</button>` : ''}
                     ${hooks.thumbs ? `<span class="mr-2 flex gap-0.5 p-0.5">
@@ -99,7 +109,7 @@ export class MaterialPanel {
                 <button data-tab="scene" class="${TAB}">${t('materials.panel.tabs.scene')}</button>
                 <button data-tab="library" class="${TAB}">${t('materials.panel.tabs.library')}</button>
                 <select data-category class="${SELECT} ml-auto w-auto max-w-40" title="${t('materials.panel.categoryTitle')}" hidden></select>
-                ${MATERIALS.editing ? `<button data-act="new" class="${BTN} ml-auto" title="${t('materials.panel.newTitle')}">${t('materials.panel.new')}</button>` : ''}
+                ${MATERIALS.editing ? `<button data-act="new" class="${ICON_BTN} ml-auto" title="${t('materials.panel.newTitle')}" aria-label="${t('materials.panel.newTitle')}">${ACTION_ICONS.create}</button>` : ''}
             </div>
             <div data-list class="${LIST}"></div>
             <div data-editor class="min-h-0 overflow-y-auto border-t border-white/10 px-3 py-2" hidden></div>
@@ -463,20 +473,23 @@ export class MaterialPanel {
 
         const info = el('div', 'mb-1.5 flex flex-wrap items-center gap-1');
         info.append(el('span', 'text-white/40', t('materials.panel.id', { id: def.id })));
-        const assign = el('button', BTN + ' ml-auto', t('materials.panel.assignSelection'));
-        assign.dataset.act = 'assign';
-        assign.disabled = !this.hooks.getSelectionObject?.();
-        const users = el('button', BTN, t('materials.panel.selectObjects'));
-        users.dataset.act = 'select-users';
+        // actions as icons, the label as tooltip
+        const action = (act, name, label, title = label, extra = '') => {
+            const b = el('button', ICON_BTN + extra);
+            b.innerHTML = ACTION_ICONS[name];
+            b.dataset.act = act;
+            b.title = title;
+            b.setAttribute('aria-label', label);
+            return b;
+        };
+        const users = action('select-users', 'select', t('materials.panel.selectObjects'), t('materials.panel.selectObjectsTitle'), ' ml-auto');
         users.disabled = this.manager.usage(def.id) === 0;
-        users.title = t('materials.panel.selectObjectsTitle');
+        const assign = action('assign', 'assign', t('materials.panel.assignSelection'));
+        assign.disabled = !this.hooks.getSelectionObject?.();
         info.append(users);
-        const nodes = el('button', BTN, t('materials.panel.nodes'));
-        nodes.dataset.act = 'nodes';
-        const dup = el('button', BTN, t('materials.panel.duplicate'));
-        dup.dataset.act = 'duplicate';
-        const del = el('button', BTN, t('materials.panel.delete'));
-        del.dataset.act = 'delete';
+        const nodes = action('nodes', 'nodes', t('materials.panel.nodes'));
+        const dup = action('duplicate', 'copy', t('materials.panel.duplicate'));
+        const del = action('delete', 'delete', t('materials.panel.delete'), undefined, ' hover:text-red-300');
         del.disabled = this.manager.usage(def.id) > 0;
         del.title = del.disabled ? t('materials.panel.deleteInUse') : t('materials.panel.deleteTitle');
         info.append(assign, ...(editing ? [...(typeAllowsGraph(type) ? [nodes] : []), dup] : []), del);
