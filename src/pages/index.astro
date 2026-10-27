@@ -237,16 +237,16 @@ const CSP = [
             >
                 <div data-drop-single class="flex flex-col items-center gap-2">
                     <div class="text-lg font-medium" data-i18n="page.drop.title">{tr('page.drop.title')}</div>
-                    <div class="text-sm text-white/60" data-i18n="page.drop.hint">{tr('page.drop.hint')}</div>
-                    <div class="text-sm text-white/60" data-i18n-html="page.drop.addHint" set:html={formatHtml(tr('page.drop.addHint'))}></div>
+                    <div class="max-w-md text-sm text-balance text-white/60" data-i18n="page.drop.hint">{tr('page.drop.hint')}</div>
+                    <div class="max-w-md text-sm text-balance text-white/60" data-i18n-html="page.drop.addHint" set:html={formatHtml(tr('page.drop.addHint'))}></div>
                 </div>
                 <div data-drop-relink hidden class="flex flex-col items-center gap-2">
                     <div class="text-lg font-medium" data-i18n="page.drop.relinkTitle">{tr('page.drop.relinkTitle')}</div>
-                    <div class="text-sm text-white/60" data-i18n="page.drop.relinkHint">{tr('page.drop.relinkHint')}</div>
+                    <div class="max-w-md text-sm text-balance text-white/60" data-i18n="page.drop.relinkHint">{tr('page.drop.relinkHint')}</div>
                 </div>
                 <div data-drop-split hidden class="flex flex-col items-center gap-2">
                     <div class="text-lg font-medium" data-i18n="page.drop.replaceTitle">{tr('page.drop.replaceTitle')}</div>
-                    <div class="text-sm text-white/60" data-i18n="page.drop.replaceHint">{tr('page.drop.replaceHint')}</div>
+                    <div class="max-w-md text-sm text-balance text-white/60" data-i18n="page.drop.replaceHint">{tr('page.drop.replaceHint')}</div>
                 </div>
             </div>
             <div
@@ -255,8 +255,8 @@ const CSP = [
                 class="flex flex-1 flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-sky-400/80 bg-black/55 p-6 text-center backdrop-blur-sm transition-colors"
             >
                 <div class="text-lg font-medium" data-i18n="page.drop.addTitle">{tr('page.drop.addTitle')}</div>
-                <div class="text-sm text-white/60" data-i18n="page.drop.addSplitHint">{tr('page.drop.addSplitHint')}</div>
-                <div class="text-xs text-white/45" data-i18n="page.drop.splatNote">{tr('page.drop.splatNote')}</div>
+                <div class="max-w-md text-sm text-balance text-white/60" data-i18n="page.drop.addSplitHint">{tr('page.drop.addSplitHint')}</div>
+                <div class="max-w-md text-xs text-balance text-white/45" data-i18n="page.drop.splatNote">{tr('page.drop.splatNote')}</div>
             </div>
         </div>
 
