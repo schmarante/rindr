@@ -151,7 +151,9 @@ const CSP = [
             @media (prefers-reduced-motion: reduce) { #preloader [data-fill] { animation-duration: 0.01s; } }
         </style>
     </head>
-    <body class="m-0 overflow-hidden bg-neutral-900 font-sans">
+    <!-- no text selection in the interface (user: texts and selection frames came up while dragging in panels); fields
+         stay editable, texts worth copying opt back in with select-text (notices, dialogs, About, BCF comments) -->
+    <body class="m-0 overflow-hidden bg-neutral-900 font-sans select-none">
         <div id="viewport" class="h-dvh w-dvw"></div>
 
         <!-- preloader until the app has started (viewer.js hidePreloader): the logo in dark grey with a soft shadow on the

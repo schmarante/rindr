@@ -191,7 +191,7 @@ export function createBcfPanel({ apply, capture, open, save, author, openSetting
             meta.append(el('span', 'truncate', `${c.author || t('bcf.anonymous')} · ${formatDate(c.date)}`));
             const vp = c.viewpoint && topic.viewpoints.find(v => v.guid === c.viewpoint);
             if (vp) { const b = button(t('bcf.showView'), () => apply(vp, topic), '!px-1 text-sky-300'); meta.append(b); }
-            item.append(meta, el('div', 'whitespace-pre-wrap break-words', c.text));
+            item.append(meta, el('div', 'whitespace-pre-wrap break-words select-text', c.text));
             cbox.append(item);
         }
         const input = el('textarea', INPUT + ' min-h-12 resize-y');
