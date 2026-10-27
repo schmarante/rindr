@@ -94,7 +94,6 @@
                 "scene": "Scene",
                 "library": "Library"
             },
-            "new": "+ New",
             "newTitle": "New material",
             "empty": "No materials yet",
             "selectionBadge": "Selection",
