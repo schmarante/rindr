@@ -329,14 +329,17 @@ export class MaterialPanel {
         };
     }
 
-    // scene material: the instance in the scene (node graph, textures); memory only, key unique to the material
+    // scene material: the instance in the scene (node graph, textures); memory only, key unique to the material.
+    // Rendered once the maps of its node graph are baked (graph-apply.js settled) – otherwise the image showed the
+    // previous maps under the new key
     _sceneThumb(entry) {
         const { def } = entry;
         const preset = def.libraryId && !def.modified && MATERIAL_PRESETS.find(p => p.libraryId === def.libraryId);
-        if (preset) return { ...this._libraryThumb(preset), group: def.id, dispose: false, material: () => entry.material };
+        const material = async () => { await this.hooks.graphApplier?.settled(def.id); return entry.material; };
+        if (preset) return { ...this._libraryThumb(preset), group: def.id, dispose: false, material };
         return {
             key: thumbKey({ id: def.id, params: def.params, graph: def.graph, maps: Object.keys(def.render?.maps || {}) }),
-            group: def.id, persist: false, material: () => entry.material, previous: this.thumbs?.url(this.lastThumb.get(def.id)),
+            group: def.id, persist: false, material, previous: this.thumbs?.url(this.lastThumb.get(def.id)),
         };
     }
 

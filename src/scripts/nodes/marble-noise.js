@@ -94,7 +94,9 @@ export function worleyS(p, period, seed, jitter = 0.9) {
  * first compile took seconds.
  */
 export function voronoiRegions(p, period, cell, jitter = 0.9) {
-    return Fn(() => {
+    // values as arguments: constants written in the body would stay in the shader code (material-graph.js
+    // uniformConstants) – `cell` must take its values the same way (marble.js passes nodes made outside)
+    return Fn(([p, period, jitter]) => {
         const i = floor(p).toVar();
         const f = fract(p).toVar();
         const visit = body => Loop({ start: int(-1), end: int(1), type: 'int', condition: '<=', name: 'y' }, ({ y }) => {
@@ -119,5 +121,5 @@ export function voronoiRegions(p, period, cell, jitter = 0.9) {
             edge.assign(min(edge, vec2(d.sub(f1)).add(step(abs(ci.zw.sub(k1)), vec2(0.5)).mul(8))));
         });
         return vec4(f1, f2, edge);
-    })();
+    })(p, period, float(jitter));
 }

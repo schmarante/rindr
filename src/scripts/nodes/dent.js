@@ -54,7 +54,9 @@ export default {
         let w = 1, norm = 0;
         for (let o = 0; o < Math.max(1, Math.round(p.detail)); o++) {
             const n = s * 2 ** o;
-            if (o > 0 && n > 256) break;                      // finer dents would only alias in the bake
+            // finer dents would only alias in the bake: weight 0 – kept in the shader, so a changed scale does not
+            // change the code (no new compile, material-graph.js uniformConstants)
+            const on = !(o > 0 && n > 256);
             let q = uv.mul(n);
             if (p.distort > 0) {
                 // bend the grid: two noise fields with cells about twice the dent size, offset ≤ distort × ½ cell
@@ -63,8 +65,8 @@ export default {
                 q = q.add(vec2(gradientNoise(nq, vec2(...np), float(seed + 16 + 2 * o)),
                     gradientNoise(nq.add(vec2(3.7, 1.3)), vec2(...np), float(seed + 17 + 2 * o))).mul(p.distort * 0.5 * n / np[0]));
             }
-            sum = sum.add(dentLayer(q, vec2(n, n), seed + o * 2, size, p.density).mul(w));
-            norm += w;
+            sum = sum.add(dentLayer(q, vec2(n, n), seed + o * 2, size, p.density).mul(on ? w : 0));
+            if (on) norm += w;
             w *= 0.5;
         }
         const v = clamp(float(1).sub(sum.mul(p.strength / norm)), 0, 1);

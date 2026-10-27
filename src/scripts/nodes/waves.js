@@ -81,8 +81,9 @@ function ripples(c, p, n, warp) {
     const centres = Math.min(Math.max(Math.round(p.centres), 1), 8);
     const lambda = Math.min(Math.max(p.wavelength, 0.01), 0.5);
     const seed = Math.round(p.seed) * 16;
-    // runtime loop (3 × 3 neighbour cells × centres): unrolled, the shader took ~0.6 s to compile
-    const h = Fn(() => {
+    // runtime loop (3 × 3 neighbour cells × centres): unrolled, the shader took ~0.6 s to compile. The values come in
+    // as arguments – constants written in the body would stay in the shader code (material-graph.js uniformConstants)
+    const h = Fn(([i, f, n, seed, lambda]) => {
         const sum = float(0).toVar();
         Loop({ start: 0, end: 9, type: 'int', name: 'k' }, { start: 0, end: centres, type: 'int', name: 'j' }, ({ k, j }) => {
             const o = vec2(float(k.mod(3)).sub(1), float(k.div(3)).sub(1));
@@ -101,7 +102,7 @@ function ripples(c, p, n, warp) {
             sum.addAssign(sin(dist.div(wl).mul(TAU).sub(h2.z.mul(TAU))).mul(amp));
         });
         return clamp(sum.div(Math.sqrt(centres) * 1.1).mul(0.5).add(0.5), 0, 1);
-    })();
+    })(i, f, float(n), float(seed), float(lambda));
     return { h, cell: wrap(i, n) };
 }
 

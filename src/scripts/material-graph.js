@@ -512,7 +512,7 @@ export class GraphBaker {
         if (target.width !== size) target.setSize(size, size);
         let out = type === 'float' ? vec3(node) : node;
         if (srgb) out = sRGBTransferOETF(out);
-        this.material.fragmentNode = vec4(out, 1);
+        this.material.fragmentNode = uniformConstants(vec4(out, 1));
         this.material.needsUpdate = true;
         const prev = renderer.getRenderTarget();
         renderer.setRenderTarget(target);
@@ -533,7 +533,7 @@ export class GraphBaker {
         const { renderer } = this;
         const target = this.heightTarget ??= new THREE.RenderTarget(size, size, { depthBuffer: false, type: THREE.FloatType });
         if (target.width !== size) target.setSize(size, size);
-        this.material.fragmentNode = vec4(vec3(heightNode), 1);
+        this.material.fragmentNode = uniformConstants(vec4(vec3(heightNode), 1));
         this.material.needsUpdate = true;
         const prev = renderer.getRenderTarget();
         renderer.setRenderTarget(target);
@@ -558,6 +558,40 @@ export class GraphBaker {
         }
         return makeTexture(out, false, n);
     }
+}
+
+// Every number in a bake shader becomes a uniform of the same value, so a changed node value leaves the shader code
+// as it was – three then takes the compiled pipeline from its cache instead of compiling anew, which took ~200 ms per
+// node preview and map and held the GPU process (the window stood still; user: "node editor very slow"; measured
+// with a checker: 230 ms → 6 ms). Only a change of structure (a link, a select, the number of octaves) compiles –
+// that first compile costs ~7 % more than with constants (measured 440 vs. 410 ms). Compiling it in the background
+// (compileAsync) was tried and dropped: twice as slow, and the GPU process stood still just the same.
+// The nodes build their expressions from plain JS numbers; turning those into uniforms in every node by hand would
+// be a lot of places to keep right, so the finished tree is rewritten here: each float / vector constant (no
+// int/uint – bit operations and indices stay constants) is replaced in its parent by a uniform. Constants written
+// inside inline Fn(() => …)() bodies are not in the tree – such bodies take their values as arguments instead
+// (waves.js ripples, marble-noise.js voronoiRegions).
+const UNIFORM_TYPES = new Set([null, 'float', 'vec2', 'vec3', 'vec4', 'color']);
+export function uniformConstants(root) {
+    // one uniform per use: three shares constant nodes of equal value, so merging them would let the uniform count –
+    // and the code – depend on whether two values happen to be equal (a noise threshold of 0.25 next to a fixed 0.25
+    // compiled anew)
+    const seen = new Set();
+    const stack = [root];
+    const swap = c => uniform(typeof c.value === 'number' ? c.value : c.value.clone(), c.nodeType || undefined);
+    while (stack.length) {
+        const node = stack.pop();
+        if (seen.has(node)) continue;
+        seen.add(node);
+        for (const { property, index, childNode } of node._getChildren()) {
+            const v = childNode.value;
+            if (childNode.isConstNode && UNIFORM_TYPES.has(childNode.nodeType ?? null)
+                && (typeof v === 'number' || v?.isVector2 || v?.isVector3 || v?.isVector4 || v?.isColor)) {
+                if (index === undefined) node[property] = swap(childNode); else node[property][index] = swap(childNode);
+            } else stack.push(childNode);
+        }
+    }
+    return root;
 }
 
 function makeTexture(data, srgb, size) {
