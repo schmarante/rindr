@@ -122,13 +122,25 @@ function showStatus(text) {
     loadingEl.style.opacity = '1';
 }
 // Empty scene: headline "drop a file into the window" + the supported formats below it
+// empty scene: drop hint, the formats (narrow – the long list ran across the window) and "open file" below
+const ICON_OPEN_FILE = icon('open', 'size-4');
 function showDropHint() {
     const title = document.createElement('div');
     title.textContent = t('status.dropHint');
     const formats = document.createElement('div');
-    formats.className = 'mt-1 text-sm text-white/60';
-    formats.textContent = t('status.dropFormats');
-    loadingEl.replaceChildren(title, formats);
+    formats.className = 'mx-auto mt-1 max-w-md text-sm text-white/60';
+    // a format never breaks inside (e.g. "Blender (.blend)"), only between the entries
+    t('status.dropFormats').split(' · ').forEach((f, i) => {
+        if (i) formats.append(' · ');
+        formats.append(Object.assign(document.createElement('span'), { className: 'whitespace-nowrap', textContent: f }));
+    });
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'pointer-events-auto mt-4 inline-flex items-center gap-1.5 rounded bg-white/10 px-3 py-1.5 text-sm text-white/90 transition-colors hover:bg-white/20';
+    open.innerHTML = ICON_OPEN_FILE;
+    open.append(t('status.openFile'));
+    open.onclick = () => modelFileInput.click();
+    loadingEl.replaceChildren(title, formats, open);
     loadingEl.style.opacity = '1';
 }
 // the preloader of the page (index.astro): complete the sweep from where its animation stands, fade out, remove
@@ -5421,7 +5433,21 @@ window.addEventListener('drop', async e => {
     setDropOverlay(false);
     const relink = assetsWindow.isOpen;
     assetsWindow.setDragActive(false);
-    let files = await droppedFiles(e.dataTransfer);
+    openFiles(await droppedFiles(e.dataTransfer), { side, relink });
+});
+// "open file" (drop hint): the same way as dropped files – several at once (model with its textures / .bin, scene
+// file, BCF); nothing loaded → added as the first model
+const modelFileInput = Object.assign(document.createElement('input'), { type: 'file', multiple: true, hidden: true });
+modelFileInput.onchange = () => {
+    const files = [...modelFileInput.files].map(file => ({ path: file.name, file }));
+    modelFileInput.value = '';
+    if (files.length) openFiles(files, { side: 'add', relink: assetsWindow.isOpen });
+};
+document.body.append(modelFileInput);
+
+/** Open dropped or picked files ({ path, file }[]): BCF, scene/material JSON, relink into the asset window, splats,
+ *  models – side 'replace' (left half of the drop area) or 'add' */
+async function openFiles(files, { side = 'add', relink = false } = {}) {
     // BCF issues (.bcfzip): into the issue window; models dropped along with them load as usual
     // (with RINDR's scene or IFC names in the headers it opens like a scene – the other files serve as its assets)
     const bcfFile = files.find(f => BCF_EXTENSIONS.includes(extOf(f.path)));
@@ -5479,7 +5505,7 @@ window.addEventListener('drop', async e => {
         return;
     }
     models.forEach(m => addModel(m));
-});
+}
 
 // distributed rendering (initDistributed below): master or render client
 let renderMaster = null, renderClient = null, distDisplay = null, distSection = null, distLastResult = null, distHub = null;
