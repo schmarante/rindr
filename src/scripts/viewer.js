@@ -101,6 +101,8 @@ applyDom();
 
 // Model: ?model=<file name from public/models> in the URL, otherwise empty scene (open a file via drag & drop)
 const MODEL_FILE = new URLSearchParams(location.search).get('model');
+// ?samplescene: the sample scene in public/samplescene (scene file + its model, openSampleScene)
+const SAMPLE_SCENE = new URLSearchParams(location.search).has('samplescene');
 // sub folders allowed (e.g. ?model=folder/scene.gltf – .bin/textures are resolved relative to it)
 const MODEL_URL = `${import.meta.env.BASE_URL}models/${(MODEL_FILE || '').split('/').map(encodeURIComponent).join('/')}`;
 // OIDN weights (Apache 2.0, from RenderKit/oidn-weights)
@@ -5570,6 +5572,25 @@ async function openHdriFile(file) {
     flashStatus(t('status.hdriDropped', { name: file.name }), 4000);
 }
 
+/** The sample scene (public/samplescene: samplescene.json naming samplescene.usda – coarse meshes the USD import
+ *  subdivides) – fetched and opened like the two files dropped together */
+async function openSampleScene() {
+    const base = `${import.meta.env.BASE_URL}samplescene/`;
+    showProgress(t('status.loadingSample'));
+    try {
+        const files = await Promise.all(['samplescene.json', 'samplescene.usda'].map(async name => {
+            const res = await fetch(base + name);
+            if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
+            return { path: name, file: new File([await res.blob()], name, name.endsWith('.json') ? { type: 'application/json' } : {}) };
+        }));
+        await openFiles(files, { side: 'add' });
+    } catch (err) {
+        hideProgress();
+        showError(err, { title: t('status.sampleError') });
+        showDropHint();
+    }
+}
+
 /** Open dropped or picked files ({ path, file }[]): BCF, scene/material JSON, relink into the asset window, splats,
  *  models – side 'replace' (left half of the drop area) or 'add' */
 async function openFiles(files, { side = 'add', relink = false } = {}) {
@@ -5729,7 +5750,8 @@ if (adapter && looksIntegrated(adapter.info) === true) {
         });
     }
 }
-if (MODEL_FILE && !(crashed?.url && crashed.name === MODEL_FILE)) {
+if (SAMPLE_SCENE) openSampleScene();
+else if (MODEL_FILE && !(crashed?.url && crashed.name === MODEL_FILE)) {
     openModel(sourceForUrl(MODEL_FILE, MODEL_URL));
 } else {
     showDropHint();
