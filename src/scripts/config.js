@@ -87,10 +87,10 @@ export const MATERIALS = {
     importExport: false,   // JSON import/export buttons in the material panel (comes back later)
 };
 
-// Scene files: "save scene" / "open scene" buttons in the toolbar hidden for now (still buggy, user Oct. 2026 –
-// comes back later). Saving/restoring code stays; dropping a scene file still opens it.
+// Scene files: "save scene" / "open scene" buttons in the toolbar (hidden for a while – still buggy then –, back since
+// the sample scene was built with them, user Oct. 2026). Dropping a scene file opens it either way.
 export const SCENE = {
-    saveOpen: false,
+    saveOpen: true,
 };
 
 // Opening large models (STEP): protection against running out of memory. Before tessellating, the
