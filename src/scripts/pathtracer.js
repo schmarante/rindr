@@ -71,6 +71,9 @@ export class PathTracingView {
         this._tracing = false;          // inside a path tracer call from render() (async compile applies)
         this._compiling = 0;            // pipelines being compiled asynchronously
         this._compiled = false;         // a compile finished -> restart (the skipped dispatches counted as samples)
+        this._injected = -1;            // restart count of an injected picture (injectImage) – no kernel needed for it
+        this.holdKernel = false;        // a render job's picture comes as buckets (viewer): the view traces nothing until
+                                        // it is injected – no kernel compiled when this computer does not render along
         this._envToken = 0;
         if (this.supported) { this._installAsyncCompile(); this._installTimestamps(); }
 
@@ -629,15 +632,21 @@ export class PathTracingView {
      * Distributed rendering: an image assembled from buckets (linear RGBA, rows top to bottom, w × h = the path
      * tracer's size) becomes the finished accumulation of `samples` samples – the rest of the chain (denoiser,
      * upscaler, image fade, lens effects, export) treats it like an own render. Every pixel's sample count is set to the
-     * maximum, so the kernel skips them all; the sample rounds are then played through (one tile per round – the
-     * budget covers the image) until the counters say done.
+     * maximum and the sample rounds are played through without the kernel (one tile per round – the budget covers the
+     * image) until the counters say done: it would skip every pixel anyway, so it need not be compiled – this computer
+     * does not wait for its kernel before a job it does not render along (it compiles only once the view restarts). A
+     * compile still running or finished meanwhile neither covers nor restarts the picture (render(), _injected).
      */
     async injectImage(data, w, h, samples) {
         if (!this.ready) throw new Error('path tracer not ready');
         const pt = this.pathTracer, backend = pt._pathTracer, gpu = this.renderer.backend;
-        // the rounds below play through the kernel there is (compiled; after a pass job its variant – holdPassKernel)
         if (!pt.material.initialized) { pt.material.init(this.renderer); pt.material.initialized = true; }
+        // what the next frame would take over and restart with (the view traced nothing yet – holdKernel): the kernel
+        // variant render() picks (a pass job's – holdPassKernel), the camera, the size
+        backend.kernel?.setLightPasses?.(this._passHold === true);
+        this._applyCamera();
         pt.maxSamples = samples;
+        pt.setSize(w, h);
         backend.setSize(w, h);
         pt.reset();   // clears the targets (creates them on the GPU) and the denoiser
         const write = (texture, array, bytesPerTexel) => gpu.device.queue.writeTexture({ texture: gpu.get(texture).texture }, array,
@@ -647,15 +656,17 @@ export class PathTracingView {
         write(backend.sampleCountTarget, new Uint32Array(w * h).fill(samples), 4);
         const budget = backend.frameBudget;
         backend.frameBudget = w * h;
-        this._tracing = true;
+        this.renderer.compute = () => {};   // the rounds' only dispatch is the kernel's
         try {
             for (let i = 0; i < samples + 2 && backend._completedSamples + backend._tileProgress < samples; i++) backend.update();
         } finally {
-            this._tracing = false;
+            delete this.renderer.compute;
             backend.frameBudget = budget;
         }
         pt._lastSampleCounts = { min: samples, max: samples, avg: samples, samplesPerSecond: 0 };
-        this._compiled = false;   // a compile that finished meanwhile must not restart (and wipe) the image
+        this._injected = this._restarts;
+        this._restarted = false;   // no first sample (it would build the kernel)
+        this._holdShown = false;
         await gpu.device.queue.onSubmittedWorkDone();
     }
 
@@ -776,10 +787,12 @@ export class PathTracingView {
         const hold = this._passHold === true || (this._passHold !== null && this._passHold === this._restarts);
         if (!hold) this._passHold = null;
         if (pt._pathTracer.kernel?.setLightPasses?.(hold)) pt.reset();
+        const injected = this._injected === this._restarts;
+        if (this.holdKernel && !injected) { rasterize(); return true; }
         // kernel compiling asynchronously: raster image meanwhile; afterwards start over (the frames without
-        // dispatch were counted as samples)
-        if (this._compiling) { rasterize(); return true; }
-        if (this._compiled) {
+        // dispatch were counted as samples) – not for an injected picture (until the next restart)
+        if (this._compiling && !injected) { rasterize(); return true; }
+        if (this._compiled && !injected) {
             this._compiled = false;
             pt.reset();
             this._firstSample ||= performance.now();
@@ -793,7 +806,7 @@ export class PathTracingView {
             this._tracing = false;
         }
         this._readTimestamps();
-        if (this._compiling) { rasterize(); return true; }
+        if (this._compiling && !injected) { rasterize(); return true; }
         if (pt.fadeState < 1 || (this._holdShown && this._holdCover)) rasterize();
 
         // update the sample count for the display occasionally (it is a GPU readback)
@@ -1073,16 +1086,7 @@ export class PathTracingView {
             for (let i = 1; i < this.motion.samples; i++) pt._pathTracer.update();
         }
         // restart in the render loop, right before the next sample
-        if (this._pendingCameraUpdate) {
-            this._pendingCameraUpdate = false;
-            // only the parameters: updateEnvironment() would rebuild the environment (importance sampling)
-            if (this.backgroundFollowsCamera) {
-                const { scene } = pt;
-                pt._pathTracer.setBackgroundParams(scene.backgroundIntensity, scene.backgroundRotation, scene.backgroundBlurriness);
-            }
-            pt.updateCamera();
-            if (this._fullFirst && pt.material?.initialized) { this._renderFirstSample(); this._restarted = false; }
-        }
+        if (this._applyCamera() && this._fullFirst && pt.material?.initialized) { this._renderFirstSample(); this._restarted = false; }
         // (not before the library's first renderSample(): it initialises the material the kernel is built from)
         if (this._restarted && !this._motion && pt.material?.initialized) {
             this._restarted = false;
@@ -1107,6 +1111,20 @@ export class PathTracingView {
             this.renderer.backend?.device?.queue.onSubmittedWorkDone()
                 .then(() => debugLog(`[Pathtracer] first sample finished on the GPU after ${(performance.now() - start).toFixed(0)} ms (incl. shader compilation)`));
         }
+    }
+
+    // a camera change pending (restartCamera) taken over – true if there was one
+    _applyCamera() {
+        if (!this._pendingCameraUpdate) return false;
+        this._pendingCameraUpdate = false;
+        const pt = this.pathTracer;
+        // only the parameters: updateEnvironment() would rebuild the environment (importance sampling)
+        if (this.backgroundFollowsCamera) {
+            const { scene } = pt;
+            pt._pathTracer.setBackgroundParams(scene.backgroundIntensity, scene.backgroundRotation, scene.backgroundBlurriness);
+        }
+        pt.updateCamera();
+        return true;
     }
 
     _canMotion() {

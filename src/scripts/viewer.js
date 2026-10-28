@@ -453,7 +453,7 @@ renderer.onError = info => {
     if (pathTracing.ready && /buffer|binding size|out of memory/i.test(message) && !/vertex buffer slot|index buffer/i.test(message)) pathTracing.fail(message);
 };
 // During movement (mouse pressed, zoom) rasterizer, afterwards path tracing again
-controls.addEventListener('start', () => { releaseExportScale(); pathTracing.beginInteraction(); });
+controls.addEventListener('start', () => { releaseExportScale(); releaseRenderView(); pathTracing.beginInteraction(); });
 // near plane of a file camera's clip start (flyToView) – given up when the user moves the camera
 let clipNear = null;
 controls.addEventListener('start', () => { if (clipNear) { clipNear = null; camera.near = Math.min(camera.near, camera.position.distanceTo(controls.target) * 0.001); camera.updateProjectionMatrix(); } });
@@ -829,7 +829,7 @@ const contours = new ContourPass(renderer, scene, camera, {
 // setup menu, view mode. Not while dragging (sliders, gizmo, orbiting apply live).
 const screenFade = new ScreenFade(renderer, TRANSITION);
 const smoothChange = () => { if (!pathTracing._dragging && !pathTracing.interacting) screenFade.begin(); };
-pathTracing.onRestart = () => { releaseExportScale(); if (viewMode === 'hq') smoothChange(); };
+pathTracing.onRestart = () => { releaseExportScale(); releaseRenderView(); if (viewMode === 'hq') smoothChange(); };
 for (const name of ['record', 'undo', 'redo']) {
     const f = history[name].bind(history);
     history[name] = (...args) => { smoothChange(); return f(...args); };
@@ -3432,7 +3432,7 @@ async function exportImage(transparent, onProgress, isOpen, scale = 1, samples =
                 await nextFrame(); await nextFrame();   // the background is back in the path tracer (it restarted)
                 await pathTracing.injectImage(keep.data, keep.w, keep.h, keep.samples);
             } else if (mode !== 'hq') setViewMode(mode);
-        }
+        } else if (done) holdRenderView(mode);
     }
 }
 async function exportScaled(transparent, onProgress, isOpen, scale) {
@@ -3471,6 +3471,19 @@ function releaseExportScale() {
     const ratio = heldExportRatio;
     heldExportRatio = null;
     restoreExportScale(ratio);
+}
+// A render started from another mode (Standard …) switches to HQ: its picture stays to look at, the next change of the view
+// (camera, a path tracer restart – material, light, window …) goes back to that mode instead of path tracing on (user:
+// "after rendering it jumps to HQ although I clicked render in Standard"); choosing a mode ends it as well
+let renderedFrom = null;
+function holdRenderView(mode) {
+    renderedFrom = mode !== 'hq' ? mode : null;
+}
+function releaseRenderView() {
+    if (renderedFrom === null) return;
+    const mode = renderedFrom;
+    renderedFrom = null;
+    if (viewMode === 'hq') setViewMode(mode);
 }
 // alpha of the transparent export is computed back through the ACES curve without the image look: those
 // captures are taken with ACES + neutral look (only the output changes – the path traced image stays)
@@ -4034,6 +4047,7 @@ if (webgpuBlocked && gpuRecovering) showHqUnavailable();
 let modeBeforeHq = 'default';   // the mode HQ was entered from – the ✕ of the path tracing status goes back to it
 function setViewMode(mode) {
     releaseExportScale();
+    renderedFrom = null;
     // HQ without WebGPU: the dimmed button explains why; already in Default → nothing changes (no fade)
     if (mode === 'hq' && !pathTracing.supported) {
         showHqUnavailable();
@@ -6373,13 +6387,13 @@ async function ensurePathTracer() {
         await new Promise(resolve => setTimeout(resolve, 50));
     }
 }
-// path tracer done with pending changes – rebuilt, and a first sample rendered: a plain background needs a kernel variant
-// of its own, compiled only with the first sample (asynchronously; afterwards it restarts – that would have thrown away
-// the injected picture). The render loop runs the frames for it.
-async function pathTracerSettled() {
+// path tracer done with pending changes (scene rebuilt, new background) before a job whose picture is injected – not
+// waiting for its kernel or a first sample: injectImage needs neither, and a compile finishing afterwards no longer
+// restarts (throws away) the injected picture. Waiting for them held up the clients for the compile and a whole sample
+// of this computer, even when it did not render along (user: it went into HQ first and took ages).
+async function pathTracerApplied() {
     await nextFrame(); await nextFrame();
-    const settled = s => ['rendering', 'denoise-loading', 'denoising', 'done'].includes(s.phase) && s.samples >= 1;
-    for (let i = 0; i < 1200 && !settled(pathTracing.getStatus()); i++) await nextFrame();
+    for (let i = 0; i < 1200 && pathTracing.building; i++) await nextFrame();
 }
 // node graphs bake asynchronously after a scene was applied – buckets wait until the materials are complete
 async function settleMaterials() {
@@ -6435,10 +6449,8 @@ async function renderDistributedImage(scale, samples, transparent = false) {
     const mode = viewMode;
     const keep = mode === 'hq' && ['rendering', 'denoise-loading', 'denoising', 'done'].includes(pathTracing.getStatus().phase)
         ? await pathTracing.snapshotImage().catch(() => null) : null;
-    await ensurePathTracer();
-    // its kernel compiled and a first sample rendered: a compile finishing after the injection restarted the path tracer –
-    // the distributed picture was thrown away and this computer rendered the image itself (from Standard)
-    await pathTracerSettled();
+    pathTracing.holdKernel = true;   // the view traces nothing until the picture comes (this computer's buckets: renderRegion)
+    try { await ensurePathTracer(); await pathTracerApplied(); } catch (err) { pathTracing.holdKernel = false; throw err; }
     const ratio = renderer.getPixelRatio();
     if (scale !== 1) { renderer.setPixelRatio(ratio * scale); lens.setPixelScale(scale); }
     const { grey, greyY } = matteGrey();
@@ -6462,15 +6474,17 @@ async function renderDistributedImage(scale, samples, transparent = false) {
             // the path tracer takes the new background before the job – otherwise it rebuilt once the render loop ran again
             // and threw the injected picture away (rendered the pass itself)
             distPass = transparent ? { n, total: passes.length, rendered: false } : null;   // segments from the start
-            if (setMatte(passes[n])) await pathTracerSettled();
+            if (setMatte(passes[n])) await pathTracerApplied();
             check();
             const image = await runDistributedJob(size, samples, preview, { matte: passes[n], keepScene: n > 0 });
             check();
             preview = image;
             if (distPass) distPass.rendered = true;
             await pathTracing.injectImage(image.data, image.width, image.height, samples);
+            pathTracing.holdKernel = false;   // should it restart after all, it renders the picture itself rather than wait
             endDistributedView();
             await waitForImage(() => {}, () => !render.cancelled);   // denoised – the status shows it (pass segments: purple)
+            pathTracing.holdKernel = true;
             if (!transparent) { outcome = 'done'; return await exportFrame(); }
             shots.push(await captureNeutral());
             if (n === 0) color = await exportFrame();
@@ -6483,6 +6497,7 @@ async function renderDistributedImage(scale, samples, transparent = false) {
         outcome = 'cancelled';
         throw new DOMException('Render cancelled', 'AbortError');
     } finally {
+        pathTracing.holdKernel = false;
         distRender = null;
         distPass = null;
         const matted = setMatte(null);
@@ -6499,7 +6514,7 @@ async function renderDistributedImage(scale, samples, transparent = false) {
                 if (matted || scale !== 1) { await nextFrame(); await nextFrame(); }
                 await pathTracing.injectImage(keep.data, keep.w, keep.h, keep.samples).catch(() => {});
             }
-        }
+        } else if (outcome === 'done') holdRenderView(mode);
     }
 }
 // Render window, EXR/PSD (docs/pathtracer.md "Licht-Passes"): the buckets with their light passes – on this computer alone
@@ -6521,8 +6536,9 @@ async function renderLightPasses(scale, samples, distributed, format) {
         ? await pathTracing.snapshotImage().catch(() => null) : null;
     // only the kernel variant with the passes is compiled (the view's first sample too – not the normal one before it)
     pathTracing.holdPassKernel(true);
-    await ensurePathTracer();
-    await pathTracerSettled();
+    pathTracing.holdKernel = true;   // as renderDistributedImage
+    try { await ensurePathTracer(); await pathTracerApplied(); } catch (err) { pathTracing.holdKernel = false; pathTracing.holdPassKernel(false); throw err; }
+    const renderHere = !distributed || renderMaster.renderLocal;
     const ratio = renderer.getPixelRatio();
     if (scale !== 1) { renderer.setPixelRatio(ratio * scale); lens.setPixelScale(scale); }
     let outcome = null, release = null;
@@ -6544,8 +6560,9 @@ async function renderLightPasses(scale, samples, distributed, format) {
         pathTracing.setLightMix(null);
         lightMix ??= new LightMix(renderer);
         lightMix.begin(w, h, lightSlotNames(), { layout: matte ? MATTE_PASSES : null });
-        // the kernel with the passes compiled first (status "preparing the path tracer") – then the buckets start at once
-        await pathTracing.prepareLightPasses(() => render.cancelled);
+        // the kernel with the passes compiled first (status "preparing the path tracer") – then the buckets start at once;
+        // not when only the clients render (the picture is injected without it)
+        if (renderHere) await pathTracing.prepareLightPasses(() => render.cancelled);
         if (render.cancelled) throw new DOMException('Render cancelled', 'AbortError');
         passMix = lightMix;
         const preview = keep && keep.w === w && keep.h === h ? { data: keep.data, width: keep.w, height: keep.h } : null;
@@ -6557,6 +6574,7 @@ async function renderLightPasses(scale, samples, distributed, format) {
         passMix = null;
         if (render.cancelled) throw new DOMException('Render cancelled', 'AbortError');
         await pathTracing.injectImage(image.data, image.width, image.height, samples);
+        pathTracing.holdKernel = false;   // as renderDistributedImage
         pathTracing.setLightMix(lightMix);
         release = lightMix.hold();   // the passes stay until the file is written, even when a restart ends the mix
         endDistributedView();
@@ -6583,6 +6601,7 @@ async function renderLightPasses(scale, samples, distributed, format) {
         if (outcome !== 'done') outcome = 'cancelled';
         throw new DOMException('Render cancelled', 'AbortError');
     } finally {
+        pathTracing.holdKernel = false;
         pathTracing.holdPassKernel(false);
         distRender = null;
         passMix = null;
@@ -6595,6 +6614,7 @@ async function renderLightPasses(scale, samples, distributed, format) {
         }
         loadRender.force = true;
         if (outcome === 'cancelled' && mode !== 'hq') setViewMode(mode);
+        else if (outcome === 'done') holdRenderView(mode);
     }
 }
 // the transparent PNG from a matte mix: in front of black (with the image look, and neutral) and in front of grey
