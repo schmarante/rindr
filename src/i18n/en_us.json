@@ -1222,7 +1222,12 @@
             "reset": "Reset",
             "position": "Position",
             "rotation": "Rotation °",
-            "scaling": "Scale"
+            "scaling": "Scale",
+            "size": "Size",
+            "sizeTitle": "Width × height × depth – in the orientation as imported, with the scale (rotating does not change it)",
+            "sizeValue": "{w} × {h} × {d} {unit}",
+            "unitMm": "mm",
+            "unitM": "m"
         },
         "explode": {
             "label": "Explode"

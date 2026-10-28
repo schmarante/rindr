@@ -1,13 +1,13 @@
 // Properties panel for the selected scene-graph entry.
-//  - Model/assembly/part: translation + rotation (XYZ), gizmo mode, reset
+//  - Model/assembly/part: translation + rotation (XYZ), gizmo mode, reset, size (width × height × depth)
 //  - Light: position (XYZ), intensity, colour
 //  - Environment: intensity, rotation, show background, ground shadow, ground reflection, bad weather (puddles),
 //    flatten ground (+ capture height)
 //  - Camera: focal length (FOV)
 //  - Section plane: position + rotation, axis X/Y/Z, flip side, colour of the cut surface
 import { viewAngle, setViewAngle, PERSPECTIVE_LIMIT, MAX_VIEW_ANGLE, MIN_VIEW_ANGLE } from './fisheye.js';
-import { Euler } from 'three/webgpu';
-import { t, has } from './i18n.js';
+import { Euler, Box3, Matrix4, Vector3, Quaternion } from 'three/webgpu';
+import { t, has, getLocale } from './i18n.js';
 import { STYLE_MODES } from './style-filters.js';
 import { MAPPING_TYPES, MAPPING_AXES, DEFAULT_MAPPING } from './uv-mapping.js';
 import { draggable, fmt, INPUT, colorField } from './ui-controls.js';
@@ -130,6 +130,7 @@ export class PropertiesPanel {
         values.position?.forEach((v, i) => set('p' + i, v));
         values.rotation?.forEach((v, i) => set('r' + i, v));
         values.scale?.forEach((v, i) => set('s' + i, v));
+        if (this.fields.size) this.fields.size.textContent = formatSize(partSize(this.entry.object));
     }
 
     // IFC (BIM): class, name, GlobalId …, material, property sets and quantities – loaded from the web-ifc worker
@@ -203,6 +204,13 @@ export class PropertiesPanel {
         const rows = [modes, this._vectorRow(t('properties.transform.position'), 'p', (v, drag) => tf.setValues({ position: v }, { merge: drag }))];
         if (withRotation) rows.push(this._vectorRow(t('properties.transform.rotation'), 'r', (v, drag) => tf.setValues({ rotation: v }, { merge: drag })));
         if (withScale) rows.push(this._vectorRow(t('properties.transform.scaling'), 's', (v, drag) => tf.setValues({ scale: v }, { merge: drag })));
+        if (withScale && this.entry?.object) {
+            const value = el('span', 'truncate tabular-nums text-white/80 select-text');
+            this.fields.size = value;
+            const row = this._row(t('properties.transform.size'), value);
+            row.title = t('properties.transform.sizeTitle');
+            rows.push(row);
+        }
         return rows;
     }
 
@@ -1033,6 +1041,41 @@ const KIND_LABEL = Object.fromEntries(['selection', 'model', 'node', 'surface', 
 
 // IFC class: readable label + the class itself ("Wand · IFCWALLSTANDARDCASE")
 const classText = type => (has(`bim.classes.${type.toUpperCase()}`) ? `${t(`bim.classes.${type.toUpperCase()}`)} · ${type}` : type);
+
+// Size of a part (mm): the box of its meshes in its orientation as imported (rest rotation of the transform, xf.rest)
+// with its current scale and its parents' – rotating does not change it, scaling does. Stray objects (outliers.js) only
+// when there is nothing else.
+const _box = new Box3(), _meshBox = new Box3(), _frame = new Matrix4(), _m = new Matrix4();
+const _p = new Vector3(), _q = new Quaternion(), _s = new Vector3(), _origin = new Vector3();
+function partSize(object) {
+    if (!object) return null;
+    object.updateMatrixWorld(true);
+    const xf = object.userData.xf;
+    (xf?.rest || object.matrix).decompose(_p, _q, _s);
+    _frame.compose(_origin, _q, xf?.scale || _s);
+    if (object.parent) _frame.premultiply(object.parent.matrixWorld);
+    _frame.multiply(_m.copy(object.matrixWorld).invert());   // world → the part's own space → the frame
+    _box.makeEmpty();
+    for (const all of [false, true]) {
+        object.traverse(c => {
+            if (!c.isMesh || !c.geometry || (c.userData.stray && !all)) return;
+            if (!c.geometry.boundingBox) c.geometry.computeBoundingBox();
+            _box.union(_meshBox.copy(c.geometry.boundingBox).applyMatrix4(_m.multiplyMatrices(_frame, c.matrixWorld)));
+        });
+        if (!_box.isEmpty()) break;
+    }
+    return _box.isEmpty() ? null : _box.getSize(new Vector3());
+}
+
+// width × height × depth (x, y – up –, z) in mm, from 10 m on in metres; four significant digits
+function formatSize(size) {
+    if (!size) return '–';
+    const metres = Math.max(size.x, size.y, size.z) >= 10000;
+    const k = metres ? 1000 : 1;
+    const nf = new Intl.NumberFormat(getLocale(), { maximumSignificantDigits: 4 });
+    return t('properties.transform.sizeValue', { w: nf.format(size.x / k), h: nf.format(size.y / k), d: nf.format(size.z / k),
+        unit: t(metres ? 'properties.transform.unitM' : 'properties.transform.unitMm') });
+}
 
 function el(tag, className, text) {
     const e = document.createElement(tag);

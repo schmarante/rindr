@@ -1222,7 +1222,12 @@
             "reset": "Zurücksetzen",
             "position": "Position",
             "rotation": "Drehung °",
-            "scaling": "Skalierung"
+            "scaling": "Skalierung",
+            "size": "Größe",
+            "sizeTitle": "Breite × Höhe × Tiefe – in der Lage beim Import, mit der Skalierung (Drehen ändert sie nicht)",
+            "sizeValue": "{w} × {h} × {d} {unit}",
+            "unitMm": "mm",
+            "unitM": "m"
         },
         "explode": {
             "label": "Explosion"
