@@ -28,11 +28,13 @@ Drop a CAD model, a mesh, a BIM file or a Gaussian splat into the window and get
   - **IFC** (BIM) incl. properties, **BCF** issues
   - **MaterialX (.mtlx)** with OpenPBR: materials in and out – a material as a package with textures, glTF sphere and preview
   - **Gaussian splats** (PLY, SOG)
-- **Node-based materials** (three.js TSL) and a material library – drag & drop onto parts in the viewport or the scene graph.
-- **Studio tools** – scene graph with hover outlines, move/rotate/scale gizmo, MAX-style quad menu, animated **exploded view**, section plane, animations.
-- **Lighting** – HDRI environments with a flattened ground dome, shadow catcher and contact shadows.
-- **Camera like a real lens** – depth of field with bokeh blades, fisheye up to 240°, bloom, glare, lens flare and **volumetric god rays**.
-- **Output** – image export (incl. transparent PNG), save/load whole scenes, and **AI rendering**: send the frame plus your material names to an image model for a photoreal take.
+- **Node-based materials** (three.js TSL) and a material library – drag & drop onto parts in the viewport or the scene graph; UV mapping per object (box, planar, cylinder, sphere).
+- **Special materials** – toon and contour styles, subsurface scattering (jelly, wax), glowing marble, a **cloud** as real volume, **wool** with fibres, **grass** with real blades, **soap bubbles** with thin-film colours; scattering media for cloudy liquids – juice, milk, honey, beer and more in the library.
+- **Studio tools** – scene graph with hover outlines, move/rotate/scale gizmo, MAX-style quad menu, view cube, animated **exploded view**, section plane, animations with skeleton view.
+- **Lighting** – HDRI environments with a flattened ground dome, shadow catcher and contact shadows, ground reflections and rain puddles; an **HDRI editor** for your own procedural environments with sun & sky and movable light pins.
+- **Camera like a real lens** – depth of field with bokeh blades, fisheye up to 240°, bloom, glare, lens flare and **volumetric god rays**; style filters from pixel art and scanlines to sketch and ASCII.
+- **Distributed rendering** – other computers in your local network render along (paired via link and code, peer-to-peer), buckets labelled per computer.
+- **Output** – image export (incl. transparent PNG), **light passes** per light source and light type plus helper passes (alpha, depth, normals, albedo, IDs) as layered **EXR** or **PSD**, save/load whole scenes, and **AI rendering**: send the frame plus your material names to an image model for a photoreal take.
 - English and German UI.
 
 **Browser:** needs WebGPU – current Chrome or Edge recommended. Large models load in parallel with shared memory (cross-origin isolation): via COOP/COEP headers on your own server (`public/.htaccess`), on static hosting like GitHub Pages a small service worker takes care of it.
