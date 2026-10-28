@@ -1400,6 +1400,8 @@
             "rotation": "Drehung °",
             "scale": "Maßstab",
             "scaleTitle": "Faktor auf die Kachelgröße des Materials: 2 = Textur doppelt so groß",
+            "real": "Realer Maßstab",
+            "realTitle": "Texturen in echter Größe – die UVs aus der Datei werden auf ihre tatsächliche Fläche umgerechnet",
             "offsetU": "Versatz U",
             "offsetV": "Versatz V",
             "offsetTitle": "Verschiebt die Textur auf dem Objekt – in Kacheln des Materials (1 = eine ganze Kachel), wie der Versatz im Material, aber nur für dieses Objekt",

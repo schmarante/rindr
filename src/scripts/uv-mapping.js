@@ -9,6 +9,9 @@
 // scale = factor on the material's tile size (material size stays the base: one material, differently sized parts);
 // offsetU / offsetV = shift in tiles of the material (as the material's own offsets – user: "move the mapping of the
 // object, not in the material"), so they follow its tile size.
+// real (standard only): the file's UVs at their real size – RINDR takes one UV unit as UV_TILE mm, an unwrap spreads
+// a whole object over 0..1 (a 20 cm ball: ~340 mm per unit, every material 3.4× too large); with real the UVs are
+// scaled by (mm per UV unit of the mesh) / UV_TILE – world area over UV area at rest (uvDensity). Box UVs give 1.
 // Cylinder and sphere: the repeats around are rounded to a whole number for the material on the mesh (its tile
 // size × scale) → the seam where the circle closes matches exactly.
 //
@@ -33,7 +36,22 @@ export const MAPPING_AXES = ['y', 'x', 'z'];
 export const DEFAULT_MAPPING = { type: 'standard', axis: 'y', rotation: 0, scale: 1 };
 const CAP = 0.7;   // cylinder: |normal · axis| above this = cap (planar)
 // "standard" without scale and offset = the import's UVs unchanged (no own mapping needed)
-export const isPlain = mapping => !mapping || (mapping.type === 'standard' && (mapping.scale ?? 1) === 1 && !mapping.offsetU && !mapping.offsetV);
+export const isPlain = mapping => !mapping || (mapping.type === 'standard' && (mapping.scale ?? 1) === 1 && !mapping.offsetU && !mapping.offsetV && !mapping.real);
+
+/** mm per UV unit of a geometry (positions through `m`, model space in mm): √(area / UV area); UV_TILE without UVs */
+export function uvDensity({ positions: P, uvs: U, index: I }, m) {
+    const e = m.elements;
+    const w = i => [e[0] * P[i * 3] + e[4] * P[i * 3 + 1] + e[8] * P[i * 3 + 2], e[1] * P[i * 3] + e[5] * P[i * 3 + 1] + e[9] * P[i * 3 + 2], e[2] * P[i * 3] + e[6] * P[i * 3 + 1] + e[10] * P[i * 3 + 2]];
+    let area = 0, uvArea = 0;
+    for (let t = 0; t < I.length; t += 3) {
+        const a = I[t], b = I[t + 1], c = I[t + 2];
+        const pa = w(a), pb = w(b), pc = w(c);
+        const u1 = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]], u2 = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+        area += Math.hypot(u1[1] * u2[2] - u1[2] * u2[1], u1[2] * u2[0] - u1[0] * u2[2], u1[0] * u2[1] - u1[1] * u2[0]) / 2;
+        uvArea += Math.abs((U[b * 2] - U[a * 2]) * (U[c * 2 + 1] - U[a * 2 + 1]) - (U[c * 2] - U[a * 2]) * (U[b * 2 + 1] - U[a * 2 + 1])) / 2;
+    }
+    return uvArea > 1e-12 && area > 0 ? Math.sqrt(area / uvArea) : UV_TILE;
+}
 
 /** frame of a mapping: centre, axis and two perpendicular directions (rotated about the axis) */
 export function mappingFrame(mapping, center) {
@@ -309,7 +327,7 @@ export class UvMapper {
             if (!g) continue;
             const tile = this.hooks.tileOf(mesh.material);
             if (mapping.type === 'standard') {
-                const s = 1 / (mapping.scale > 0 ? mapping.scale : 1);
+                const s = (mapping.real ? uvDensity(g, restMatrix(mesh)) / UV_TILE : 1) / (mapping.scale > 0 ? mapping.scale : 1);
                 job.g = { positions: g.positions.slice(), normals: g.normals.slice(), index: g.index.slice(), uvs: g.uvs.map(x => x * s) };
             } else {
                 job.g = projectUVs(g, restMatrix(mesh).elements, mapping, frame.frame, tile, frame.radius);
