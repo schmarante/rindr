@@ -74,7 +74,7 @@ textures/<name>_<slot>.png
 
 ## Einlesen
 
-- Abgelegt (Fenster) oder über „Material importieren“ (Material-Panel): `.mtlx` (mit den Texturen daneben) oder ein Paket-`.zip`.
+- Abgelegt (Fenster) oder über „Material importieren“ (Material-Panel): `.mtlx` (mit den Texturen daneben) oder ein Paket-`.zip`; seit Okt. 2026 auch die `<name>.rindr.json` eines entpackten Pakets allein (Nutzer: „wenn ich die .rindr.json reinziehe, sagt er weder Szene noch Materialien“ – ein Browser-Drop bringt nur die gezogene Datei, nie die Nachbarn im Ordner): Parameter und Node-Graph, ein prozedurales Material ist damit vollständig (die Nodes erzeugen ihre Texturen selbst); liegen `.mtlx` und `.rindr.json` zusammen im Drop, gilt die `.rindr.json`.
 - Paket mit `.rindr.json` → daraus (verlustfrei, auch Node-Graph und Spezialeffekte); seine Texturen über `maps`.
 - Fremde `.mtlx` → `open_pbr_surface` oder `standard_surface` (Autodesk) nach der Tabelle oben; Texturen über `<image>`/`<tiledimage>`, auch hinter `<multiply>`, `<normalmap>`, `<extract>`, `<convert>` und in `<nodegraph>`-Ausgängen; als Import-Material (Texturen als Nodes „Bild-Textur (aus der Datei)“).
 - Das Material landet in der Szene (Material-Panel, Reiter Szene), zugewiesen wird es per Drag & Drop wie jedes andere.

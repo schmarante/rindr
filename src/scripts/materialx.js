@@ -12,6 +12,7 @@ import { readZip } from './splat/splat-formats.js';
 import { createImportGraph } from './material-graph.js';
 import { UV_TILE } from './step-importer.js';
 import { SUBSURFACE_RADIUS_SCALE } from './materials/medium.js';
+import { getLocale } from './i18n.js';
 
 export const MATERIAL_PACKAGE = 'rindr-material';
 const PACKAGE_VERSION = 1;
@@ -376,7 +377,24 @@ export async function readMaterialFiles(files) {
             const json = jsonName ? JSON.parse(new TextDecoder().decode(await entries.get(jsonName)())) : null;
             if (json?.format === MATERIAL_PACKAGE && json.material) defs.push(await fromPackage(json, read));
             else if (mtlxName) defs.push(...await fromMtlx(new TextDecoder().decode(await entries.get(mtlxName)()), dirOf(mtlxName), read));
+        } else if (/\.rindr\.json$/i.test(f.path)) {
+            // RINDR's own description of a package on its own (unpacked package): parameters and node graph – a
+            // procedural material is complete without its baked textures; maps of an imported one from the files dropped along
+            let json = null;
+            try { json = JSON.parse(await f.file.text()); } catch { continue; }
+            if (json?.format !== MATERIAL_PACKAGE || !json.material) continue;
+            used.add(f);
+            const dir = dirOf(f.path);
+            const read = async path => {
+                const hit = loose.get((dir + path).toLowerCase().replace(/^\.\//, '')) ?? loose.get(baseName(path));
+                if (hit) used.add(hit);
+                return hit?.file ?? null;
+            };
+            defs.push(await fromPackage(json, read));
         } else if (ext === 'mtlx') {
+            // its RINDR description dropped along: that one (lossless) instead
+            const twin = f.path.replace(/\.mtlx$/i, '.rindr.json').toLowerCase();
+            if (files.some(o => o.path.toLowerCase() === twin)) { used.add(f); continue; }
             used.add(f);
             const dir = dirOf(f.path);
             const read = async path => {
@@ -429,7 +447,9 @@ async function fromPackage(json, read) {
         if (blob) maps[prop] = await loadTexture(blob, { srgb: ['map', 'emissiveMap', 'sheenColorMap', 'specularColorMap'].includes(prop), name: baseName(file) });
     }
     const graph = m.graph ?? (Object.keys(maps).length ? createImportGraph(maps) : null);
-    return { name: m.name, source: 'custom', libraryId: null, params: { ...m.params }, graph, render: Object.keys(maps).length ? { maps } : null };
+    // names per language (library packages: { de, en }) – the one of the interface, else the English one
+    const name = m.names?.[getLocale().slice(0, 2)] ?? m.name;
+    return { name, source: 'custom', libraryId: null, params: { ...m.params }, graph, render: Object.keys(maps).length ? { maps } : null };
 }
 
 // OpenPBR input → RINDR param (+ map slot); conv: value conversion; defaults = OpenPBR's for inputs not in the file
