@@ -13,9 +13,10 @@ export const MATERIAL_TYPES = {
     standard: { graph: true },
     toon: { keys: ['color', 'toon', 'flat', 'contour', 'contourColor', 'contourWidth'], graph: true, template: 'toon-orange' },
     cloud: { keys: ['cloud', 'cloudColor', 'cloudPuff'], graph: false, template: 'cloud-white' },
-    wool: { keys: ['color', 'sheen', 'sheenColor', 'sheenRoughness', 'wool', 'woolLength'], graph: false, template: 'wool-cream' },
-    grass: { keys: ['color', 'roughness', 'grass', 'grassHeight', 'grassDensity', 'grassDry'], graph: false, template: 'grass-lawn' },
-    soap: { keys: ['soap', 'soapFilm', 'soapSwirl', 'soapScale'], graph: false, template: 'soap-bubble' },
+    // wool, grass, soap film: their switch itself is not shown – the type is the switch (user: "wool as a material type is enough")
+    wool: { keys: ['color', 'sheen', 'sheenColor', 'sheenRoughness', 'woolLength'], graph: false, template: 'wool-cream', on: { wool: 1 } },
+    grass: { keys: ['color', 'roughness', 'grassHeight', 'grassDensity', 'grassDry'], graph: false, template: 'grass-lawn', on: { grass: 1 } },
+    soap: { keys: ['soapFilm', 'soapSwirl', 'soapScale'], graph: false, template: 'soap-bubble', on: { soap: 1 } },
     marble: { keys: ['color', 'roughness', 'clearcoat', 'clearcoatRoughness', 'marble', 'marbleColor', 'marbleScale'], graph: true, template: 'marble-glow-green' },
 };
 
@@ -44,6 +45,8 @@ export function normalizeType(params) {
     const type = materialType(params);
     params.type = type;
     for (const [other, keys] of Object.entries(SWITCHES)) if (other !== type) for (const k of keys) if (params[k] > 0) params[k] = 0;
+    // a type whose switch the panel does not show is always on
+    for (const [k, v] of Object.entries(MATERIAL_TYPES[type]?.on ?? {})) if (!(params[k] > 0)) params[k] = v;
     return params;
 }
 
