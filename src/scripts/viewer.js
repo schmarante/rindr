@@ -4825,7 +4825,9 @@ function setupGUI() {
         () => pathTracing.enabled, v => setViewMode(v ? 'hq' : viewMode === 'hq' ? 'default' : viewMode))
         .enable(pathTracing.supported);
     if (pathTracing.supported) {
-        pt.range(t('setup.bounces'), () => pathTracing.bounces, v => pathTracing.setBounces(v), 1, 20, 1);
+        // bounces of reflections (diffuse, glossy) and – on top of them – of refractions through glass (pt-motion.js)
+        pt.range(t('setup.bouncesReflection'), () => pathTracing.bounces, v => pathTracing.setBounces(v), 1, 20, 1);
+        pt.range(t('setup.bouncesRefraction'), () => pathTracing.refractionBounces, v => pathTracing.setRefractionBounces(v), 0, 20, 1);
         pt.range(t('setup.resolution'), () => pathTracing.renderScale, v => { pathTracing.renderScale = v; }, 0.25, 1, 0.05);
         pt.range(t('setup.maxSamples'), () => pathTracing.maxSamples, v => { pathTracing.maxSamples = v; }, 1, 256, 1);
         pt.range(t('setup.glossyFilter'), () => pathTracing.filterGlossyFactor, v => { pathTracing.filterGlossyFactor = v; }, 0, 1, 0.01);
@@ -4839,6 +4841,7 @@ function setupGUI() {
             pt.range(t('setup.glassFringe'), () => pathTracing.glassShadow.fringe, v => pathTracing.setGlassShadow({ fringe: v }), 0, 1, 0.01),
             pt.range(t('setup.glassFringeRange'), () => pathTracing.glassShadow.range, v => pathTracing.setGlassShadow({ range: v }), 0.05, 2, 0.05));
         fringeControls.forEach(c => c.enable(pathTracing.glassShadow.mode === 'transparent'));
+        pt.toggle(t('setup.glassSplit'), () => pathTracing.glassSplit, v => pathTracing.setGlassSplit(v));
         pt.toggle(t('setup.denoise'), () => pathTracing.denoiseEnabled, v => pathTracing.setDenoise(v));
         pt.toggle(t('setup.upscale'), () => pathTracing.upscaleEnabled, v => pathTracing.setUpscale(v));
         pt.range(t('setup.fsrSharpness'), () => pathTracing.sharpness, v => { pathTracing.sharpness = v; }, 0, 2, 0.01);

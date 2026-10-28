@@ -212,6 +212,7 @@ export function captureState(ctx) {
             sharpness: pt.sharpness ?? 1,
             motion: { ...pt.motion },
             glassShadow: { ...pt.glassShadow },
+            refractionBounces: pt.refractionBounces, glassSplit: pt.glassSplit,
         },
         slicer: {
             enabled: slicer.enabled, flipped: slicer.flipped,
@@ -320,6 +321,8 @@ export async function applyState(ctx, state) {
         if (p.upscale != null) pt.setUpscale(p.upscale);
         if (p.sharpness != null) pt.sharpness = p.sharpness;   // stored until the path tracer is loaded
         if (p.glassShadow) pt.setGlassShadow(p.glassShadow);
+        if (p.refractionBounces != null) pt.setRefractionBounces(p.refractionBounces);
+        if (p.glassSplit != null) pt.setGlassSplit(p.glassSplit);
         if (p.motion) {
             const { kuwahara, ...motion } = p.motion;   // older states: kuwahara on/off instead of filter
             if (kuwahara != null && motion.filter == null) motion.filter = kuwahara ? 'kuwahara' : 'off';

@@ -4,7 +4,8 @@
 
 export const PATHTRACING = {
     enabled: false,             // path tracing on at startup (= HQ view instead of Default; WebGPU only)
-    bounces: 8,                 // light paths: number of reflections/refractions per path (GUI: 1–20)
+    bounces: 8,                 // light paths: number of reflections (diffuse, glossy) per path (GUI: 1–20)
+    refractionBounces: 4,       // scatters at glass on top of that – glass does not use up the bounces (GUI: 0–20)
     maxSamples: 32,             // samples per pixel, then stop + denoise (GUI: 1–256)
     renderScale: 1,           // resolution relative to the window (0.25–1); < 1 is upscaled via FSR
     filterGlossyFactor: 1,      // glossy filter 0–1: dampens glossy noise (fireflies), slightly softer
@@ -18,8 +19,9 @@ export const PATHTRACING = {
         range: 0.5,             // the fringe fades over this share of the scene size (behind the glass)
     },
     // first glass hit of the camera ray: reflection and refraction both traced (glass-split.js) – clean glass and
-    // reflections on it after few samples, one more path where glass is seen; false = picked by chance (library)
-    glassSplit: true,
+    // reflections on it after few samples, one more path where glass is seen; false = picked by chance (library,
+    // cheaper per sample – the default, user Oct. 2026)
+    glassSplit: false,
     upscale: true,              // FSR upscaling (only useful with renderScale < 1)
     sharpness: 1,               // FSR sharpness 0–2
 
