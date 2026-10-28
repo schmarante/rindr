@@ -674,9 +674,14 @@ export function editPoly(state, steps) {
 
 // --- TurboSmooth (Catmull–Clark) ---
 
-/** Catmull–Clark subdivision, `iterations` times; open borders stay borders (curve rule) */
+/**
+ * Catmull–Clark subdivision, `iterations` times; open borders stay borders (curve rule). UVs per corner (f.uv into
+ * mesh.uvs) are subdivided linearly: face and edge points get the mean of their corners' UVs, a corner keeps its UV;
+ * an edge point is shared only where both faces have the same UVs at the edge (seams stay seams).
+ */
 export function turboSmooth(mesh, iterations = 1) {
     let { P, faces } = mesh;
+    let UV = mesh.uvs && faces.every(f => f.uv) ? mesh.uvs : null;
     for (let it = 0; it < Math.max(0, Math.min(iterations | 0, 4)); it++) {
         const nv = P.length / 3;
         const NP = [];
@@ -721,17 +726,35 @@ export function turboSmooth(mesh, iterations = 1) {
                 ? [0, 1, 2].map(k => (a[k] + b[k] + fp[e.faces[0]][k] + fp[e.faces[1]][k]) / 4)
                 : [0, 1, 2].map(k => (a[k] + b[k]) / 2));
         }
+        // UVs: the old ones stay (corners), new ones for face points and edge points (per edge and pair of UVs)
+        let NU = null, fUv = null, eUv = null;
+        if (UV) {
+            NU = UV.slice();
+            const addUv = (a, b) => NU.push(a, b) / 2 - 1;
+            fUv = faces.map(f => { let u = 0, w = 0; for (const t of f.uv) { u += UV[t * 2]; w += UV[t * 2 + 1]; } return addUv(u / f.uv.length, w / f.uv.length); });
+            eUv = new Map();
+        }
+        const edgeUv = (f, k) => {
+            const n = f.v.length, a = f.uv[k], b = f.uv[(k + 1) % n];
+            const key = `${ek(f.v[k], f.v[(k + 1) % n])}|${a < b ? a : b},${a < b ? b : a}`;
+            let i = eUv.get(key);
+            if (i === undefined) eUv.set(key, i = NU.push((UV[a * 2] + UV[b * 2]) / 2, (UV[a * 2 + 1] + UV[b * 2 + 1]) / 2) / 2 - 1);
+            return i;
+        };
         const next = [];
         faces.forEach((f, fi) => {
             const n = f.v.length;
             for (let k = 0; k < n; k++) {
                 const v = f.v[k], prev = f.v[(k - 1 + n) % n], nxt = f.v[(k + 1) % n];
-                next.push({ v: [v, edges.get(ek(v, nxt)).index, fIndex[fi], edges.get(ek(prev, v)).index], sg: 1, mat: f.mat || 0 });
+                const face = { v: [v, edges.get(ek(v, nxt)).index, fIndex[fi], edges.get(ek(prev, v)).index], sg: 1, mat: f.mat || 0 };
+                if (UV) face.uv = [f.uv[k], edgeUv(f, k), fUv[fi], edgeUv(f, (k - 1 + n) % n)];
+                next.push(face);
             }
         });
         P = NP; faces = next;
+        if (UV) UV = NU;
     }
-    return { P, faces };
+    return UV ? { P, faces, uvs: UV } : { P, faces };
 }
 
 /** Cap Holes: every open border loop becomes a face (polygon meshes) or is triangulated in its plane (triangle meshes) */
