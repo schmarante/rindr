@@ -72,9 +72,9 @@ export const PARAMS = [
     { key: 'marbleColor', type: 'color', default: '#33ff73', group: 'marble' },
     { key: 'marbleScale', type: 'number', min: 0.5, max: 200, default: 10, group: 'marble' },
     // style: toon shading / flat colour (raster; matte in the path tracer) and contour lines (contour.js, all view modes)
-    { key: 'toon', type: 'number', min: 0, max: 1, default: 0, group: 'style' },
-    { key: 'flat', type: 'number', min: 0, max: 1, default: 0, group: 'style' },
-    { key: 'contour', type: 'number', min: 0, max: 1, default: 0, group: 'style' },
+    { key: 'toon', type: 'number', min: 0, max: 1, step: 1, toggle: true, default: 0, group: 'style' },
+    { key: 'flat', type: 'number', min: 0, max: 1, step: 1, toggle: true, default: 0, group: 'style' },
+    { key: 'contour', type: 'number', min: 0, max: 1, step: 1, toggle: true, default: 0, group: 'style' },
     { key: 'contourColor', type: 'color', default: '#000000', group: 'style' },
     { key: 'contourWidth', type: 'number', min: 0.5, max: 6, default: 1.5, group: 'style' },
     // cloud (clouds.js): density 0 = off; puff = how far the cloud swells over the shape (share of its size)
