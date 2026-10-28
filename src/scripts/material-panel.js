@@ -49,6 +49,8 @@ const ICON_BTN = BTN.replace('px-2 py-0.5', 'flex items-center justify-center p-
 const ACTION_ICONS = {
     create: icon('material-new', 'size-4'),     // material ball with a plus (new material)
     merge: icon('merge', 'size-4'),             // a dashed circle moving into a solid one (merge identical ones)
+    exportMtlx: icon('download', 'size-4'),     // MaterialX package of the material (materialx.js)
+    importMtlx: icon('open', 'size-4'),         // MaterialX file / package into the scene
     select: icon('select-objects', 'size-4'),   // dashed selection frame with a pointer
     assign: icon('assign', 'size-4'),           // the material ball with a curved arrow down onto the selection
     nodes: icon('nodes', 'size-4'),             // three connected nodes
@@ -93,6 +95,7 @@ export class MaterialPanel {
                 <span class="font-medium">${t('materials.panel.title')}</span>
                 <span class="flex gap-1">
                     <button data-act="merge" class="${ICON_BTN}" title="${t('materials.panel.mergeTitle')}" aria-label="${t('materials.panel.merge')}" hidden>${ACTION_ICONS.merge}</button>
+                    <button data-act="import-mtlx" class="${ICON_BTN}" title="${t('materials.panel.importMtlxTitle')}" aria-label="${t('materials.panel.importMtlx')}">${ACTION_ICONS.importMtlx}</button>
                     ${MATERIALS.importExport ? `<button data-act="import" class="${BTN}" title="${t('materials.panel.importTitle')}">${t('materials.panel.import')}</button>
                     <button data-act="export" class="${BTN}" title="${t('materials.panel.exportTitle')}">${t('materials.panel.export')}</button>` : ''}
                     ${hooks.thumbs ? `<span class="mr-2 flex gap-0.5 p-0.5">
@@ -492,10 +495,11 @@ export class MaterialPanel {
         info.append(users);
         const nodes = action('nodes', 'nodes', t('materials.panel.nodes'));
         const dup = action('duplicate', 'copy', t('materials.panel.duplicate'));
+        const exp = action('export-mtlx', 'exportMtlx', t('materials.panel.exportMtlx'), t('materials.panel.exportMtlxTitle'));
         const del = action('delete', 'delete', t('materials.panel.delete'), undefined, ' hover:text-red-300');
         del.disabled = this.manager.usage(def.id) > 0;
         del.title = del.disabled ? t('materials.panel.deleteInUse') : t('materials.panel.deleteTitle');
-        info.append(assign, ...(editing ? [...(typeAllowsGraph(type) ? [nodes] : []), dup] : []), del);
+        info.append(assign, ...(editing ? [...(typeAllowsGraph(type) ? [nodes] : []), dup] : []), exp, del);
         frag.append(info);
         if (!editing) { this.editor.replaceChildren(frag); return; }
 
@@ -606,6 +610,8 @@ export class MaterialPanel {
         if (act === 'reload-thumbs') return this.thumbs?.reload();
         if (act === 'checker') return this.thumbs?.setChecker(!this.thumbs.checker);
         if (act === 'merge') return this.hooks.onMergeDuplicates?.();
+        if (act === 'import-mtlx') return this.hooks.onImportMaterials?.();
+        if (act === 'export-mtlx' && this.current) return this.hooks.onExportMaterial?.(this.current);
         if (act === 'assign' && this.current) return this.hooks.onAssignToSelection?.(this.current);
         if (act === 'nodes' && this.current && MATERIALS.editing) return this.hooks.onOpenNodeEditor?.(this.current);
         if (act === 'select-users' && this.current) return this.hooks.onSelectUsers?.(this.current);

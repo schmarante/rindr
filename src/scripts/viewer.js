@@ -1745,6 +1745,9 @@ const materialPanel = new MaterialPanel(document.getElementById('materials'), ma
     // an open node editor follows the material opened in the panel
     onCurrentChange: id => followNodeEditor(id),
     onMergeDuplicates: () => mergeDuplicateMaterials(),
+    // MaterialX (docs/material-format.md): a material as a package, .mtlx / packages into the scene
+    onExportMaterial: id => exportMaterialX(id),
+    onImportMaterials: () => materialFileInput.click(),
     graphApplier,
     // rendered previews under the current environment, as bright as in the scene (switched off: the studio)
     thumbs: new MaterialThumbs(renderer, () => (environment.on
@@ -5445,9 +5448,65 @@ modelFileInput.onchange = () => {
 };
 document.body.append(modelFileInput);
 
+// --- MaterialX (materialx.js, docs/material-format.md) ---
+
+const materialFileInput = Object.assign(document.createElement('input'), { type: 'file', multiple: true, hidden: true, accept: '.mtlx,.zip,image/*' });
+materialFileInput.onchange = () => {
+    const files = [...materialFileInput.files].map(file => ({ path: file.name, file }));
+    materialFileInput.value = '';
+    if (files.length) importMaterialFiles(files);
+};
+document.body.append(materialFileInput);
+
+/** MaterialX files / packages among the files → new scene materials (the first opened in the panel); returns the
+ *  files left over that are something else (a model dropped along) or null */
+async function importMaterialFiles(files) {
+    let res;
+    try {
+        res = await (await import('./materialx.js')).readMaterialFiles(files);
+    } catch (err) {
+        showError(err, { title: t('materials.mtlx.importError') });
+        return null;
+    }
+    if (res.defs.length) {
+        const entries = res.defs.map(d => materialManager.create(d));
+        materialPanel.open(entries[0].def.id, 'scene');
+        flashStatus(t('materials.mtlx.imported', { count: entries.length }), 4000);
+    } else if (res.used.size) {
+        showError(new Error(t('materials.mtlx.noMaterial')), { title: t('materials.mtlx.importError') });
+    }
+    const left = files.filter(f => !res.used.has(f));
+    // textures of the .mtlx that it did not name stay unused – only models go on
+    return left.some(f => MAIN_EXTENSIONS.includes(extOf(f.path))) || !res.used.size ? left : null;
+}
+
+/** a scene material as MaterialX package (.zip): saved through the browser's dialog */
+async function exportMaterialX(id) {
+    const entry = materialManager.get(id);
+    if (!entry) return;
+    flashStatus(t('materials.mtlx.exporting'), 2000);
+    try {
+        await graphApplier.settled(id);   // the maps of its node graph baked
+        // the sphere picture of the node editor's size – rendered on request, waited for a few seconds
+        let preview = materialPanel.thumbUrl(id, 256);
+        for (let i = 0; !preview && i < 25; i++) { await new Promise(r => setTimeout(r, 200)); preview = materialPanel.thumbUrl(id, 256); }
+        const { exportMaterialPackage } = await import('./materialx.js');
+        const pkg = await exportMaterialPackage(entry, { preview, json: materialManager.toJSON([id]).materials[0], version: __APP_VERSION__ });
+        const { saveFile } = await import('./hdri/hdri-export.js');
+        if (await saveFile(pkg.bytes, pkg.name, 'application/zip', t('materials.mtlx.fileType'))) flashStatus(t('materials.mtlx.exported', { name: pkg.name }), 4000);
+    } catch (err) {
+        showError(err, { title: t('materials.mtlx.exportError') });
+    }
+}
+
 /** Open dropped or picked files ({ path, file }[]): BCF, scene/material JSON, relink into the asset window, splats,
  *  models – side 'replace' (left half of the drop area) or 'add' */
 async function openFiles(files, { side = 'add', relink = false } = {}) {
+    // MaterialX (.mtlx with its textures) and material packages (.zip): into the scene's materials
+    if (files.some(f => ['mtlx', 'zip'].includes(extOf(f.path)))) {
+        files = await importMaterialFiles(files);
+        if (!files) return;
+    }
     // BCF issues (.bcfzip): into the issue window; models dropped along with them load as usual
     // (with RINDR's scene or IFC names in the headers it opens like a scene – the other files serve as its assets)
     const bcfFile = files.find(f => BCF_EXTENSIONS.includes(extOf(f.path)));

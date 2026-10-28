@@ -123,7 +123,11 @@
             "allCategories": "Alle Kategorien",
             "categoryTitle": "Bibliothek nach Kategorie filtern",
             "type": "Typ",
-            "typeTitle": "Materialtyp – Standard oder ein Spezialeffekt; der Typ bestimmt, welche Werte es gibt (Spezialeffekte schließen sich aus)"
+            "typeTitle": "Materialtyp – Standard oder ein Spezialeffekt; der Typ bestimmt, welche Werte es gibt (Spezialeffekte schließen sich aus)",
+            "importMtlx": "MaterialX importieren",
+            "importMtlxTitle": "MaterialX importieren – .mtlx (mit ihren Texturen) oder Material-Paket (.zip); auch per Drag & Drop ins Fenster",
+            "exportMtlx": "Als MaterialX exportieren",
+            "exportMtlxTitle": "Als Material-Paket exportieren (.zip): MaterialX mit OpenPBR, Texturen, glTF-Kugel und RINDR-Beschreibung"
         },
         "maps": {
             "map": "Farbe",
@@ -496,6 +500,18 @@
                 "other": "{count} Materialien zusammengefasst"
             },
             "undo": "Gleiche Materialien zusammenfassen"
+        },
+        "mtlx": {
+            "importError": "MaterialX-Import fehlgeschlagen",
+            "exportError": "MaterialX-Export fehlgeschlagen",
+            "imported": {
+                "one": "Ein Material importiert",
+                "other": "{count} Materialien importiert"
+            },
+            "noMaterial": "Keine OpenPBR- oder Standard-Surface-Materialien in der Datei gefunden.",
+            "exporting": "Material-Paket wird erstellt …",
+            "exported": "Gespeichert: {name}",
+            "fileType": "Material-Paket (MaterialX)"
         }
     },
     "nodeEditor": {
@@ -1767,7 +1783,7 @@
         "unsupportedFormat": "Format nicht unterstützt ({extensions})",
         "dropHint": "Datei ins Fenster ziehen",
         "openFile": "Datei öffnen",
-        "dropFormats": "STEP (.stp/.step) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · BIM (.ifc/.ifczip) · BCF-Tickets (.bcfzip) · Gaussian Splats (.ply/.sog)",
+        "dropFormats": "STEP (.stp/.step) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · BIM (.ifc/.ifczip) · MaterialX (.mtlx) · BCF-Tickets (.bcfzip) · Gaussian Splats (.ply/.sog)",
         "qualityReduced": "Großes Modell (≈ {triangles} Dreiecke bei „{from}“) – Qualität automatisch auf „{to}“ gesenkt",
         "modelTooLarge": "Modell zu groß: ≈ {triangles} Dreiecke bei „{quality}“ (Grenze {limit}) – Laden abgebrochen",
         "qualityTooFine": "„{quality}“ ist für dieses Modell zu fein (≈ {triangles} Dreiecke, Grenze {limit}) – Qualität bleibt „{previous}“",
@@ -2102,13 +2118,13 @@
     },
     "page": {
         "title": "RINDR – 3D-Viewer mit Pathtracing im Browser",
-        "description": "STEP, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, STL, BIM (IFC, BCF) und Gaussian Splats direkt im Browser öffnen – lokal, ohne Upload, mit Materialbibliothek und Echtzeit-Pathtracing.",
+        "description": "STEP, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, STL, MaterialX, BIM (IFC, BCF) und Gaussian Splats direkt im Browser öffnen – lokal, ohne Upload, mit Materialbibliothek und Echtzeit-Pathtracing.",
         "ogImageAlt": "RINDR-Logo (Kuhkopf) mit dem Schriftzug „3D-Viewer im Browser“",
         "loading": "RINDR wird gestartet …",
         "sceneGraph": "Scene Graph",
         "drop": {
             "title": "Datei hier ablegen",
-            "hint": "STEP (.stp/.step), glTF/GLB, FBX, MAX (.max), C4D (.c4d), Blender (.blend), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, BIM (.ifc/.ifczip), BCF-Tickets (.bcfzip), Gaussian Splats (.ply/.sog) – Texturen und .bin-Dateien einfach mit hineinziehen",
+            "hint": "STEP (.stp/.step), glTF/GLB, FBX, MAX (.max), C4D (.c4d), Blender (.blend), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, BIM (.ifc/.ifczip), MaterialX (.mtlx), BCF-Tickets (.bcfzip), Gaussian Splats (.ply/.sog) – Texturen und .bin-Dateien einfach mit hineinziehen",
             "addHint": "Mehrere Modelle: zusammen oder nacheinander hineinziehen – sie erscheinen nebeneinander",
             "replaceTitle": "Modelle ersetzen",
             "replaceHint": "Die geladenen Modelle werden entfernt und durch die neue Datei ersetzt",
@@ -2123,7 +2139,7 @@
     },
     "about": {
         "title": "Über",
-        "description": "Your Local 3D-File Viewer – STEP, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, BIM (IFC, BCF) und Gaussian Splats direkt im Browser, mit Pathtracing in Echtzeit.",
+        "description": "Your Local 3D-File Viewer – STEP, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, MaterialX, BIM (IFC, BCF) und Gaussian Splats direkt im Browser, mit Pathtracing in Echtzeit.",
         "author": "Autor",
         "email": "E-Mail",
         "version": "Version",
