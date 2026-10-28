@@ -27,6 +27,7 @@
 //    of every layer on the root, starting at the stage's first time code – see bindAcrossLayers.
 //  - units: the composer scales by an authored metersPerUnit; without one USD means centimetres (spec default 0.01).
 //    Z up: the composer turns the root.
+//  - subdivision surfaces: meshes authored subdivisionScheme "catmullClark" are subdivided (see subdivided).
 // Materials: UsdPreviewSurface as far as the composer reads it; MDL shaders mapped onto physical materials with their
 // textures (usd-mdl.js); bindings the stack authors over referenced parts applied afterwards (overrideComposed).
 import * as THREE from 'three/webgpu';
@@ -37,6 +38,7 @@ import { USDComposer } from 'three/addons/loaders/usd/USDComposer.js';
 import { t } from './i18n.js';
 import { debugLog } from './log.js';
 import { mdlShader, applyMdl, UsdTextures, finishMaterials } from './usd-mdl.js';
+import { catmullClark } from './subdivide.js';
 
 export const USD_EXTENSIONS = ['usd', 'usda', 'usdc', 'usdz'];
 const LAYER_EXTENSIONS = ['usd', 'usda', 'usdc'];
@@ -260,6 +262,67 @@ USDComposer.prototype.applyTransform = function (obj, fields, attrs = {}) {
 // materials: named after their prim, MDL shaders mapped (usd-mdl.js), keyed per (layer, material path) – the composer
 // builds a new material for every mesh (hundreds of copies of "Material 12"), merged after composing (shareMaterials)
 const layerIds = new WeakMap();
+// subdivision surfaces (UsdGeomMesh subdivisionScheme, user Oct. 2026: "the sample scene as USD – the polygon count of
+// MAX plus MeshSmooth"): an authored "catmullClark" → Catmull–Clark (subdivide.js) before the composer triangulates –
+// positions smoothed, UVs linear (faceVarying with or without indices, or per vertex), authored normals dropped (the
+// composer computes them from the shared points), GeomSubsets follow their faces (each child knows its input face).
+// Not authored = left as it is, although the spec's default is catmullClark: most exporters write polygon meshes without
+// the attribute. Level: rindr:subdivisionLevel (USD leaves it to the renderer), otherwise SUBDIV_LEVEL; lowered while the
+// result would exceed SUBDIV_FACES. Creases, corners and boundary rules are not read (everything smooth, borders as
+// curves). Not with skinning or polygon holes.
+const SUBDIV_LEVEL = 2, SUBDIV_FACES = 2e6;
+function subdivided(fields, subsets = null) {
+    if (fields.subdivisionScheme !== 'catmullClark' || fields['primvars:arnold:polygon_holes']) return null;
+    const counts = fields.faceVertexCounts, index = fields.faceVertexIndices, points = fields.points;
+    if (!counts?.length || !index?.length || !points?.length) return null;
+    let level = Math.max(0, Math.min(4, Math.round(Number(fields['rindr:subdivisionLevel'] ?? SUBDIV_LEVEL))));
+    let corners = 0;
+    for (let i = 0; i < counts.length; i++) corners += counts[i];
+    while (level > 0 && corners * 4 ** (level - 1) > SUBDIV_FACES) level--;
+    if (!level) return null;
+    // UVs per corner
+    const uvs = fields['primvars:st'] || fields['primvars:UVMap'], uvIndices = fields['primvars:st:indices'];
+    const nv = points.length / 3;
+    const uvOf = !uvs?.length ? null
+        : uvIndices?.length === corners ? k => uvIndices[k]
+            : uvs.length / 2 === corners ? k => k
+                : uvs.length / 2 === nv ? (k, v) => v : null;
+    const faces = [];
+    for (let f = 0, k = 0; f < counts.length; f++) {
+        const v = [], uv = uvOf ? [] : null;
+        for (let j = 0; j < counts[f]; j++, k++) { v.push(index[k]); if (uv) uv.push(uvOf(k, index[k])); }
+        faces.push(uv ? { v, uv } : { v });
+    }
+    const r = catmullClark({ P: Array.from(points), faces, uvs: uvOf ? Array.from(uvs) : null }, level);
+    const out = { ...fields, points: Float32Array.from(r.P), faceVertexCounts: new Int32Array(r.faces.length).fill(4) };
+    const fvi = new Int32Array(r.faces.length * 4), uvi = r.uvs ? new Int32Array(r.faces.length * 4) : null;
+    r.faces.forEach((f, i) => { fvi.set(f.v, i * 4); if (uvi) uvi.set(f.uv, i * 4); });
+    out.faceVertexIndices = fvi;
+    for (const key of ['normals', 'normals:indices', 'primvars:normals', 'primvars:normals:indices', 'primvars:st1', 'primvars:st1:indices', 'primvars:UVMap', 'subdivisionScheme']) delete out[key];
+    if (uvi) { out['primvars:st'] = Float32Array.from(r.uvs); out['primvars:st:indices'] = uvi; } else { delete out['primvars:st']; delete out['primvars:st:indices']; }
+    // GeomSubsets: the faces whose input face was in the subset
+    let subs = null;
+    if (subsets) {
+        const owner = new Int32Array(counts.length).fill(-1);
+        subsets.forEach((s, i) => { for (const f of s.indices) owner[f] = i; });
+        const lists = subsets.map(() => []);
+        r.faces.forEach((f, j) => { const o = owner[f.root]; if (o >= 0) lists[o].push(j); });
+        subs = subsets.map((s, i) => ({ ...s, indices: Int32Array.from(lists[i]) }));
+    }
+    debugLog(`[USD] subdivided ${counts.length} → ${r.faces.length} faces (level ${level})`);
+    return { fields: out, subsets: subs };
+}
+const originalBuildGeometry = USDComposer.prototype._buildGeometry;
+USDComposer.prototype._buildGeometry = function (path, fields, hasSkinning = false) {
+    const s = !hasSkinning && subdivided(fields);
+    return originalBuildGeometry.call(this, path, s ? s.fields : fields, hasSkinning);
+};
+const originalBuildWithSubsets = USDComposer.prototype._buildGeometryWithSubsets;
+USDComposer.prototype._buildGeometryWithSubsets = function (fields, subsets, hasSkinning = false) {
+    const s = !hasSkinning && subdivided(fields, subsets);
+    return originalBuildWithSubsets.call(this, s ? s.fields : fields, s ? s.subsets : subsets, hasSkinning);
+};
+
 const originalApplyMaterial = USDComposer.prototype._applyMaterial;
 USDComposer.prototype._applyMaterial = function (material, materialPath) {
     originalApplyMaterial.call(this, material, materialPath);

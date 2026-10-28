@@ -992,9 +992,22 @@ export function buildMaxGeometry(described, g) {
     return out;
 }
 
+/**
+ * Polygon mesh of a geometry before its TurboSmooth / MeshSmooth: { P, faces: [{ v, uv?, mat }], uvs?, iterations,
+ * after: modifiers above it } – null without such a modifier (tools: the sample scene's USD keeps the coarse mesh and
+ * marks it for subdivision)
+ */
+export function buildMaxCage(described, g) {
+    const { chunks: sc, objects, geometries } = described;
+    const entry = geometries[g];
+    if (!entry?.stack?.some(op => op.type === 'turbosmooth')) return null;
+    const r = evaluateStack(sc, objects, entry, { cage: true });
+    return r?.faces ? r : null;
+}
+
 // Modifier stack → raw faces. States: polygon mesh { P, faces } (primitives, Editable Poly – TurboSmooth needs
 // polygons), triangle mesh { P, tri, N } (Editable Mesh, Extrude, Shell); deformers move points of either.
-function evaluateStack(sc, objects, entry) {
+function evaluateStack(sc, objects, entry, { cage = false } = {}) {
     let poly = null, tris = null;
     if (entry.primitive) {
         poly = primitive(entry.primitive.kind, entry.primitive);
@@ -1021,6 +1034,9 @@ function evaluateStack(sc, objects, entry) {
     for (const op of entry.stack) {
         if (op.type === 'extrude') { tris = extrude(readShape(sc, objects[entry.object], entry.text), op); poly = null; continue; }
         if (op.type === 'shell') { asTris(); if (tris) tris = shell(tris, op); continue; }
+        // cage: the polygon mesh going into the (first) smoothing, its iterations and what follows (sample scene as USD –
+        // the renderer subdivides)
+        if (op.type === 'turbosmooth' && cage) { asPoly(); return poly ? { ...poly, iterations: op.iterations, after: entry.stack.slice(entry.stack.indexOf(op) + 1) } : null; }
         if (op.type === 'turbosmooth') { asPoly(); if (poly) poly = turboSmooth(poly, op.iterations); continue; }   // smooth everywhere (as MAX), UVs along
         if (op.type === 'capholes') { if (poly) poly = { ...capHoles(poly), crease: poly.crease }; else if (tris) tris = capHoles(tris); continue; }
         if (op.type === 'none') continue;
@@ -1068,6 +1084,9 @@ function evaluateStack(sc, objects, entry) {
     const nf = tris.tri.length / 3;
     return { P: tris.P instanceof Float32Array ? tris.P : Float32Array.from(tris.P), tri: tris.tri, tuv: null, uvs: null, sg: new Uint32Array(nf), mat: new Uint16Array(nf), cornerN: tris.N };
 }
+
+/** stored mesh of an Unwrap UVW op ({ type: 'unwrap' } of a geometry's stack) – tools (sample scene) */
+export const readMaxUnwrap = (described, op) => readUnwrap(described.chunks, op);
 
 // stored mesh of an Unwrap UVW (layout: modifier() in describeMax)
 function readUnwrap(sc, { tv, fc, pts }) {
