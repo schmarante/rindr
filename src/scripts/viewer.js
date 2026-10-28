@@ -1108,13 +1108,17 @@ window.addEventListener('keydown', e => {
     }
     if (key === 'u' && !e.ctrlKey && !e.metaKey && !e.altKey) toggleUi();
     // C: the next saved camera view (file cameras included) – like clicking it in the Scene Graph; P: back to the
-    // perspective of 45° (the camera stays, the angle blends; a file camera's clip start ends)
+    // perspective of 45°, the whole model framed from the current direction (user: after T the camera stayed far away
+    // – only the angle changed; now like a double click on the model) – the angle blends, a file camera's clip start ends
     if (key === 'c' && !e.ctrlKey && !e.metaKey && !e.altKey && cameraViews.length) {
         const at = selection?.kind === 'view' ? cameraViews.indexOf(selection.view) : -1;
         sceneGraph.select(viewEntry(cameraViews[(at + 1) % cameraViews.length]));
     }
     if (key === 'p' && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        flyToView({ position: camera.position.toArray(), target: controls.target.toArray(), fov: DEFAULT_VIEW_ANGLE, roll: 0 });
+        const fit = rootGroup && frameFit(extraModels.length ? slicer.group : rootGroup, DEFAULT_VIEW_ANGLE);
+        flyToView({ position: (fit ? fit.position : camera.position).toArray(), target: (fit ? fit.target : controls.target).toArray(), fov: DEFAULT_VIEW_ANGLE, roll: 0 });
+        if (fit && flight) flight.fit = fit;   // clipping planes for the framed model once there (the far plane of the
+                                               // far-away top view stayed otherwise – poor depth precision)
     }
     // a selected joint (skeleton view): its gizmo
     if ((e.key === 'w' || e.key === 'W') && skeletonView.selected >= 0) skeletonView.setMode('translate');
@@ -2663,9 +2667,11 @@ function cancelFlight() {
     flight = null;
     endFlightInteraction();
 }
-function frameObject(object) {
-    streamFit.active = false;
-    splatSpin.active = false;
+/**
+ * Camera that frames an object (multi-selection: its members) from the current view direction at a vertical view
+ * angle (degrees, default the camera's): { position, target, dist } – null without visible meshes
+ */
+function frameFit(object, fovDeg = camera.fov) {
     const box = new THREE.Box3();
     for (const o of object.isMeshSet ? object.members : [object]) {   // multi-selection
         o.updateMatrixWorld(true);
@@ -2675,25 +2681,35 @@ function frameObject(object) {
             box.union(new THREE.Box3().copy(c.geometry.boundingBox).applyMatrix4(c.matrixWorld));
         });
     }
-    if (box.isEmpty()) return;
+    if (box.isEmpty()) return null;
     const sphere = box.getBoundingSphere(new THREE.Sphere());
-    const vFov = THREE.MathUtils.degToRad(camera.fov / 2);
+    const vFov = THREE.MathUtils.degToRad(fovDeg / 2);
     const fov = Math.min(vFov, Math.atan(Math.tan(vFov) * camera.aspect));
     const dist = Math.max(sphere.radius, 1e-3) / Math.sin(fov) * 1.15;
     const dir = camera.position.clone().sub(controls.target).normalize();
-    flight = {
-        t0: performance.now(), duration: 450,
-        fromPos: camera.position.clone(), fromTarget: controls.target.clone(),
-        toPos: sphere.center.clone().addScaledVector(dir, dist), toTarget: sphere.center.clone(),
-    };
-    // clipping planes for the new distance: near matching the object (small parts are not cut), far covering the
-    // whole scene from there – previously far stayed at the first model (small STEP part + building added →
-    // everything clipped) and near only ever shrank (poor depth precision for large scenes)
+    return { position: sphere.center.clone().addScaledVector(dir, dist), target: sphere.center.clone(), dist };
+}
+// clipping planes for a camera at `position`, `dist` from what it frames: near matching the object (small parts are not
+// cut), far covering the whole scene from there – previously far stayed at the first model (small STEP part + building
+// added → everything clipped) and near only ever shrank (poor depth precision for large scenes)
+function fitClipping(dist, position) {
     const sceneBox = modelBox(slicer.group);
-    const reach = sceneBox.isEmpty() ? 0 : flight.toPos.distanceTo(sceneBox.getCenter(new THREE.Vector3())) + sceneBox.getSize(new THREE.Vector3()).length() / 2;
+    const reach = sceneBox.isEmpty() ? 0 : position.distanceTo(sceneBox.getCenter(new THREE.Vector3())) + sceneBox.getSize(new THREE.Vector3()).length() / 2;
     camera.near = dist * 0.001;
     camera.far = Math.max(dist * 100, reach * 2);
     camera.updateProjectionMatrix();
+}
+function frameObject(object) {
+    streamFit.active = false;
+    splatSpin.active = false;
+    const fit = frameFit(object);
+    if (!fit) return;
+    flight = {
+        t0: performance.now(), duration: 450,
+        fromPos: camera.position.clone(), fromTarget: controls.target.clone(),
+        toPos: fit.position, toTarget: fit.target,
+    };
+    fitClipping(fit.dist, fit.position);
     flightInteraction = true;
     pathTracing.beginInteraction();
 }
@@ -2734,6 +2750,7 @@ function updateFlight() {
         // a camera of the file with a clip start (one behind a wall that clips it away): the near plane there until the
         // user moves the camera – raster and path tracer (its rays start on the near plane)
         if (flight.clip > 0) { clipNear = flight.clip; camera.near = clipNear; camera.updateProjectionMatrix(); }
+        if (flight.fit) fitClipping(flight.fit.dist, flight.fit.position);
         if (flight.ortho) {
             orthoView = flight.ortho;
             // ~18× further away: near plane along (depth precision – far grows by itself, syncViewDependents)
