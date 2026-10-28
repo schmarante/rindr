@@ -5,7 +5,7 @@
 import { t } from './i18n.js';
 
 // Order of the categories in the library (and its category filter); categories without presets are left out.
-export const PRESET_CATEGORIES = ['metal', 'plastic', 'paint', 'glass', 'wood', 'stone', 'masonry', 'concrete', 'tiles', 'fabric', 'outdoor', 'nature',
+export const PRESET_CATEGORIES = ['metal', 'plastic', 'paint', 'glass', 'liquid', 'wood', 'stone', 'masonry', 'concrete', 'tiles', 'fabric', 'outdoor', 'nature',
     'subsurface', 'marble', 'style', 'special', 'other'];
 
 /** Display name of a preset (also the default name of a material created from it) */
