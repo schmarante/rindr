@@ -182,9 +182,11 @@ for (const mod of Object.values(import.meta.glob('./nodes/*.js', { eager: true }
 // and an angle around the picture's centre. Defaults = the coordinate unchanged (older graphs look the same).
 // Integer tiling, mirroring and 90° steps keep a repeating texture seamless; other values break the tile edges.
 export const MAPPING_PARAMS = [
-    // offsets in tile units – a decal sits at the model's UV of its spot (large on big models)
-    { key: 'offsetU', kind: 'number', min: -10000, max: 10000, step: 0.01, default: 0, mapping: true },
-    { key: 'offsetV', kind: 'number', min: -10000, max: 10000, step: 0.01, default: 0, mapping: true },
+    // offsets in tile units – a decal sits at the model's UV of its spot (large on big models); the slider spans one
+    // tile either way around the current value (sliderRange – a repeating texture is periodic, a decal moves finely
+    // instead of jumping; user: "-1 to +1 instead of -1000 to +1000"), the field takes the whole range
+    { key: 'offsetU', kind: 'number', min: -10000, max: 10000, step: 0.01, default: 0, mapping: true, slider: 'tile' },
+    { key: 'offsetV', kind: 'number', min: -10000, max: 10000, step: 0.01, default: 0, mapping: true, slider: 'tile' },
     // negative tiling mirrors the axis (decals on faces whose UVs run mirrored)
     { key: 'tilingU', kind: 'number', min: -100, max: 100, step: 0.01, default: 1, mapping: true },
     { key: 'tilingV', kind: 'number', min: -100, max: 100, step: 0.01, default: 1, mapping: true },
@@ -192,6 +194,13 @@ export const MAPPING_PARAMS = [
 ];
 for (const def of Object.values(NODE_TYPES)) {
     if (def.texture && !def.importOnly) def.params = [...(def.params || []), ...MAPPING_PARAMS];
+}
+
+/** range of a number parameter's slider: { min, max } – 'tile': one tile either way around the whole tile nearest the value */
+export function sliderRange(p, value) {
+    if (p.slider !== 'tile') return { min: p.min, max: p.max };
+    const c = Math.round(Number(value) || 0);
+    return { min: Math.max(p.min, c - 1), max: Math.min(p.max, c + 1) };
 }
 
 /** graph with a picture that does not repeat (decal): baked over the UV range of its meshes instead of a tile */

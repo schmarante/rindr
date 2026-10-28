@@ -10,7 +10,7 @@
 //  - Image files dropped onto a texture node become its picture
 import {
     NODE_TYPES, NODE_CATEGORIES, IMPORT_SLOTS, createGraph, createImportGraph, defaultParams,
-    nodeLabel, portLabel, paramLabel, optionLabel, categoryLabel,
+    nodeLabel, portLabel, paramLabel, optionLabel, categoryLabel, sliderRange,
 } from './material-graph.js';
 import { mapLabel } from './material-panel.js';
 import { t } from './i18n.js';
@@ -531,14 +531,15 @@ export class NodeEditor {
         } else {
             const r = document.createElement('input');
             r.type = 'range';
-            Object.assign(r, { min: p.min, max: p.max, step: p.step, value });
+            Object.assign(r, { ...sliderRange(p, value), step: p.step, value });
             r.className = 'min-w-0 flex-1 accent-sky-400';
             const num = document.createElement('input');
             num.type = 'number';
             Object.assign(num, { min: p.min, max: p.max, step: p.step, value });
             num.className = INPUT;
             r.oninput = () => { num.value = r.value; set(Number(r.value)); };
-            num.onchange = () => { r.value = num.value; set(Number(num.value)); };
+            // a typed value can leave the slider's span: centre it there again
+            num.onchange = () => { Object.assign(r, sliderRange(p, num.value)); r.value = num.value; set(Number(num.value)); };
             wrap.append(label, r, num);
         }
         return wrap;
