@@ -863,6 +863,8 @@ export class PropertiesPanel {
                 rows.push(this._row(t('properties.mapping.axis'), axis));
                 rows.push(this._rangeRow(t('properties.mapping.rotation'), shown.rotation, -180, 180, 1, v => change({ rotation: v }), this._dragHooks()));
             }
+            // standard: the file's UVs at their real size (uv-mapping.js uvDensity)
+            if (shown.type === 'standard') rows.push(this._checkRow(t('properties.mapping.real'), t('properties.mapping.realTitle'), !!shown.real, v => change({ real: v || undefined })));
             const scale = this._rangeRow(t('properties.mapping.scale'), shown.scale, 0.1, 10, 0.01, v => change({ scale: v }), this._dragHooks());
             scale.title = t('properties.mapping.scaleTitle');
             rows.push(scale);

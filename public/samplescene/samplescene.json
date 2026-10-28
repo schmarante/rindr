@@ -29,9 +29,6 @@
     "mat-mvsguqgk-p": [
      "3/all"
     ],
-    "mat-mvsi9ns3-8": [
-     "4/all"
-    ],
     "mat-mvsgg7nj-m": [
      "5/all",
      "6/all",
@@ -39,7 +36,19 @@
      "8/all",
      "9/all",
      "10/all"
+    ],
+    "mat-emissive-white-1": [
+     "4/all"
     ]
+   },
+   "mappings": {
+    "n13": {
+     "type": "standard",
+     "axis": "y",
+     "rotation": 0,
+     "scale": 1,
+     "real": true
+    }
    }
   }
  ],
@@ -684,14 +693,16 @@
     "modified": true
    },
    {
-    "id": "mat-mvsi9ns3-8",
-    "name": "Aluminium poliert",
+    "id": "mat-emissive-white-1",
+    "name": "Leuchtend weiß",
     "source": "library",
-    "libraryId": "metal-alu-polished",
+    "libraryId": "emissive-white",
     "params": {
-     "color": "#e6e8ea",
-     "metalness": 1,
-     "roughness": 0.12,
+     "color": "#ffffff",
+     "metalness": 0,
+     "roughness": 0.5,
+     "emissive": "#ffffff",
+     "emissiveIntensity": 5,
      "type": "standard"
     }
    }

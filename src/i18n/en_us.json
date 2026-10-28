@@ -1400,6 +1400,8 @@
             "rotation": "Rotation °",
             "scale": "Scale",
             "scaleTitle": "Factor on the material's tile size: 2 = texture twice as large",
+            "real": "Real scale",
+            "realTitle": "Textures at their real size – the file's UVs are scaled to the area they actually cover",
             "offsetU": "Offset U",
             "offsetV": "Offset V",
             "offsetTitle": "Shifts the texture on the object – in tiles of the material (1 = one whole tile), like the material's offset, but for this object only",
