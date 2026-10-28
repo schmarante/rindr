@@ -16,7 +16,7 @@ import { MATERIALS } from './config.js';
 import { MATERIAL_TYPES, materialType, typeShows, typeAllowsGraph } from './material-types.js';
 import { MATERIAL_PRESETS, PRESET_CATEGORIES, presetName, presetCategoryLabel, libraryComplete, loadLibraryPresets } from './material-presets.js';
 import { t, has } from './i18n.js';
-import { colorField, SELECT } from './ui-controls.js';
+import { colorField, SELECT, CHECKBOX } from './ui-controls.js';
 import { icon } from './icons.js';
 
 const ICON_WARNING = icon('warning', 'size-3.5 shrink-0 fill-amber-400 drop-shadow');
@@ -554,8 +554,15 @@ export class MaterialPanel {
         const set = v => this.manager.setParams(def.id, { [p.key]: v });
         if (p.type === 'color') {
             ctl.append(colorField(value, { onInput: set }));
+        } else if (p.toggle) {
+            // on/off (stored as 0 / 1 like the other values)
+            const cb = el('input', CHECKBOX);
+            cb.type = 'checkbox';
+            cb.checked = value > 0;
+            cb.onchange = () => set(cb.checked ? 1 : 0);
+            ctl.append(cb);
         } else {
-            const step = (p.max - p.min) / 100;
+            const step = p.step ?? (p.max - p.min) / 100;
             const r = el('input', 'min-w-0 flex-1 accent-sky-400');
             r.type = 'range';
             Object.assign(r, { min: p.min, max: p.max, step, value });

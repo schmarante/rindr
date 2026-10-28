@@ -12,6 +12,7 @@ export const KERNEL_FEATURES = [
     'volume',   // cloud volumes and the splat volume (ptVolume 3, 6): volume walk, media in shadow rays
     'gaussians',   // traced Gaussian splats (ptVolume 6 with ptGaussians – baked look; gaussian-pt.js)
     'glass',    // transmission: glass shadows (shadow rays through glass), glass split
+    'medium',   // scattering media inside glass / accurate subsurface (mediumScatter): the random walk (medium-walk.patch.wgsl)
     'wool',     // wool fibres (ptVolume 4): fibre hits in the ray test, their shading
     'soap',     // soap film (ptVolume 5)
     'marble',   // glowing marble (ptVolume 2)
@@ -48,6 +49,8 @@ export const kernelFeatures = {
         else if (volume === 5) add('soap');
         else if (volume === 2) add('marble');
         if ((m.transmission ?? 0) > 0) add('glass');
+        const scatter = m.mediumScatter;
+        if ((m.transmission ?? 0) > 0 && scatter && scatter.r + scatter.g + scatter.b > 0) add('medium');
         if (m.anisotropyRotation && !m.anisotropy) add('edges');
         if (m.matte) add('ground');
         return m;

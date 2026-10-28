@@ -262,6 +262,139 @@ function ptStandInPatch() {
   };
 }
 
+// OpenPBR in the path tracer (docs/material-format.md, Oct. 2026): what three-gpu-pathtracer's material does not cover
+// yet – coat IOR (fixed 1.5 there) and coat colour (OpenPBR coat_color: tints everything below the coat), the metal
+// edge tint after OpenPBR's F82-tint model with specular_color (Schlick before; white = exactly Schlick, so every
+// existing material looks as before). The new material fields sit in padding slots of the packed struct (coat IOR
+// after clearcoatNormalMap, coat colour before the map transforms) – size and layout stay. Diffuse roughness (EON),
+// dispersion, specular colour, anisotropy, thin film IOR/thickness the library reads already (material-manager.js
+// sets them). Fails loudly if the library changed.
+const F82_CONDUCTOR = `
+	fn conductorFresnel( VdotH: f32, f0: vec3f, specular: vec3f ) -> vec3f {
+
+		// OpenPBR F82-tint: Schlick, pulled towards specular × Schlick at mu = 1/7 (the "82°" point)
+		let mu = abs( VdotH );
+		let schlick = schlickFresnelVec( mu, f0, vec3f( 1 ) );
+		let muBar = 1.0 / 7.0;
+		let schlickBar = schlickFresnelVec( muBar, f0, vec3f( 1 ) );
+		let b = schlickBar * ( vec3f( 1.0 ) - specular );
+		let w = mu * pow( 1.0 - mu, 6.0 ) / ( muBar * pow( 1.0 - muBar, 6.0 ) );
+		return clamp( schlick - w * b, vec3f( 0.0 ), vec3f( 1.0 ) );
+
+	}
+`;
+function openPbrPatch() {
+  return {
+    name: 'rindr-openpbr',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.replace(/\\/g, '/').split('?')[0];
+      const name = file.split('/').pop();
+      const replaceOnce = (from, to) => {
+        const n = typeof from === 'string' ? code.split(from).length - 1 : (code.match(new RegExp(from.source, 'g')) || []).length;
+        if (n !== 1) this.error(`rindr-openpbr: ${from} not found exactly once in ${name} (three-gpu-pathtracer changed?)`);
+        code = code.replace(from, to);
+      };
+      const replaceAll = (from, to, count) => {
+        const n = code.split(from).length - 1;
+        if (n !== count) this.error(`rindr-openpbr: ${from} found ${n}× instead of ${count}× in ${name} (three-gpu-pathtracer changed?)`);
+        code = code.split(from).join(to);
+      };
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/structs.wgsl.js')) {
+        // material struct: into the padding (float after the int at offset 22; three floats before the mat3 at 72)
+        replaceOnce(/\n(\t)clearcoatNormalMap: 'int',\n/, (m, tab) => `${m}${tab}coatIor: 'float',\n`);
+        replaceOnce(/\n(\t)anisotropyMap: 'int',\n/, (m, tab) => `${m}${tab}coatColorR: 'float',\n${tab}coatColorG: 'float',\n${tab}coatColorB: 'float',\n`);
+        // surface record
+        replaceOnce(/\n(\t)clearcoatRoughness: 'f32',\n/, (m, tab) => `${m}${tab}coatIor: 'f32',\n${tab}coatColor: 'vec3f',\n`);
+        return { code, map: null };
+      }
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/PathtracerBVHComputeData.js')) {
+        replaceOnce(/(intArray\[ index \+\+ \] = getTexture\( m, 'clearcoatNormalMap' \);\n\t+)index \+\+; \/\/ because of vec2 alignment/,
+          (_, head) => `${head}floatArray[ index ++ ] = getField( m, 'coatIor', 1.5 ); // rindr-openpbr (was padding)`);
+        replaceOnce(/(intArray\[ index \+\+ \] = getTexture\( m, 'anisotropyMap' \);\n(\t+))index \+\+; \/\/ padding for mat3 alignment\n\t+index \+\+;\n\t+index \+\+;/,
+          (_, head, tab) => `${head}// rindr-openpbr: coat colour (was padding)\n${tab}floatArray[ index ++ ] = m.coatColor ? m.coatColor.r : 1.0;\n`
+            + `${tab}floatArray[ index ++ ] = m.coatColor ? m.coatColor.g : 1.0;\n${tab}floatArray[ index ++ ] = m.coatColor ? m.coatColor.b : 1.0;`);
+        return { code, map: null };
+      }
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/material.wgsl.js')) {
+        replaceOnce(/\n(\t+)surf\.clearcoat = clearcoat;\n/, (m, tab) => `${m}${tab}surf.coatIor = max( material.coatIor, 1.0 );\n`
+          + `${tab}surf.coatColor = vec3f( material.coatColorR, material.coatColorG, material.coatColorB );\n`);
+        replaceOnce(/\n\tfn conductorFresnel\( VdotH: f32, f0: vec3f, specular: vec3f \) -> vec3f \{\n[\s\S]*?\n\t\}\n/, () => F82_CONDUCTOR);
+        return { code, map: null };
+      }
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/materials/GltfCompliantMaterial.js')) {
+        replaceAll('${ iorToF0Func }( 1.5 )', '${ iorToF0Func }( surf.coatIor )', 2);
+        replaceOnce('surf.clearcoatRoughness, 1.5 )', 'surf.clearcoatRoughness, surf.coatIor )');
+        replaceAll('${ CLEARCOAT_IOR }', 'surf.coatIor', 2);
+        replaceOnce(/\n(\t+)attenuation \*= 1\.0 - surf\.clearcoat \* clearcoatFresnelEnergySS;\n/, (m, tab) => `${m}${tab}// rindr-openpbr: what lies below goes through the coat's colour\n${tab}attenuation *= mix( vec3f( 1.0 ), surf.coatColor, surf.clearcoat );\n`);
+        replaceOnce('${ this.conductorFresnel }( ctx.VdotH, surf.color, vec3f( 1.0 ) )', '${ this.conductorFresnel }( ctx.VdotH, surf.color, surf.specularColor )');
+        return { code, map: null };
+      }
+      return null;
+    },
+  };
+}
+
+// Scattering media (src/scripts/materials/medium.js, docs/material-format.md – fails loudly if the library changed,
+// check on every update): OpenPBR transmission_scatter and subsurface in the accurate mode as a real homogeneous medium
+// inside the mesh – a random walk in the megakernel (medium-walk.patch.wgsl, kernel feature 'medium').
+// - material struct: scattering coefficient (per world unit), anisotropy, tint flag appended after the last map
+//   transform (the struct grows by 8 floats; the absorption stays in attenuationColor / attenuationDistance)
+// - surface record: transmissionTint – the colour the glass lobe tints with: the base colour as before, white for
+//   subsurface (its colour comes from the medium; the base colour belongs to the diffuse share)
+// - megakernel: the walk on back-face hits; no absorption of the library on stretches it handled; no light sample on
+//   the exit face after scattering (the events' light samples carry that light already)
+const MEDIUM_WALK_PATCH = fileURLToPath(new URL('./src/scripts/medium-walk.patch.wgsl', import.meta.url));
+function mediumPatch() {
+  return {
+    name: 'rindr-medium',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.replace(/\\/g, '/').split('?')[0];
+      const name = file.split('/').pop();
+      const replaceOnce = (from, to) => {
+        const n = typeof from === 'string' ? code.split(from).length - 1 : (code.match(new RegExp(from.source, 'g')) || []).length;
+        if (n !== 1) this.error(`rindr-medium: ${from} not found exactly once in ${name} (three-gpu-pathtracer changed?)`);
+        code = code.replace(from, to);
+      };
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/structs.wgsl.js')) {
+        replaceOnce(/\n(\t)anisotropyMapTransform: 'mat3',\n/, (m, tab) => `${m}${tab}// rindr-medium\n${tab}mediumScatter: 'vec3',\n${tab}mediumAnisotropy: 'float',\n${tab}mediumTint: 'float',\n`);
+        replaceOnce(/\n(\t)clearcoatRoughness: 'f32',\n/, (m, tab) => `${m}${tab}transmissionTint: 'vec3f',\n`);
+        return { code, map: null };
+      }
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/PathtracerBVHComputeData.js')) {
+        replaceOnce(/\n(\t+)index \+= writeTextureMatrixToArray\( m, 'anisotropyMap', floatArray, index \);\n/, (m, tab) => `${m}
+${tab}// rindr-medium: scattering coefficient, anisotropy, tint flag (+ padding to the struct's alignment)
+${tab}const rindrScatter = getField( m, 'mediumScatter', null );
+${tab}floatArray[ index ++ ] = rindrScatter ? rindrScatter.r : 0.0;
+${tab}floatArray[ index ++ ] = rindrScatter ? rindrScatter.g : 0.0;
+${tab}floatArray[ index ++ ] = rindrScatter ? rindrScatter.b : 0.0;
+${tab}floatArray[ index ++ ] = getField( m, 'mediumAnisotropy', 0.0 );
+${tab}floatArray[ index ++ ] = getField( m, 'mediumTint', 0.0 );
+${tab}index += 3;
+`);
+        return { code, map: null };
+      }
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/material.wgsl.js')) {
+        replaceOnce(/\n(\t+)surf\.clearcoat = clearcoat;\n/, (m, tab) => `${m}${tab}surf.transmissionTint = mix( surf.color, vec3f( 1.0 ), material.mediumTint );\n`);
+        return { code, map: null };
+      }
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/materials/GltfCompliantMaterial.js')) {
+        replaceOnce('result += ( 1.0 - surf.metalness ) * surf.transmission * refraction * surf.color;', () => 'result += ( 1.0 - surf.metalness ) * surf.transmission * refraction * surf.transmissionTint;');
+        replaceOnce(/result\.color = \( 1\.0 - surf\.metalness \) \* surf\.transmission \* surf\.color \*\n/, m => m.replace('surf.color', 'surf.transmissionTint'));
+        return { code, map: null };
+      }
+      if (!file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) return null;
+      replaceOnce(/\n(\t+)var transparentBounce = 0u;/, (m, tab) => `${m}\n${tab}var mdScattered = false;\n${tab}var mdPassed = false;\n${tab}var mdNoLight = false;\n${tab}var mdEvents = 0u;`);
+      replaceOnce(/\n\t+materialInfo\.opacity \*= objectInfo\.color\.a;\n/, m => m + gate('medium', readFileSync(MEDIUM_WALK_PATCH, 'utf8')));
+      replaceOnce('if ( hitResult.side < 0.0 && materialInfo.transmission > 0.0 ) {', () => 'if ( hitResult.side < 0.0 && materialInfo.transmission > 0.0 && ! mdPassed ) {');
+      replaceOnce(/(\/\/ next event estimation: draw one light or the environment, each with\n\t+\/\/ probability 1 \/ lightsDenom\n\t+)if \( misEnabled != 0u && lightsDenom > 0\.0 \) \{/,
+        (_, head) => `${head}if ( misEnabled != 0u && lightsDenom > 0.0 && ! mdNoLight ) {`);
+      return { code, map: null };
+    },
+  };
+}
+
 // Glass while orbiting (src/scripts/pt-motion.js): refractions up to PT_MOTION.glassBounces do not use up the bounce
 // budget of the megakernel – with the 3 bounces of the motion mode glass was black (fails loudly if the library
 // changed, check on every update).
@@ -333,9 +466,10 @@ function glassShadowPatch() {
         code = code.replace(from, to);
       };
       // markers of other patches: shadow catcher (shadow-catcher.patch.wgsl, rindr-shadow-catcher) and the light samples
-      // of the volume walk (volume-walk.patch.wgsl, rindr-cloud) – both inserted before this plugin
+      // of the volume walk (volume-walk.patch.wgsl, rindr-cloud), the traced Gaussians and the medium walk
+      // (medium-walk.patch.wgsl, rindr-medium) – all inserted before this plugin
       const markers = /\n\t*\/\/@glass-shadow ([^\n]+)/g;
-      if ((code.match(markers) || []).length !== 3) this.error('rindr-glass-shadow: expected 3 //@glass-shadow markers in PathTracerMegaKernel.js (shadow catcher, volume walk, traced Gaussians)');
+      if ((code.match(markers) || []).length !== 4) this.error('rindr-glass-shadow: expected 4 //@glass-shadow markers in PathTracerMegaKernel.js (shadow catcher, volume walk, traced Gaussians, medium walk)');
       code = code.replace(markers, (_, args) => {
         const [origin, dir, maxDist, normal, primary] = args.split('|').map(a => a.trim());
         return '\n' + snippet({ origin, dir, maxDist, normal, primary });
@@ -596,7 +730,7 @@ function lightPassesPatch() {
         const lobe = (statement, k) => swap(statement, `{ let lpE = ${statement.slice('result += '.length, -1)}; result += lpE; lobes[ ${k} ] += lpE; }`);
         lobe('result += surf.clearcoat * clearcoatFresnel * clearcoatSpecular;', 1);
         lobe('result += attenuation * surf.sheen * ${ sheenColorFunc }( ctx.V, ctx.L, ctx.H, surf );', 0);
-        lobe('result += ( 1.0 - surf.metalness ) * surf.transmission * refraction * surf.color;', 2);
+        lobe('result += ( 1.0 - surf.metalness ) * surf.transmission * refraction * surf.transmissionTint;', 2);   // rindr-medium: tint
         lobe('result += attenuation * ( 1.0 - surf.metalness ) * surf.transmission * reflection;', 1);
         lobe('result += attenuation * mix( ( 1.0 - surf.transmission ) * dielectric, metallic, surf.metalness );', 1);
         lobe('result += attenuation * diffuse;', 0);
@@ -738,6 +872,8 @@ ${tab}}${lpT(tab, 'scShadow * scSurf.z * ( 1.0 - scSurf.x )')}`);
       wrap('resultColor += vec4f( ${ clampPathContributionFunc }( throughputColor * vmSc, bounce, clampDirect, clampIndirect ), 0.0 );', `${LP.EMISSION}u`, { direct: LP.DIRECT_EMISSION });
       wrap('resultColor += vec4f( ${ clampPathContributionFunc }( throughputColor * ${ __SPLAT.glow }, bounce, clampDirect, clampIndirect ), 0.0 );', `${LP.EMISSION}u`, { direct: LP.DIRECT_EMISSION });
       wrap('resultColor += vec4f( ${ clampPathContributionFunc }( vmDirect, bounce + 1u, clampDirect, clampIndirect ), 0.0 );', lpLightSlot('vmLightIndex'), { direct: LP.DIFFUSE });
+      // scattering media (rindr-medium): the path's kind comes from the surface it entered through (glass lobe)
+      wrap('resultColor += vec4f( ${ clampPathContributionFunc }( mdDirect, bounce + 1u, clampDirect, clampIndirect ), 0.0 );', lpLightSlot('mdLightIndex'), { direct: LP.DIFFUSE });
       wrap('resultColor += vec4f( ${ clampPathContributionFunc }( throughputColor * mbGlow * ( 1.0 - mbFresnel ), bounce, clampDirect, clampIndirect ), 0.0 );', `${LP.EMISSION}u`, { direct: LP.DIRECT_EMISSION });
       wrap('resultColor += vec4f( ${ clampPathContributionFunc }( throughputColor * gxSeg.rgb, bounce, clampDirect, clampIndirect ), 0.0 );', `${LP.EMISSION}u`, { direct: LP.DIRECT_EMISSION });
       wrap('resultColor += vec4f( ${ clampPathContributionFunc }( throughputColor * gxCaught, bounce, clampDirect, clampIndirect ), 0.0 );', `${LP.EMISSION}u`, { direct: LP.DIRECT_EMISSION });
@@ -1318,7 +1454,7 @@ export default defineConfig({
     headers: isolationHeaders,
   },
   vite: {
-    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), bucketPatch(), ptStandInPatch(), glassBouncesPatch(), cloudPatch(), gaussianPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch(), glassSplitPatch(), nanGuardPatch(), lightPassesPatch()],
+    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), bucketPatch(), ptStandInPatch(), openPbrPatch(), mediumPatch(), glassBouncesPatch(), cloudPatch(), gaussianPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch(), glassSplitPatch(), nanGuardPatch(), lightPassesPatch()],
     server: { headers: isolationHeaders },
     preview: { headers: isolationHeaders },
     worker: { format: 'es' },

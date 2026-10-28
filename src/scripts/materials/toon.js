@@ -16,17 +16,22 @@
 //   path tracer: stand-in fields (pt-stand-in.js) – a translucent share as rough (diffuse-like) transmission,
 //     the gloss as clearcoat and the scatter colour absorbed over the distance travelled inside: the exact
 //     thickness of the method, thin parts glow, thick ones stay dense. A real random walk (Oct. 2026) took 2–5× the
-//     render time of plastic and came out too dark – dropped.
+//     render time of plastic and came out too dark – dropped as the default; since Oct. 2026 the accurate mode
+//     (`subsurfaceMode`, user's choice: a switch per material) is that walk after OpenPBR (medium.js,
+//     medium-walk.patch.wgsl) – the raster keeps the approximation.
+// Scattering inside glass (OpenPBR transmission_scatter, setTransmissionScatter): milk glass, juice, jade – the same
+// walk in the path tracer; the raster only lets less through and shows the scattered share as a diffuse colour.
 import * as THREE from 'three/webgpu';
 import { diffuseColor, materialEmissive, luminance, select, float, vec4, uniform, normalView, positionViewDirection,
     positionGeometry, positionWorld, cameraPosition, modelWorldMatrixInverse, materialColor, positionLocal, cameraWorldMatrix,
-    modelWorldMatrix, normalize, length, exp, mix, log, vec3 } from 'three/tsl';
+    modelWorldMatrix, normalize, length, exp, mix, log, vec3, materialClearcoat } from 'three/tsl';
 import { fieldThickness, fieldReady } from './sss-field.js';
 import { marbleGlow } from './marble.js';
 import { WOOL_SHADE } from './wool.js';
 import { GRASS_SHADE } from './grass-field.js';
 import { SOAP_IOR, soapThicknessNode, soapSceneCell } from './soap.js';
 import { edgeNormalView } from './edges.js';
+import { transmissionMedium, subsurfaceMedium, colorFromAlbedo } from './medium.js';
 
 // brightness of the lit colour relative to the base colour → tone (thresholds, tones as share of the base colour)
 const TOON_STEPS = { shadow: 0.55, mid: 1.1 };
@@ -115,6 +120,12 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         this._marbleIntensity = uniform(1);
         this.edges = false;    // cache key (normal node); radius as a uniform
         this._edgeRadius = uniform(0);
+        // OpenPBR extras the path tracer reads (rindr-openpbr in astro.config.mjs): diffuse roughness (EON), coat IOR
+        // and colour; the raster tints what lies below the coat with its colour (setupDiffuseColor)
+        this.diffuseRoughness = 0;
+        this.coatIor = 1.5;
+        this.coatColor = new THREE.Color(1, 1, 1);
+        this._coatColor = uniform(new THREE.Color(1, 1, 1));
     }
 
     /**
@@ -207,14 +218,23 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
             Object.defineProperty(pt, 'iridescenceThicknessRange', {
                 get: () => [film, soapSceneCell() * scale], enumerable: true, configurable: true,
             });
-        } else {
-            this.iridescenceIOR = 1.3;
         }
+        // off: the thin film's own IOR and thickness come from the material's params (material-manager.js)
         if (Object.keys(pt).length) this.userData.ptStandIn = pt; else delete this.userData.ptStandIn;
+    }
+
+    /** Coat colour (sRGB hex – OpenPBR coat_color: what the coat lets through) and coat IOR */
+    setCoat(color, ior) {
+        this.coatColor.set(color);
+        this._coatColor.value.copy(this.coatColor);
+        this.coatIor = ior;
     }
 
     setupDiffuseColor(builder) {
         super.setupDiffuseColor(builder);
+        // the coat's colour over the base (diffuse and, through the diffuse colour, the metal's reflection) – a
+        // uniform, weighted with the coat (its map included)
+        diffuseColor.rgb.mulAssign(mix(vec3(1), this._coatColor, materialClearcoat));
         // SSS with a distance field: the translucent share goes through the body instead of reflecting off the surface
         // – like the path tracer's stand-in (PT_TRANSLUCENT of the weight as transmission)
         if (this.subsurface) diffuseColor.rgb.mulAssign(mix(float(1), float(1).sub(this._sssWeight.mul(PT_TRANSLUCENT)), fieldReady));
@@ -276,21 +296,31 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
      * ones stay dense). Mixes `color` towards the scatter colour and sets the path tracer stand-in – call after
      * colour, roughness and clearcoat are set.
      */
-    setSubsurface(weight, color, radius) {
+    setSubsurface(weight, color, radius, accurate = 0, anisotropy = 0) {
         this.subsurface = weight > 0;
         this._sssWeight.value = weight;
         this._sssColor.value.set(color);
         this._sssRadius.value = Math.max(radius, 1e-3);
         // the thickness comes from the geometry's distance field in its own space – drawn one by one (sss-field.js)
         this.userData.noBatch = (this.subsurface || this.marble) || undefined;
-        const pt = this.userData.ptStandIn ?? {};
-        for (const key of ['transmission', 'roughness', 'clearcoat', 'clearcoatRoughness', 'thickness', 'attenuationColor', 'attenuationDistance']) delete pt[key];
-        if (Object.keys(pt).length) this.userData.ptStandIn = pt; else delete this.userData.ptStandIn;
-        if (!this.subsurface) return;
+        if (!this.subsurface) return this._standIn('_sssKeys', null);
         const sss = this._sssColor.value;
+        const base = { r: this.color.r, g: this.color.g, b: this.color.b };
         this.color.lerp(sss, weight);   // the visible colour of the scattering (raster and path tracer)
+        if (accurate > 0) {
+            // OpenPBR: a dielectric boundary (the material's own gloss) over the medium; the weight is the share that
+            // enters it, the rest is the diffuse base in its own colour – the glass lobe does not tint (the medium does)
+            return this._standIn('_sssKeys', {
+                transmission: Math.max(this.transmission, weight),
+                thickness: Math.max(this.thickness, 1),   // volume, not a thin wall
+                color: base,
+                mediumTint: 1,
+                mediumAnisotropy: anisotropy,
+                ...subsurfaceMedium(sss, radius, anisotropy),
+            });
+        }
         const gloss = this.roughness < PT_ROUGHNESS;
-        this.userData.ptStandIn = Object.assign(pt, {
+        this._standIn('_sssKeys', {
             transmission: Math.max(this.transmission, weight * PT_TRANSLUCENT),
             roughness: Math.max(this.roughness, PT_ROUGHNESS),
             // the material's own gloss as a clear layer over the rough translucent body
@@ -300,6 +330,45 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
             attenuationColor: { r: sss.r, g: sss.g, b: sss.b },
             attenuationDistance: Math.max(radius, 1e-3),
         });
+    }
+
+    /**
+     * OpenPBR transmission_scatter: scattering inside the glass (milk glass, juice, jade) – scatter colour (sRGB hex;
+     * over the glass's absorption distance like the transmission colour), anisotropy −1..1. Call after the glass
+     * params and setSubsurface (subsurface takes the medium when both are on). Path tracer: the medium walk
+     * (medium.js); raster: less light through, the scattered share as the diffuse colour.
+     */
+    setTransmissionScatter(color, anisotropy = 0) {
+        const scatter = new THREE.Color(color);
+        // thin wall: no thickness and no absorption distance (the library's rule)
+        const medium = this.subsurface || !Number.isFinite(this.attenuationDistance) || !(this.transmission > 0) ? null
+            : transmissionMedium(this.attenuationColor, this.attenuationDistance, scatter);
+        if (!medium) return this._standIn('_scatterKeys', null);
+        this._standIn('_scatterKeys', {
+            transmission: this.transmission,
+            color: { r: this.color.r, g: this.color.g, b: this.color.b },
+            mediumTint: 0,
+            mediumAnisotropy: anisotropy,
+            ...medium,
+        });
+        // raster: the scattered share over twice the depth (objects are usually thicker than the depth the colour is
+        // given at) is not let through; the colour × the medium's observed colour (absorption included – jade green,
+        // milk white; mixed in by the share, a white glass stayed pale grey)
+        const s = medium.mediumScatter, a = medium.attenuationColor, depth = medium.attenuationDistance;
+        const albedo = c => s[c] / Math.max(s[c] - Math.log(Math.max(a[c], 1e-6)) / depth, 1e-9);
+        const cloudy = 1 - Math.exp(-2 * depth * (s.r + s.g + s.b) / 3);
+        this.transmission *= 1 - cloudy;
+        this.color.multiply(scatter.setRGB(colorFromAlbedo(albedo('r'), anisotropy), colorFromAlbedo(albedo('g'), anisotropy),
+            colorFromAlbedo(albedo('b'), anisotropy), THREE.LinearSRGBColorSpace));
+    }
+
+    // path tracer stand-in fields of one feature (key: where its field names are kept) – the previous ones removed
+    _standIn(key, values) {
+        const pt = this.userData.ptStandIn ?? {};
+        for (const name of this[key] ?? []) delete pt[name];
+        this[key] = values ? Object.keys(values) : [];
+        if (values) Object.assign(pt, values);
+        if (Object.keys(pt).length) this.userData.ptStandIn = pt; else delete this.userData.ptStandIn;
     }
 
     setupLightingModel(builder) {
@@ -329,6 +398,10 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         this._sssWeight.value = source._sssWeight.value;
         this._sssColor.value.copy(source._sssColor.value);
         this._sssRadius.value = source._sssRadius.value;
+        this._sssKeys = [...(source._sssKeys ?? [])];   // stand-in fields of subsurface / medium (userData is copied)
+        this._scatterKeys = [...(source._scatterKeys ?? [])];
+        this.diffuseRoughness = source.diffuseRoughness;
+        this.setCoat(source.coatColor, source.coatIor);
         if (source.userData.noBatch) this.userData.noBatch = true;
         this.marble = false;
         this.setMarble(source._marbleIntensity.value * (source.marble ? 1 : 0), '#' + source._marbleColor.value.getHexString(), source._marbleScale.value);
