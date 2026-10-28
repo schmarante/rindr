@@ -395,9 +395,9 @@ ${tab}index += 3;
   };
 }
 
-// Glass while orbiting (src/scripts/pt-motion.js): refractions up to PT_MOTION.glassBounces do not use up the bounce
-// budget of the megakernel – with the 3 bounces of the motion mode glass was black (fails loudly if the library
-// changed, check on every update).
+// Refraction bounces (src/scripts/pt-motion.js): refractions up to PT_MOTION.glassBounces do not use up the bounce
+// budget of the megakernel – glass gets its own limit (setting "Bounces refraction"); with the 3 bounces of the motion
+// mode glass was black (fails loudly if the library changed, check on every update).
 const PT_MOTION_MODULE = fileURLToPath(new URL('./src/scripts/pt-motion.js', import.meta.url));
 function glassBouncesPatch() {
   return {
@@ -412,9 +412,10 @@ function glassBouncesPatch() {
       // the budget raises the loop's limit (instead of `bounce --`: a mirror reflection then restarted at bounce 0 and
       // the environment it hit was drawn as the directly seen background – chrome turned black)
       code = code.replace(loop, (m, tab) => `\n${tab}var glassBounce = 0u;\n${tab}for ( var bounce = 0u; bounce < maxBounces + glassBounce; bounce ++ ) {`);
-      // end of the iteration (after Russian roulette): a refraction or a smooth mirror reflection (chrome: mirror in
-      // mirror) within the budget does not count
-      code = code.replace(next, (m, tab) => `\n${tab}if ( ( scatterRec.isTransmissive || ( surface.metalness > 0.9 && surface.roughness < 0.1 ) ) && glassBounce < \${ __PT_MOTION.glassBounces } ) {\n\n${tab}\tglassBounce ++;\n\n${tab}}\n` + m);
+      // end of the iteration (after Russian roulette): a refraction, any scatter at glass (also its reflections – total
+      // reflection inside counted as a bounce darkened glass with few bounces) or – while orbiting – a smooth mirror
+      // reflection (chrome: mirror in mirror) within the budget does not count
+      code = code.replace(next, (m, tab) => `\n${tab}if ( ( scatterRec.isTransmissive || surface.transmission > 0.5 || ( \${ __PT_MOTION.mirrors } != 0u && surface.metalness > 0.9 && surface.roughness < 0.1 ) ) && glassBounce < \${ __PT_MOTION.glassBounces } ) {\n\n${tab}\tglassBounce ++;\n\n${tab}}\n` + m);
       return { code: `import { PT_MOTION as __PT_MOTION } from ${JSON.stringify(PT_MOTION_MODULE)};\n` + code, map: null };
     },
   };

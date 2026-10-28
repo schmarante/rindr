@@ -44,6 +44,8 @@ export class PathTracingView {
         this.building = false;
 
         this.bounces = PATHTRACING.bounces;   // bounces when standing still
+        this.refractionBounces = PATHTRACING.refractionBounces;   // refractions on top of them (pt-motion.js)
+        this.glassSplit = PATHTRACING.glassSplit;   // reflection and refraction both traced at glass (glass-split.js)
         this.interacting = false;       // camera is being moved -> rasterizer instead of path tracing
         this._pendingCameraUpdate = false;
         this.backgroundFollowsCamera = false;   // background rotation is tied to the camera (vignette)
@@ -96,7 +98,8 @@ export class PathTracingView {
         this.glassShadow = { ...PATHTRACING.glassShadow };   // shadows of glass (setGlassShadow, glass-shadow.js)
         this.sceneSize = 1;             // size of the scene (viewer) – the fringe fades relative to it
         this._applyGlassShadow();
-        GLASS_SPLIT.enabled.value = PATHTRACING.glassSplit ? 1 : 0;
+        GLASS_SPLIT.enabled.value = this.glassSplit ? 1 : 0;
+        PT_MOTION.glassBounces.value = this.refractionBounces;
         this._blend = { last: 0, frame: 0, view: new Matrix4(), proj: new Matrix4(), rest: 0, prepared: false };
         this.lightMix = null;           // light mix of a render with light passes (setLightMix)
         this._passHold = null;          // kernel variant with the passes kept: true during a job (holdPassKernel), then
@@ -319,6 +322,7 @@ export class PathTracingView {
 
     /** Reflection and refraction both traced at the first glass hit (glass-split.js) */
     setGlassSplit(on) {
+        this.glassSplit = !!on;
         GLASS_SPLIT.enabled.value = on ? 1 : 0;
         this.reset();
     }
@@ -399,6 +403,14 @@ export class PathTracingView {
             this.pathTracer.maxBounces = bounces;
             this.reset(); // also discards an already denoised image
         }
+    }
+
+    /** Refractions through glass that do not count as bounces (pt-motion.js) */
+    setRefractionBounces(bounces) {
+        this.refractionBounces = bounces;
+        if (this._motion) return;   // taken over when the motion ends
+        PT_MOTION.glassBounces.value = bounces;
+        if (this.ready) this.reset();
     }
 
     // Scene has changed (e.g. retessellated) – no path tracing until the next setScene().
@@ -1139,8 +1151,9 @@ export class PathTracingView {
         this._motion = { saved: { renderScale: pt.renderScale, bounces: this.bounces, minSamples: pt.minSamples, frameBudget: pt.frameBudget }, end: 0 };
         pt.renderScale = Math.min(this.motion.renderScale, pt.renderScale) * this._motionScale;   // learned from the GPU time
         pt.maxBounces = Math.min(this.motion.bounces, this.bounces);
-        // glass keeps the bounces of standing still (refractions within this budget are not counted, pt-motion.js)
-        PT_MOTION.glassBounces.value = Math.max(this.bounces - pt.maxBounces, 0);
+        // glass and smooth mirrors keep the bounces of standing still (within this budget they are not counted, pt-motion.js)
+        PT_MOTION.glassBounces.value = Math.max(this.bounces - pt.maxBounces, 0) + this.refractionBounces;
+        PT_MOTION.mirrors.value = 1;
         pt.minSamples = 0;   // show immediately (otherwise the raster image covers it until the first sample is counted)
         // every frame starts over: the whole image in one dispatch. With the refining budget (learned per tile, small
         // for large scenes / 4K) the image was split into tiles and only the first one (bottom left) was ever traced
@@ -1156,7 +1169,8 @@ export class PathTracingView {
         pt.renderScale = m.saved.renderScale;
         pt.frameBudget = m.saved.frameBudget;
         pt.maxBounces = this.bounces;
-        PT_MOTION.glassBounces.value = 0;
+        PT_MOTION.glassBounces.value = this.refractionBounces;
+        PT_MOTION.mirrors.value = 0;
         // show the first full sample immediately instead of the raster image (see _renderFirstSample)
         this._fullFirst = true;
         this._fullFirstMin = m.saved.minSamples;
@@ -1221,7 +1235,7 @@ export class PathTracingView {
             motionDispatchMs: Math.round((this._motionMs || 0) * 10) / 10, motionScale: Math.round(this._motionScale * 100) / 100,
             traceSize: size ? `${size.x}x${size.y}` : null, renderScale: pt?.renderScale ?? null,
             filter: this.motion.filter, temporal: this.motion.temporal, bounces: this.bounces,
-            timestamps: !!this._timestamps, cautious: this.gpuCautious,
+            refractionBounces: this.refractionBounces, timestamps: !!this._timestamps, cautious: this.gpuCautious,
         };
     }
 
