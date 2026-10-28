@@ -9,7 +9,7 @@ import { viewAngle, setViewAngle, PERSPECTIVE_LIMIT, MAX_VIEW_ANGLE, MIN_VIEW_AN
 import { Euler, Box3, Matrix4, Vector3, Quaternion } from 'three/webgpu';
 import { t, has, getLocale } from './i18n.js';
 import { STYLE_MODES } from './style-filters.js';
-import { MAPPING_TYPES, MAPPING_AXES, DEFAULT_MAPPING } from './uv-mapping.js';
+import { MAPPING_TYPES, MAPPING_AXES, DEFAULT_MAPPING, isPlain } from './uv-mapping.js';
 import { draggable, fmt, INPUT, colorField } from './ui-controls.js';
 import { icon } from './icons.js';
 
@@ -852,7 +852,7 @@ export class PropertiesPanel {
         // inherited: first entry = no own mapping; otherwise "standard" without scale is the same as none
         const types = MAPPING_TYPES.map(k => [k, typeName(k)]);
         if (inherited) types.unshift(['', t('properties.mapping.inherited', { type: typeName(inherited.type), name: from })]);
-        const plain = v => !inherited && v === 'standard' && (api.get(entry).own?.scale ?? 1) === 1;
+        const plain = v => !inherited && isPlain({ ...api.get(entry).own, type: v });
         const type = select(types, own ? own.type : inherited ? '' : 'standard', t('properties.mapping.type'),
             v => set(!v || plain(v) ? null : { ...shown, type: v }));
         type.title = t('properties.mapping.typeTitle');
@@ -866,6 +866,13 @@ export class PropertiesPanel {
             const scale = this._rangeRow(t('properties.mapping.scale'), shown.scale, 0.1, 10, 0.01, v => change({ scale: v }), this._dragHooks());
             scale.title = t('properties.mapping.scaleTitle');
             rows.push(scale);
+            // shift in tiles of the material (slider: one tile either way – a repeating texture is periodic; the field
+            // takes any value)
+            for (const key of ['offsetU', 'offsetV']) {
+                const row = this._rangeRow(t(`properties.mapping.${key}`), shown[key] || 0, -1, 1, 0.01, v => change({ [key]: v }), this._dragHooks());
+                row.title = t('properties.mapping.offsetTitle');
+                rows.push(row);
+            }
             if (!own && inherited) rows.push(el('div', 'mb-1 text-white/40', t('properties.mapping.inheritHint')));
             if (below) rows.push(el('div', 'mb-1 text-white/40', t('properties.mapping.belowHint', { count: below })));
             return rows;

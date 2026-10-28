@@ -1400,6 +1400,9 @@
             "rotation": "Rotation °",
             "scale": "Scale",
             "scaleTitle": "Factor on the material's tile size: 2 = texture twice as large",
+            "offsetU": "Offset U",
+            "offsetV": "Offset V",
+            "offsetTitle": "Shifts the texture on the object – in tiles of the material (1 = one whole tile), like the material's offset, but for this object only",
             "inheritHint": "A change gives this object its own mapping.",
             "belowHint": {
                 "one": "{count} part below has its own mapping – a change here replaces it.",

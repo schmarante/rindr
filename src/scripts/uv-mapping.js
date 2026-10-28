@@ -6,7 +6,9 @@
 //   planar    projection along the axis
 //   cylinder  around the axis; faces looking along the axis (caps) planar
 //   sphere    longitude/latitude around the centre
-// scale = factor on the material's tile size (material size stays the base: one material, differently sized parts).
+// scale = factor on the material's tile size (material size stays the base: one material, differently sized parts);
+// offsetU / offsetV = shift in tiles of the material (as the material's own offsets – user: "move the mapping of the
+// object, not in the material"), so they follow its tile size.
 // Cylinder and sphere: the repeats around are rounded to a whole number for the material on the mesh (its tile
 // size × scale) → the seam where the circle closes matches exactly.
 //
@@ -30,6 +32,8 @@ export const MAPPING_TYPES = ['standard', 'box', 'planar', 'cylinder', 'sphere']
 export const MAPPING_AXES = ['y', 'x', 'z'];
 export const DEFAULT_MAPPING = { type: 'standard', axis: 'y', rotation: 0, scale: 1 };
 const CAP = 0.7;   // cylinder: |normal · axis| above this = cap (planar)
+// "standard" without scale and offset = the import's UVs unchanged (no own mapping needed)
+export const isPlain = mapping => !mapping || (mapping.type === 'standard' && (mapping.scale ?? 1) === 1 && !mapping.offsetU && !mapping.offsetV);
 
 /** frame of a mapping: centre, axis and two perpendicular directions (rotated about the axis) */
 export function mappingFrame(mapping, center) {
@@ -287,8 +291,7 @@ export class UvMapper {
         const restore = [];
         for (const mesh of meshes) {
             const { mapping, owner } = this.effective(mesh);
-            const plain = !mapping || (mapping.type === 'standard' && (mapping.scale ?? 1) === 1);
-            if (plain) { restore.push(mesh); continue; }
+            if (isPlain(mapping)) { restore.push(mesh); continue; }
             if (!groups.has(owner)) groups.set(owner, { mapping, meshes: [] });
             groups.get(owner).meshes.push(mesh);
         }
@@ -311,6 +314,9 @@ export class UvMapper {
             } else {
                 job.g = projectUVs(g, restMatrix(mesh).elements, mapping, frame.frame, tile, frame.radius);
             }
+            // shift in tiles of the material: one tile = UV_TILE / its size in the import's UV units
+            const du = (mapping.offsetU || 0) * tile / UV_TILE, dv = (mapping.offsetV || 0) * tile / UV_TILE;
+            if (du || dv) for (let i = 0; i < job.g.uvs.length; i += 2) { job.g.uvs[i] += du; job.g.uvs[i + 1] += dv; }
             job.tile = tile;
             job.base = base;
             geometries.push(job.g);
@@ -334,7 +340,8 @@ export class UvMapper {
             mesh.userData.uvBase = job.base;
             mesh.geometry = this.hooks.makeGeometry(job.g);
             if (!job.g.tangents && mesh.material?.normalMap) mesh.geometry.computeTangents();
-            const tiled = ['cylinder', 'sphere'].includes(job.mapping.type);
+            // depends on the material's tile size: cylinder/sphere (whole repeats around), offsets (in tiles)
+            const tiled = ['cylinder', 'sphere'].includes(job.mapping.type) || !!(job.mapping.offsetU || job.mapping.offsetV);
             mesh.userData.uvMapTile = tiled ? job.tile : -1;
             if (tiled) this._tiled.add(mesh); else this._tiled.delete(mesh);
             if (old !== job.base) disposeGeometry(old);
