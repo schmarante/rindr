@@ -214,8 +214,10 @@ export async function describeMax(buffer, gunzip) {
         if (s && s.length > 2 && s[0] === 0x1f && s[1] === 0x8b) return gunzip(s);   // compressed scene
         return s;
     };
-    const sceneBytes = await read('Scene');
+    // a material library (.mat) has the same object list in "MatLib" instead of "Scene"
+    const sceneBytes = await read('Scene') || await read('MatLib');
     if (!sceneBytes) throw new Error('MAX: no scene in the file');
+    const isLibrary = !cfb.stream('Scene');
     const classBytes = await read('ClassDirectory3') || await read('ClassDirectory2') || await read('ClassDirectory');
     if (!classBytes) throw new Error('MAX: no class directory');
 
@@ -231,7 +233,10 @@ export async function describeMax(buffer, gunzip) {
     let unitMm = UNIT_MM[0];
     // external files: GUID → path (Bitmap textures)
     const assets = new Map();
-    const assetBytes = await read('FileAssetMetaData3');
+    // FileAssetMetaData3: GUID, type, path, resolved path; FileAssetMetaData2 (older files, material libraries): GUID,
+    // type, path
+    const assetV3 = await read('FileAssetMetaData3');
+    const assetBytes = assetV3 || await read('FileAssetMetaData2');
     if (assetBytes) {
         const dv = new DataView(assetBytes.buffer, assetBytes.byteOffset, assetBytes.byteLength);
         let o = 0;
@@ -248,7 +253,7 @@ export async function describeMax(buffer, gunzip) {
                 o += 16;
                 str();                // type ("Bitmap", "RenderOutput" …)
                 const path = str();
-                str();                // second path (resolved)
+                if (assetV3) str();   // second path (resolved)
                 assets.set(guid, path);
             }
         } catch { /* layout of another version: textures stay unnamed */ }
@@ -359,9 +364,11 @@ export async function describeMax(buffer, gunzip) {
         if (!c) return params;
         let slot = 0;
         for (const k of sc.children(c)) {
-            if ((k.id !== 0x100e && k.id !== 0x000e) || k.container || sc.size(k) < 15) continue;   // 0x000e: older files (MAX 2009), same layout
+            // 0x100e (MAX 2020), 0x000e (MAX 2009) – 15 byte head; 0x000a (older libraries) – 11 byte head
+            const head = k.id === 0x000a ? 11 : 15;
+            if ((k.id !== 0x100e && k.id !== 0x000e && k.id !== 0x000a) || k.container || sc.size(k) < head) continue;
             const id = sc.dv.getUint16(k.start, true), type = sc.dv.getUint32(k.start + 2, true);
-            const p = { type, at: k.start + 15, end: k.end };
+            const p = { type, at: k.start + head, end: k.end };
             if (type === 15 || type === 14) p.slot = slot++;   // texmap / material: references in parameter order
             params.set(id, p);
         }
@@ -382,9 +389,11 @@ export async function describeMax(buffer, gunzip) {
         }
         return out;
     };
-    const pFloat = (P, id, d) => { const p = P.get(id); return p && p.end - p.at >= 4 && p.type !== 23 ? sc.dv.getFloat32(p.at, true) : d; };
+    // colours: type 23 (RGBA float, newer files) or 2 (RGB, older ones)
+    const isColor = t => t === 23 || t === 2;
+    const pFloat = (P, id, d) => { const p = P.get(id); return p && p.end - p.at >= 4 && !isColor(p.type) ? sc.dv.getFloat32(p.at, true) : d; };
     const pInt = (P, id, d) => { const p = P.get(id); return p && p.end - p.at >= 4 ? sc.dv.getInt32(p.at, true) : d; };
-    const pColor = (P, id) => { const p = P.get(id); return p && p.type === 23 && p.end - p.at >= 12 ? [0, 1, 2].map(k => sc.dv.getFloat32(p.at + k * 4, true)) : null; };
+    const pColor = (P, id) => { const p = P.get(id); return p && isColor(p.type) && p.end - p.at >= 12 ? [0, 1, 2].map(k => sc.dv.getFloat32(p.at + k * 4, true)) : null; };
     // texture of a map (Bitmap: file name via the asset GUID); other maps → null
     // texture of a map (Bitmap): file name via the asset GUID (0x1260 > 0x0002 in its parameter block → FileAssetMetaData3)
     // or, in older files without that stream (MAX 2009), the path in the parameter block's bitmap info (0x0003 > 0x1230);
@@ -414,7 +423,7 @@ export async function describeMax(buffer, gunzip) {
         const placement = [...refs(i).values()].find(x => idOf(x) === CLASS.uvGen);
         const P = placement != null ? paramBlock1(ref(placement, 0)) : new Map();
         const num = (k, d) => (typeof P.get(k) === 'number' ? P.get(k) : d);
-        const t = file ? textures.push({ file, offset: [num(0, 0), num(1, 0)], tiling: [num(2, 1), num(3, 1)], angle: num(6, 0) }) - 1 : -1;
+        const t = file ? textures.push({ file, offset: [num(0, 0), num(1, 0)], tiling: [num(2, 1), num(3, 1)], angle: num(6, 0), object: i }) - 1 : -1;
         textureOf.set(i, t);
         return t;
     };
@@ -737,9 +746,19 @@ export async function describeMax(buffer, gunzip) {
         if (look) n.transform = { ...n.transform, lookAt: { ...look, target: nodeOf.has(look.target) ? remap.get(nodeOf.get(look.target)) : -1 } };
     }
 
+    // material library: its materials = material objects no other material refers to (sub-materials stay inside)
+    let library = null;
+    if (isLibrary) {
+        const isMtl = i => classOf(i)?.superId === 0xc00;
+        const inner = new Set();
+        objects.forEach((c, i) => { if (isMtl(i)) for (const [, x] of refs(i)) if (isMtl(x)) inner.add(x); });
+        library = [];
+        objects.forEach((c, i) => { if (isMtl(i) && !inner.has(i)) library.push({ object: i, material: material(i) }); });
+        objects.forEach((c, i) => texture(i));   // every Bitmap's file (tools read the library's map trees)
+    }
     const plain = map => [...map].map(([name, n]) => ({ name, count: n }));
     return {
-        unitMm, renderAspect, nodes: sorted, materials, textures, geometries,
+        unitMm, renderAspect, nodes: sorted, materials, textures, geometries, library,
         unsupported: { nodes: unsupported.nodes, modifiers: plain(unsupported.modifiers), objects: plain(unsupported.objects), controllers: plain(unsupported.controllers), approx: plain(unsupported.approx) },
         chunks: sc, objects,   // for buildMaxGeometry (not transferable – stays in the worker)
     };
