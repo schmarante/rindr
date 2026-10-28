@@ -18,8 +18,9 @@ import earcut from 'earcut';
  */
 export function readShape(sc, c, text = null) {
     if (text) return readText(sc, c, text);
+    // Line and other spline objects: 0x2000 > 0x1010; Editable Spline (SplineShape): 0x1010 directly
     const shape = sc.child(c, 0x2000);
-    return shape ? readSplines(sc, sc.child(shape, 0x1010)) : null;
+    return readSplines(sc, shape?.container ? sc.child(shape, 0x1010) : sc.child(c, 0x1010));
 }
 
 function readSplines(sc, list) {
@@ -427,7 +428,7 @@ export function primitive(kind, p) {
 // --- conversions ---
 
 /** Polygon mesh → raw triangles (fans) with smoothing groups and material IDs (for the welding in max-parse.js) */
-export function polyToRaw({ P, faces }) {
+export function polyToRaw({ P, faces }, uvs = null) {
     let nt = 0;
     for (const f of faces) nt += f.v.length - 2;
     const tri = new Uint32Array(nt * 3), sg = new Uint32Array(nt), mat = new Uint16Array(nt);
@@ -436,7 +437,69 @@ export function polyToRaw({ P, faces }) {
         tri[t * 3] = f.v[0]; tri[t * 3 + 1] = f.v[k]; tri[t * 3 + 2] = f.v[k + 1];
         sg[t] = f.sg >>> 0; mat[t] = f.mat || 0;
     }
-    return { P: Float32Array.from(P), tri, sg, mat, tuv: null, uvs: null };
+    // UVs per corner (Unwrap UVW – unwrapUVs): f.uv[k] index into uvs
+    let tuv = null;
+    if (uvs && faces.some(f => f.uv)) {
+        tuv = new Int32Array(nt * 3).fill(-1);
+        t = 0;
+        for (const f of faces) for (let k = 1; k + 1 < f.v.length; k++, t++) {
+            if (!f.uv) continue;
+            tuv[t * 3] = f.uv[0]; tuv[t * 3 + 1] = f.uv[k]; tuv[t * 3 + 2] = f.uv[k + 1];
+        }
+    }
+    return { P: Float32Array.from(P), tri, sg, mat, tuv, uvs: tuv ? uvs : null };
+}
+
+/**
+ * UVs of an Unwrap UVW onto our evaluated faces. The modifier stores the mesh it received (points, faces with their
+ * point indices) next to its UV faces – matched to ours by the points' positions, not by numbers (our TurboSmooth /
+ * MeshSmooth numbers points and faces differently). Sets f.uv on each matched face; null when less than 99 % match
+ * (a modifier above changed the shape or the faces).
+ * @param {{ uv: Float32Array, faces: { tv: number[], geo: number[] }[], points: Float32Array }} U
+ */
+export function unwrapUVs(P, faces, U) {
+    const nv = P.length / 3;
+    if (!nv || !faces.length) return null;
+    let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < P.length; i++) { lo[i % 3] = Math.min(lo[i % 3], P[i]); hi[i % 3] = Math.max(hi[i % 3], P[i]); }
+    const tol = Math.max(Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) * 1e-5, 1e-9), cell = tol * 4;
+    const grid = new Map();
+    const cellKey = (x, y, z) => `${Math.floor(x / cell)},${Math.floor(y / cell)},${Math.floor(z / cell)}`;
+    for (let i = 0; i < nv; i++) {
+        const k = cellKey(P[i * 3], P[i * 3 + 1], P[i * 3 + 2]);
+        let list = grid.get(k);
+        if (!list) grid.set(k, list = []);
+        list.push(i);
+    }
+    // the stored points → our points (nearest within the tolerance)
+    const Q = U.points, ours = new Int32Array(Q.length / 3).fill(-1);
+    for (let j = 0; j < ours.length; j++) {
+        const x = Q[j * 3], y = Q[j * 3 + 1], z = Q[j * 3 + 2];
+        const cx = Math.floor(x / cell), cy = Math.floor(y / cell), cz = Math.floor(z / cell);
+        let best = tol;
+        for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (let c = -1; c <= 1; c++) {
+            for (const i of grid.get(`${cx + a},${cy + b},${cz + c}`) || []) {
+                const d = Math.hypot(P[i * 3] - x, P[i * 3 + 1] - y, P[i * 3 + 2] - z);
+                if (d <= best) { best = d; ours[j] = i; }
+            }
+        }
+    }
+    // our faces by their sorted points
+    const faceKey = vs => [...vs].sort((a, b) => a - b).join(',');
+    const byKey = new Map();
+    faces.forEach((f, i) => byKey.set(faceKey(f.v), i));
+    let matched = 0;
+    for (const { tv, geo } of U.faces) {
+        const vs = geo.map(g => ours[g]);
+        if (vs.some(v => v < 0)) continue;
+        const fi = byKey.get(faceKey(vs));
+        if (fi === undefined) continue;
+        const f = faces[fi];
+        f.uv = f.v.map(v => tv[vs.indexOf(v)]);
+        matched++;
+    }
+    if (matched < faces.length * 0.99) { for (const f of faces) delete f.uv; return null; }
+    return U.uv;
 }
 
 // --- deformers (points only; `space` maps object space into the modifier's gizmo space and back) ---
@@ -581,12 +644,30 @@ export function noise(P, { seed = 0, scale = 100, strength = [0, 0, 0], fractal 
     });
 }
 
-/** Edit Poly vertex moves: per recorded step one delta per vertex (only when the vertex count matches) */
-export function moveVertices(P, steps) {
-    const n = P.length / 3;
-    for (const d of steps) {
-        if (d.length !== n * 3) return false;
-        for (let i = 0; i < P.length; i++) P[i] += d[i];
+/**
+ * Edit Poly steps (oldest first): 'move' – one delta per vertex; 'delete' – faces by their selection (polygon state).
+ * False when a step does not fit the mesh (other vertex or face count).
+ */
+export function editPoly(state, steps) {
+    for (const step of steps) {
+        if (step.op === 'move') {
+            const P = state.P, d = step.delta;
+            if (d.length !== P.length) return false;
+            for (let i = 0; i < P.length; i++) P[i] += d[i];
+        } else if (step.op === 'delete') {
+            // delete the selected faces, then the vertices no face uses any more (Edit Poly's default)
+            const { n, words } = step.faces;
+            if (!state.faces || n !== state.faces.length) return false;
+            const faces = state.faces.filter((_, f) => !(words[f >>> 5] >>> (f & 31) & 1));
+            const map = new Int32Array(state.P.length / 3).fill(-1);
+            const P = [];
+            for (const f of faces) f.v = f.v.map(v => {
+                if (map[v] < 0) { map[v] = P.length / 3; P.push(state.P[v * 3], state.P[v * 3 + 1], state.P[v * 3 + 2]); }
+                return map[v];
+            });
+            state.P = P;
+            state.faces = faces;
+        }
     }
     return true;
 }

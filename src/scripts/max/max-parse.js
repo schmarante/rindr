@@ -21,7 +21,7 @@
 // scales to mm), Z up.
 
 import { creaseCornerNormals } from '../crease-normals.js';
-import { readShape, extrude, shell, primitive, polyToRaw, gizmoSpace, bend, ffd, noise, moveVertices, turboSmooth, capHoles, sweepSplines } from './max-modifiers.js';
+import { readShape, extrude, shell, primitive, polyToRaw, gizmoSpace, bend, ffd, noise, editPoly, turboSmooth, capHoles, sweepSplines, unwrapUVs } from './max-modifiers.js';
 
 const CFB_MAGIC = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
 
@@ -176,9 +176,9 @@ const CLASS = {
     prs: cid(0x9008, 0x2005), lookAt: cid(0x9008, 0x2006), positionXYZ: cid(0x900b, 0x118f7e02, 0xffee238a), eulerXYZ: cid(0x900c, 0x2012),
     positionList: cid(0x900b, 0x4b4b1002), rotationList: cid(0x900c, 0x4b4b1003), scaleList: cid(0x900d, 0x4b4b1004),
     physical: cid(0xc00, 0x3d6b1cec, 0xdeadc001), multiSub: cid(0xc00, 0x200), bitmap: cid(0xc10, 0x240),
-    smooth: cid(0x810, 0xf8613), uvwMap: cid(0x810, 0xf72b1), text: cid(0x40, 0x1993),
+    smooth: cid(0x810, 0xf8613), uvwMap: cid(0x810, 0xf72b1), unwrap: cid(0x810, 0x2df2e3a, 0x72ba4e1f), text: cid(0x40, 0x1993),
     extrude: cid(0x810, 0xa0), shell: cid(0x810, 0x3b9b1a16, 0x6d84e8d0), bend: cid(0x810, 0x10), ffd4: cid(0x810, 0x21325596, 0x2cd10bd8),
-    turboSmooth: cid(0x810, 0xd727b3e, 0x491d29a7), noise: cid(0x810, 0xf997b124), editPoly: cid(0x810, 0x79aa6e1d, 0x71a075b7), optimize: cid(0x810, 0xc4d31),
+    turboSmooth: cid(0x810, 0xd727b3e, 0x491d29a7), meshSmooth: cid(0x810, 0x32, 0x7f9e), noise: cid(0x810, 0xf997b124), editPoly: cid(0x810, 0x79aa6e1d, 0x71a075b7), optimize: cid(0x810, 0xc4d31),
     freeCamera: cid(0x20, 0x1001), targetCamera: cid(0x20, 0x1002), physicalCamera: cid(0x20, 0x46697218, 0x28e8008d),
     renderSettings: cid(0x1010, 0xee448b23), scene: cid(0x100, 0x2222),
 };
@@ -193,7 +193,7 @@ const GEOMETRY = new Set([CLASS.editableMesh, CLASS.triMesh, CLASS.editablePoly]
 const HARMLESS_MODIFIERS = new Set([CLASS.smooth, CLASS.uvwMap, CLASS.optimize]);
 // not seen in a test file yet (class id unknown) – recognised by their English names: same shape with finer faces
 // (Subdivide; Tessellate rounds slightly when its tension is set → approximated), Cap Holes rebuilt
-const BY_NAME = { Subdivide: { type: 'none' }, Tessellate: { type: 'none', approx: true }, 'Cap Holes': { type: 'capholes' }, 'Unwrap UVW': { type: 'none' }, 'UVW Xform': { type: 'none' } };
+const BY_NAME = { Subdivide: { type: 'none' }, Tessellate: { type: 'none', approx: true }, 'Cap Holes': { type: 'capholes' }, 'UVW Xform': { type: 'none' } };
 // geometry classes that render nothing of their own: camera/light targets, a render plugin's infinite plane (our ground)
 const NOT_RENDERED = new Set([cid(0x10, 0x1020), cid(0x10, 0x628140f6, 0x3bdb0e0c)]);
 const SUPER = { geometry: 0x10, shape: 0x40, helper: 0x50, light: 0x30, camera: 0x20, modifier: 0x810 };
@@ -358,7 +358,7 @@ export async function describeMax(buffer, gunzip) {
         if (!c) return params;
         let slot = 0;
         for (const k of sc.children(c)) {
-            if (k.id !== 0x100e || k.container || sc.size(k) < 15) continue;
+            if ((k.id !== 0x100e && k.id !== 0x000e) || k.container || sc.size(k) < 15) continue;   // 0x000e: older files (MAX 2009), same layout
             const id = sc.dv.getUint16(k.start, true), type = sc.dv.getUint32(k.start + 2, true);
             const p = { type, at: k.start + 15, end: k.end };
             if (type === 15 || type === 14) p.slot = slot++;   // texmap / material: references in parameter order
@@ -481,6 +481,11 @@ export async function describeMax(buffer, gunzip) {
         const t = sc.child(c, 0x2510), b = sc.child(c, 0x2511);
         return { tm: t && sc.size(t) >= 48 ? sc.floats(t, 12) : null, box: b && sc.size(b) >= 24 ? sc.floats(b, 6) : null, local: sc.child(c, 0x2512) };
     };
+    // modifier switched off in the stack: its name block (0x39bf: 0x0100 name) holds an empty 0x0110 – seen only on two
+    // modifiers of a demo scene that make no sense switched on (one spherical Displace instance on a ball and on a box
+    // base, a render plugin's displacement without a texture); 0x0120 sat on an Unwrap UVW named "Render_UVW" (off in
+    // the viewport, assumed – applied: we render)
+    const modifierOff = x => !!sc.child(sc.child(objects[x], 0x39bf), 0x0110);
     // evaluable modifier → { type, name, params } (max-modifiers.js), else null
     const modifier = (x, ctx = {}) => {
         const id = idOf(x), name = classOf(x)?.name || '?';
@@ -496,7 +501,28 @@ export async function describeMax(buffer, gunzip) {
             return { type: 'ffd', name, dim: 4, base: sc.floats(base, 192), offsets: off && sc.size(off) === 64 * 12 ? sc.floats(off, 192) : null, box: ctx.box, space: gizmo() };
         }
         if (BY_NAME[name]) return { ...BY_NAME[name], name };
-        if (id === CLASS.turboSmooth) return { type: 'turbosmooth', name, iterations: pInt(paramBlock(ref(x, 0)), 0, 1) };
+        if (id === CLASS.unwrap) {
+            // local data: 0x0860 UV points (u32 count, 24 bytes each: u, v, w, …), 0x0870 faces (u32 count; each u32 degree,
+            // degree × UV index, 2 × u32, u32 flags, degree × point index), 0x0330 the points it received (u32 count, xyz)
+            // – checked at both Unwrap UVW of a demo scene (735 / 47 040 quads, the bytes add up exactly)
+            const L = ctx.local, tv = sc.child(L, 0x0860), fc = sc.child(L, 0x0870), pts = sc.child(L, 0x0330);
+            const ok = tv && fc && pts && sc.size(tv) >= 4 && sc.size(fc) >= 4 && sc.size(pts) >= 4
+                && sc.size(tv) === 4 + sc.u32(tv) * 24 && sc.size(pts) === 4 + sc.u32(pts) * 12;
+            return ok ? { type: 'unwrap', name, tv, fc, pts } : { type: 'none', name };
+        }
+        if (id === CLASS.turboSmooth) {
+            // parameter block 2: 0 iterations, 1 render iterations on, 2 render iterations (we render: those win)
+            const P = paramBlock(ref(x, 0));
+            return { type: 'turbosmooth', name, iterations: pInt(P, 1, 0) ? pInt(P, 2, 1) : pInt(P, 0, 1) };
+        }
+        if (id === CLASS.meshSmooth) {
+            // parameter block 2: 9 method (2 NURMS – Catmull–Clark as TurboSmooth; 0 classic, 1 quad output → approximated),
+            // 2 smoothness (< 1 keeps sharp corners → approximated), 3 iterations, 0x0d render iterations on, 0x0e render
+            // iterations – checked: render iterations 3 on 735 quads = the 47 040 faces an Unwrap UVW above stored
+            const P = paramBlock(ref(x, 0));
+            const iterations = pInt(P, 0x0d, 0) ? pInt(P, 0x0e, 1) : pInt(P, 0x03, 1);
+            return { type: 'turbosmooth', name, iterations, approx: pInt(P, 0x09, 2) !== 2 || pFloat(P, 0x02, 1) < 0.999 };
+        }
         if (id === CLASS.noise) {
             const P = paramBlock1(ref(x, 2));   // 0 seed, 1 scale, 2 fractal, 3 roughness, 4 iterations, 8 strength (point3)
             const st = P.get(8);
@@ -504,21 +530,42 @@ export async function describeMax(buffer, gunzip) {
                 strength: Array.isArray(st) ? st : [0, 0, 0], space: gizmo(), approx: true };   // MAX' noise function differs
         }
         if (id === CLASS.editPoly) {
-            // recorded steps (local data): 0x0230 operation, 0x0238 { 0x12c4 delta per vertex } – only moves (53) rebuilt
+            // recorded operations (local data): 0x0230 operation, then its data – 53 move: 0x0238 { 0x12c4 delta per
+            // vertex }; 13 delete faces: 0x0234 { 0x0600 { 0x0400 { 0x2700 face selection } } } (checked: 1472 of 2207 faces
+            // → the 735 an Unwrap UVW above stored). Other operations on faces that a delete step removes anyway do not
+            // matter (11 with values 0x0410 – meaning unknown); anything else → not rebuilt. Stored newest first.
             const steps = [];
-            let op = -1;
+            const selection = k => {
+                const b = sc.child(sc.child(sc.child(k, 0x0600), 0x0400), 0x2700);
+                if (!b || sc.size(b) < 4) return null;
+                const n = sc.u32(b), words = Math.ceil(n / 32);
+                return sc.size(b) >= 4 + words * 4 ? { n, words: Uint32Array.from({ length: words }, (_, w) => sc.u32(b, 1 + w)) } : null;
+            };
+            // each operation with its data chunks (up to the next 0x0230)
+            const ops = [];
             for (const k of sc.children(ctx.local)) {
-                if (k.id === 0x0230 && sc.size(k) >= 4) op = sc.u32(k);
-                else if (k.id === 0x0238) {
-                    if (op !== 53) return null;
-                    const d = sc.child(k, 0x12c4);
+                if (k.id === 0x0230 && sc.size(k) >= 4) ops.push({ op: sc.u32(k), data: new Map() });
+                else if (ops.length && (k.id === 0x0234 || k.id === 0x0238)) ops[ops.length - 1].data.set(k.id, k);
+            }
+            for (const { op, data } of ops) {
+                if (op === 53) {
+                    const d = sc.child(data.get(0x0238), 0x12c4);
                     if (!d) return null;
-                    steps.push(Float32Array.from(sc.floats(d, sc.size(d) / 4)));
-                    op = -1;
+                    steps.push({ op: 'move', delta: Float32Array.from(sc.floats(d, sc.size(d) / 4)) });
+                } else {
+                    const faces = data.has(0x0234) ? selection(data.get(0x0234)) : null;
+                    if (!faces) return null;
+                    steps.push({ op: op === 13 ? 'delete' : 'other', faces });
                 }
             }
-            if (op !== -1) return null;   // an operation without vertex data
-            return { type: 'move', name, steps };
+            steps.reverse();
+            // other face operations: only when every one of their faces is deleted afterwards
+            for (let k = 0; k < steps.length; k++) {
+                if (steps[k].op !== 'other') continue;
+                const del = steps.slice(k + 1).find(t => t.op === 'delete' && t.faces.n === steps[k].faces.n);
+                if (!del || steps[k].faces.words.some((w, i) => (w & ~del.faces.words[i]) !== 0)) return null;
+            }
+            return { type: 'editpoly', name, steps: steps.filter(t => t.op !== 'other') };
         }
         if (id === CLASS.extrude) {
             // parameter block 1: 0 amount, 1 segments, 2 cap start, 3 cap end
@@ -566,7 +613,7 @@ export async function describeMax(buffer, gunzip) {
             const stack = [], bad = [];
             for (const { x, ctx } of [...mods].reverse()) {
                 const id = idOf(x);
-                if (HARMLESS_MODIFIERS.has(id)) continue;
+                if (HARMLESS_MODIFIERS.has(id) || modifierOff(x)) continue;
                 const op = modifier(x, ctx);
                 if (op) stack.push(op); else bad.push(classOf(x)?.name || '?');
             }
@@ -948,28 +995,68 @@ function evaluateStack(sc, objects, entry) {
         tris = null;
     };
     if (entry.render) poly = sweepSplines(readShape(sc, objects[entry.object], entry.text), entry.render);
+    const unwraps = [];   // Unwrap UVW in the stack: the topmost whose stored mesh matches ours gives the UVs
     for (const op of entry.stack) {
         if (op.type === 'extrude') { tris = extrude(readShape(sc, objects[entry.object], entry.text), op); poly = null; continue; }
         if (op.type === 'shell') { asTris(); if (tris) tris = shell(tris, op); continue; }
         if (op.type === 'turbosmooth') { asPoly(); if (poly) poly = turboSmooth(poly, op.iterations); continue; }   // smooth everywhere (as MAX)
         if (op.type === 'capholes') { if (poly) poly = { ...capHoles(poly), crease: poly.crease }; else if (tris) tris = capHoles(tris); continue; }
         if (op.type === 'none') continue;
+        if (op.type === 'unwrap') { unwraps.push(op); continue; }
+        if (op.type === 'editpoly') {
+            // deleting faces needs the polygons (the selection counts them); moves work on either state
+            if (op.steps.some(t => t.op === 'delete')) asPoly();
+            const state = poly || tris;
+            if (!state || !editPoly(state, op.steps)) return null;
+            if (tris) tris.N = creaseCornerNormals(tris.P, tris.tri);
+            continue;
+        }
         const P = poly ? poly.P : tris?.P;
         if (!P) continue;
         if (op.type === 'bend') bend(P, op);
         else if (op.type === 'ffd') ffd(P, op);
         else if (op.type === 'noise') noise(P, op);
-        else if (op.type === 'move') moveVertices(P, op.steps);
         if (tris) tris.N = creaseCornerNormals(tris.P, tris.tri);   // moved points: the stored normals no longer fit
     }
+    if (unwraps.length) {
+        // triangle meshes: as polygons (one per triangle) – their normals stay
+        const N = tris?.N;
+        if (tris) asPoly();
+        let uvs = null;
+        for (let k = unwraps.length - 1; k >= 0 && !uvs && poly; k--) uvs = unwrapUVs(poly.P, poly.faces, readUnwrap(sc, unwraps[k]));
+        if (poly && N && !poly.crease) {
+            const r = polyToRaw(poly, uvs);
+            r.cornerN = N;
+            return r;
+        }
+        if (poly) poly.uvs = uvs;
+    }
     if (poly) {
-        const r = polyToRaw(poly);
+        const r = polyToRaw(poly, poly.uvs || null);
         if (poly.crease) r.cornerN = creaseCornerNormals(r.P, r.tri);
         return r;
     }
     if (!tris || !tris.tri.length) return null;
     const nf = tris.tri.length / 3;
     return { P: tris.P instanceof Float32Array ? tris.P : Float32Array.from(tris.P), tri: tris.tri, tuv: null, uvs: null, sg: new Uint32Array(nf), mat: new Uint16Array(nf), cornerN: tris.N };
+}
+
+// stored mesh of an Unwrap UVW (layout: modifier() in describeMax)
+function readUnwrap(sc, { tv, fc, pts }) {
+    const dv = sc.dv, ntv = sc.u32(tv), nf = sc.u32(fc), np = sc.u32(pts);
+    const uv = new Float32Array(ntv * 2);
+    for (let i = 0; i < ntv; i++) { uv[i * 2] = dv.getFloat32(tv.start + 4 + i * 24, true); uv[i * 2 + 1] = dv.getFloat32(tv.start + 8 + i * 24, true); }
+    const faces = [];
+    for (let f = 0, o = fc.start + 4; f < nf; f++) {
+        if (o + 4 > fc.end) return { uv, faces: [], points: new Float32Array(0) };
+        const deg = dv.getUint32(o, true);
+        if (deg < 3 || deg > 64 || o + 16 + deg * 8 > fc.end) return { uv, faces: [], points: new Float32Array(0) };   // other layout
+        const t = [], g = [];
+        for (let k = 0; k < deg; k++) { t.push(dv.getUint32(o + 4 + k * 4, true)); g.push(dv.getUint32(o + 16 + deg * 4 + k * 4, true)); }
+        if (t.every(x => x < ntv) && g.every(x => x < np)) faces.push({ tv: t, geo: g });
+        o += 16 + deg * 8;
+    }
+    return { uv, faces, points: Float32Array.from(sc.floats(pts, np * 3, 4)) };
 }
 
 // Normal per corner of raw faces: explicit normal, otherwise the faces at the vertex sharing a smoothing group
