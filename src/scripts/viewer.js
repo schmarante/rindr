@@ -5403,7 +5403,8 @@ function setDropOverlay(visible, mode = rootGroup ? 'split' : 'single') {
     dropOverlay.querySelector('[data-drop-single]').hidden = mode !== 'single';
     dropOverlay.querySelector('[data-drop-split]').hidden = mode !== 'split' && mode !== 'replace';
     dropOverlay.querySelector('[data-drop-relink]').hidden = mode !== 'relink';
-    if (mode !== 'split') highlightDropZone(mode === 'relink' || mode === 'replace' ? 'replace' : null);
+    dropOverlay.querySelector('[data-drop-hdri]').hidden = mode !== 'hdri';
+    if (mode !== 'split') highlightDropZone(mode === 'relink' || mode === 'replace' || mode === 'hdri' ? 'replace' : null);
 }
 let dropMode = 'single';
 // Only pictures dragged (textures – no 3D data): with missing files of the scene they are linked (one zone
@@ -5411,7 +5412,14 @@ let dropMode = 'single';
 // during the drag, not the names – folders/unknown types count as possibly 3D.
 const isAssetDrag = e => {
     const items = [...(e.dataTransfer?.items || [])];
-    return items.length > 0 && items.every(i => i.kind === 'file' && /^image\//.test(i.type));
+    return items.length > 0 && items.every(i => i.kind === 'file' && /^image\//.test(i.type) && !HDRI_MIME.test(i.type));
+};
+// Only HDRIs dragged (when the system tells their type – often it does not, then the usual zones show and the drop
+// still sets the environment): one zone "use as environment"
+const HDRI_MIME = /^(image\/(vnd\.radiance|x-hdr|x-exr|aces)|application\/x-exr)$/i;
+const isHdriDrag = e => {
+    const items = [...(e.dataTransfer?.items || [])];
+    return items.length > 0 && items.every(i => i.kind === 'file' && HDRI_MIME.test(i.type));
 };
 const hasMissingAssets = () => assetRows().some(r => r.status === 'missing');
 function highlightDropZone(side) {
@@ -5439,6 +5447,7 @@ window.addEventListener('dragenter', e => {
     dragDepth++;
     // asset window open: it is the drop target (relink) – no replace/add plane behind it
     if (assetsWindow.isOpen) assetsWindow.setDragActive(true);
+    else if (isHdriDrag(e)) setDropOverlay(true, 'hdri');
     else if (isAssetDrag(e)) { if (hasMissingAssets()) setDropOverlay(true, 'relink'); }
     else setDropOverlay(true);
 });
@@ -5533,6 +5542,34 @@ async function exportMaterialX(id) {
     }
 }
 
+const HDRI_EXTENSIONS = ['hdr', 'exr'];
+/** A dropped HDRI becomes the environment: selectable under its file name in the environment panel, an asset of the
+ *  scene (asset window; a saved scene names it and asks for it again), one undo step. The scene's own missing HDRI of
+ *  the same name is linked by it. */
+async function openHdriFile(file) {
+    const before = environment.hdri, wasOn = environment.on;
+    environment.on = true;
+    let ok;
+    try {
+        ok = await environment.selectFile(file);
+    } catch (err) {
+        environment.on = wasOn;
+        environment.apply();
+        console.error(`HDRI ${file.name}: ${err.message}`);
+        showStatus(t('sceneState.hdriError', { name: file.name, message: err.message }));
+        return;
+    }
+    if (!ok) return;   // another HDRI was chosen meanwhile
+    if (missingHdri?.toLowerCase() === file.name.toLowerCase()) missingHdri = null;
+    const load = (name, on) => { environment.on = on; return environment.select(name).catch(err => properties.ctx.onHdriError(name, err)); };
+    history.record({ label: t('properties.environment.undo.hdri'), undo: () => load(before, wasOn), redo: () => load(file.name, true) });
+    sceneGraph.render();
+    if (selection?.kind === 'environment') properties.show(selection);
+    assetsWindow.render();
+    updateAssetsTool();
+    flashStatus(t('status.hdriDropped', { name: file.name }), 4000);
+}
+
 /** Open dropped or picked files ({ path, file }[]): BCF, scene/material JSON, relink into the asset window, splats,
  *  models – side 'replace' (left half of the drop area) or 'add' */
 async function openFiles(files, { side = 'add', relink = false } = {}) {
@@ -5549,6 +5586,13 @@ async function openFiles(files, { side = 'add', relink = false } = {}) {
         if (await openBcfFile(bcfFile.file, files) || !files.length) return;
     }
     if (relink) { relinkFiles(files); return; }
+    // HDRIs (.hdr/.exr) on their own: the environment (the first one). Dropped with a model they stay its files
+    // (textures, e.g. of a USD scene)
+    if (files.length && files.every(f => HDRI_EXTENSIONS.includes(extOf(f.path)))) {
+        if (files.length > 1) flashStatus(t('status.hdriOne', { name: files[0].path.split(/[\\/]/).pop() }), 5000);
+        openHdriFile(files[0].file);
+        return;
+    }
     // scene/material files (.json) – with or without a model
     const jsonFile = files.find(f => extOf(f.path) === 'json' && !/\.gltf$/i.test(f.path));
     const state = jsonFile ? await openJsonFile(jsonFile.file) : null;

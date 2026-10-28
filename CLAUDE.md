@@ -104,7 +104,6 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 
 ## Offen
 - **Geplant (Nutzer, Okt. 2026):**
-  - HDRI per Drag & Drop: `.hdr`/`.exr` ins Fenster ziehen → wird geladen und sofort als Umgebung gewählt (heute nur `public/hdr/` per Build-Liste bzw. `?hdr=`; Laden über `environment.selectFile` gibt es schon – beim Relink genutzt). Drop-Logik: HDRI-Datei allein = Umgebung, kein Modell-Ersetzen/Hinzufügen; Szenen-Zustand/Asset-Fenster müssen die Datei als Asset führen. Format-Texte ergänzen.
   - Decals/Aufkleber: nur über das Material (Bild-Node, Kacheln aus → UV-Modus); Drag & Drop aufs Teil mit Bearbeiten auf dem Objekt verworfen (Nutzer: zu langsam, stört die UI – Details `docs/materials.md`). Projektion (Variante 3) zurückgestellt.
 - Import-Materialien: Texturen gehen beim JSON-Export verloren (Graph verweist nur auf den Map-Schlüssel); Mischen von Materialien per Maske geplant; Vertex-Farben und Lichter aus glTF/FBX/MAX werden ignoriert (Kameras werden seit Okt. 2026 zu gespeicherten Ansichten – docs/mesh-import.md); FBX-Phong → Rauheit aus Shininess geschätzt. glTF/FBX nur mit selbst erzeugten Testdateien geprüft (Scratchpad `gen.py`).
 - Node-Editor: Box-UVs haben auf gekrümmten Flächen gerade Nähte (seit Okt. 2026 je Dreieck – vorher Zickzack-Streifen; nahtlos über das Mapping je Objekt: Zylinder/Kugel); importierte Materialien landen in der Szene, nicht dauerhaft in der Bibliothek.
