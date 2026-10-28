@@ -317,6 +317,8 @@ async function previewGlb(source, name) {
         else if (Array.isArray(v)) m[k] = [...v];
         else m[k] = v;
     }
+    // a medium's colour in the raster (toon.js) – the glTF sphere's stand-in for the scattering it cannot carry
+    if (source._mediumColor) m.color.multiply(source._mediumColor.value);
     // distances: RINDR mm → glTF metres; tinted glass needs a volume thickness for KHR_materials_volume (the sphere's
     // diameter – without it the exporter leaves the absorption out and the glass came out clear)
     if (m.attenuationDistance !== Infinity) m.attenuationDistance /= 1000;

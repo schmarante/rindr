@@ -22,9 +22,9 @@
 // Scattering inside glass (OpenPBR transmission_scatter, setTransmissionScatter): milk glass, juice, jade – the same
 // walk in the path tracer; the raster only lets less through and shows the scattered share as a diffuse colour.
 import * as THREE from 'three/webgpu';
-import { diffuseColor, materialEmissive, luminance, select, float, vec4, uniform, normalView, positionViewDirection,
+import { diffuseColor, materialEmissive, luminance, select, float, vec4, normalView, positionViewDirection,
     positionGeometry, positionWorld, cameraPosition, modelWorldMatrixInverse, materialColor, positionLocal, cameraWorldMatrix,
-    modelWorldMatrix, normalize, length, exp, mix, log, vec3, materialClearcoat } from 'three/tsl';
+    modelWorldMatrix, normalize, length, exp, mix, log, vec3, materialClearcoat, materialReference, materialTransmission } from 'three/tsl';
 import { fieldThickness, fieldReady } from './sss-field.js';
 import { marbleGlow } from './marble.js';
 import { WOOL_SHADE } from './wool.js';
@@ -32,6 +32,18 @@ import { GRASS_SHADE } from './grass-field.js';
 import { SOAP_IOR, soapThicknessNode, soapSceneCell } from './soap.js';
 import { edgeNormalView } from './edges.js';
 import { transmissionMedium, subsurfaceMedium, colorFromAlbedo } from './medium.js';
+
+// A value of the material that its shader reads from the material being drawn (materialReference; `.value` reads and
+// writes the material's own). three builds the nodes once per cache key and shares them between materials – the values
+// do not count there; a plain uniform() kept in the material belonged to whichever material built the shared shader
+// first (a second lacquer with another coat colour showed the first one's; Oct. 2026). Kept under a `_` key: not part
+// of the cache key, a changed value builds nothing anew.
+function own(material, key, type, value) {
+    material[key] = value;
+    const node = materialReference(key, type);
+    Object.defineProperty(node, 'value', { get: () => material[key], set: v => { material[key] = v; } });
+    return node;
+}
 
 // brightness of the lit colour relative to the base colour → tone (thresholds, tones as share of the base colour)
 const TOON_STEPS = { shadow: 0.55, mid: 1.1 };
@@ -107,25 +119,28 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         this.toon = false;   // part of the material cache key (RenderObject.getMaterialCacheKey)
         this.flat = false;   // plain colour, no lighting (outline materials: surface + contour); colour = emissive
         this.subsurface = false;   // cache key; strength/colour as uniforms (`_` = not in the key – no rebuild on edits)
-        this._sssColor = uniform(new THREE.Color(1, 1, 1));
-        this._sssWeight = uniform(0);
-        this._sssRadius = uniform(2);   // scatter radius (scene units) – the raster's thickness falloff
+        this._sssColor = own(this, '_sssColorValue', 'color', new THREE.Color(1, 1, 1));
+        this._sssWeight = own(this, '_sssWeightValue', 'float', 0);
+        this._sssRadius = own(this, '_sssRadiusValue', 'float', 2);   // scatter radius (scene units) – the raster's thickness falloff
         this.marble = false;   // cache key (emissiveNode); colour/scale/intensity as uniforms
         this.wool = false;     // cache key (root colour, sheenNode)
         this.grass = false;    // cache key (soil shade)
         this.soap = false;     // cache key (film thickness node); film/swirl/scale as uniforms
-        this._soap = { film: uniform(380), swirl: uniform(0.7), scale: uniform(1) };
-        this._marbleColor = uniform(new THREE.Color(0.2, 1, 0.45));
-        this._marbleScale = uniform(10);
-        this._marbleIntensity = uniform(1);
+        this._soap = { film: own(this, '_soapFilm', 'float', 380), swirl: own(this, '_soapSwirl', 'float', 0.7), scale: own(this, '_soapScale', 'float', 1) };
+        this._marbleColor = own(this, '_marbleColorValue', 'color', new THREE.Color(0.2, 1, 0.45));
+        this._marbleScale = own(this, '_marbleScaleValue', 'float', 10);
+        this._marbleIntensity = own(this, '_marbleIntensityValue', 'float', 1);
         this.edges = false;    // cache key (normal node); radius as a uniform
-        this._edgeRadius = uniform(0);
+        this._edgeRadius = own(this, '_edgeRadiusValue', 'float', 0);
         // OpenPBR extras the path tracer reads (rindr-openpbr in astro.config.mjs): diffuse roughness (EON), coat IOR
         // and colour; the raster tints what lies below the coat with its colour (setupDiffuseColor)
         this.diffuseRoughness = 0;
         this.coatIor = 1.5;
         this.coatColor = new THREE.Color(1, 1, 1);
-        this._coatColor = uniform(new THREE.Color(1, 1, 1));
+        this._coatColor = own(this, '_coatColorValue', 'color', new THREE.Color(1, 1, 1));
+        // raster: the observed colour of a medium inside the glass (setTransmissionScatter) – a factor of its own, the
+        // node graph sets the material colour to white under a colour map (the medium's colour was lost there)
+        this._mediumColor = own(this, '_mediumColorValue', 'color', new THREE.Color(1, 1, 1));
     }
 
     /**
@@ -233,8 +248,11 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
     setupDiffuseColor(builder) {
         super.setupDiffuseColor(builder);
         // the coat's colour over the base (diffuse and, through the diffuse colour, the metal's reflection) – a
-        // uniform, weighted with the coat (its map included)
-        diffuseColor.rgb.mulAssign(mix(vec3(1), this._coatColor, materialClearcoat));
+        // material value (own), weighted with the coat (its map included)
+        // the medium's colour (raster) only where light goes into it: by the transmission map's share (opaque beer foam
+        // above the wheat beer stayed white, not orange)
+        const inMedium = materialTransmission.div(materialReference('transmission', 'float').max(1e-4)).clamp(0, 1);
+        diffuseColor.rgb.mulAssign(mix(vec3(1), this._coatColor, materialClearcoat).mul(mix(vec3(1), this._mediumColor, inMedium)));
         // SSS with a distance field: the translucent share goes through the body instead of reflecting off the surface
         // – like the path tracer's stand-in (PT_TRANSLUCENT of the weight as transmission)
         if (this.subsurface) diffuseColor.rgb.mulAssign(mix(float(1), float(1).sub(this._sssWeight.mul(PT_TRANSLUCENT)), fieldReady));
@@ -343,23 +361,25 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         // thin wall: no thickness and no absorption distance (the library's rule)
         const medium = this.subsurface || !Number.isFinite(this.attenuationDistance) || !(this.transmission > 0) ? null
             : transmissionMedium(this.attenuationColor, this.attenuationDistance, scatter);
+        this._mediumColor.value.setRGB(1, 1, 1);
         if (!medium) return this._standIn('_scatterKeys', null);
         this._standIn('_scatterKeys', {
-            transmission: this.transmission,
-            color: { r: this.color.r, g: this.color.g, b: this.color.b },
+            transmission: this.transmission,   // the raster lets less through (below)
             mediumTint: 0,
             mediumAnisotropy: anisotropy,
             ...medium,
         });
         // raster: the scattered share over twice the depth (objects are usually thicker than the depth the colour is
-        // given at) is not let through; the colour × the medium's observed colour (absorption included – jade green,
-        // milk white; mixed in by the share, a white glass stayed pale grey)
+        // given at) is not let through; the colour × the medium's colour (_mediumColor, below – jade green, milk white;
+        // blending the material colour instead of multiplying left a white glass pale grey)
         const s = medium.mediumScatter, a = medium.attenuationColor, depth = medium.attenuationDistance;
         const albedo = c => s[c] / Math.max(s[c] - Math.log(Math.max(a[c], 1e-6)) / depth, 1e-9);
         const cloudy = 1 - Math.exp(-2 * depth * (s.r + s.g + s.b) / 3);
         this.transmission *= 1 - cloudy;
-        this.color.multiply(scatter.setRGB(colorFromAlbedo(albedo('r'), anisotropy), colorFromAlbedo(albedo('g'), anisotropy),
-            colorFromAlbedo(albedo('b'), anisotropy), THREE.LinearSRGBColorSpace));
+        // the colour: the light let through (absorbed over twice the depth) mixed with the scattered light's colour by
+        // the scattered share – only the scattered colour made a slightly hazy wheat beer dark brown
+        const tone = c => (1 - cloudy) * a[c] * a[c] + cloudy * colorFromAlbedo(albedo(c), anisotropy);
+        this._mediumColor.value.setRGB(tone('r'), tone('g'), tone('b'), THREE.LinearSRGBColorSpace);
     }
 
     // path tracer stand-in fields of one feature (key: where its field names are kept) – the previous ones removed
@@ -401,6 +421,7 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         this._sssKeys = [...(source._sssKeys ?? [])];   // stand-in fields of subsurface / medium (userData is copied)
         this._scatterKeys = [...(source._scatterKeys ?? [])];
         this.diffuseRoughness = source.diffuseRoughness;
+        this._mediumColor.value.copy(source._mediumColor.value);
         this.setCoat(source.coatColor, source.coatIor);
         if (source.userData.noBatch) this.userData.noBatch = true;
         this.marble = false;
