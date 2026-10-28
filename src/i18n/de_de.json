@@ -1821,7 +1821,9 @@
         "unsupportedFormat": "Format nicht unterstützt ({extensions})",
         "dropHint": "Datei ins Fenster ziehen",
         "openFile": "Datei öffnen",
-        "dropFormats": "STEP (.stp/.step) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · BIM (.ifc/.ifczip) · MaterialX (.mtlx) · BCF-Tickets (.bcfzip) · Gaussian Splats (.ply/.sog)",
+        "dropFormats": "STEP (.stp/.step) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · BIM (.ifc/.ifczip) · MaterialX (.mtlx) · BCF-Tickets (.bcfzip) · Gaussian Splats (.ply/.sog) · HDRI (.hdr/.exr)",
+        "hdriDropped": "HDRI „{name}“ als Umgebung",
+        "hdriOne": "Mehrere HDRIs – „{name}“ als Umgebung gewählt",
         "qualityReduced": "Großes Modell (≈ {triangles} Dreiecke bei „{from}“) – Qualität automatisch auf „{to}“ gesenkt",
         "modelTooLarge": "Modell zu groß: ≈ {triangles} Dreiecke bei „{quality}“ (Grenze {limit}) – Laden abgebrochen",
         "qualityTooFine": "„{quality}“ ist für dieses Modell zu fein (≈ {triangles} Dreiecke, Grenze {limit}) – Qualität bleibt „{previous}“",
@@ -2165,7 +2167,7 @@
         "sceneGraph": "Scene Graph",
         "drop": {
             "title": "Datei hier ablegen",
-            "hint": "STEP (.stp/.step), glTF/GLB, FBX, MAX (.max), C4D (.c4d), Blender (.blend), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, BIM (.ifc/.ifczip), MaterialX (.mtlx), BCF-Tickets (.bcfzip), Gaussian Splats (.ply/.sog) – Texturen und .bin-Dateien einfach mit hineinziehen",
+            "hint": "STEP (.stp/.step), glTF/GLB, FBX, MAX (.max), C4D (.c4d), Blender (.blend), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, BIM (.ifc/.ifczip), MaterialX (.mtlx), BCF-Tickets (.bcfzip), Gaussian Splats (.ply/.sog), HDRI (.hdr/.exr) – Texturen und .bin-Dateien einfach mit hineinziehen",
             "addHint": "Mehrere Modelle: zusammen oder nacheinander hineinziehen – sie erscheinen nebeneinander",
             "replaceTitle": "Modelle ersetzen",
             "replaceHint": "Die geladenen Modelle werden entfernt und durch die neue Datei ersetzt",
@@ -2173,6 +2175,8 @@
             "addSplitHint": "Die neue Datei erscheint zusätzlich neben den vorhandenen Modellen",
             "relinkTitle": "Fehlende Dateien verknüpfen",
             "relinkHint": "Die Dateien werden über ihren Namen den fehlenden Texturen bzw. Dateien der Szene zugeordnet",
+            "hdriTitle": "Als Umgebung verwenden",
+            "hdriHint": "Das HDRI wird geladen und als Umgebung gewählt – die Modelle bleiben, wie sie sind",
             "splatNote": "Gaussian Splats (.ply/.sog) werden zur Umgebung – die Modelle kommen in den Scan"
         },
         "ptStatus": "Pathtracing",
@@ -2180,7 +2184,7 @@
     },
     "about": {
         "title": "Über",
-        "description": "Your Local 3D-File Viewer – STEP, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, MaterialX, BIM (IFC, BCF) und Gaussian Splats direkt im Browser, mit Pathtracing in Echtzeit.",
+        "description": "Your Local 3D-File Viewer – STEP, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, MaterialX, BIM (IFC, BCF), Gaussian Splats und HDRIs direkt im Browser, mit Pathtracing in Echtzeit.",
         "author": "Autor",
         "email": "E-Mail",
         "version": "Version",

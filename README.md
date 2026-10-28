@@ -8,7 +8,7 @@
 
 Your local 3D file viewer – with real-time path tracing, right in the browser.
 
-**STEP · glTF/GLB · FBX · MAX · C4D · Blender · OBJ · 3MF · USD · STL · PLY · IFC · BCF · Gaussian splats (PLY/SOG) · MaterialX**
+**STEP · glTF/GLB · FBX · MAX · C4D · Blender · OBJ · 3MF · USD · STL · PLY · IFC · BCF · Gaussian splats (PLY/SOG) · MaterialX · HDRI (HDR/EXR)**
 
 <a href="https://schmarante.github.io/rindr/"><img src="https://img.shields.io/badge/%E2%96%B6%20Live%20demo-schmarante.github.io%2Frindr-2ea44f?style=for-the-badge" alt="Live demo"></a>
 
@@ -31,7 +31,7 @@ Drop a CAD model, a mesh, a BIM file or a Gaussian splat into the window and get
 - **Node-based materials** (three.js TSL) and a material library – drag & drop onto parts in the viewport or the scene graph; UV mapping per object (box, planar, cylinder, sphere).
 - **Special materials** – toon and contour styles, subsurface scattering (jelly, wax), glowing marble, a **cloud** as real volume, **wool** with fibres, **grass** with real blades, **soap bubbles** with thin-film colours; scattering media for cloudy liquids – juice, milk, honey, beer and more in the library.
 - **Studio tools** – scene graph with hover outlines, move/rotate/scale gizmo, MAX-style quad menu, view cube, animated **exploded view**, section plane, animations with skeleton view.
-- **Lighting** – HDRI environments with a flattened ground dome, shadow catcher and contact shadows, ground reflections and rain puddles; an **HDRI editor** for your own procedural environments with sun & sky and movable light pins.
+- **Lighting** – HDRI environments (drop your own .hdr/.exr into the window) with a flattened ground dome, shadow catcher and contact shadows, ground reflections and rain puddles; an **HDRI editor** for your own procedural environments with sun & sky and movable light pins.
 - **Camera like a real lens** – depth of field with bokeh blades, fisheye up to 240°, bloom, glare, lens flare and **volumetric god rays**; style filters from pixel art and scanlines to sketch and ASCII.
 - **Distributed rendering** – other computers in your local network render along (paired via link and code, peer-to-peer), buckets labelled per computer.
 - **Output** – image export (incl. transparent PNG), **light passes** per light source and light type plus helper passes (alpha, depth, normals, albedo, IDs) as layered **EXR** or **PSD**, save/load whole scenes, and **AI rendering**: send the frame plus your material names to an image model for a photoreal take.
