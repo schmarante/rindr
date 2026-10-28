@@ -34,6 +34,7 @@
 													gsRay.maxDist = $MAXDIST;
 													var gsT = vec3f( 1.0 );
 													var gsTravel = 0.0;
+													var gsFaces = 0u;   // glass faces passed so far
 													var gsBlocked = false;
 													var gsMedia = false;   // the volumes' transmittance along this ray is counted (volume-pt.js)
 													for ( var gsI = 0u; gsI < 16u; gsI ++ ) {
@@ -128,6 +129,11 @@
 
 															gsPassed *= 1.0 - gsFresnel;   // both faces of a thin wall at once
 
+														/*@if:medium*/
+														} else if ( any( gsMaterial.mediumScatter > vec3f( 0.0 ) ) ) {
+
+															// scattering media (medium-walk.patch.wgsl): the light spreads inside anyway – no bend term
+														/*@endif*/
 														} else {
 
 															// light bent away: the more an oblique face would turn the ray, the less of the light on
@@ -141,11 +147,33 @@
 
 														if ( gsEntering ) {
 
+															/*@if:medium*/
+															// subsurface media: the surface does not tint (transmissionTint of the glass lobe)
+															gsT *= gsPassed * mix( gsMaterial.color * gsObject.color.rgb, vec3f( 1.0 ), gsMaterial.mediumTint );
+															/*@else*/
 															gsT *= gsPassed * gsMaterial.color * gsObject.color.rgb;
+															/*@endif*/
 
 														} else {
 
 															gsT *= gsPassed * ${ transmissionAttenuationFunc }( gsHit.dist, gsMaterial.attenuationColor, gsMaterial.attenuationDistance );
+															/*@if:medium*/
+															// scattering media: what is scattered away on the stretch inside does not arrive either
+															if ( ! gsThin ) {
+
+																gsT *= exp( - gsMaterial.mediumScatter * gsHit.dist );
+																// a light sample from inside the medium (medium walk): outside light arrives refracted, within the
+																// critical cone – per solid angle outside along the straight line × cos θ outside / (η² cos θ inside);
+																// the library's refraction leaves out the radiance factor η² (cancels between entry and exit), so the
+																// medium's radiance is in outside units (without the factor the media came out about twice as bright)
+																if ( gsFaces == 0u && any( gsMaterial.mediumScatter > vec3f( 0.0 ) ) ) {
+
+																	gsT *= gsEta * gsEta * gsCos / sqrt( max( 1.0 - ( 1.0 - gsCos * gsCos ) * gsEta * gsEta, 1e-8 ) );
+
+																}
+
+															}
+															/*@endif*/
 
 														}
 
@@ -161,6 +189,7 @@
 
 														}
 
+														gsFaces ++;
 														if ( max( max( gsT.r, gsT.g ), gsT.b ) < 1e-3 ) {
 
 															gsBlocked = true;

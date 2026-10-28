@@ -51,14 +51,18 @@ export const MATERIAL_PRESETS = [
     { libraryId: 'glass-frosted', category: 'glass', params: { color: '#ffffff', metalness: 0, roughness: 0.35, transmission: 1, ior: 1.5, thickness: 2 } },
     { libraryId: 'glass-tinted', category: 'glass', params: { color: '#ffffff', metalness: 0, roughness: 0, transmission: 1, ior: 1.5, thickness: 4, attenuationColor: '#5a6b5e', attenuationDistance: 8 } },
     { libraryId: 'plastic-clear', category: 'glass', params: { color: '#ffffff', metalness: 0, roughness: 0.05, transmission: 1, ior: 1.49, thickness: 2 } },
+    // scattering inside the glass (OpenPBR transmission_scatter; HQ: random walk, raster: an approximation)
+    { libraryId: 'glass-milk', category: 'glass', params: { color: '#ffffff', metalness: 0, roughness: 0, transmission: 1, ior: 1.5, thickness: 2, attenuationDistance: 10, transmissionScatter: '#ffffff' } },
 
-    // --- subsurface scattering (random walk in the path tracer; radius in mm) ---
+    // --- subsurface scattering (fast approximation; "accurate" = random walk in the path tracer; radius in mm) ---
     { libraryId: 'sss-jelly', category: 'subsurface', params: { color: '#ffffff', metalness: 0, roughness: 0.06, ior: 1.35, thickness: 1, subsurface: 1, subsurfaceColor: '#e8203a', subsurfaceRadius: 8 } },
     // slime: wet gloss (clearcoat), very translucent, a faint own glow
     { libraryId: 'sss-slime', category: 'subsurface', params: { color: '#ffffff', metalness: 0, roughness: 0.02, ior: 1.33, thickness: 1, clearcoat: 1, clearcoatRoughness: 0.01, subsurface: 1, subsurfaceColor: '#3fd60a', subsurfaceRadius: 20, emissive: '#2a9a00', emissiveIntensity: 0.3 } },
     // watery slime (user's reference: a jelly cube one sees the skeleton in): clear like water, deep yellow-green by
     // absorption with the depth (thin parts light, thick ones dark), wet gloss on top, a faint glow of its own
     { libraryId: 'sss-slime-watery', category: 'subsurface', params: { color: '#d6f36c', metalness: 0, roughness: 0.04, transmission: 1, ior: 1.34, thickness: 25, attenuationColor: '#5fae10', attenuationDistance: 45, clearcoat: 1, clearcoatRoughness: 0.02, emissive: '#2f7000', emissiveIntensity: 0.06 } },
+    // jade: a green stone, light scattered and absorbed inside (transmission_scatter, HQ random walk)
+    { libraryId: 'sss-jade', category: 'subsurface', params: { color: '#ffffff', metalness: 0, roughness: 0.15, transmission: 1, ior: 1.62, thickness: 2, attenuationColor: '#3f9c5a', attenuationDistance: 6, transmissionScatter: '#b0b0b0' } },
     { libraryId: 'sss-wax', category: 'subsurface', params: { color: '#f4ead6', metalness: 0, roughness: 0.4, ior: 1.45, thickness: 1, subsurface: 1, subsurfaceColor: '#f1dfbf', subsurfaceRadius: 1.5 } },
 
     // --- glowing marble: dark polished stone, light veins inside (marble.js; scale in mm) ---

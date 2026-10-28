@@ -14,31 +14,59 @@ import { RindrMaterial } from './materials/toon.js';
 import { normalizeType, paramsForType, typeAllowsGraph } from './material-types.js';
 
 // Parameter description (also for the editor panel). Labels: materials.params.<key>,
-// group labels: materials.paramGroups.<group> (group = id, also used for the collapse state)
+// group labels: materials.paramGroups.<group> (group = id, also used for the collapse state); step: slider step
+// (default: a hundredth of the range); toggle: a checkbox (0 / 1). The physical ones follow OpenPBR (docs/material-format.md: names, mapping,
+// what the raster view leaves out) – defaults of the newer ones as before them, so saved materials look the same.
 export const PARAMS = [
     { key: 'color', type: 'color', default: '#808080', group: 'base' },
     { key: 'metalness', type: 'number', min: 0, max: 1, default: 0, group: 'base' },
     { key: 'roughness', type: 'number', min: 0, max: 1, default: 0.5, group: 'base' },
+    // OpenPBR base_diffuse_roughness: rough diffuse (clay, cloth) – energy-preserving Oren-Nayar, path tracer only
+    { key: 'diffuseRoughness', type: 'number', min: 0, max: 1, default: 0, group: 'base' },
     { key: 'specularIntensity', type: 'number', min: 0, max: 1, default: 1, group: 'base' },
+    // OpenPBR specular_color: tint of the dielectric reflection; on metals the edge tint (F82, path tracer)
+    { key: 'specularColor', type: 'color', default: '#ffffff', group: 'base' },
+    // OpenPBR specular_roughness_anisotropy (brushed metal) and the direction (degrees, three.js: radians)
+    { key: 'anisotropy', type: 'number', min: 0, max: 1, default: 0, group: 'base' },
+    { key: 'anisotropyRotation', type: 'number', min: -180, max: 180, step: 1, default: 0, group: 'base' },
     { key: 'clearcoat', type: 'number', min: 0, max: 1, default: 0, group: 'clearcoat' },
     { key: 'clearcoatRoughness', type: 'number', min: 0, max: 1, default: 0, group: 'clearcoat' },
+    // OpenPBR coat_color (what the coat lets through – tints everything below it) and coat_ior
+    { key: 'clearcoatColor', type: 'color', default: '#ffffff', group: 'clearcoat' },
+    { key: 'clearcoatIor', type: 'number', min: 1, max: 3, default: 1.5, group: 'clearcoat' },
     { key: 'transmission', type: 'number', min: 0, max: 1, default: 0, group: 'glass' },
     { key: 'ior', type: 'number', min: 1, max: 2.5, default: 1.5, group: 'glass' },
+    // OpenPBR transmission_dispersion_scale / _abbe_number: rainbow fringes in glass (three.js dispersion = 20 × scale
+    // / Abbe number, KHR_materials_dispersion; the path tracer traces one wavelength per path)
+    { key: 'dispersion', type: 'number', min: 0, max: 1, default: 0, group: 'glass' },
+    { key: 'dispersionAbbe', type: 'number', min: 9, max: 91, step: 1, default: 20, group: 'glass' },
     { key: 'thickness', type: 'number', min: 0, max: 50, default: 0, group: 'glass' },
+    // OpenPBR geometry_thin_walled: a sheet without inside (leaf, paper, lamp shade) – no refraction, no absorption
+    { key: 'thinWalled', type: 'number', min: 0, max: 1, step: 1, toggle: true, default: 0, group: 'glass' },
     { key: 'attenuationColor', type: 'color', default: '#ffffff', group: 'glass' },
     { key: 'attenuationDistance', type: 'number', min: 0.1, max: 100, default: 100, group: 'glass' },
+    // OpenPBR transmission_scatter (+ _anisotropy): scattering inside the glass over the same distance – milk glass,
+    // juice, jade (path tracer: random walk, medium.js; raster: an approximation)
+    { key: 'transmissionScatter', type: 'color', default: '#000000', group: 'glass' },
+    { key: 'transmissionScatterAnisotropy', type: 'number', min: -0.9, max: 0.9, default: 0, group: 'glass' },
     { key: 'sheen', type: 'number', min: 0, max: 1, default: 0, group: 'sheen' },
     { key: 'sheenColor', type: 'color', default: '#ffffff', group: 'sheen' },
     { key: 'sheenRoughness', type: 'number', min: 0, max: 1, default: 1, group: 'sheen' },
     { key: 'iridescence', type: 'number', min: 0, max: 1, default: 0, group: 'effects' },
+    // OpenPBR thin_film_thickness (here nm, OpenPBR µm) / thin_film_ior – defaults as three.js had them (400 nm, 1.3)
+    { key: 'iridescenceThickness', type: 'number', min: 50, max: 1200, step: 10, default: 400, group: 'effects' },
+    { key: 'iridescenceIOR', type: 'number', min: 1, max: 2.5, default: 1.3, group: 'effects' },
     { key: 'emissive', type: 'color', default: '#000000', group: 'effects' },
     { key: 'emissiveIntensity', type: 'number', min: 0, max: 20, default: 1, group: 'effects' },
     { key: 'opacity', type: 'number', min: 0, max: 1, default: 1, group: 'effects' },
-    // subsurface scattering (toon.js: random walk in the path tracer, approximation in the raster view);
-    // radius = mean free path in scene units (mm for CAD models)
+    // subsurface scattering (toon.js: approximation in the raster view and by default in the path tracer; accurate
+    // mode = random walk after OpenPBR in the path tracer, 2–5× the render time); radius = mean free path of red light
+    // in scene units (mm for CAD models), anisotropy = OpenPBR subsurface_scatter_anisotropy (accurate mode)
     { key: 'subsurface', type: 'number', min: 0, max: 1, default: 0, group: 'subsurface' },
     { key: 'subsurfaceColor', type: 'color', default: '#ffffff', group: 'subsurface' },
     { key: 'subsurfaceRadius', type: 'number', min: 0.05, max: 50, default: 2, group: 'subsurface' },
+    { key: 'subsurfaceMode', type: 'number', min: 0, max: 1, step: 1, toggle: true, default: 0, group: 'subsurface' },
+    { key: 'subsurfaceAnisotropy', type: 'number', min: -0.9, max: 0.9, default: 0, group: 'subsurface' },
     // glowing marble veins inside the object (marble.js, raster + path tracer); scale = scene units per pattern unit
     { key: 'marble', type: 'number', min: 0, max: 5, default: 0, group: 'marble' },
     { key: 'marbleColor', type: 'color', default: '#33ff73', group: 'marble' },
@@ -496,14 +524,22 @@ function applyParams(material, params) {
     material.color.set(p.color);
     material.metalness = p.metalness;
     material.roughness = p.roughness;
+    material.diffuseRoughness = p.diffuseRoughness;   // read by the path tracer (EON diffuse); not in the raster
     material.specularIntensity = p.specularIntensity;
+    material.specularColor.set(p.specularColor);
+    material.anisotropy = p.anisotropy;
+    // a rotation without anisotropy would read as an edge radius in the path tracer (edges.js stand-in)
+    material.anisotropyRotation = p.anisotropy > 0 ? THREE.MathUtils.degToRad(p.anisotropyRotation) : 0;
     material.clearcoat = p.clearcoat;
     material.clearcoatRoughness = p.clearcoatRoughness;
+    material.setCoat(p.clearcoatColor, p.clearcoatIor);
     material.transmission = p.transmission;
     material.ior = p.ior;
-    material.thickness = p.thickness;
+    material.dispersion = p.dispersion > 0 ? 20 * p.dispersion / Math.max(p.dispersionAbbe, 1) : 0;
+    // thin walled: three.js and the path tracer take thickness 0 (and no absorption distance) as a thin wall
+    material.thickness = p.thinWalled > 0 ? 0 : p.thickness;
     material.attenuationColor.set(p.attenuationColor);
-    material.attenuationDistance = p.attenuationDistance;
+    material.attenuationDistance = p.thinWalled > 0 ? Infinity : p.attenuationDistance;
     material.sheen = p.sheen;
     material.sheenColor.set(p.sheenColor);
     material.sheenRoughness = p.sheenRoughness;
@@ -512,12 +548,18 @@ function applyParams(material, params) {
     material.emissiveIntensity = p.emissiveIntensity;
     material.opacity = p.opacity;
     material.transparent = p.opacity < 1;
-    material.setSubsurface(p.subsurface, p.subsurfaceColor, p.subsurfaceRadius);   // after the physical params
+    material.setSubsurface(p.subsurface, p.subsurfaceColor, p.subsurfaceRadius, p.subsurfaceMode, p.subsurfaceAnisotropy);   // after the physical params
+    material.setTransmissionScatter(p.transmissionScatter, p.transmissionScatterAnisotropy);   // after setSubsurface
     material.setMarble(p.marble, p.marbleColor, p.marbleScale);
     material.setCloud(p.cloud, p.cloudColor, p.cloudPuff);
     material.setWool(p.wool, p.woolLength);
     material.setGrass(p.grass, p.grassHeight, p.grassDensity, p.grassDry);
     material.setSoap(p.soap, p.soapFilm, p.soapSwirl, p.soapScale);   // after setMarble (shares stand-in fields)
+    if (!material.soap) {
+        // thin film (the soap film sets its own)
+        material.iridescenceIOR = p.iridescenceIOR;
+        material.iridescenceThicknessRange = [p.iridescenceThickness, p.iridescenceThickness];
+    }
     material.setEdges(p.edgeRadius, p.edgeConcave);
     material.toon = p.toon > 0;
     material.flat = p.flat > 0;
