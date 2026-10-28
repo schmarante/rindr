@@ -830,6 +830,14 @@ async function convertMax({ scene, geometries: parts }, source, materialManager)
                 tex.userData.sourceUrl = scene.textures[i].file;
                 tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
                 if (color) tex.colorSpace = THREE.SRGBColorSpace;
+                // the Bitmap's placement: MAX tiles and turns about the map's centre, the offset counts before the tiling
+                // (u' = (u − offset − ½) × tiling + ½ – the centre pivot fits a demo scene: tiling 0.2 across a band shows
+                // the middle of its picture, where the lettering is)
+                const { offset = [0, 0], tiling = [1, 1], angle = 0 } = scene.textures[i];
+                tex.center.set(0.5, 0.5);
+                tex.repeat.set(tiling[0], tiling[1]);
+                tex.offset.set(-tiling[0] * offset[0], -tiling[1] * offset[1]);
+                tex.rotation = angle;
                 textures.set(key, tex);
             }
             return textures.get(key);
@@ -858,8 +866,14 @@ async function convertMax({ scene, geometries: parts }, source, materialManager)
                 if (rough && !m.roughnessInverted) params.roughnessMap = rough;
                 mat = new THREE.MeshPhysicalMaterial(params);
             } else {
-                // Standard, plugin materials … : the colour of the material preview
+                // Standard, plugin materials … : the colour of the material preview; a render plugin's material also its
+                // diffuse map and bump (the preview colour stays while the picture is missing)
                 mat = new THREE.MeshStandardMaterial({ color: m.color ? srgb(m.color) : new THREE.Color(0.7, 0.7, 0.7), roughness: 0.5, metalness: 0 });
+                if (m.kind === 'plugin') {
+                    const map = texture(m.map, true), bump = texture(m.bumpMap, false);
+                    if (map) { mat.map = map; mat.color.set(1, 1, 1); }
+                    if (bump) mat.bumpMap = bump;
+                }
             }
             mat.name = m.name;
             built.set(i, mat);
@@ -877,7 +891,7 @@ async function convertMax({ scene, geometries: parts }, source, materialManager)
             if (!wire.has(hex)) wire.set(hex, new THREE.MeshStandardMaterial({ name: `#${hex}`, color: srgb(c), roughness: 0.6, metalness: 0 }));
             return wire.get(hex);
         };
-        for (const m of scene.materials) if (m.kind === 'physical') { texture(m.map, true); texture(m.bumpMap, false); texture(m.roughnessMap, false); }
+        for (const m of scene.materials) if (m.kind === 'physical' || m.kind === 'plugin') { texture(m.map, true); texture(m.bumpMap, false); texture(m.roughnessMap, false); }
         await idle();
         loaded = true;
 

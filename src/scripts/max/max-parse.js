@@ -175,7 +175,8 @@ const CLASS = {
     node: cid(0x1, 0x1), editableMesh: cid(0x10, 0xe44f10b3), triMesh: cid(0x10, 0x9), editablePoly: cid(0x10, 0x1bf8338d, 0x192f6098),
     prs: cid(0x9008, 0x2005), lookAt: cid(0x9008, 0x2006), positionXYZ: cid(0x900b, 0x118f7e02, 0xffee238a), eulerXYZ: cid(0x900c, 0x2012),
     positionList: cid(0x900b, 0x4b4b1002), rotationList: cid(0x900c, 0x4b4b1003), scaleList: cid(0x900d, 0x4b4b1004),
-    physical: cid(0xc00, 0x3d6b1cec, 0xdeadc001), multiSub: cid(0xc00, 0x200), bitmap: cid(0xc10, 0x240),
+    physical: cid(0xc00, 0x3d6b1cec, 0xdeadc001), multiSub: cid(0xc00, 0x200), bitmap: cid(0xc10, 0x240), uvGen: cid(0xc20, 0x100),
+    pluginMtl: cid(0xc00, 0x37bf3f2f, 0x7034695c),   // a render plugin's material: its maps as own references (see material)
     smooth: cid(0x810, 0xf8613), uvwMap: cid(0x810, 0xf72b1), unwrap: cid(0x810, 0x2df2e3a, 0x72ba4e1f), text: cid(0x40, 0x1993),
     extrude: cid(0x810, 0xa0), shell: cid(0x810, 0x3b9b1a16, 0x6d84e8d0), bend: cid(0x810, 0x10), ffd4: cid(0x810, 0x21325596, 0x2cd10bd8),
     turboSmooth: cid(0x810, 0xd727b3e, 0x491d29a7), meshSmooth: cid(0x810, 0x32, 0x7f9e), noise: cid(0x810, 0xf997b124), editPoly: cid(0x810, 0x79aa6e1d, 0x71a075b7), optimize: cid(0x810, 0xc4d31),
@@ -385,23 +386,35 @@ export async function describeMax(buffer, gunzip) {
     const pInt = (P, id, d) => { const p = P.get(id); return p && p.end - p.at >= 4 ? sc.dv.getInt32(p.at, true) : d; };
     const pColor = (P, id) => { const p = P.get(id); return p && p.type === 23 && p.end - p.at >= 12 ? [0, 1, 2].map(k => sc.dv.getFloat32(p.at + k * 4, true)) : null; };
     // texture of a map (Bitmap: file name via the asset GUID); other maps → null
+    // texture of a map (Bitmap): file name via the asset GUID (0x1260 > 0x0002 in its parameter block → FileAssetMetaData3)
+    // or, in older files without that stream (MAX 2009), the path in the parameter block's bitmap info (0x0003 > 0x1230);
+    // its placement (Coordinates: slot 0, old parameter block – 0/1 offset U/V, 2/3 tiling U/V, 4/5/6 angle U/V/W
+    // in radians, 7 blur; checked against a demo scene's settings) → { offset, tiling, angle }; other maps → -1
     const texture = i => {
         if (i < 0 || idOf(i) !== CLASS.bitmap) return -1;
         if (textureOf.has(i)) return textureOf.get(i);
         let file = '';
-        // GUID somewhere in the Bitmap's parameter block (0x1260 > 0x0002, 16 bytes)
-        const find = c => {
+        const find = (c, id, sub, test) => {
             for (const k of sc.children(c)) {
-                if (k.id === 0x1260 && k.container) { const g = sc.child(k, 0x0002); if (g && sc.size(g) === 16) return hex(sc.b.subarray(g.start, g.end)); }
-                if (k.container) { const r = find(k); if (r) return r; }
+                if (k.id === id && k.container) { const g = sc.child(k, sub); if (g && test(g)) return g; }
+                if (k.container) { const r = find(k, id, sub, test); if (r) return r; }
             }
             return null;
         };
         for (const [, x] of refs(i)) {
-            const guid = objects[x]?.container ? find(objects[x]) : null;
+            if (!objects[x]?.container) continue;
+            const g = find(objects[x], 0x1260, 0x0002, k => sc.size(k) === 16);
+            const guid = g ? hex(sc.b.subarray(g.start, g.end)) : null;
             if (guid && assets.has(guid)) { file = assets.get(guid); break; }
         }
-        const t = file ? textures.push({ file }) - 1 : -1;
+        if (!file) for (const [, x] of refs(i)) {
+            const path = objects[x]?.container ? find(objects[x], 0x0003, 0x1230, k => sc.size(k) > 2) : null;
+            if (path) { file = sc.text(path); break; }
+        }
+        const placement = [...refs(i).values()].find(x => idOf(x) === CLASS.uvGen);
+        const P = placement != null ? paramBlock1(ref(placement, 0)) : new Map();
+        const num = (k, d) => (typeof P.get(k) === 'number' ? P.get(k) : d);
+        const t = file ? textures.push({ file, offset: [num(0, 0), num(1, 0)], tiling: [num(2, 1), num(3, 1)], angle: num(6, 0) }) - 1 : -1;
         textureOf.set(i, t);
         return t;
     };
@@ -451,6 +464,12 @@ export async function describeMax(buffer, gunzip) {
             m.roughnessMap = map(0x68);
             m.bumpMap = map(0x82);
             m.cutoutMap = map(0x85);
+        } else if (id === CLASS.pluginMtl) {
+            // a render plugin's material: its parameters are not read (colour from the preview below); maps as its own
+            // references – slot 7 the diffuse map, slot 10 bump (seen: the same picture with blur 0.1, a bump's)
+            m.kind = 'plugin';
+            m.map = texture(ref(i, 7));
+            m.bumpMap = texture(ref(i, 10));
         }
         m.preview = swatch(c);   // colour of MAX' material preview (shows the look with its maps)
         if (!m.color) m.color = m.preview;   // other materials (Standard, plugin materials …)
@@ -802,6 +821,7 @@ function readFaces(sc, c, poly) {
                 mapFaces.push(a);
             }
             if (mapFaces.length !== nf || mapFaces.some((a, j) => a.length !== polys[j].vs.length)) { uvs = null; mapFaces = null; }
+            else polys.forEach((p, j) => { p.uv = mapFaces[j]; });   // per corner, for modifier stacks (evaluateStack)
             break;
         }
         // triangulate: MAX's own diagonals, otherwise a fan
@@ -983,7 +1003,9 @@ function evaluateStack(sc, objects, entry) {
         const base = readFaces(sc, objects[entry.object], entry.poly);
         if (!base) return null;
         // meshes from the file: smoothed by angle (30°) at the end, their smoothing groups / normals are not used
-        if (base.polys) poly = { P: Array.from(base.P), faces: base.polys.map(p => ({ v: Array.from(p.vs), sg: 0, mat: p.m })), crease: true };
+        // polygons keep their UVs per corner (TurboSmooth / MeshSmooth subdivide them, Edit Poly keeps them)
+        const uvOk = base.uvs && base.polys?.every(p => p.uv && Array.prototype.every.call(p.uv, x => x < base.uvs.length / 2));
+        if (base.polys) poly = { P: Array.from(base.P), faces: base.polys.map(p => ({ v: Array.from(p.vs), sg: 0, mat: p.m, ...(uvOk ? { uv: Array.from(p.uv) } : {}) })), crease: true, uvs: uvOk ? Array.from(base.uvs) : null };
         else tris = { P: base.P, tri: base.tri, N: creaseCornerNormals(base.P, base.tri) };
     }
     const asTris = () => { if (poly) { const r = polyToRaw(poly); tris = { P: r.P, tri: r.tri, N: poly.crease ? creaseCornerNormals(r.P, r.tri) : cornerNormals(r) }; poly = null; } };
@@ -995,14 +1017,20 @@ function evaluateStack(sc, objects, entry) {
         tris = null;
     };
     if (entry.render) poly = sweepSplines(readShape(sc, objects[entry.object], entry.text), entry.render);
-    const unwraps = [];   // Unwrap UVW in the stack: the topmost whose stored mesh matches ours gives the UVs
+    const unwraps = [];   // Unwrap UVW on triangle meshes: the topmost whose stored mesh matches ours gives the UVs
     for (const op of entry.stack) {
         if (op.type === 'extrude') { tris = extrude(readShape(sc, objects[entry.object], entry.text), op); poly = null; continue; }
         if (op.type === 'shell') { asTris(); if (tris) tris = shell(tris, op); continue; }
-        if (op.type === 'turbosmooth') { asPoly(); if (poly) poly = turboSmooth(poly, op.iterations); continue; }   // smooth everywhere (as MAX)
+        if (op.type === 'turbosmooth') { asPoly(); if (poly) poly = turboSmooth(poly, op.iterations); continue; }   // smooth everywhere (as MAX), UVs along
         if (op.type === 'capholes') { if (poly) poly = { ...capHoles(poly), crease: poly.crease }; else if (tris) tris = capHoles(tris); continue; }
         if (op.type === 'none') continue;
-        if (op.type === 'unwrap') { unwraps.push(op); continue; }
+        if (op.type === 'unwrap') {
+            // polygons: its UVs at once when its stored mesh matches (TurboSmooth above carries them on); triangle
+            // meshes: tried at the end
+            if (poly) { const uv = unwrapUVs(poly.P, poly.faces, readUnwrap(sc, op)); if (uv) poly.uvs = Array.from(uv); }
+            else unwraps.push(op);
+            continue;
+        }
         if (op.type === 'editpoly') {
             // deleting faces needs the polygons (the selection counts them); moves work on either state
             if (op.steps.some(t => t.op === 'delete')) asPoly();
@@ -1029,10 +1057,10 @@ function evaluateStack(sc, objects, entry) {
             r.cornerN = N;
             return r;
         }
-        if (poly) poly.uvs = uvs;
+        if (poly && uvs) poly.uvs = Array.from(uvs);
     }
     if (poly) {
-        const r = polyToRaw(poly, poly.uvs || null);
+        const r = polyToRaw(poly, poly.uvs ? Float32Array.from(poly.uvs) : null);
         if (poly.crease) r.cornerN = creaseCornerNormals(r.P, r.tri);
         return r;
     }
