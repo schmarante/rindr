@@ -1815,6 +1815,8 @@
         "loadModelFirst": "Erst ein Modell laden",
         "sceneBelongsTo": "Szene gehört zu „{name}“ – Modell ins Fenster ziehen",
         "restoringScene": "Stelle Szene wieder her…",
+        "loadingSample": "Lädt die Beispielszene …",
+        "sampleError": "Beispielszene nicht geladen",
         "sceneErrorTitle": "Szene konnte nicht geöffnet werden",
         "invalidJson": "{name}: kein gültiges JSON",
         "notSceneOrMaterials": "{name}: weder Szene noch Materialien",
