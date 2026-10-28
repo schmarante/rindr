@@ -98,12 +98,17 @@ export const NODE_TYPES = {
         ],
         params: [{ key: 'map', kind: 'importMap', default: 'map' }],
     },
+    // extent 'object': once over the UVs of every mesh with the material (UV mode, like an image with tiling off) –
+    // e.g. a band at the top of a model (beer foam); from / to: where the ramp starts and ends (0 below, 1 above)
     gradient: {
         category: 'texture', color: 'bg-amber-700', texture: true,
         inputs: [], outputs: [{ key: 'value', type: 'float' }],
         params: [
             { key: 'axis', kind: 'select', options: ['u', 'v'], default: 'u' },
+            { key: 'extent', kind: 'select', options: ['tile', 'object'], default: 'tile' },
             { key: 'scale', kind: 'number', min: 1, max: 50, step: 1, default: 1 },
+            { key: 'from', kind: 'number', min: 0, max: 1, step: 0.01, default: 0 },
+            { key: 'to', kind: 'number', min: 0, max: 1, step: 0.01, default: 1 },
         ],
     },
     checker: {
@@ -190,7 +195,8 @@ for (const def of Object.values(NODE_TYPES)) {
 }
 
 /** graph with a picture that does not repeat (decal): baked over the UV range of its meshes instead of a tile */
-export const isUvMode = graph => !!graph?.nodes?.some(n => n.type === 'image' && (n.params?.wrapU === 'off' || n.params?.wrapV === 'off'));
+export const isUvMode = graph => !!graph?.nodes?.some(n => (n.type === 'image' && (n.params?.wrapU === 'off' || n.params?.wrapV === 'off'))
+    || (n.type === 'gradient' && n.params?.extent === 'object'));
 
 export const NODE_CATEGORIES = ['input', 'texture', 'color', 'value'];
 
@@ -273,7 +279,8 @@ export function evaluateGraph(graph, textures, importMaps = {}, { domain = null 
     // the model's UV range across the texture, in tile units (× scale = UV_TILE / size)
     const modelUv = domain ? mix(vec2(...domain.min), vec2(...domain.max), uv()) : uv();
     const base = domain ? modelUv.mul(domain.scale) : uv();
-    const ctx = { textures, importMaps, bakeSize: fixed || BAKE_SIZE, base, modelUv };
+    // span: 0..1 across the bake – the material's UV range in UV mode (gradient over the object), the tile otherwise
+    const ctx = { textures, importMaps, bakeSize: fixed || BAKE_SIZE, base, modelUv, span: uv() };
     const { nodes, linkTo, outputOf, signature } = evaluator(graph, ctx);
 
     // Bake size: largest import texture in the subgraph (at least BAKE_SIZE)
@@ -431,8 +438,13 @@ function evalNode(n, port, get, ctx) {
         }
         case 'gradient': {
             const s = Math.max(1, Math.round(p.scale));
-            const c = p.axis === 'v' ? at.y : at.x;
-            return T(fract(c.mul(s)), 'float');
+            // object: the bake texel across the UV range of the material's meshes (0 … 1 once, mapping params unused)
+            const span = p.extent === 'object' ? ctx.span : null;
+            const c = span ? (p.axis === 'v' ? span.y : span.x) : (p.axis === 'v' ? at.y : at.x);
+            let v = span ? clamp(c, 0, 1) : fract(c.mul(s));
+            const from = p.from ?? 0, to = p.to ?? 1;
+            if (from !== 0 || to !== 1) v = clamp(v.sub(from).div(Math.max(to - from, 1e-3)), 0, 1);
+            return T(v, 'float');
         }
         case 'checker': {
             const s = Math.max(1, Math.round(p.scale));

@@ -655,12 +655,19 @@
                 },
                 "params": {
                     "axis": "Direction",
-                    "scale": "Repeat"
+                    "extent": "Extent",
+                    "scale": "Repeat",
+                    "from": "Start",
+                    "to": "End"
                 },
                 "options": {
                     "axis": {
                         "u": "U",
                         "v": "V"
+                    },
+                    "extent": {
+                        "tile": "Tile",
+                        "object": "Object (once)"
                     }
                 }
             },

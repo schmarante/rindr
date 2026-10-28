@@ -655,12 +655,19 @@
                 },
                 "params": {
                     "axis": "Richtung",
-                    "scale": "Wiederholung"
+                    "extent": "Bereich",
+                    "scale": "Wiederholung",
+                    "from": "Start",
+                    "to": "Ende"
                 },
                 "options": {
                     "axis": {
                         "u": "U",
                         "v": "V"
+                    },
+                    "extent": {
+                        "tile": "Kachel",
+                        "object": "Objekt (einmal)"
                     }
                 }
             },
