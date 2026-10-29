@@ -39,7 +39,8 @@ const OPENPBR_TYPES = {
     subsurface_weight: 'float', subsurface_color: 'color3', subsurface_radius: 'float', subsurface_radius_scale: 'color3',
     subsurface_scatter_anisotropy: 'float',
     fuzz_weight: 'float', fuzz_color: 'color3', fuzz_roughness: 'float',
-    coat_weight: 'float', coat_color: 'color3', coat_roughness: 'float', coat_ior: 'float',
+    coat_weight: 'float', coat_color: 'color3', coat_roughness: 'float', coat_roughness_anisotropy: 'float', coat_ior: 'float',
+    coat_darkening: 'float',
     thin_film_weight: 'float', thin_film_thickness: 'float', thin_film_ior: 'float',
     emission_luminance: 'float', emission_color: 'color3',
     geometry_opacity: 'float', geometry_thin_walled: 'boolean',
@@ -51,6 +52,8 @@ const EXPORT_MAPS = [
     { input: 'base_metalness', prop: 'metalnessMap', kind: 'float', channel: 2 },
     { input: 'specular_roughness', prop: 'roughnessMap', kind: 'float', channel: 1 },
     { input: 'specular_color', prop: 'specularColorMap', kind: 'color' },
+    { input: 'specular_weight', prop: 'specularIntensityMap', kind: 'float', channel: 3 },
+    { input: 'fuzz_roughness', prop: 'sheenRoughnessMap', kind: 'float', channel: 3 },
     { input: 'transmission_weight', prop: 'transmissionMap', kind: 'float', channel: 0 },
     { input: 'fuzz_color', prop: 'sheenColorMap', kind: 'color' },
     { input: 'coat_weight', prop: 'clearcoatMap', kind: 'float', channel: 0 },
@@ -59,7 +62,23 @@ const EXPORT_MAPS = [
     { input: 'emission_color', prop: 'emissiveMap', kind: 'color' },
     { input: 'geometry_opacity', prop: 'alphaMap', kind: 'float', channel: 1 },
     { input: 'geometry_normal', prop: 'normalMap', kind: 'normal' },
+    { input: 'geometry_coat_normal', prop: 'clearcoatNormalMap', kind: 'normal' },
 ];
+
+// Anisotropic roughness: RINDR (three.js / glTF, also the path tracer's base) α_b = r², α_t = mix(r², 1, a²);
+// OpenPBR α_t = r² √(2 / (1 + (1 − a)²)), α_b = (1 − a) α_t (keeps the mean roughness) – the same lobe, converted
+export function anisotropyToOpenPbr(r, a) {
+    if (!(a > 0)) return { roughness: r, anisotropy: 0 };
+    const ab = r * r, at = ab + (1 - ab) * a * a;
+    if (!(at > 0)) return { roughness: r, anisotropy: 0 };
+    const k = ab / at;   // 1 − a'
+    return { roughness: Math.sqrt(at * Math.sqrt((1 + k * k) / 2)), anisotropy: 1 - k };
+}
+export function anisotropyFromOpenPbr(r, a) {
+    if (!(a > 0)) return { roughness: r, anisotropy: 0 };
+    const at = Math.min(r * r * Math.sqrt(2 / (1 + (1 - a) ** 2)), 1), ab = (1 - a) * at;
+    return { roughness: Math.sqrt(ab), anisotropy: ab < 1 ? Math.sqrt(Math.max(at - ab, 0) / (1 - ab)) : 0 };
+}
 
 /** OpenPBR values of a material (constants; with a map they are its factor) – p: RINDR params */
 function openPbrValues(m, p) {
@@ -75,8 +94,9 @@ function openPbrValues(m, p) {
         base_diffuse_roughness: m.diffuseRoughness ?? 0,
         specular_weight: m.specularIntensity,
         specular_color: m.specularColor.clone(),
-        specular_roughness: m.roughness,
-        specular_roughness_anisotropy: m.anisotropy,
+        // anisotropic: RINDR's lobe in OpenPBR's mapping (with a roughness map only the anisotropy – the map stays)
+        specular_roughness: m.anisotropy > 0 && !m.roughnessMap ? anisotropyToOpenPbr(m.roughness, m.anisotropy).roughness : m.roughness,
+        specular_roughness_anisotropy: anisotropyToOpenPbr(m.roughness, m.anisotropy).anisotropy,
         specular_ior: m.ior,
         transmission_weight: scatter ? p.transmission : m.transmission,
         transmission_color: m.attenuationColor.clone(),
@@ -96,7 +116,9 @@ function openPbrValues(m, p) {
         coat_weight: m.clearcoat,
         coat_color: m.coatColor?.clone() ?? new THREE.Color(1, 1, 1),
         coat_roughness: m.clearcoatRoughness,
+        coat_roughness_anisotropy: m.coatAnisotropy ?? 0,   // the path tracer uses OpenPBR's mapping for the coat
         coat_ior: m.coatIor ?? 1.5,
+        coat_darkening: m.coatDarkening ?? 0,
         thin_film_weight: m.iridescence,
         thin_film_thickness: (m.iridescenceThicknessRange?.[1] ?? 400) / 1000,   // nm → µm
         thin_film_ior: m.iridescenceIOR,
@@ -176,9 +198,10 @@ export async function exportMaterialPackage({ def, material: m }, { preview = nu
         if (!pixelCache.has(tex)) pixelCache.set(tex, await texturePixels(tex));
         const px = pixelCache.get(tex);
         if (!px) continue;
-        const file = `textures/${name}_${slot.input === 'geometry_normal' ? 'normal' : slot.input}.png`;
+        const file = `textures/${name}_${slot.input === 'geometry_normal' ? 'normal' : slot.input === 'geometry_coat_normal' ? 'coat_normal' : slot.input}.png`;
         let data = slot.kind === 'float' ? greyOf(px.data, slot.channel) : px.data;
-        if (slot.kind === 'normal' && m.normalScale?.y < 0) {
+        const scaleY = slot.prop === 'clearcoatNormalMap' ? m.clearcoatNormalScale?.y : m.normalScale?.y;
+        if (slot.kind === 'normal' && scaleY < 0) {
             // three's glTF convention (normalScale.y negative with flipY false): green back to OpenGL (+Y)
             data = new Uint8ClampedArray(data);
             for (let i = 1; i < data.length; i += 4) data[i] = 255 - data[i];
@@ -191,8 +214,59 @@ export async function exportMaterialPackage({ def, material: m }, { preview = nu
         maps[slot.prop] = file;
         textured[slot.input] = { file, kind: slot.kind };
     }
-    const mtlx = writeMtlx({ name, label: def.name, values, textured, tileSize, clamp: uvMode, normalScale: Math.abs(m.normalScale?.x ?? 1),
-        rotation: p.anisotropy > 0 ? (p.anisotropyRotation ?? 0) : 0, version });
+    // anisotropy map of the node graph (RG direction, B strength): roughness and strength converted per pixel to
+    // OpenPBR's mapping (both depend on the local strength – roughness from its map, if any, sampled nearest), the
+    // direction as a tangent map → geometry_tangent through the surface's tangent frame
+    let anisotropyDirFile = null;
+    if (m.anisotropyMap && m.anisotropy > 0) {
+        const px = await texturePixels(m.anisotropyMap);
+        const rpx = m.roughnessMap ? pixelCache.get(m.roughnessMap) ?? await texturePixels(m.roughnessMap) : null;
+        if (px) {
+            const n = px.data.length;
+            const strength = new Uint8ClampedArray(n), rough = new Uint8ClampedArray(n), dir = new Uint8ClampedArray(n);
+            for (let y = 0, i = 0; y < px.h; y++) for (let x = 0; x < px.w; x++, i += 4) {
+                let r = m.roughness;
+                if (rpx) r *= rpx.data[(Math.floor(y * rpx.h / px.h) * rpx.w + Math.floor(x * rpx.w / px.w)) * 4 + 1] / 255;
+                const o = anisotropyToOpenPbr(r, px.data[i + 2] / 255 * m.anisotropy);
+                strength[i] = strength[i + 1] = strength[i + 2] = Math.round(o.anisotropy * 255);
+                rough[i] = rough[i + 1] = rough[i + 2] = Math.round(Math.min(o.roughness, 1) * 255);
+                dir[i] = px.data[i]; dir[i + 1] = px.data[i + 1]; dir[i + 2] = 128;
+                strength[i + 3] = rough[i + 3] = dir[i + 3] = 255;
+            }
+            const sFile = `textures/${name}_specular_roughness_anisotropy.png`, dFile = `textures/${name}_anisotropy_direction.png`;
+            // own file: a roughness map of its own stays in the package for RINDR's maps (unconverted)
+            const rFile = `textures/${name}_specular_roughness_anisotropic.png`;
+            files.push({ name: sFile, data: await pngBytes(strength, px.w, px.h) }, { name: dFile, data: await pngBytes(dir, px.w, px.h) },
+                { name: rFile, data: await pngBytes(rough, px.w, px.h) });
+            textured.specular_roughness_anisotropy = { file: sFile, kind: 'float' };
+            textured.specular_roughness = { file: rFile, kind: 'float' };
+            values.specular_roughness_anisotropy = values.specular_roughness = 1;
+            anisotropyDirFile = dFile;
+        }
+    }
+    // the coat's anisotropy map (swirl marks): OpenPBR's mapping already (raster + path tracer) – strength × the
+    // material's, direction as a tangent map → geometry_coat_tangent
+    let coatAnisotropyDirFile = null;
+    if (m.coatAnisotropyMap && m.coatAnisotropy > 0) {
+        const px = await texturePixels(m.coatAnisotropyMap);
+        if (px) {
+            const strength = new Uint8ClampedArray(px.data.length), dir = new Uint8ClampedArray(px.data.length);
+            for (let i = 0; i < px.data.length; i += 4) {
+                strength[i] = strength[i + 1] = strength[i + 2] = Math.round(px.data[i + 2] * Math.min(m.coatAnisotropy, 1));
+                dir[i] = px.data[i]; dir[i + 1] = px.data[i + 1]; dir[i + 2] = 128;
+                strength[i + 3] = dir[i + 3] = 255;
+            }
+            const sFile = `textures/${name}_coat_roughness_anisotropy.png`, dFile = `textures/${name}_coat_anisotropy_direction.png`;
+            files.push({ name: sFile, data: await pngBytes(strength, px.w, px.h) }, { name: dFile, data: await pngBytes(dir, px.w, px.h) });
+            textured.coat_roughness_anisotropy = { file: sFile, kind: 'float' };
+            values.coat_roughness_anisotropy = 1;
+            coatAnisotropyDirFile = dFile;
+        }
+    }
+    const mtlx = writeMtlx({ anisotropyDirFile, coatAnisotropyDirFile, name, label: def.name, values, textured, tileSize, clamp: uvMode, normalScale: Math.abs(m.normalScale?.x ?? 1),
+        coatNormalScale: Math.abs(m.clearcoatNormalScale?.x ?? 1),
+        rotation: p.anisotropy > 0 ? (p.anisotropyRotation ?? 0) : 0,
+        coatRotation: p.clearcoatAnisotropy > 0 ? (p.clearcoatAnisotropyRotation ?? 0) : 0, version });
     files.unshift({ name: `${name}.mtlx`, data: new TextEncoder().encode(mtlx) });
     const description = {
         format: MATERIAL_PACKAGE, version: PACKAGE_VERSION, generator: `RINDR ${version}`.trim(),
@@ -217,7 +291,7 @@ function notOpenPbr(p) {
     return out;
 }
 
-function writeMtlx({ name, label, values, textured, tileSize, clamp, normalScale, rotation, version }) {
+function writeMtlx({ name, label, values, textured, tileSize, clamp, normalScale, coatNormalScale, rotation, coatRotation, anisotropyDirFile, coatAnisotropyDirFile, version }) {
     const shader = ident(`${name}_shader`);
     const nodes = [];
     const inputs = [];
@@ -249,29 +323,73 @@ function writeMtlx({ name, label, values, textured, tileSize, clamp, normalScale
         const value = type === 'color3' ? color3(v) : type === 'boolean' ? String(!!v) : fmt(v);
         inputs.push(`    <input name="${input}" type="${type}" value="${value}" />`);
     }
-    if (textured.geometry_normal) {
-        const img = ident('normal_image'), nm = ident('normal_map');
-        image(img, 'vector3', textured.geometry_normal.file, null);
+    // normal maps (base and coat) through a normalmap node with the scale
+    for (const [input, prefix, scale] of [['geometry_normal', 'normal', normalScale], ['geometry_coat_normal', 'coat_normal', coatNormalScale ?? 1]]) {
+        if (!textured[input]) continue;
+        const img = ident(`${prefix}_image`), nm = ident(`${prefix}_map`);
+        image(img, 'vector3', textured[input].file, null);
         nodes.push(`  <normalmap name="${nm}" type="vector3">
     <input name="in" type="vector3" nodename="${img}" />
-    <input name="scale" type="float" value="${fmt(normalScale)}" />
+    <input name="scale" type="float" value="${fmt(scale)}" />
   </normalmap>`);
-        inputs.push(`    <input name="geometry_normal" type="vector3" nodename="${nm}" />`);
+        inputs.push(`    <input name="${input}" type="vector3" nodename="${nm}" />`);
     }
-    if (rotation) {
-        // anisotropy direction: the surface tangent turned around the normal (OpenPBR has no rotation input)
-        nodes.push(`  <tangent name="tangent_world" type="vector3">
+    // anisotropy directions (base: geometry_tangent, coat: geometry_coat_tangent): the surface tangent turned around
+    // the normal (OpenPBR has no rotation input)
+    if (rotation || coatRotation || anisotropyDirFile || coatAnisotropyDirFile) nodes.push(`  <tangent name="tangent_world" type="vector3">
     <input name="space" type="string" value="world" />
   </tangent>
   <normal name="normal_world" type="vector3">
     <input name="space" type="string" value="world" />
-  </normal>
-  <rotate3d name="tangent_rotated" type="vector3">
+  </normal>`);
+    // direction maps (RG = the direction in the tangent frame, 0..1 → −1..1): tangent × x + bitangent × y
+    if (anisotropyDirFile || coatAnisotropyDirFile) nodes.push(`  <bitangent name="bitangent_world" type="vector3">
+    <input name="space" type="string" value="world" />
+  </bitangent>`);
+    for (const [file, p, input] of [[anisotropyDirFile, 'anisotropy', 'geometry_tangent'], [coatAnisotropyDirFile, 'coat_anisotropy', 'geometry_coat_tangent']]) {
+        if (!file) continue;
+        image(ident(`${p}_direction_image`), 'vector3', file, null);
+        nodes.push(`  <multiply name="${p}_dir_scaled" type="vector3">
+    <input name="in1" type="vector3" nodename="${p}_direction_image" />
+    <input name="in2" type="vector3" value="2, 2, 2" />
+  </multiply>
+  <subtract name="${p}_dir" type="vector3">
+    <input name="in1" type="vector3" nodename="${p}_dir_scaled" />
+    <input name="in2" type="vector3" value="1, 1, 1" />
+  </subtract>
+  <extract name="${p}_dir_x" type="float">
+    <input name="in" type="vector3" nodename="${p}_dir" />
+    <input name="index" type="integer" value="0" />
+  </extract>
+  <extract name="${p}_dir_y" type="float">
+    <input name="in" type="vector3" nodename="${p}_dir" />
+    <input name="index" type="integer" value="1" />
+  </extract>
+  <multiply name="${p}_t" type="vector3">
+    <input name="in1" type="vector3" nodename="tangent_world" />
+    <input name="in2" type="float" nodename="${p}_dir_x" />
+  </multiply>
+  <multiply name="${p}_b" type="vector3">
+    <input name="in1" type="vector3" nodename="bitangent_world" />
+    <input name="in2" type="float" nodename="${p}_dir_y" />
+  </multiply>
+  <add name="${p}_sum" type="vector3">
+    <input name="in1" type="vector3" nodename="${p}_t" />
+    <input name="in2" type="vector3" nodename="${p}_b" />
+  </add>
+  <normalize name="${p}_tangent" type="vector3">
+    <input name="in" type="vector3" nodename="${p}_sum" />
+  </normalize>`);
+        inputs.push(`    <input name="${input}" type="vector3" nodename="${p}_tangent" />`);
+    }
+    for (const [amount, node, input] of [[anisotropyDirFile ? 0 : rotation, 'tangent_rotated', 'geometry_tangent'], [coatAnisotropyDirFile ? 0 : coatRotation, 'coat_tangent_rotated', 'geometry_coat_tangent']]) {
+        if (!amount) continue;
+        nodes.push(`  <rotate3d name="${node}" type="vector3">
     <input name="in" type="vector3" nodename="tangent_world" />
-    <input name="amount" type="float" value="${fmt(rotation)}" />
+    <input name="amount" type="float" value="${fmt(amount)}" />
     <input name="axis" type="vector3" nodename="normal_world" />
   </rotate3d>`);
-        inputs.push('    <input name="geometry_tangent" type="vector3" nodename="tangent_rotated" />');
+        inputs.push(`    <input name="${input}" type="vector3" nodename="${node}" />`);
     }
     return `<?xml version="1.0"?>
 <!-- ${esc(label)} – exported by RINDR ${esc(version)} (OpenPBR surface, docs/material-format.md) -->
@@ -479,7 +597,9 @@ const FROM_OPENPBR = {
     coat_weight: { param: 'clearcoat', map: 'clearcoatMap', def: 0 },
     coat_color: { param: 'clearcoatColor', kind: 'color', def: [1, 1, 1] },
     coat_roughness: { param: 'clearcoatRoughness', map: 'clearcoatRoughnessMap', def: 0 },
+    coat_roughness_anisotropy: { param: 'clearcoatAnisotropy', def: 0 },
     coat_ior: { param: 'clearcoatIor', def: 1.6 },
+    coat_darkening: { param: 'clearcoatDarkening', def: 1 },   // OpenPBR's default: the physical darkening
     thin_film_weight: { param: 'iridescence', def: 0 },
     thin_film_thickness: { param: 'iridescenceThickness', def: 0.5, conv: v => v * 1000 },   // µm → nm
     thin_film_ior: { param: 'iridescenceIOR', def: 1.4 },
@@ -488,6 +608,7 @@ const FROM_OPENPBR = {
     geometry_opacity: { param: 'opacity', map: 'alphaMap', def: 1 },
     geometry_thin_walled: { param: 'thinWalled', def: 0, conv: v => (v ? 1 : 0) },
     geometry_normal: { map: 'normalMap', kind: 'normal' },
+    geometry_coat_normal: { map: 'clearcoatNormalMap', kind: 'normal' },
 };
 // Autodesk Standard Surface → the same (weights multiplied in afterwards)
 const FROM_STANDARD = {
@@ -498,7 +619,7 @@ const FROM_STANDARD = {
     transmission_scatter_anisotropy: 'transmission_scatter_anisotropy', subsurface: 'subsurface_weight', subsurface_color: 'subsurface_color',
     subsurface_anisotropy: 'subsurface_scatter_anisotropy',
     sheen: 'fuzz_weight', sheen_color: 'fuzz_color', sheen_roughness: 'fuzz_roughness', coat: 'coat_weight', coat_color: 'coat_color',
-    coat_roughness: 'coat_roughness', coat_IOR: 'coat_ior', thin_film_IOR: 'thin_film_ior', emission_color: 'emission_color',
+    coat_roughness: 'coat_roughness', coat_anisotropy: 'coat_roughness_anisotropy', coat_IOR: 'coat_ior', thin_film_IOR: 'thin_film_ior', emission_color: 'emission_color',
     thin_walled: 'geometry_thin_walled', normal: 'geometry_normal',
 };
 
@@ -609,12 +730,20 @@ async function fromMtlx(text, dir, read) {
         // no depth: no medium inside the glass (OpenPBR) – the scatter colour does nothing then
         const depth = raw.transmission_depth?.value;
         if (!(depth !== undefined && depth !== null && num(depth) > 0)) delete params.transmissionScatter;
-        // anisotropy direction: RINDR writes it as the tangent turned around the normal (rotate3d) – read back
-        const tangentInput = children(shader).find(c => c.nodeName === 'input' && c.getAttribute('name') === 'geometry_tangent');
-        const rot = tangentInput && byName(root, tangentInput.getAttribute('nodename') || '');
-        if (rot?.nodeName === 'rotate3d') {
-            const amount = children(rot).find(c => c.getAttribute('name') === 'amount')?.getAttribute('value');
-            if (amount !== undefined && amount !== null) params.anisotropyRotation = num(amount);
+        // anisotropy directions: RINDR writes them as the tangent turned around the normal (rotate3d) – read back
+        for (const [input, param] of [['geometry_tangent', 'anisotropyRotation'], ['geometry_coat_tangent', 'clearcoatAnisotropyRotation']]) {
+            const tangentInput = children(shader).find(c => c.nodeName === 'input' && c.getAttribute('name') === input);
+            const rot = tangentInput && byName(root, tangentInput.getAttribute('nodename') || '');
+            if (rot?.nodeName === 'rotate3d') {
+                const amount = children(rot).find(c => c.getAttribute('name') === 'amount')?.getAttribute('value');
+                if (amount !== undefined && amount !== null) params[param] = num(amount);
+            }
+        }
+        // base anisotropy: OpenPBR's mapping → RINDR's (glTF) lobe (a roughness map stays as it is)
+        if (params.anisotropy > 0) {
+            const g = anisotropyFromOpenPbr(params.roughness ?? 0.3, params.anisotropy);
+            params.anisotropy = g.anisotropy;
+            if (!maps.roughnessMap) params.roughness = g.roughness;
         }
         // tile size of baked maps (RINDR's own note on the material): the textures repeat like on RINDR's model UVs
         const tile = Number(/tile = ([\d.]+) mm/.exec(mat.getAttribute('doc') || '')?.[1]);

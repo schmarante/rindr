@@ -104,6 +104,8 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 
 ## Offen
 - **Geplant (Nutzer, Okt. 2026):**
+  - **Ziel: OpenPBR zu 100 % abdecken** – seit 29.10.2026 in HQ alle 41 Parameter, im Raster dazu EON, F82, Lack-IOR, Lack-Anisotropie (Licht), Abdunkeln; neue Node-Ausgänge, Anisotropie-Map im MaterialX-Export, Blender-Add-on nachgezogen; Fuzz nach OpenPBR (LTC, Raster + HQ); offen: Lack-Anisotropie in der Raster-Umgebung, Maps für Lackfarbe/-IOR/Abdunkeln (keine Textur-Plätze) – Liste in `docs/material-format.md` „Offen“.
+  - ~~Prozeduraler Kratzer-Node `scratches` + Lack mit Wirbelkratzern~~ – umgesetzt 29.10.2026 (Node, Lack-Anisotropie je Pixel in Raster + HQ + MaterialX, 39 Autolack-Varianten „… mit Wirbelkratzern“) – `docs/materials.md`.
   - Decals/Aufkleber: nur über das Material (Bild-Node, Kacheln aus → UV-Modus); Drag & Drop aufs Teil mit Bearbeiten auf dem Objekt verworfen (Nutzer: zu langsam, stört die UI – Details `docs/materials.md`). Projektion (Variante 3) zurückgestellt.
 - Import-Materialien: Texturen gehen beim JSON-Export verloren (Graph verweist nur auf den Map-Schlüssel); Mischen von Materialien per Maske geplant; Vertex-Farben und Lichter aus glTF/FBX/MAX werden ignoriert (Kameras werden seit Okt. 2026 zu gespeicherten Ansichten – docs/mesh-import.md); FBX-Phong → Rauheit aus Shininess geschätzt. glTF/FBX nur mit selbst erzeugten Testdateien geprüft (Scratchpad `gen.py`).
 - Node-Editor: Box-UVs haben auf gekrümmten Flächen gerade Nähte (seit Okt. 2026 je Dreieck – vorher Zickzack-Streifen; nahtlos über das Mapping je Objekt: Zylinder/Kugel); importierte Materialien landen in der Szene, nicht dauerhaft in der Bibliothek.

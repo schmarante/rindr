@@ -34,6 +34,11 @@ export const PARAMS = [
     // OpenPBR coat_color (what the coat lets through – tints everything below it) and coat_ior
     { key: 'clearcoatColor', type: 'color', default: '#ffffff', group: 'clearcoat' },
     { key: 'clearcoatIor', type: 'number', min: 1, max: 3, default: 1.5, group: 'clearcoat' },
+    // OpenPBR coat_darkening (0 = no darkening, as before; 1 = the physical darkening of the base by light the coat
+    // reflects back down), coat_roughness_anisotropy and its direction (geometry_coat_tangent, degrees) – path tracer
+    { key: 'clearcoatDarkening', type: 'number', min: 0, max: 1, default: 0, group: 'clearcoat' },
+    { key: 'clearcoatAnisotropy', type: 'number', min: 0, max: 1, default: 0, group: 'clearcoat' },
+    { key: 'clearcoatAnisotropyRotation', type: 'number', min: -180, max: 180, step: 1, default: 0, group: 'clearcoat' },
     { key: 'transmission', type: 'number', min: 0, max: 1, default: 0, group: 'glass' },
     { key: 'ior', type: 'number', min: 1, max: 2.5, default: 1.5, group: 'glass' },
     // OpenPBR transmission_dispersion_scale / _abbe_number: rainbow fringes in glass (three.js dispersion = 20 × scale
@@ -185,12 +190,15 @@ export class MaterialManager extends EventTarget {
         }, { silent: true });
     }
 
-    /** Bring a library preset into the scene (reuse an existing unmodified instance) */
-    fromLibrary(libraryId) {
+    /**
+     * Bring a library preset into the scene (reuse an existing unmodified instance). fallback: { params, graph } of the
+     * preset when its category is not loaded here yet (a drag from another tab – material-transfer.js)
+     */
+    fromLibrary(libraryId, fallback = null) {
         for (const e of this.entries.values()) {
             if (e.def.libraryId === libraryId && !e.def.modified) return e;
         }
-        const preset = MATERIAL_PRESETS.find(p => p.libraryId === libraryId);
+        const preset = MATERIAL_PRESETS.find(p => p.libraryId === libraryId) || (fallback?.params ? fallback : null);
         if (!preset) return null;
         return this.create({ name: presetName(libraryId), source: 'library', libraryId, params: preset.params, graph: preset.graph });
     }
@@ -532,7 +540,7 @@ function applyParams(material, params) {
     material.anisotropyRotation = p.anisotropy > 0 ? THREE.MathUtils.degToRad(p.anisotropyRotation) : 0;
     material.clearcoat = p.clearcoat;
     material.clearcoatRoughness = p.clearcoatRoughness;
-    material.setCoat(p.clearcoatColor, p.clearcoatIor);
+    material.setCoat(p.clearcoatColor, p.clearcoatIor, p.clearcoatDarkening, p.clearcoatAnisotropy, p.clearcoatAnisotropyRotation);
     material.transmission = p.transmission;
     material.ior = p.ior;
     material.dispersion = p.dispersion > 0 ? 20 * p.dispersion / Math.max(p.dispersionAbbe, 1) : 0;
@@ -548,6 +556,7 @@ function applyParams(material, params) {
     material.emissiveIntensity = p.emissiveIntensity;
     material.opacity = p.opacity;
     material.transparent = p.opacity < 1;
+    material.setOpenPbr();   // raster terms of diffuse roughness / metal edge tint (openpbr-lighting.js)
     material.setSubsurface(p.subsurface, p.subsurfaceColor, p.subsurfaceRadius, p.subsurfaceMode, p.subsurfaceAnisotropy);   // after the physical params
     material.setTransmissionScatter(p.transmissionScatter, p.transmissionScatterAnisotropy);   // after setSubsurface
     material.setMarble(p.marble, p.marbleColor, p.marbleScale);
@@ -596,6 +605,9 @@ const GRAPH_MAP_SLOTS = {
     color: 'map', metalness: 'metalnessMap', roughness: 'roughnessMap', clearcoat: 'clearcoatMap',
     clearcoatRoughness: 'clearcoatRoughnessMap', transmission: 'transmissionMap', sheen: 'sheenColorMap',
     emissive: 'emissiveMap', normal: 'normalMap', ao: 'aoMap', height: 'normalMap',
+    coatNormal: 'clearcoatNormalMap', coatHeight: 'clearcoatNormalMap', anisotropyMap: 'anisotropyMap', coatAnisotropyMap: 'coatAnisotropyMap',
+    specularIntensity: 'specularIntensityMap', specularColor: 'specularColorMap', sheenRoughness: 'sheenRoughnessMap',
+    iridescence: 'iridescenceMap',
 };
 
 const hasGraphMaps = render => [...Object.keys(render?.maps || {}), ...Object.keys(render?.missing || {})].some(k => IMPORT_SLOTS[k]);

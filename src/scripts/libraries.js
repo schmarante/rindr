@@ -23,6 +23,7 @@ export const RUNTIME = [
     { id: 'fflate', name: 'fflate', license: 'MIT', url: 'https://github.com/101arrowz/fflate' },
     { id: 'webIfc', name: 'web-ifc', license: 'MPL-2.0', url: 'https://github.com/ThatOpen/engine_web-ifc' },
     { id: 'coi', name: 'coi-serviceworker', license: 'MIT', url: 'https://github.com/gzuidhof/coi-serviceworker' },
+    { id: 'ltcSheen', name: 'MaterialX, ltc-sheen (fuzz fits)', license: 'Apache-2.0', url: 'https://github.com/tizian/ltc-sheen' },
 ];
 // assets: HDRI environment maps (public/hdr)
 export const ASSETS = [
