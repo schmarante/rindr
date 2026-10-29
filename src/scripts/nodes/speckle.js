@@ -2,23 +2,27 @@
 // sprinkled paint). Each layer is a jittered grid; a cell holds one spot with probability `density`. The spot is a
 // random convex polygon (angular chips) blended into an oval by `roundness`; up to three layers (each twice as
 // fine) mix several grain sizes. Spots may overlap their neighbours (3×3 search), the topmost wins.
+// Output "flake normal": each spot as a small tilted mirror (metallic paint flakes, mica, glitter) – a random direction
+// per spot, up to `tilt` (sine of the largest angle), flat around the spots; a tangent-space normal map (into the output
+// node's "normal" – not relief: a height gives every spot a flat top and a steep rim, a flake is tilted as a whole).
 import { float, vec2, vec3, floor, fract, dot, mix, max, clamp, smoothstep, sqrt, cos, sin, length, select } from 'three/tsl';
 import { T, tsl, coord, input, wrap, hash33, vary } from '../node-lib.js';
 
 const SIDES = 5;
 
-/** one layer of spots on a grid of `s` cells per tile: { mask, height, rand, shade } (rand/shade of the topmost spot) */
+/** one layer of spots on a grid of `s` cells per tile: { mask, height, rand, shade, tilt } (rand/shade/tilt of the topmost spot) */
 function spots(uv, s, o, seed) {
     const p = uv.mul(s);
     const i = floor(p).toVar();
     const f = fract(p).toVar();
-    let mask = float(0), height = float(0), rand = float(0), shade = float(1);
+    let mask = float(0), height = float(0), rand = float(0), shade = float(1), tilt = vec2(0);
     for (let y = -1; y <= 1; y++) {
         for (let x = -1; x <= 1; x++) {
             const id = wrap(i.add(vec2(x, y)), s);
             const h0 = hash33(vec3(id, seed)).toVar();       // exists, centre x/y
             const h1 = hash33(vec3(id, seed + 1)).toVar();   // radius, rotation, aspect
             const h2 = hash33(vec3(id, seed + 2)).toVar();   // tone, corner jitter
+            const h3 = hash33(vec3(id, seed + 3));            // flake direction, tilt
             // radius in cells (diameter `size` of a cell), smaller ones by `variation`
             const r = float(o.size * 0.5).mul(float(1).sub(h1.x.mul(o.variation))).toVar();
             // centre anywhere in the cell: a spot (r ≤ 1) two cells away never reaches this one → 3×3 is enough
@@ -44,19 +48,22 @@ function spots(uv, s, o, seed) {
             const hgt = dome.mul(m);
             const top = m.greaterThan(mask.mul(0.5));
             rand = select(top, h2.x, rand).toVar();
+            // tilt evenly over the disc of directions up to `tilt` (sine of the angle)
+            const phi = h3.x.mul(Math.PI * 2);
+            tilt = select(top, vec2(cos(phi), sin(phi)).mul(h3.y.sqrt().mul(o.tilt)), tilt).toVar();
             shade = select(top, dome, shade).toVar();
             height = max(height, hgt.mul(float(0.75).add(h1.x.mul(0.25)))).toVar();
             mask = max(mask, m).toVar();
         }
     }
-    return { mask, height, rand, shade };
+    return { mask, height, rand, shade, tilt };
 }
 
 export default {
     type: 'speckle',
     category: 'texture', color: 'bg-amber-700', texture: true,
     inputs: [{ key: 'uv', type: 'vector' }, { key: 'a', type: 'color' }, { key: 'b', type: 'color' }],
-    outputs: [{ key: 'color', type: 'color' }, { key: 'value', type: 'float' }, { key: 'random', type: 'float' }],
+    outputs: [{ key: 'color', type: 'color' }, { key: 'value', type: 'float' }, { key: 'random', type: 'float' }, { key: 'normal', type: 'color' }],
     params: [
         // grid cells per tile of the coarsest layer (integer → seamless)
         { key: 'scale', kind: 'number', min: 1, max: 200, step: 1, default: 24 },
@@ -72,6 +79,8 @@ export default {
         { key: 'softness', kind: 'number', min: 0, max: 1, step: 0.01, default: 0.1 },
         // per-spot colour variation
         { key: 'tone', kind: 'number', min: 0, max: 1, step: 0.01, default: 0.3 },
+        // flake normal: sine of the largest tilt (0.35 ≈ 20°)
+        { key: 'tilt', kind: 'number', min: 0, max: 1, step: 0.01, default: 0.35 },
         { key: 'a', kind: 'color', default: '#b9b4ab' },
         { key: 'b', kind: 'color', default: '#2b2927' },
     ],
@@ -81,20 +90,22 @@ export default {
         const o = {
             size: p.size, density: p.density, variation: Math.min(Math.max(p.variation, 0), 1),
             roundness: Math.min(Math.max(p.roundness, 0), 1), elongation: Math.min(Math.max(p.elongation, 0), 1),
-            softness: Math.min(Math.max(p.softness, 0), 1),
+            softness: Math.min(Math.max(p.softness, 0), 1), tilt: Math.min(Math.max(p.tilt ?? 0.35, 0), 1),
         };
         const uv = coord(get);
         // finest layer first, coarser ones on top
-        let mask = float(0), height = float(0), rand = float(0.5), shade = float(1);
+        let mask = float(0), height = float(0), rand = float(0.5), shade = float(1), tilt = vec2(0);
         for (let k = layers - 1; k >= 0; k--) {
             const l = spots(uv, s * 2 ** k, o, 7 * k);
             rand = mix(rand, l.rand, l.mask);
+            tilt = mix(tilt, l.tilt, l.mask);
             shade = mix(shade, l.shade, l.mask);
             height = max(height.mul(float(1).sub(l.mask)), l.height.mul(0.8 ** k));
             mask = max(mask, l.mask);
         }
         if (port === 'random') return T(rand, 'float');
         if (port === 'value') return T(clamp(height, 0, 1), 'float');
+        if (port === 'normal') return T(vec3(tilt, sqrt(max(float(1).sub(dot(tilt, tilt)), 0))).mul(0.5).add(0.5), 'color');
         const a = input(get, 'a', 'color', p.a), b = input(get, 'b', 'color', p.b);
         // round spots get darker towards the rim (pebbles), flat chips stay flat
         const spot = vary(tsl(b), rand, p.tone).mul(mix(float(1 - 0.2 * o.roundness), float(1), shade));

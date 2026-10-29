@@ -76,6 +76,7 @@ RINDR is built on great open-source projects. Thanks to everyone who contributes
 | [fflate](https://github.com/101arrowz/fflate) | Decompression of FBX data | MIT |
 | [web-ifc](https://github.com/ThatOpen/engine_web-ifc) | IFC import (BIM): geometry and properties | MPL-2.0 |
 | [coi-serviceworker](https://github.com/gzuidhof/coi-serviceworker) | Cross-origin isolation on GitHub Pages (fast loading of large files) | MIT |
+| [MaterialX, ltc-sheen (fuzz fits)](https://github.com/tizian/ltc-sheen) | Fitted formulas for the OpenPBR fuzz sheen (Zeltner et al. 2022) | Apache-2.0 |
 
 ### HDRI environments
 

@@ -24,10 +24,12 @@
 import * as THREE from 'three/webgpu';
 import { diffuseColor, materialEmissive, luminance, select, float, vec4, normalView, positionViewDirection,
     positionGeometry, positionWorld, cameraPosition, modelWorldMatrixInverse, materialColor, positionLocal, cameraWorldMatrix,
-    modelWorldMatrix, normalize, length, exp, mix, log, vec3, materialClearcoat, materialReference, materialTransmission } from 'three/tsl';
+    modelWorldMatrix, normalize, length, exp, mix, log, vec3, materialClearcoat, materialReference, materialTransmission,
+    materialRoughness, materialMetalness, clearcoatRoughness } from 'three/tsl';
 import { fieldThickness, fieldReady } from './sss-field.js';
 import { marbleGlow } from './marble.js';
 import { WOOL_SHADE } from './wool.js';
+import { OpenPbrLightingModel } from './openpbr-lighting.js';
 import { GRASS_SHADE } from './grass-field.js';
 import { SOAP_IOR, soapThicknessNode, soapSceneCell } from './soap.js';
 import { edgeNormalView } from './edges.js';
@@ -68,9 +70,9 @@ function thicknessAlong(viewDir, maxWorld) {
     return fieldThickness(positionLocal, dir, maxWorld.div(worldPerLocal)).mul(worldPerLocal);
 }
 
-class SubsurfaceLightingModel extends THREE.PhysicalLightingModel {
+class SubsurfaceLightingModel extends OpenPbrLightingModel {
     constructor(material, ...flags) {
-        super(...flags);
+        super(material, ...flags);
         this.sssColor = material._sssColor.mul(material._sssWeight);
         this.sssLog = log(material._sssColor.max(1e-3));
         this.radius = material._sssRadius;
@@ -138,6 +140,23 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         this.coatIor = 1.5;
         this.coatColor = new THREE.Color(1, 1, 1);
         this._coatColor = own(this, '_coatColorValue', 'color', new THREE.Color(1, 1, 1));
+        // OpenPBR coat_darkening, coat_roughness_anisotropy and the coat's direction (geometry_coat_tangent as a
+        // rotation, radians) – path tracer; the raster darkens with a rough-base estimate (setupDiffuseColor)
+        this.coatDarkening = 0;
+        this.coatAnisotropy = 0;
+        this.coatAnisotropyRotation = 0;
+        this._coatDark = own(this, '_coatDarkValue', 'float', 0);
+        this._coatKr = own(this, '_coatKrValue', 'float', 0.6);
+        this._coatKs = own(this, '_coatKsValue', 'float', 0.04);
+        this._coatAniso = own(this, '_coatAnisoValue', 'float', 0);
+        this._coatRot = own(this, '_coatRotValue', 'float', 0);
+        // coat anisotropy per pixel (node graph: RG direction, B strength – as three's anisotropyMap); a cache key
+        this.coatAnisotropyMap = null;
+        // OpenPBR terms of the raster lighting (openpbr-lighting.js) – cache keys, only where a material needs them
+        this.eon = false;        // diffuse roughness (EON)
+        this.f82 = false;        // metal edge tint
+        this.coatExtra = false;  // coat IOR ≠ 1.5 or coat anisotropy
+        this._diffRough = own(this, '_diffRoughValue', 'float', 0);
         // raster: the observed colour of a medium inside the glass (setTransmissionScatter) – a factor of its own, the
         // node graph sets the material colour to white under a colour map (the medium's colour was lost there)
         this._mediumColor = own(this, '_mediumColorValue', 'color', new THREE.Color(1, 1, 1));
@@ -238,11 +257,54 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         if (Object.keys(pt).length) this.userData.ptStandIn = pt; else delete this.userData.ptStandIn;
     }
 
-    /** Coat colour (sRGB hex – OpenPBR coat_color: what the coat lets through) and coat IOR */
-    setCoat(color, ior) {
+    /**
+     * Coat colour (sRGB hex – OpenPBR coat_color: what the coat lets through), coat IOR, darkening (coat_darkening:
+     * 0 = none, as before; 1 = physical), anisotropy and its direction (degrees)
+     */
+    setCoat(color, ior, darkening = 0, anisotropy = 0, rotation = 0) {
         this.coatColor.set(color);
         this._coatColor.value.copy(this.coatColor);
         this.coatIor = ior;
+        this.coatDarkening = darkening;
+        this.coatAnisotropy = anisotropy;
+        this.coatAnisotropyRotation = anisotropy > 0 ? THREE.MathUtils.degToRad(rotation) : 0;
+        // internal reflectance of the coat: rough base K_r = 1 − (1 − E_F) / η² (E_F: the spec's analytic fit of the
+        // hemispherical Fresnel), smooth base ≈ the Fresnel at normal incidence (the path tracer takes the view's)
+        const n = Math.max(ior, 1.0001);
+        const eF = Math.log((10893 * n - 1438.2) / (-774.4 * n * n + 10212 * n + 1));
+        this._coatKr.value = 1 - (1 - eF) / (n * n);
+        this._coatKs.value = ((n - 1) / (n + 1)) ** 2;
+        this._coatDark.value = darkening;
+        this._coatAniso.value = anisotropy;
+        this._coatRot.value = this.coatAnisotropyRotation;
+        this.coatExtra = Math.abs(ior - 1.5) > 1e-3 || anisotropy > 0;
+    }
+
+    setupVariants(builder) {
+        super.setupVariants(builder);
+        // raster: the coat's environment is isotropic – on scratches (coat anisotropy map towards 1: smooth along,
+        // rough across) it takes the roughness along them (nearly a mirror); a rough isotropic blur showed every
+        // scratch as a grey line. The coat's direct lobe keeps the full roughness (openpbr-lighting.js)
+        if (this.useClearcoat && this.coatAnisotropyMap) {
+            const a = this._coatAniso.mul(materialReference('coatAnisotropyMap', 'texture').b).clamp(0, 1);
+            clearcoatRoughness.assign(clearcoatRoughness.mul(float(1).sub(a).sqrt()));
+        }
+    }
+
+    /** the coat's anisotropy alone (node graph: 1 / 0 under its map, or its constants); rotation in radians */
+    setCoatAnisotropy(anisotropy, rotation) {
+        this.coatAnisotropy = anisotropy;
+        this.coatAnisotropyRotation = anisotropy > 0 ? rotation : 0;
+        this._coatAniso.value = anisotropy;
+        this._coatRot.value = this.coatAnisotropyRotation;
+        this.coatExtra = Math.abs(this.coatIor - 1.5) > 1e-3 || anisotropy > 0;
+    }
+
+    /** raster flags of the OpenPBR terms (after the physical params): diffuse roughness, metal edge tint */
+    setOpenPbr() {
+        this._diffRough.value = this.diffuseRoughness ?? 0;
+        this.eon = this.diffuseRoughness > 0;
+        this.f82 = this.metalness > 0 && this.specularColor.getHex() !== 0xffffff;
     }
 
     setupDiffuseColor(builder) {
@@ -251,6 +313,12 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         // material value (own), weighted with the coat (its map included)
         // the medium's colour (raster) only where light goes into it: by the transmission map's share (opaque beer foam
         // above the wheat beer stayed white, not orange)
+        // OpenPBR coat darkening (before the coat's tint – E_b is the base's own albedo): Δ = (1 − K) / (1 − E_b K),
+        // K between the smooth-base and the rough-base reflectance by the base's roughness (dielectrics: rough, like
+        // the path tracer's r_d ≈ 1), weighted with coat × darkening
+        const coatK = mix(this._coatKs, this._coatKr, mix(float(1), materialRoughness, materialMetalness));
+        const coatDelta = float(1).sub(coatK).div(vec3(1).sub(diffuseColor.rgb.mul(coatK)).max(1e-4));
+        diffuseColor.rgb.mulAssign(mix(vec3(1), coatDelta, materialClearcoat.mul(this._coatDark)));
         const inMedium = materialTransmission.div(materialReference('transmission', 'float').max(1e-4)).clamp(0, 1);
         diffuseColor.rgb.mulAssign(mix(vec3(1), this._coatColor, materialClearcoat).mul(mix(vec3(1), this._mediumColor, inMedium)));
         // SSS with a distance field: the translucent share goes through the body instead of reflecting off the surface
@@ -392,9 +460,11 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
     }
 
     setupLightingModel(builder) {
-        if (!this.subsurface) return super.setupLightingModel(builder);
-        return new SubsurfaceLightingModel(this, this.useClearcoat, this.useSheen, this.useIridescence, this.useAnisotropy,
-            this.useTransmission, this.useDispersion, this.useRetroreflection);
+        const flags = [this.useClearcoat, this.useSheen, this.useIridescence, this.useAnisotropy, this.useTransmission, this.useDispersion, this.useRetroreflection];
+        if (this.subsurface) return new SubsurfaceLightingModel(this, ...flags);
+        // OpenPBR's fuzz replaces three's sheen: every material with sheen
+        if (this.eon || this.f82 || (this.coatExtra && this.useClearcoat) || this.useSheen) return new OpenPbrLightingModel(this, ...flags);
+        return super.setupLightingModel(builder);
     }
 
     setupOutput(builder, outputNode) {
@@ -421,8 +491,10 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         this._sssKeys = [...(source._sssKeys ?? [])];   // stand-in fields of subsurface / medium (userData is copied)
         this._scatterKeys = [...(source._scatterKeys ?? [])];
         this.diffuseRoughness = source.diffuseRoughness;
+        this.setOpenPbr();
         this._mediumColor.value.copy(source._mediumColor.value);
-        this.setCoat(source.coatColor, source.coatIor);
+        this.setCoat(source.coatColor, source.coatIor, source.coatDarkening, source.coatAnisotropy, THREE.MathUtils.radToDeg(source.coatAnisotropyRotation));
+        this.coatAnisotropyMap = source.coatAnisotropyMap;
         if (source.userData.noBatch) this.userData.noBatch = true;
         this.marble = false;
         this.setMarble(source._marbleIntensity.value * (source.marble ? 1 : 0), '#' + source._marbleColor.value.getHexString(), source._marbleScale.value);

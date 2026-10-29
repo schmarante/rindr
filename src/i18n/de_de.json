@@ -200,6 +200,9 @@
             "anisotropyRotation": "Drehung (°)",
             "clearcoatColor": "Lackfarbe",
             "clearcoatIor": "Lack-Brechzahl",
+            "clearcoatDarkening": "Abdunkeln unter dem Lack",
+            "clearcoatAnisotropy": "Lack-Anisotropie",
+            "clearcoatAnisotropyRotation": "Lack-Richtung (°)",
             "dispersion": "Dispersion",
             "dispersionAbbe": "Abbe-Zahl",
             "thinWalled": "Dünnwandig",
@@ -336,6 +339,8 @@
             "mirror": "Spiegel",
             "paint-lacquer-black": "Klavierlack schwarz",
             "paint-lacquer-white": "Klavierlack weiß",
+            "paint-car-swirl-black": "Autolack schwarz mit Wirbelkratzern",
+            "paint-car-flakes-blue": "Autolack tiefblau metallic mit Flakes",
             "metal-alu-anodized-blue": "Aluminium eloxiert blau",
             "metal-alu-anodized-red": "Aluminium eloxiert rot",
             "emissive-neon-red": "Neon-Rot leuchtend",
@@ -573,15 +578,25 @@
                     "color": "Farbe",
                     "metalness": "Metall",
                     "roughness": "Rauheit",
+                    "anisotropy": "Anisotropie",
+                    "anisotropyDirection": "Anisotropie-Richtung (0–1 = 0–180°)",
+                    "specularIntensity": "Spiegelstärke",
+                    "specularColor": "Spiegelfarbe",
                     "clearcoat": "Klarlack",
                     "clearcoatRoughness": "Lack-Rauheit",
                     "transmission": "Transmission",
                     "sheen": "Samt",
+                    "sheenRoughness": "Samt-Rauheit",
+                    "iridescence": "Schillern (Dünnfilm)",
                     "emissive": "Leuchtfarbe",
                     "normal": "Normal-Map",
                     "ao": "Umgebungsverdeckung",
                     "height": "Relief (Höhe)",
-                    "alpha": "Ausschnitt (Alpha)"
+                    "coatNormal": "Lack-Normal-Map",
+                    "coatHeight": "Lack-Relief (Höhe)",
+                    "alpha": "Ausschnitt (Alpha)",
+                    "coatAnisotropy": "Lack-Anisotropie",
+                    "coatAnisotropyDirection": "Lack-Richtung"
                 },
                 "params": {
                     "reliefStrength": "Relief-Stärke",
@@ -832,7 +847,8 @@
                 "outputs": {
                     "color": "Farbe",
                     "value": "Höhe",
-                    "random": "Zufall je Sprenkel"
+                    "random": "Zufall je Sprenkel",
+                    "normal": "Flake-Normale"
                 },
                 "params": {
                     "scale": "Raster",
@@ -844,6 +860,7 @@
                     "elongation": "Streckung",
                     "softness": "Weichheit",
                     "tone": "Farbvariation",
+                    "tilt": "Flake-Neigung",
                     "a": "Grundfarbe",
                     "b": "Sprenkelfarbe"
                 }
@@ -1118,6 +1135,26 @@
                         "veins": "Adern",
                         "banded": "Schichten"
                     }
+                }
+            },
+            "scratches": {
+                "label": "Kratzer",
+                "inputs": {
+                    "uv": "Koordinate"
+                },
+                "outputs": {
+                    "value": "Abdeckung",
+                    "direction": "Richtung (quer)",
+                    "random": "Zufall je Kratzer"
+                },
+                "params": {
+                    "scale": "Raster",
+                    "density": "Dichte",
+                    "layers": "Kratzer je Zelle",
+                    "length": "Länge",
+                    "thickness": "Breite",
+                    "variation": "Variation",
+                    "seed": "Zufallswert"
                 }
             }
         },
@@ -2204,6 +2241,7 @@
             "pathtracer": "Pathtracing auf der GPU (HQ)",
             "bvh": "Beschleunigungsstrukturen für Raycasts und Pathtracing",
             "oidn": "KI-Entrauschen (Gewichte)",
+            "ltcSheen": "Näherungsformeln für den Samt-Glanz nach OpenPBR (Zeltner et al. 2022)",
             "oidnWeb": "Open Image Denoise im Browser",
             "upscaler": "Hochskalieren (AMD FSR)",
             "earcut": "Triangulierung der STEP-Flächen",

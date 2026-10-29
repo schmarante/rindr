@@ -24,7 +24,7 @@
 // in between is it baked – with the model's UVs, at the resolution of the source texture.
 import { t, has } from './i18n.js';
 import * as THREE from 'three/webgpu';
-import { float, vec2, vec3, vec4, uv, uniform, texture, mat3, fract, floor, dot, mix, mod, clamp, max, min, pow, abs, step, dFdx, dFdy, sRGBTransferOETF } from 'three/tsl';
+import { float, vec2, vec3, vec4, uv, uniform, texture, mat3, fract, floor, dot, mix, mod, clamp, max, min, pow, abs, step, dFdx, dFdy, sRGBTransferOETF, cos, sin } from 'three/tsl';
 import { LUMA, linear, C, T, tsl, convert, input } from './node-lib.js';
 
 export const BAKE_SIZE = 1024;
@@ -47,14 +47,29 @@ export const NODE_TYPES = {
             { key: 'color', type: 'color' },
             { key: 'metalness', type: 'float' },
             { key: 'roughness', type: 'float' },
+            // OpenPBR specular_roughness_anisotropy + direction (0..1 = 0..180°, along the UVs' u) – one anisotropy map
+            { key: 'anisotropy', type: 'float' },
+            { key: 'anisotropyDirection', type: 'float' },
+            // OpenPBR specular_weight / specular_color (dielectric tint; on metals the edge tint, F82)
+            { key: 'specularIntensity', type: 'float' },
+            { key: 'specularColor', type: 'color' },
             { key: 'clearcoat', type: 'float' },
             { key: 'clearcoatRoughness', type: 'float' },
+            // OpenPBR coat_roughness_anisotropy + geometry_coat_tangent (0..1 = 0..180°) – one coat anisotropy map
+            // (swirl marks: micro scratches in the clear coat)
+            { key: 'coatAnisotropy', type: 'float' },
+            { key: 'coatAnisotropyDirection', type: 'float' },
             { key: 'transmission', type: 'float' },
             { key: 'sheen', type: 'float' },
+            { key: 'sheenRoughness', type: 'float' },
+            { key: 'iridescence', type: 'float' },
             { key: 'emissive', type: 'color' },
             { key: 'normal', type: 'color' },
             { key: 'ao', type: 'float' },
             { key: 'height', type: 'float' },
+            // OpenPBR geometry_coat_normal: the coat's own normal (normal map or relief, e.g. orange peel over a smooth base)
+            { key: 'coatNormal', type: 'color' },
+            { key: 'coatHeight', type: 'float' },
             { key: 'alpha', type: 'float' },
         ],
         outputs: [],
@@ -238,6 +253,9 @@ export const IMPORT_SLOTS = {
     clearcoatRoughnessMap: ['clearcoatRoughness', 'g'],
     transmissionMap: ['transmission', 'r'],
     sheenColorMap: ['sheen', 'color'],
+    clearcoatNormalMap: ['coatNormal', 'color'],
+    specularColorMap: ['specularColor', 'color'],
+    iridescenceMap: ['iridescence', 'r'],
 };
 // input -> channel that can be passed through
 const PASS_PORT = Object.fromEntries(Object.values(IMPORT_SLOTS));
@@ -329,6 +347,22 @@ export function evaluateGraph(graph, textures, importMaps = {}, { domain = null 
             ? { kind: 'const', value: r.value }
             : { kind: 'tsl', node: r.node, type: input.type, sig: signature(from.node, from.port), size: fixed || bakeSize(from.node) };
     }
+    // anisotropy (base and coat): strength and direction share one map (three.js / the path tracer: RG = direction as
+    // a vector in the tangent frame, B = strength – both multiply the material's values, so an unlinked one stays the
+    // material's)
+    const anisotropy = (aStr, aDir, name) => {
+        if (aStr?.kind === 'tsl' || aDir?.kind === 'tsl') {
+            const strength = aStr?.kind === 'tsl' ? aStr.node : float(aStr?.kind === 'const' ? aStr.value : 1);
+            const angle = (aDir?.kind === 'tsl' ? aDir.node : float(aDir?.kind === 'const' ? aDir.value : 0)).mul(Math.PI);
+            result[name + 'Map'] = { kind: 'tsl', type: 'color', node: vec3(cos(angle).mul(0.5).add(0.5), sin(angle).mul(0.5).add(0.5), strength),
+                sig: `${name}|${aStr?.sig ?? aStr?.value}|${aDir?.sig ?? aDir?.value}`, size: Math.max(aStr?.size || 0, aDir?.size || 0) || BAKE_SIZE,
+                strength: aStr?.kind === 'tsl' || aStr?.kind === 'const', direction: aDir?.kind === 'tsl' || aDir?.kind === 'const' };
+        } else if (aStr || aDir) {
+            result[name + 'Const'] = { strength: aStr?.kind === 'const' ? aStr.value : null, direction: aDir?.kind === 'const' ? aDir.value : null };
+        }
+    };
+    anisotropy(result.anisotropy, result.anisotropyDirection, 'anisotropy');
+    anisotropy(result.coatAnisotropy, result.coatAnisotropyDirection, 'coatAnisotropy');
     result.reliefStrength = out.params?.reliefStrength ?? 1;
     result.size = out.params?.size ?? 100;
     result.domain = domain;
@@ -531,9 +565,10 @@ export class GraphBaker {
         const { renderer } = this;
         const target = size < BAKE_SIZE ? (this.smallTarget ??= new THREE.RenderTarget(size, size, { depthBuffer: false, type: THREE.UnsignedByteType })) : this.target;
         if (target.width !== size) target.setSize(size, size);
-        let out = type === 'float' ? vec3(node) : node;
+        // 'floatA': the value also in alpha (three reads specularIntensityMap / sheenRoughnessMap from A)
+        let out = type === 'float' || type === 'floatA' ? vec3(node) : node;
         if (srgb) out = sRGBTransferOETF(out);
-        this.material.fragmentNode = uniformConstants(vec4(out, 1));
+        this.material.fragmentNode = uniformConstants(vec4(out, type === 'floatA' ? float(node) : 1));
         this.material.needsUpdate = true;
         const prev = renderer.getRenderTarget();
         renderer.setRenderTarget(target);

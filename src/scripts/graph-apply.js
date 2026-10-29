@@ -23,16 +23,27 @@ const SLOTS = {
     color: { prop: 'color', map: 'map', unit: '#ffffff', srgb: true },
     metalness: { prop: 'metalness', map: 'metalnessMap', unit: 1 },
     roughness: { prop: 'roughness', map: 'roughnessMap', unit: 1 },
+    specularIntensity: { prop: 'specularIntensity', map: 'specularIntensityMap', unit: 1, alpha: true },
+    specularColor: { prop: 'specularColor', map: 'specularColorMap', unit: '#ffffff', srgb: true },
     clearcoat: { prop: 'clearcoat', map: 'clearcoatMap', unit: 1 },
     clearcoatRoughness: { prop: 'clearcoatRoughness', map: 'clearcoatRoughnessMap', unit: 1 },
     transmission: { prop: 'transmission', map: 'transmissionMap', unit: 1 },
     sheen: { prop: 'sheen', map: 'sheenColorMap', unit: 1 },
+    sheenRoughness: { prop: 'sheenRoughness', map: 'sheenRoughnessMap', unit: 1, alpha: true },
+    iridescence: { prop: 'iridescence', map: 'iridescenceMap', unit: 1 },
     emissive: { prop: 'emissive', map: 'emissiveMap', unit: '#ffffff', srgb: true },
     ao: { map: 'aoMap' },
     normal: { map: 'normalMap' },
     height: { map: 'normalMap' },   // after 'normal': relief takes precedence
     alpha: { map: 'alphaMap' },     // cutout: alpha test at 0.5
+    coatNormal: { map: 'clearcoatNormalMap' },
+    coatHeight: { map: 'clearcoatNormalMap' },   // after 'coatNormal': relief takes precedence
+    // strength + direction combined in material-graph.js (evaluateGraph: RG direction, B strength)
+    anisotropyMap: { map: 'anisotropyMap' },
+    coatAnisotropyMap: { map: 'coatAnisotropyMap' },
 };
+// relief inputs: baked from a height into a normal map
+const RELIEF = new Set(['height', 'coatHeight']);
 
 export class GraphApplier {
     /**
@@ -97,6 +108,24 @@ export class GraphApplier {
             }
         }
         if (result.height?.kind === 'tsl') material.normalScale.setScalar(1);
+        if (result.coatHeight?.kind === 'tsl') material.clearcoatNormalScale.setScalar(1);
+        // anisotropy from the graph: a linked map multiplies the material's values (unit where the graph drives them);
+        // constants straight into the material (direction 0..1 = 0..180°)
+        const aMap = result.anisotropyMap, aConst = result.anisotropyConst;
+        if (aMap) {
+            if (aMap.strength) material.anisotropy = 1;
+            if (aMap.direction) material.anisotropyRotation = 0;
+        } else if (aConst) {
+            if (aConst.strength !== null) material.anisotropy = aConst.strength;
+            if (aConst.direction !== null) material.anisotropyRotation = aConst.direction * Math.PI;
+        }
+        // the coat's the same way (RindrMaterial: OpenPBR's own coat anisotropy, raster + path tracer)
+        const cMap = result.coatAnisotropyMap, cConst = result.coatAnisotropyConst;
+        if (material.setCoatAnisotropy && (cMap || cConst)) {
+            const strength = cMap ? (cMap.strength ? 1 : null) : cConst.strength;
+            const direction = cMap ? (cMap.direction ? 0 : null) : cConst.direction;
+            material.setCoatAnisotropy(strength ?? material.coatAnisotropy, direction !== null ? direction * Math.PI : material.coatAnisotropyRotation);
+        }
         material.alphaTest = result.alpha?.kind === 'tsl' ? 0.5 : def.render?.alphaTest || 0;
         material.userData.graphUvMode = !!result.domain;
         for (const tex of Object.values(maps)) place(tex, entry, result);
@@ -171,15 +200,15 @@ export class GraphApplier {
         for (const [key, slot] of Object.entries(SLOTS)) {
             const r = result[key];
             if (!r || r.kind !== 'tsl') continue;
-            const sig = (key === 'height' ? r.sig + '|' + result.reliefStrength : r.sig) + '|' + r.size + (result.domain ? '|' + JSON.stringify(result.domain) : '');
+            const sig = (RELIEF.has(key) ? r.sig + '|' + result.reliefStrength : r.sig) + '|' + r.size + (result.domain ? '|' + JSON.stringify(result.domain) : '');
             if (maps[key] && sigs[key] === sig) {
                 material[slot.map] = maps[key];   // unchanged -> keep the existing texture
                 continue;
             }
             if (entry.def.graph !== graph) return;   // changed in the meantime -> a new run follows
-            const tex = key === 'height'
+            const tex = RELIEF.has(key)
                 ? await this.baker.bakeNormal(r.node, result.reliefStrength, r.size)
-                : await this.baker.bake(r.node, r.type, { srgb: !!slot.srgb, size: r.size });
+                : await this.baker.bake(r.node, slot.alpha ? 'floatA' : r.type, { srgb: !!slot.srgb, size: r.size });
             if (entry.def.graph !== graph) { tex.dispose(); return; }   // changed in the meantime
             maps[key]?.dispose();
             place(tex, entry, result);

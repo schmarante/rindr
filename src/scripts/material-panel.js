@@ -1,7 +1,7 @@
 // Material panel: scene materials + library, parameter editor, drag & drop, JSON.
 //  - Scene: all used/created materials; materials of the current selection are marked
 //  - Library: presets by category; double-click takes one over into the scene
-//  - Every row is draggable (dataTransfer MATERIAL_MIME = { id } or { libraryId })
+//  - Every row is draggable (dataTransfer MATERIAL_MIME = { id, tab, def } or { libraryId } – material-transfer.js)
 //  - Both lists as rows or tiles (toggle top right, remembered per browser)
 //  - Previews: rendered spheres (material-thumbs.js, hooks.thumbs) with a spinner per material while its image is
 //    made (only the one being rendered – they are made one after another; waiting ones stay quiet); reload button
@@ -10,6 +10,7 @@
 //    the library's 200+ presets were all queued on its first opening, each a shader compile that blocks the GPU
 //    process (the whole browser window froze now and then)
 import { messageDialog } from './dialog.js';
+import { materialDragData, libraryDragData } from './material-transfer.js';
 import { PARAMS, buildMaterial } from './material-manager.js';
 import { thumbKey } from './material-thumbs.js';
 import { MATERIALS } from './config.js';
@@ -145,7 +146,9 @@ export class MaterialPanel {
         this.list.addEventListener('dragstart', e => {
             const row = e.target.closest('[data-drag]');
             if (!row) return;
-            e.dataTransfer.setData(MATERIAL_MIME, row.dataset.drag);
+            // a scene material with its whole description and this tab: droppable into another RINDR tab too
+            const data = JSON.parse(row.dataset.drag);
+            e.dataTransfer.setData(MATERIAL_MIME, JSON.stringify(data.id ? materialDragData(data.id) : libraryDragData(data.libraryId)));
             e.dataTransfer.effectAllowed = 'copy';
         });
         this.file.addEventListener('change', () => this._import());

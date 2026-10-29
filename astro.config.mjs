@@ -283,6 +283,25 @@ const F82_CONDUCTOR = `
 
 	}
 `;
+// OpenPBR coat_darkening: light the coat reflects back down darkens the base, Δ = ( 1 − K ) / ( 1 − E_b K ) with K the
+// coat's internal reflectance – rough base K_r = 1 − ( 1 − E_F ) / η² (E_F: hemispherical Fresnel, analytic fit of the
+// spec), smooth base K_s = Fresnel at the view; K = mix( K_s, K_r, r_b ), r_b = mix( mix( 1, r, ξF ), r, metalness);
+// E_b: the base's albedo (dielectric: base colour, glass: its Fresnel; metal: its colour); applied as mix( 1, Δ, C δ )
+const COAT_DARKENING = tab => `${tab}if ( surf.coatDarkening > 0.0 ) {
+${tab}	let ce = surf.coatIor;
+${tab}	let cEF = log( ( 10893.0 * ce - 1438.2 ) / ( - 774.4 * ce * ce + 10212.0 * ce + 1.0 ) );
+${tab}	let cKr = 1.0 - ( 1.0 - cEF ) / ( ce * ce );
+${tab}	let cKs = \${ schlickFresnelFunc }( clamp( NdotVc, 0.0, 1.0 ), \${ iorToF0Func }( ce ) );
+${tab}	let cFs = \${ schlickFresnelFunc }( clamp( NdotV, 0.0, 1.0 ), surf.f0 );
+${tab}	let cRb = mix( mix( 1.0, surf.roughness, clamp( surf.specularIntensity * cFs, 0.0, 1.0 ) ), surf.roughness, surf.metalness );
+${tab}	let cK = mix( cKs, cKr, cRb );
+${tab}	let cEb = mix( mix( surf.color, vec3f( cFs ), surf.transmission ), surf.color, surf.metalness );
+${tab}	let cDelta = ( 1.0 - cK ) / max( vec3f( 1.0 ) - cEb * cK, vec3f( 1e-4 ) );
+${tab}	attenuation *= mix( vec3f( 1.0 ), cDelta, surf.clearcoat * surf.coatDarkening );
+${tab}}
+`;
+// OpenPBR fuzz (Zeltner et al. 2022) in place of the Charlie sheen – src/scripts/fuzz.patch.js
+const FUZZ_PATCH = fileURLToPath(new URL('./src/scripts/fuzz.patch.js', import.meta.url));
 function openPbrPatch() {
   return {
     name: 'rindr-openpbr',
@@ -305,7 +324,7 @@ function openPbrPatch() {
         replaceOnce(/\n(\t)clearcoatNormalMap: 'int',\n/, (m, tab) => `${m}${tab}coatIor: 'float',\n`);
         replaceOnce(/\n(\t)anisotropyMap: 'int',\n/, (m, tab) => `${m}${tab}coatColorR: 'float',\n${tab}coatColorG: 'float',\n${tab}coatColorB: 'float',\n`);
         // surface record
-        replaceOnce(/\n(\t)clearcoatRoughness: 'f32',\n/, (m, tab) => `${m}${tab}coatIor: 'f32',\n${tab}coatColor: 'vec3f',\n`);
+        replaceOnce(/\n(\t)clearcoatRoughness: 'f32',\n/, (m, tab) => `${m}${tab}coatIor: 'f32',\n${tab}coatColor: 'vec3f',\n${tab}coatDarkening: 'f32',\n${tab}coatAlpha: 'vec2f',\n${tab}fuzzWeight: 'f32',\n`);
         return { code, map: null };
       }
       if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/PathtracerBVHComputeData.js')) {
@@ -318,16 +337,78 @@ function openPbrPatch() {
       }
       if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/material.wgsl.js')) {
         replaceOnce(/\n(\t+)surf\.clearcoat = clearcoat;\n/, (m, tab) => `${m}${tab}surf.coatIor = max( material.coatIor, 1.0 );\n`
-          + `${tab}surf.coatColor = vec3f( material.coatColorR, material.coatColorG, material.coatColorB );\n`);
+          + `${tab}surf.coatColor = vec3f( material.coatColorR, material.coatColorG, material.coatColorB );\n`
+          + `${tab}surf.coatDarkening = material.coatDarkening;\n`);
+
+        // OpenPBR coat_roughness_anisotropy: alpha_t = r² sqrt( 2 / ( 1 + ( 1 - a )² ) ), alpha_b = ( 1 - a ) alpha_t
+        replaceOnce(/\n(\t+)surf\.clearcoatRoughness = clamp\( clearcoatRoughness, minRoughness, 1\.0 \);\n/, (m, tab) => `${m}`
+          + `${tab}// strength and direction: the material's, per pixel × its map (RG direction turns the rotation, B strength)\n`
+          + `${tab}var coatA = clamp( material.coatAnisotropy, 0.0, 1.0 );\n`
+          + `${tab}var coatDir = vec2f( cos( material.coatAnisotropyRotation ), sin( material.coatAnisotropyRotation ) );\n`
+          + `${tab}if ( material.coatAnisotropyMap != -1 ) {\n\n`
+          + `${tab}\tlet coatUv = material.coatAnisotropyMapTransform * vec3f( getUvFromChannel( vertexData, material.coatAnisotropyMap ), 1.0 );\n`
+          + `${tab}\tlet coatTex = sampleTexel( coatUv.xy, material.coatAnisotropyMap, 0 );\n`
+          + `${tab}\tlet coatMd = coatTex.rg * 2.0 - vec2f( 1.0 );\n`
+          + `${tab}\tcoatA *= coatTex.b;\n`
+          + `${tab}\tif ( length( coatMd ) > EPSILON ) {\n\n`
+          + `${tab}\t\tlet d = normalize( coatMd );\n`
+          + `${tab}\t\tcoatDir = vec2f( coatDir.x * d.x - coatDir.y * d.y, coatDir.y * d.x + coatDir.x * d.y );\n\n`
+          + `${tab}\t}\n\n`
+          + `${tab}}\n`
+          + `${tab}let coatAlphaT = min( surf.clearcoatRoughness * surf.clearcoatRoughness * sqrt( 2.0 / ( 1.0 + ( 1.0 - coatA ) * ( 1.0 - coatA ) ) ), 1.0 );\n`
+          + `${tab}surf.coatAlpha = vec2f( coatAlphaT, max( ( 1.0 - coatA ) * coatAlphaT, 1e-4 ) );\n`);
+        // the coat's frame along its own tangent (OpenPBR geometry_coat_tangent: the surface tangent turned by the
+        // coat's rotation) – before, an arbitrary frame around the coat normal (isotropic, so it did not matter)
+        replaceOnce('surf.clearcoatBasis = getBasisFromNormal( surf.clearcoatNormal );', () => `surf.clearcoatBasis = getBasisFromNormal( surf.clearcoatNormal );
+		if ( coatA > 0.0 && length( vertexData.tangent.xyz ) > 0.0 && vertexData.tangent.w != 0.0 ) {
+
+			let cn = surf.clearcoatNormal;
+			let ct = normalize( vertexData.tangent.xyz - cn * dot( cn, vertexData.tangent.xyz ) );
+			let cb = cross( cn, ct ) * vertexData.tangent.w;
+			let cd = coatDir;
+			surf.clearcoatBasis = mat3x3f( ct * cd.x + cb * cd.y, cb * cd.x - ct * cd.y, cn );
+
+		}`);
         replaceOnce(/\n\tfn conductorFresnel\( VdotH: f32, f0: vec3f, specular: vec3f \) -> vec3f \{\n[\s\S]*?\n\t\}\n/, () => F82_CONDUCTOR);
+        // the fuzz weight alone: a node graph drives it through sheenColorMap (weight × the map's strongest channel)
+        replaceOnce(/\n(\t+)surf\.sheenColor = sheenColor;\n/, (m, tab) => `${m}${tab}let fuzzBase = max( max( material.sheenColor.r, material.sheenColor.g ), material.sheenColor.b );\n`
+          + `${tab}surf.fuzzWeight = material.sheen * select( 1.0, clamp( max( max( sheenColor.r, sheenColor.g ), sheenColor.b ) / max( fuzzBase, 1e-4 ), 0.0, 1.0 ), fuzzBase > 1e-4 );\n`);
+        return { code, map: null };
+      }
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/sheen.wgsl.js')) {
+        replaceOnce(/\n\/\/ See Section 5, Layering[^\n]*\n(?:\/\/[^\n]*\n)*export const sheenAlbedoScalingFunc[\s\S]*$/, () => '\n' + readFileSync(FUZZ_PATCH, 'utf8'));
         return { code, map: null };
       }
       if (file.endsWith('three-gpu-pathtracer/src/webgpu/materials/GltfCompliantMaterial.js')) {
         replaceAll('${ iorToF0Func }( 1.5 )', '${ iorToF0Func }( surf.coatIor )', 2);
         replaceOnce('surf.clearcoatRoughness, 1.5 )', 'surf.clearcoatRoughness, surf.coatIor )');
         replaceAll('${ CLEARCOAT_IOR }', 'surf.coatIor', 2);
-        replaceOnce(/\n(\t+)attenuation \*= 1\.0 - surf\.clearcoat \* clearcoatFresnelEnergySS;\n/, (m, tab) => `${m}${tab}// rindr-openpbr: what lies below goes through the coat's colour\n${tab}attenuation *= mix( vec3f( 1.0 ), surf.coatColor, surf.clearcoat );\n`);
+        replaceOnce(/\n(\t+)attenuation \*= 1\.0 - surf\.clearcoat \* clearcoatFresnelEnergySS;\n/, (m, tab) => `${m}${tab}// rindr-openpbr: what lies below goes through the coat's colour\n${tab}attenuation *= mix( vec3f( 1.0 ), surf.coatColor, surf.clearcoat );\n` + COAT_DARKENING(tab));
+        replaceAll('vec2( clearcoatAlpha )', 'surf.coatAlpha', 3);
         replaceOnce('${ this.conductorFresnel }( ctx.VdotH, surf.color, vec3f( 1.0 ) )', '${ this.conductorFresnel }( ctx.VdotH, surf.color, surf.specularColor )');
+        // OpenPBR: the fuzz on top of the coat (glTF: under it) – the sheen block moves in front of the coat's; what lies
+        // below × (1 − weight × E( view )) instead of the reciprocal albedo scaling with the fuzz colour
+        const sheenBlock = /\n(\t+)\/\/ sheen\n\t+if \( NdotL > 0\.0 && surf\.sheen > 0\.0 \) \{\n[\s\S]*?\n\1\}\n/;
+        const block = code.match(sheenBlock);
+        if (!block) this.error('rindr-openpbr: sheen block not found in GltfCompliantMaterial.js (three-gpu-pathtracer changed?)');
+        replaceOnce(sheenBlock, '\n');
+        replaceOnce(/\n(\t+)\/\/ clearcoat\n(\t+)if \( NdotL > 0\.0 && surf\.clearcoat > 0\.0 \) \{\n/, m => block[0].replace('// sheen', '// sheen (rindr-openpbr: OpenPBR fuzz, on top)') + m.slice(1));
+        replaceOnce('attenuation *= mix( 1.0, ${ sheenAlbedoScalingFunc }( ctx.V, ctx.L, surf ), surf.sheen );', 'attenuation *= 1.0 - surf.fuzzWeight * ${ sheenAlbedoScalingFunc }( ctx.V, ctx.L, surf );');
+        // the coat lies over the base's relief (normal map: flakes, grain): whether it reflects is decided by its own
+        // normal, not the base's – before, a light below the tilted base normal switched the coat off and its samples
+        // there were dropped; its half vector from its own view and light (the shared one is the refraction half vector
+        // for directions below the base)
+        replaceOnce('if ( NdotL > 0.0 && surf.clearcoat > 0.0 ) {', 'if ( surf.clearcoat > 0.0 ) {');
+        replaceOnce('let Hc = normalize( toClearcoatMat * ctx.H );', 'let Hc = normalize( Vc + Lc );');
+        replaceOnce(/\n(\t+)result \+= surf\.clearcoat \* clearcoatFresnel \* clearcoatSpecular;\n/, (m, tab) => `\n${tab}if ( Lc.z > 0.0 && NdotVc > 0.0 ) {\n\n${tab}\tresult += surf.clearcoat * clearcoatFresnel * clearcoatSpecular;\n\n${tab}}\n`);
+        replaceOnce('let whClearcoat = normalize( toClearcoatMat * wh );', 'let whClearcoat = normalize( woClearcoat + wiClearcoat );');
+        replaceOnce(/\n(\t+)var isDead = false;\n/, (m, tab) => `${m}${tab}var rindrCoatLobe = false;   // rindr-openpbr: a coat sample above the coat\n`);
+        replaceOnce(/\n(\t+)wi = normalize\( surf\.normalInvBasis \* surf\.clearcoatBasis \* wiCoat \);\n/, (m, tab) => `${m}${tab}rindrCoatLobe = wiCoat.z > 0.0;\n`);
+        replaceOnce('let invalid = isDead || ( ! isTransmissionLobe && wi.z <= 0.0 );', 'let invalid = isDead || ( ! isTransmissionLobe && ! rindrCoatLobe && wi.z <= 0.0 );');
+        // bsdfEvalPdf multiplies the whole BSDF by the cosine to the base's normal – the coat's share needs its own
+        // (the base's relief otherwise dimmed the coat at every tilted flake edge): pre-scaled by cos_coat / cos_base
+        replaceOnce('let clearcoatSpecular = ${ this.specularBrdf }( Vc, Lc, Hc, surf.coatAlpha ) * clearcoatBoost;',
+          'let clearcoatSpecular = ${ this.specularBrdf }( Vc, Lc, Hc, surf.coatAlpha ) * clearcoatBoost * ( max( Lc.z, 0.0 ) / max( abs( NdotL ), 1e-4 ) );');
         return { code, map: null };
       }
       return null;
@@ -358,7 +439,9 @@ function mediumPatch() {
         code = code.replace(from, to);
       };
       if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/structs.wgsl.js')) {
-        replaceOnce(/\n(\t)anisotropyMapTransform: 'mat3',\n/, (m, tab) => `${m}${tab}// rindr-medium\n${tab}mediumScatter: 'vec3',\n${tab}mediumAnisotropy: 'float',\n${tab}mediumTint: 'float',\n`);
+        replaceOnce(/\n(\t)anisotropyMapTransform: 'mat3',\n/, (m, tab) => `${m}${tab}// rindr-medium\n${tab}mediumScatter: 'vec3',\n${tab}mediumAnisotropy: 'float',\n${tab}mediumTint: 'float',\n`
+          + `${tab}// rindr-openpbr (in the medium's padding): coat darkening, anisotropy, rotation (radians)\n${tab}coatDarkening: 'float',\n${tab}coatAnisotropy: 'float',\n${tab}coatAnisotropyRotation: 'float',\n`
+          + `${tab}// rindr-openpbr: the coat's anisotropy map (RG direction, B strength – swirl marks) + its transform\n${tab}coatAnisotropyMap: 'int',\n${tab}coatPad0: 'float',\n${tab}coatPad1: 'float',\n${tab}coatPad2: 'float',\n${tab}coatAnisotropyMapTransform: 'mat3',\n`);
         replaceOnce(/\n(\t)clearcoatRoughness: 'f32',\n/, (m, tab) => `${m}${tab}transmissionTint: 'vec3f',\n`);
         return { code, map: null };
       }
@@ -371,7 +454,14 @@ ${tab}floatArray[ index ++ ] = rindrScatter ? rindrScatter.g : 0.0;
 ${tab}floatArray[ index ++ ] = rindrScatter ? rindrScatter.b : 0.0;
 ${tab}floatArray[ index ++ ] = getField( m, 'mediumAnisotropy', 0.0 );
 ${tab}floatArray[ index ++ ] = getField( m, 'mediumTint', 0.0 );
+${tab}// rindr-openpbr: coat darkening, anisotropy, rotation (in the struct's former padding)
+${tab}floatArray[ index ++ ] = getField( m, 'coatDarkening', 0.0 );
+${tab}floatArray[ index ++ ] = getField( m, 'coatAnisotropy', 0.0 );
+${tab}floatArray[ index ++ ] = getField( m, 'coatAnisotropyRotation', 0.0 );
+${tab}// rindr-openpbr: the coat's anisotropy map + its transform
+${tab}intArray[ index ++ ] = getTexture( m, 'coatAnisotropyMap' );
 ${tab}index += 3;
+${tab}index += writeTextureMatrixToArray( m, 'coatAnisotropyMap', floatArray, index );
 `);
         return { code, map: null };
       }

@@ -200,6 +200,9 @@
             "anisotropyRotation": "Rotation (°)",
             "clearcoatColor": "Coat colour",
             "clearcoatIor": "Coat IOR",
+            "clearcoatDarkening": "Coat darkening",
+            "clearcoatAnisotropy": "Coat anisotropy",
+            "clearcoatAnisotropyRotation": "Coat direction (°)",
             "dispersion": "Dispersion",
             "dispersionAbbe": "Abbe number",
             "thinWalled": "Thin walled",
@@ -336,6 +339,8 @@
             "mirror": "Mirror",
             "paint-lacquer-black": "Piano lacquer black",
             "paint-lacquer-white": "Piano lacquer white",
+            "paint-car-swirl-black": "Black car paint with swirl marks",
+            "paint-car-flakes-blue": "Deep blue metallic car paint with flakes",
             "metal-alu-anodized-blue": "Aluminium anodised blue",
             "metal-alu-anodized-red": "Aluminium anodised red",
             "emissive-neon-red": "Neon red (emissive)",
@@ -573,15 +578,25 @@
                     "color": "Colour",
                     "metalness": "Metalness",
                     "roughness": "Roughness",
+                    "anisotropy": "Anisotropy",
+                    "anisotropyDirection": "Anisotropy direction (0–1 = 0–180°)",
+                    "specularIntensity": "Specular weight",
+                    "specularColor": "Specular colour",
                     "clearcoat": "Clearcoat",
                     "clearcoatRoughness": "Clearcoat roughness",
                     "transmission": "Transmission",
                     "sheen": "Sheen",
+                    "sheenRoughness": "Sheen roughness",
+                    "iridescence": "Iridescence (thin film)",
                     "emissive": "Emissive colour",
                     "normal": "Normal map",
                     "ao": "Ambient occlusion",
                     "height": "Bump (height)",
-                    "alpha": "Cutout (alpha)"
+                    "coatNormal": "Coat normal map",
+                    "coatHeight": "Coat bump (height)",
+                    "alpha": "Cutout (alpha)",
+                    "coatAnisotropy": "Coat anisotropy",
+                    "coatAnisotropyDirection": "Coat direction"
                 },
                 "params": {
                     "reliefStrength": "Bump strength",
@@ -832,7 +847,8 @@
                 "outputs": {
                     "color": "Colour",
                     "value": "Height",
-                    "random": "Random per speckle"
+                    "random": "Random per speckle",
+                    "normal": "Flake normal"
                 },
                 "params": {
                     "scale": "Grid",
@@ -844,6 +860,7 @@
                     "elongation": "Elongation",
                     "softness": "Softness",
                     "tone": "Colour variation",
+                    "tilt": "Flake tilt",
                     "a": "Base colour",
                     "b": "Speckle colour"
                 }
@@ -1118,6 +1135,26 @@
                         "veins": "Veins",
                         "banded": "Layers"
                     }
+                }
+            },
+            "scratches": {
+                "label": "Scratches",
+                "inputs": {
+                    "uv": "Coordinate"
+                },
+                "outputs": {
+                    "value": "Coverage",
+                    "direction": "Direction (across)",
+                    "random": "Random per scratch"
+                },
+                "params": {
+                    "scale": "Grid",
+                    "density": "Density",
+                    "layers": "Scratches per cell",
+                    "length": "Length",
+                    "thickness": "Width",
+                    "variation": "Variation",
+                    "seed": "Seed"
                 }
             }
         },
@@ -2204,6 +2241,7 @@
             "pathtracer": "GPU path tracing (HQ)",
             "bvh": "Acceleration structures for raycasting and path tracing",
             "oidn": "AI denoising (weights)",
+            "ltcSheen": "Fitted formulas for the OpenPBR fuzz sheen (Zeltner et al. 2022)",
             "oidnWeb": "Open Image Denoise in the browser",
             "upscaler": "Upscaling (AMD FSR)",
             "earcut": "Triangulation of STEP faces",
