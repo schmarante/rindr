@@ -32,11 +32,17 @@ export const PATHTRACING = {
         bounces: 3,             // light paths while orbiting
         samples: 1,             // samples per pixel and frame (more = calmer, but slower)
         holdMs: 250,            // stays reduced this long after release (mouse wheel: no switching per notch)
+        stillMs: 150,           // camera still this long while the mouse stays pressed: full quality already (0 = only
+                                // after the release)
         // image filter while orbiting and while the image refines (until the final image), instead of showing the
         // noise: 'kuwahara' paints over it (kuwahara.js, look: PATHTRACING.kuwahara), 'denoise' smooths it edge-aware
         // (motion-denoise.js, PATHTRACING.denoiseMotion), 'off'
         filter: 'kuwahara',
         temporal: false,        // 'denoise': also blend in the previous frames (reprojected) while orbiting
+        // 'denoise': upscale with history instead of FSR – each frame traced with another offset within the pixel and
+        // accumulated at screen size (motion-upscale.js, PATHTRACING.motionUpscale); after the release it fades over
+        // the refining image
+        taau: true,
     },
 
     // Kuwahara look (painterly while orbiting and while the image refines) – values chosen by the user
@@ -62,6 +68,14 @@ export const PATHTRACING = {
         maxHistory: 8,          // temporal: at most this many frames blended (newest with ≥ 1/maxHistory)
         clampGamma: 1.5,        // temporal: history clamped to mean ± clampGamma·σ of the current neighbourhood
         firefly: 8,             // luminance limit per sample (linear) – single bright samples would become blobs
+    },
+
+    // Upscaling with history while orbiting (motion-upscale.js, motion.taau)
+    motionUpscale: {
+        frames: 16,             // history limit in frames (more = calmer and sharper, but slower to follow changes)
+        clampGamma: 1.25,       // history clamped to mean ± clampGamma·σ of the current samples around the pixel
+        seedSamples: 16,        // after the release the history counts like this many samples of the refining image
+                                // (share (n / (n + samples))²: a quarter after n samples, gone after ~8 n)
     },
 
     // Technical (benchmark with ?bench in the URL)

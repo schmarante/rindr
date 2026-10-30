@@ -187,7 +187,11 @@ export class GuideKernel {
             viewMatrix: uniform(new Matrix4()),   // world → view (OIDN normals)
             aperture: uniform(new Vector2()),     // x radius (world units, 0 = sharp), y focus distance
             aov: uniform(aov ? 1 : 0, 'uint'),
+            pixelJitter: uniform(new Vector2(0.5, 0.5)),   // point within the pixel (samples 0) – see pixelJitter
         };
+        /** point within the pixel of the guide rays (samples 0): centre, or the path tracer's fixed offset of this frame
+         *  (PT_MOTION.jitter, while orbiting with the upscaler with history – motion-upscale.js) */
+        this.pixelJitter = p.pixelJitter.value;
         const raycastOutput = proxy('bvhData.value.fns.raycastFirstHit.outputType', p);
         const raycastFirstHit = proxyFn('bvhData.value.fns.raycastFirstHit', p);
         const sampleTrianglePoint = proxyFn('bvhData.value.fns.sampleTrianglePoint', p);
@@ -223,8 +227,9 @@ export class GuideKernel {
 
                 for ( var s = 0u; s < count; s ++ ) {
 
-                    // pixel centre (OIDN guides: a jittered point in the pixel, R2 sequence), ndc like the path tracer (row 0 = bottom)
-                    var jitter = vec4f( 0.5 );
+                    // pixel centre or the path tracer's fixed offset (OIDN guides: a jittered point in the pixel, R2 sequence), ndc
+                    // like the path tracer (row 0 = bottom)
+                    var jitter = vec4f( ${ p.pixelJitter }, 0.5, 0.5 );   // orbiting with the upscaler with history: the path tracer's offset of this frame
                     if ( samples > 0u ) {
 
                         jitter = fract( rotation + f32( s ) * vec4f( 0.7548776662, 0.5698402910, 0.6180339887, 0.4142135624 ) );

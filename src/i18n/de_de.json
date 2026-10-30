@@ -2045,6 +2045,7 @@
         "motionFilterOff": "Aus",
         "motionDenoise": "Entrauschen (À-trous)",
         "motionTemporal": "Verlauf über mehrere Bilder",
+        "motionUpscale": "Hochskalieren mit Verlauf",
         "tessellation": "Tessellierung",
         "quality": "Qualität",
         "close": "Schließen (Esc)",

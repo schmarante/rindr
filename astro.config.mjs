@@ -511,6 +511,25 @@ function glassBouncesPatch() {
   };
 }
 
+// Camera ray jitter while orbiting (src/scripts/pt-motion.js, motion-upscale.js): the point within the pixel is one
+// known offset per frame for all pixels instead of a random one per pixel – the upscaler with history places each
+// sample where it was traced (fails loudly if the library changed – check on every update)
+function motionJitterPatch() {
+  return {
+    name: 'rindr-motion-jitter',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.replace(/\\/g, '/').split('?')[0];
+      if (!file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')
+        && !file.endsWith('three-gpu-pathtracer/src/webgpu/compute/wavefront/MaterialKernel.js')) return null;
+      const from = 'let jitteredUv = uv + ${ rand2 }( ${ RNG_INDEX_RAY_JITTER } ) / vec2f( targetDimensions );';
+      if (code.split(from).length !== 2) this.error(`rindr-motion-jitter: ray jitter not found exactly once in ${file.split('/').pop()} (three-gpu-pathtracer changed?)`);
+      code = code.replace(from, 'let jitteredUv = uv + select( ${ rand2 }( ${ RNG_INDEX_RAY_JITTER } ), ${ __PT_JITTER.jitter }, ${ __PT_JITTER.fixedJitter } != 0u ) / vec2f( targetDimensions );');
+      return { code: `import { PT_MOTION as __PT_JITTER } from ${JSON.stringify(PT_MOTION_MODULE)};\n` + code, map: null };
+    },
+  };
+}
+
 // Glass shadows (src/scripts/glass-shadow.js): shadow rays through glass (next event estimation + shadow catcher), the
 // colour fringe, and no caustic paths while that is on (fails loudly if the library changed – check on every update).
 const GLASS_SHADOW_MODULE = fileURLToPath(new URL('./src/scripts/glass-shadow.js', import.meta.url));
@@ -1545,7 +1564,7 @@ export default defineConfig({
     headers: isolationHeaders,
   },
   vite: {
-    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), bucketPatch(), ptStandInPatch(), openPbrPatch(), mediumPatch(), glassBouncesPatch(), cloudPatch(), gaussianPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch(), glassSplitPatch(), nanGuardPatch(), lightPassesPatch()],
+    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), bucketPatch(), ptStandInPatch(), openPbrPatch(), mediumPatch(), glassBouncesPatch(), motionJitterPatch(), cloudPatch(), gaussianPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch(), glassSplitPatch(), nanGuardPatch(), lightPassesPatch()],
     server: { headers: isolationHeaders },
     preview: { headers: isolationHeaders },
     worker: { format: 'es' },

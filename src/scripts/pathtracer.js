@@ -16,6 +16,7 @@ import { PATHTRACING } from './config.js';   // defaults (samples, resolution, b
 import { isEnvCdfReady, prepareEnvCdf } from './env-cdf.js';
 import { KuwaharaFilter } from './kuwahara.js';
 import { MotionDenoiser } from './motion-denoise.js';
+import { MotionUpscaler } from './motion-upscale.js';
 import { ImageFade } from './image-fade.js';
 import { fisheyeParams } from './fisheye.js';
 import { PT_MOTION } from './pt-motion.js';
@@ -188,6 +189,7 @@ export class PathTracingView {
         this.upscaler.sharpness = s.sharpness;
         this.kuwahara = new KuwaharaFilter(this.renderer, PATHTRACING.kuwahara);
         this.motionDenoiser = new MotionDenoiser(this.renderer, PATHTRACING.denoiseMotion);
+        this.motionUpscaler = new MotionUpscaler(this.renderer, PATHTRACING.motionUpscale);
         this.guides = new GuideKernel(PATHTRACING.denoiseMotion);   // its guide buffers, traced like the image
         // OIDN's albedo/normal guides from the same kernel instead of the library's raster pass (perspective camera:
         // did not fit the fisheye – noise stayed, ghost edges –, nor depth of field or mirrors/glass)
@@ -200,16 +202,17 @@ export class PathTracingView {
         };
         this.imageFade = new ImageFade(this.renderer);
         // the path tracer's "upscaler" slot: image filter while orbiting and while the image refines (Kuwahara or
-        // denoiser, see _filter), then FSR if switched on, then the soft transition to the shown image (_fade)
+        // denoiser, see _filter), then the upscale (_upscale: with history while orbiting, else FSR if switched on),
+        // then the soft transition to the shown image (_fade)
         const fsr = this.upscaler;
         this._imageChain = {
             init: renderer => fsr.init(renderer),
-            dispose: () => { fsr.dispose?.(); this.kuwahara.dispose(); this.motionDenoiser.dispose(); this.guides.dispose(); this.denoiseGuides.dispose(); this._helpers?.dispose(); this.imageFade.dispose(); },
+            dispose: () => { fsr.dispose?.(); this.kuwahara.dispose(); this.motionDenoiser.dispose(); this.motionUpscaler.dispose(); this.guides.dispose(); this.denoiseGuides.dispose(); this._helpers?.dispose(); this.imageFade.dispose(); },
             upscale: (texture, camera) => {
                 // light mix of a render with light passes (light-mix.js): its picture instead of the path tracer's
                 if (this.lightMix) texture = this.lightMix.texture() ?? texture;
                 texture = this._filter(texture);
-                if (this.upscaleEnabled) texture = fsr.upscale(texture, camera);
+                texture = this._upscale(texture, camera);
                 return this._fade(texture, camera);
             },
         };
@@ -232,11 +235,19 @@ export class PathTracingView {
             if (this._maxSamplesLater != null) { const v = this._maxSamplesLater; this._maxSamplesLater = null; pt.maxSamples = v; }
             reset();
             this._restarts = (this._restarts || 0) + 1;   // image filter cache (_filter)
+            // another picture (materials, environment, scene …): the orbit history no longer fits – a new view is
+            // checked when blending (_seedWeight), while orbiting the neighbourhood clamp follows changes
+            if (!this._motion && !this._cameraReset) this.motionUpscaler.dropHistory();
             if (this.lightMix) this.setLightMix(null);   // a new picture: the mix is over
             if (this.ready && !this._motion && !this.interacting) {
                 this._restarted = true;
                 this.onRestart?.();
             }
+        };
+        const updateCamera = pt.updateCamera.bind(pt);
+        pt.updateCamera = () => {
+            this._cameraReset = true;
+            try { updateCamera(); } finally { this._cameraReset = false; }
         };
         debugLog(`[Pathtracer] created in ${(performance.now() - t0).toFixed(0)} ms`);
     }
@@ -440,6 +451,7 @@ export class PathTracingView {
         if (this._dragging && this._canMotion()) {
             // keep path tracing reduced: every frame from scratch with the new camera
             this._enterMotion();
+            this._motion.moved = performance.now();
             this._pendingCameraUpdate = true;
         } else if (this._dragging) {
             // Movement begins: abort running denoising immediately (otherwise OIDN keeps working
@@ -943,14 +955,17 @@ export class PathTracingView {
             const whole = this._motion ? -1 : Math.floor(spp);
             if (!this._motion && s.out && s.whole === whole && s.restarts === this._restarts && s.input === texture && s.w === (texture.image?.width ?? texture.width)) return s.out;
             const w = texture.image?.width ?? texture.width, h = texture.image?.height ?? texture.height;
+            // guide rays through the path tracer's offset of this frame (upscaling with history) or the pixel centre
+            const jitter = this.guides.pixelJitter;
+            if (PT_MOTION.fixedJitter.value) jitter.copy(PT_MOTION.jitter.value); else jitter.set(0.5, 0.5);
             // guides only when the view or the scene changed (restart = fewer samples: objects, materials, depth of
             // field …); while orbiting every frame
-            if (this._motion || spp < s.spp || s.w !== w || s.h !== h || s.k !== lens.k
+            if (this._motion || spp < s.spp || s.w !== w || s.h !== h || s.k !== lens.k || s.jx !== jitter.x || s.jy !== jitter.y
                 || !s.view.equals(camera.matrixWorld) || !s.proj.equals(camera.projectionMatrix)) {
                 this.guides.trace(this.renderer, pt._bvhData, w, h, camera);
                 s.view.copy(camera.matrixWorld);
                 s.proj.copy(camera.projectionMatrix);
-                Object.assign(s, { w, h, k: lens.k });
+                Object.assign(s, { w, h, k: lens.k, jx: jitter.x, jy: jitter.y });
             }
             s.spp = spp;
             s.whole = whole;
@@ -962,6 +977,47 @@ export class PathTracingView {
         if (mode !== 'kuwahara' && mode !== 'denoise') return texture;
         const radius = this._kuwaharaRadius(texture);
         return radius > 0 ? this.kuwahara.render(texture, radius) : texture;
+    }
+
+    // Upscaling with history while orbiting (motion-upscale.js, motion.taau, filter 'denoise'): every frame traced with
+    // another known offset within the pixel and accumulated at screen size – edges and textures sharp after a few
+    // frames instead of FSR's upscale of the reduced image. Otherwise FSR (if switched on), and as long as the image
+    // that refines (or accumulates while the mouse is held still) has few samples, the history fades over it
+    // (_seedWeight) – the samples of orbiting are not thrown away at the release.
+    _upscale(texture, camera) {
+        const up = this.motionUpscaler;
+        if (this._taauActive() && this._taauFresh()) {
+            return up.accumulate(texture, { guides: this.guides, camera: this.pathTracer.camera, lens: fisheyeParams(),
+                jitter: PT_MOTION.jitter.value });
+        }
+        if (this.upscaleEnabled) texture = this.upscaler.upscale(texture, camera);
+        const seed = this._seedWeight(camera);
+        return seed > 0 ? up.blend(texture, seed) : texture;
+    }
+
+    _taauActive() {
+        return Boolean(this._motion) && this.motion.taau && this.motion.filter === 'denoise' && this._motionReady && !this.lightMix;
+    }
+
+    // a new picture of this frame (camera moved: restarted) – not one accumulated over several frames while the mouse
+    // is held still (traced with several offsets, then it refines like after the release)
+    _taauFresh() {
+        const inner = this.pathTracer._pathTracer;
+        return !('_completedSamples' in inner) || inner._completedSamples <= this.motion.samples;
+    }
+
+    // share of the orbit history over the refining image: (H / (H + samples))² – after H samples a quarter, gone after
+    // ~8 H; never in the final image, only for the view it was accumulated in
+    _seedWeight(camera) {
+        const up = this.motionUpscaler;
+        if (!up.hasHistory) return 0;
+        if (!this.motion.taau || this.motion.filter !== 'denoise' || this.lightMix || this._injected === this._restarts
+            || !up.sameView(camera)) { up.dropHistory(); return 0; }
+        if (this._isDone()) return 0;
+        const n = up.seedSamples;
+        const seed = (n / (n + this._samplesNow())) ** 2;
+        if (seed < 0.01) { if (!this._motion) up.dropHistory(); return 0; }
+        return seed;
     }
 
     // Soft transition (image-fade.js, user's wish: no jumps between the orbit preview and the sample stages): the
@@ -1057,7 +1113,7 @@ export class PathTracingView {
             this.renderer.compute(kernel, dispatch);
             this._ownCompile = null;
             this._filterState.w = 0;   // trace the guides again at the first use
-            job = Promise.all([Promise.all(own), this.motionDenoiser.compile(source, this.guides)]);
+            job = Promise.all([Promise.all(own), this.motionDenoiser.compile(source, this.guides), this.motionUpscaler.compile(source, this.guides)]);
             this._trackCompile('motionDenoiser', job);
         } catch (err) {
             console.warn('[Pathtracer] motion denoiser precompile failed:', err);
@@ -1092,7 +1148,20 @@ export class PathTracingView {
     _renderPathTraced(pt) {
         // motion over (hold time elapsed): back to full quality, restart
         if (this._motion?.end && performance.now() - this._motion.end > this.motion.holdMs) this._exitMotion();
+        // camera (or dragged slider) still while the mouse stays pressed: full quality already – every sample from now
+        // on counts for the final image (before, the reduced ones accumulated meanwhile were thrown away at the
+        // release); the orbit history fades over the new image (_seedWeight), the next move orbits again. At least a
+        // few frames without a change, not only the time: a slow frame is no standstill
+        const m = this._motion;
+        if (m && !m.end && this._dragging && this.motion.stillMs > 0) {
+            if (m.seen !== m.moved) { m.seen = m.moved; m.still = 0; } else m.still++;
+            if (m.still >= 3 && performance.now() - m.moved > this.motion.stillMs) this._exitMotion();
+        }
         this._syncSize();
+        // upscaling with history: one known offset within the pixel per frame (motion-upscale.js)
+        const fixed = this._taauActive();
+        PT_MOTION.fixedJitter.value = fixed ? 1 : 0;
+        if (fixed) PT_MOTION.jitter.value.copy(this.motionUpscaler.nextJitter());
         // while orbiting possibly several samples per frame (the whole image is one tile then)
         if (this._motion && !this._pendingCameraUpdate) {
             for (let i = 1; i < this.motion.samples; i++) pt._pathTracer.update();
@@ -1148,7 +1217,8 @@ export class PathTracingView {
         this._holdShown = this._holdCover = false;   // orbiting shows every frame anew
         if (this._motion) { this._motion.end = 0; return; }
         const pt = this.pathTracer;
-        this._motion = { saved: { renderScale: pt.renderScale, bounces: this.bounces, minSamples: pt.minSamples, frameBudget: pt.frameBudget }, end: 0 };
+        this._motion = { saved: { renderScale: pt.renderScale, bounces: this.bounces, minSamples: pt.minSamples, frameBudget: pt.frameBudget }, end: 0,
+            moved: performance.now(), seen: 0, still: 0 };   // last change / frames since (_renderPathTraced: standstill)
         pt.renderScale = Math.min(this.motion.renderScale, pt.renderScale) * this._motionScale;   // learned from the GPU time
         pt.maxBounces = Math.min(this.motion.bounces, this.bounces);
         // glass and smooth mirrors keep the bounces of standing still (within this budget they are not counted, pt-motion.js)
@@ -1171,6 +1241,7 @@ export class PathTracingView {
         pt.maxBounces = this.bounces;
         PT_MOTION.glassBounces.value = this.refractionBounces;
         PT_MOTION.mirrors.value = 0;
+        PT_MOTION.fixedJitter.value = 0;
         // show the first full sample immediately instead of the raster image (see _renderFirstSample)
         this._fullFirst = true;
         this._fullFirstMin = m.saved.minSamples;
@@ -1234,7 +1305,7 @@ export class PathTracingView {
             frameBudget: pt?.frameBudget ?? null, lastDispatchMs: Math.round(this._frameMs * 10) / 10,
             motionDispatchMs: Math.round((this._motionMs || 0) * 10) / 10, motionScale: Math.round(this._motionScale * 100) / 100,
             traceSize: size ? `${size.x}x${size.y}` : null, renderScale: pt?.renderScale ?? null,
-            filter: this.motion.filter, temporal: this.motion.temporal, bounces: this.bounces,
+            filter: this.motion.filter, temporal: this.motion.temporal, taau: this.motion.taau, bounces: this.bounces,
             refractionBounces: this.refractionBounces, timestamps: !!this._timestamps, cautious: this.gpuCautious,
         };
     }

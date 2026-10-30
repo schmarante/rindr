@@ -28,6 +28,22 @@ import { Fn, texture, uniform, screenUV, vec2, vec3, vec4, float, dot, max, min,
 const LUMA = vec3(0.2126, 0.7152, 0.0722);
 const B3 = [3 / 8, 1 / 4, 1 / 16];   // B3 spline, index = |offset|
 
+/**
+ * uv in the previous camera (perspective or fisheye) of a world position (w 1) or a direction (w 0: background);
+ * x < 0 = not visible there. u: prevView, prevProj, prevK (fisheye, 1 = perspective), prevAspect, tanLimit (uniforms).
+ */
+export function previousUv(u, P, w = 1) {
+    const v = u.prevView.mul(vec4(P, w)).xyz.toVar();
+    const clip = u.prevProj.mul(vec4(v, 1));
+    const persp = select(clip.w.greaterThan(0), getScreenPositionFromClip(clip), vec2(-1));
+    const len = length(v.xy);
+    const half = atan(len, v.z.negate()).div(u.prevK);
+    const rho = tan(min(half, 1.5)).div(u.tanLimit);
+    const ndc = v.xy.div(max(len, 1e-9)).mul(rho).div(vec2(u.prevAspect, 1));
+    const fish = select(half.lessThan(Math.PI / 2 - 1e-3), vec2(ndc.x.mul(0.5).add(0.5), ndc.y.mul(-0.5).add(0.5)), vec2(-1));
+    return select(u.prevK.greaterThan(1), fish, persp);
+}
+
 export class MotionDenoiser {
     /**
      * @param {THREE.WebGPURenderer} renderer
@@ -90,18 +106,7 @@ export class MotionDenoiser {
         };
         const demod = p => tame(src.sample(p).rgb).div(modAlbedo(p));
 
-        // uv in the previous camera (perspective or fisheye); x < 0 = not visible there
-        const prevUv = P => {
-            const v = u.prevView.mul(vec4(P, 1)).xyz.toVar();
-            const clip = u.prevProj.mul(vec4(v, 1));
-            const persp = select(clip.w.greaterThan(0), getScreenPositionFromClip(clip), vec2(-1));
-            const len = length(v.xy);
-            const half = atan(len, v.z.negate()).div(u.prevK);
-            const rho = tan(min(half, 1.5)).div(u.tanLimit);
-            const ndc = v.xy.div(max(len, 1e-9)).mul(rho).div(vec2(u.prevAspect, 1));
-            const fish = select(half.lessThan(Math.PI / 2 - 1e-3), vec2(ndc.x.mul(0.5).add(0.5), ndc.y.mul(-0.5).add(0.5)), vec2(-1));
-            return select(u.prevK.greaterThan(1), fish, persp);
-        };
+        const prevUv = P => previousUv(u, P);
 
         // 1. temporal accumulation (demodulated)
         this._temporalMaterial = new THREE.NodeMaterial();
