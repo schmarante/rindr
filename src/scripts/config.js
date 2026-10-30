@@ -6,7 +6,11 @@ export const PATHTRACING = {
     enabled: false,             // path tracing on at startup (= HQ view instead of Default; WebGPU only)
     bounces: 8,                 // light paths: number of reflections (diffuse, glossy) per path (GUI: 1–20)
     refractionBounces: 4,       // scatters at glass on top of that – glass does not use up the bounces (GUI: 0–20)
-    maxSamples: 32,             // samples per pixel, then stop + denoise (GUI: 1–256)
+    maxSamples: 128,            // samples per pixel, then stop + denoise (GUI: 1–256) – with adaptive sampling the limit
+    // adaptive sampling (adaptive-sampling.js, megakernel only): pixels stop once their noise is below `threshold`
+    // (standard error / √mean of the tone-compressed luminance, per 8 × 8 block incl. neighbours) – maxSamples is the
+    // upper limit then; at least `minSamples` everywhere (at most half the maximum)
+    adaptive: { enabled: true, threshold: 0.08, minSamples: 16 },
     renderScale: 1,           // resolution relative to the window (0.25–1); < 1 is upscaled via FSR
     hidpi: false,               // HiDPI screens: false = traced at the CSS pixel size (1/devicePixelRatio of the canvas) and
                                 // upscaled, true = every device pixel (GUI "Full HiDPI resolution")
@@ -89,6 +93,7 @@ export const PATHTRACING = {
     startFrameBudget: 65_536,   // the very first dispatch runs before any measurement – small, it grows within frames
     minFrameBudget: 32_768,
     frameTargetMs: 50,          // GPU time per frame the path tracer aims at (refining and orbiting)
+    maxDispatchesPerFrame: 16,  // cheap dispatches (adaptive sampling, small images): up to this many per frame within frameTargetMs
     firstSampleMs: 250,         // after a restart the first sample is computed in one frame up to about this long
     countInterval: 200,         // ms between two sample counts for the status display (GPU readback)
     asyncCompileMinChars: 32_000,   // compute shaders from this WGSL size are compiled asynchronously (megakernel

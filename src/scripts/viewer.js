@@ -4844,6 +4844,19 @@ function setupGUI() {
         // HiDPI screens: by default traced at the CSS pixel size and upscaled (pathtracer.js sizeFactor)
         pt.toggle(t('setup.hidpi'), () => pathTracing.hidpi, v => { pathTracing.hidpi = v; });
         pt.range(t('setup.maxSamples'), () => pathTracing.maxSamples, v => { pathTracing.maxSamples = v; }, 1, 256, 1);
+        // adaptive sampling (adaptive-sampling.js): pixels stop below the noise threshold – max. samples is the limit then;
+        // the noise map shows where the samples went (megakernel only)
+        let thresholdControl = null, noiseMapControl = null;
+        const adaptiveControl = pt.toggle(t('setup.adaptive'), () => pathTracing.adaptive.enabled, v => {
+            pathTracing.setAdaptive({ enabled: v });
+            thresholdControl.enable(v);
+            noiseMapControl.enable(v);
+        });
+        thresholdControl = pt.range(t('setup.adaptiveThreshold'), () => pathTracing.adaptive.threshold, v => pathTracing.setAdaptive({ threshold: v }), 0.01, 0.3, 0.005);
+        noiseMapControl = pt.toggle(t('setup.noiseMap'), () => pathTracing.noiseMap, v => { pathTracing.noiseMap = v; });
+        adaptiveControl.enable(pathTracing.adaptiveSupported);
+        thresholdControl.enable(pathTracing.adaptiveSupported && pathTracing.adaptive.enabled);
+        noiseMapControl.enable(pathTracing.adaptiveSupported && pathTracing.adaptive.enabled);
         pt.range(t('setup.glossyFilter'), () => pathTracing.filterGlossyFactor, v => { pathTracing.filterGlossyFactor = v; }, 0, 1, 0.01);
         // shadows of glass (glass-shadow.js): transparent with an optional colour fringe, or opaque
         const fringeControls = [];
@@ -5868,7 +5881,7 @@ function updatePathTracingStatus() {
     if (!saving) trackRenderTime(s);
     const phase = PT_PHASES[s.phase];
     const pct = Math.floor(s.progress * 100);
-    const samples = t('pathtracing.samples', { samples: Math.floor(s.samples), maxSamples: s.maxSamples });
+    const samples = t(s.adaptive ? 'pathtracing.samplesAdaptive' : 'pathtracing.samples', { samples: Math.floor(s.samples), maxSamples: s.maxSamples });
     let value = '';
     let detail = '';
     switch (s.phase) {

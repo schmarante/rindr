@@ -1933,6 +1933,7 @@
             "saving": "Preparing the file"
         },
         "samples": "{samples} / {maxSamples} samples",
+        "samplesAdaptive": "avg. {samples} / {maxSamples} samples",
         "percent": "{value} %",
         "seconds": "{value} s",
         "minutes": "{minutes}:{seconds} min",
@@ -2035,6 +2036,9 @@
         "resolution": "Resolution",
         "hidpi": "Full HiDPI resolution",
         "maxSamples": "Max. samples",
+        "adaptive": "Adaptive sampling",
+        "adaptiveThreshold": "Noise threshold",
+        "noiseMap": "Show noise map",
         "glossyFilter": "Glossy filter",
         "glassShadow": "Glass shadows",
         "glassShadowTransparent": "Transparent",

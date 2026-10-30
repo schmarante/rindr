@@ -1933,6 +1933,7 @@
             "saving": "Datei wird vorbereitet"
         },
         "samples": "{samples} / {maxSamples} Samples",
+        "samplesAdaptive": "Ø {samples} / {maxSamples} Samples",
         "percent": "{value} %",
         "seconds": "{value} s",
         "minutes": "{minutes}:{seconds} min",
@@ -2035,6 +2036,9 @@
         "resolution": "Auflösung",
         "hidpi": "Volle HiDPI-Auflösung",
         "maxSamples": "Max. Samples",
+        "adaptive": "Adaptives Sampling",
+        "adaptiveThreshold": "Rauschschwelle",
+        "noiseMap": "Rauschkarte anzeigen",
         "glossyFilter": "Glossy-Filter",
         "glassShadow": "Glas-Schatten",
         "glassShadowTransparent": "Transparent",
