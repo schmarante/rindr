@@ -27,6 +27,7 @@ import { debugLog } from './log.js';
 import { setBucketRegion } from './distributed/bucket.js';
 import { preparePassBuffer, setPassesEnabled, readPasses } from './light-passes.js';
 import { kernelFeatures } from './kernel-features.js';
+import { AdaptiveSampler, ADAPTIVE, setAdaptiveHandler } from './adaptive-sampling.js';
 
 // environments up to this size get their importance-sampling table from the library directly (updateEnvironment)
 const SMALL_ENV_PIXELS = 512 * 512;
@@ -34,6 +35,7 @@ const GLASS_FRINGE_SPREAD = 0.3;   // glass shadow colour fringe 1 = IOR ±15 % 
 // paths per dispatch while orbiting: the whole image in one tile (the GPU time is kept by the resolution, _adapt)
 const MOTION_FRAME_BUDGET = 2 ** 30;
 const _size = new Vector2();
+const _adaptiveSize = new Vector2();
 
 export class PathTracingView {
     constructor(renderer, { denoiseWeightsUrl }) {
@@ -66,6 +68,11 @@ export class PathTracingView {
         // `fullResolution` for the picture they render (viewer.js applyExportScale)
         this.hidpi = PATHTRACING.hidpi;
         this.fullResolution = false;
+        // adaptive sampling (adaptive-sampling.js): samples per pixel until its noise is below the threshold; noise map
+        // = where they went (display only)
+        this.adaptive = { ...PATHTRACING.adaptive };
+        this._noiseMap = false;
+        this._adaptiveTask = null;      // state of the current render (the render task's, see _adaptiveCycle)
         this.denoiseProgress = 0;       // 0..1 of the OIDN tiles
         this.denoiseLoading = false;    // network/weights are loading
 
@@ -208,19 +215,23 @@ export class PathTracingView {
             return { textures: [guides.albedo, guides.normal] };
         };
         this.imageFade = new ImageFade(this.renderer);
+        this.adaptiveSampler = new AdaptiveSampler(this.renderer);
+        setAdaptiveHandler((backend, completed, task) => this._adaptiveCycle(backend, completed, task));
         // the path tracer's "upscaler" slot: image filter while orbiting and while the image refines (Kuwahara or
         // denoiser, see _filter), then the upscale (_upscale: with history while orbiting, else FSR if switched on),
         // then the soft transition to the shown image (_fade)
         const fsr = this.upscaler;
         this._imageChain = {
             init: renderer => fsr.init(renderer),
-            dispose: () => { fsr.dispose?.(); this.kuwahara.dispose(); this.motionDenoiser.dispose(); this.motionUpscaler.dispose(); this.guides.dispose(); this.denoiseGuides.dispose(); this._helpers?.dispose(); this.imageFade.dispose(); },
+            dispose: () => { fsr.dispose?.(); this.adaptiveSampler.dispose(); this.kuwahara.dispose(); this.motionDenoiser.dispose(); this.motionUpscaler.dispose(); this.guides.dispose(); this.denoiseGuides.dispose(); this._helpers?.dispose(); this.imageFade.dispose(); },
             upscale: (texture, camera) => {
                 // light mix of a render with light passes (light-mix.js): its picture instead of the path tracer's
                 if (this.lightMix) texture = this.lightMix.texture() ?? texture;
                 texture = this._filter(texture);
                 texture = this._upscale(texture, camera);
-                return this._fade(texture, camera);
+                texture = this._fade(texture, camera);
+                // noise map of adaptive sampling over the picture (not while orbiting: no map of that image)
+                return this.noiseMap && this.adaptiveSampler.hasHeat && !this._motion ? this.adaptiveSampler.overlay(texture) : texture;
             },
         };
         // the denoise waits until the guide kernel is compiled (_prepareDenoiser)
@@ -249,6 +260,9 @@ export class PathTracingView {
             // checked when blending (_seedWeight), while orbiting the neighbourhood clamp follows changes
             if (!this._motion && !this._cameraReset) this.motionUpscaler.dropHistory();
             if (this.lightMix) this.setLightMix(null);   // a new picture: the mix is over
+            this._adaptiveTask = null;   // its noise map and counts belong to the old picture
+            this._frameMs = 0;   // dispatches per frame: measured anew (_renderPathTraced)
+            this.adaptiveSampler.hasHeat = false;
             if (this.ready && !this._motion && !this.interacting) {
                 this._restarted = true;
                 this.onRestart?.();
@@ -691,10 +705,12 @@ export class PathTracingView {
         const budget = backend.frameBudget;
         backend.frameBudget = w * h;
         this.renderer.compute = () => {};   // the rounds' only dispatch is the kernel's
+        this._injecting = true;
         try {
             for (let i = 0; i < samples + 2 && backend._completedSamples + backend._tileProgress < samples; i++) backend.update();
         } finally {
             delete this.renderer.compute;
+            this._injecting = false;
             backend.frameBudget = budget;
         }
         pt._lastSampleCounts = { min: samples, max: samples, avg: samples, samplesPerSecond: 0 };
@@ -702,6 +718,11 @@ export class PathTracingView {
         this._restarted = false;   // no first sample (it would build the kernel)
         this._holdShown = false;
         await gpu.device.queue.onSubmittedWorkDone();
+    }
+
+    /** adaptive sampling needs the megakernel (Vite patch rindr-adaptive) */
+    get adaptiveSupported() {
+        return this.supported && PATHTRACING.megakernel;
     }
 
     /** light passes need the megakernel (its patched variant – light-passes.js) */
@@ -1196,6 +1217,15 @@ export class PathTracingView {
             this._renderFirstSample();
         }
         pt.renderSample();
+        // cheap samples (adaptive sampling with most pixels finished, small images): several per frame up to the GPU time
+        // target – with one per frame the GPU idled most of the frame (60 samples/s at most, a finished-looking image
+        // at 2 ms per sample still took as long as before). The last measured dispatch sets the count; a restart
+        // forgets it (the new picture may cost far more per sample – one frame must stay below the GPU watchdog)
+        if (!this._motion && !this._compiling && this._frameMs > 0 && !this._isDone()) {
+            const target = PATHTRACING.frameTargetMs * (this.gpuCautious ? 0.5 : 1);
+            const extra = Math.min(Math.floor(target / Math.max(this._frameMs, 0.5)) - 1, PATHTRACING.maxDispatchesPerFrame - 1);
+            for (let i = 0; i < extra; i++) pt._pathTracer.update();
+        }
         if (this._fullFirst) {   // first full-quality image is on screen: normal gate again
             this._fullFirst = false;
             pt.minSamples = this._fullFirstMin;
@@ -1301,8 +1331,57 @@ export class PathTracingView {
     // the orbit resolution changed)
     _syncSize() {
         const { w, h } = this.traceSize();
+        // adaptive sampling: the megakernel records every sample's moments – room for them before the first one
+        const adaptive = this._adaptiveOn();
+        if (adaptive) this.adaptiveSampler.ensure(w * h);
+        ADAPTIVE.on.value = adaptive ? 1 : 0;
         this.pathTracer.setSize(w, h);
         return { w, h };
+    }
+
+    get noiseMap() { return this._noiseMap; }
+    set noiseMap(on) {
+        this._noiseMap = on;
+        if (on) this.adaptiveSampler?.prepare();   // its overlay shader compiled before the map is due
+    }
+
+    _adaptiveOn() {
+        return this.adaptive.enabled && this.adaptive.threshold > 0 && PATHTRACING.megakernel;
+    }
+
+    /** adaptive sampling on/off, threshold – the image starts over (finished pixels stay finished within a render) */
+    setAdaptive(options) {
+        Object.assign(this.adaptive, options);
+        if (this.pathTracer) this.reset();
+    }
+
+    // After every full sample of the megakernel's render task (Vite patch rindr-adaptive): from minSamples on the blocks
+    // below the threshold are marked done (adaptive-sampling.js); once the counters come back without an active block,
+    // the next full sample returns the maximum – the image counts as finished (denoiser, status). Not while orbiting,
+    // for buckets (their light passes divide by one sample count) or while an image is injected.
+    _adaptiveCycle(backend, completed, task) {
+        const max = backend.maxSamples, a = this.adaptive;
+        if (task.done) return Math.max(completed, max);
+        if (!this._adaptiveOn() || this._motion || this.regionBusy || this._injecting || backend.lowResMode || max <= 0 || completed >= max) return completed;
+        const min = Math.max(4, Math.min(a.minSamples, Math.floor(max / 2)));
+        const size = backend.getSize(_adaptiveSize), pixels = size.x * size.y;
+        if (ADAPTIVE.capacity.value < pixels) return completed;   // its moments were not recorded
+        // noise map before minSamples: from the second sample on, only shown (the estimate is coarse – nothing finishes)
+        if (completed < min) {
+            if (this._noiseMap && completed >= 2) this.adaptiveSampler.run(backend.sampleCountTarget, size, { threshold: a.threshold, minSamples: 2, maxSamples: max, mark: false });
+            return completed;
+        }
+        this.adaptiveSampler.run(backend.sampleCountTarget, size, { threshold: a.threshold, minSamples: min, maxSamples: max });
+        this._adaptiveTask = task;
+        if (!task.pending) {
+            task.pending = true;
+            this.adaptiveSampler.readCounts().then(c => {
+                task.pending = false;
+                task.stats = { active: c.active / Math.max(c.blocks, 1), samples: c.samples / Math.max(pixels, 1) };
+                if (c.active === 0 && c.samples > 0) task.done = true;   // (no samples: the pass did not run)
+            }).catch(err => { task.pending = false; console.warn('[Adaptive] reading the counters failed:', err); });
+        }
+        return completed;
     }
 
     /** share of the canvas' drawing buffer traced on top of renderScale: < 1 on HiDPI screens (see `hidpi`) */
@@ -1378,6 +1457,13 @@ export class PathTracingView {
         const counts = pt._lastSampleCounts;
         status.samples = counts.avg;
         status.progress = pt.maxSamples > 0 ? Math.min(counts.avg / pt.maxSamples, 1) : 0;
+        // adaptive sampling: the mean over the pixels, progress at least the share of finished blocks
+        const adaptive = this._adaptiveTask?.stats;
+        if (adaptive) {
+            status.samples = adaptive.samples;
+            status.adaptive = true;
+            status.progress = Math.max(status.progress, 1 - adaptive.active);
+        }
 
         if (this._isDone()) {
             if (this._fadeSettled()) return { ...status, phase: 'done', progress: 1 };

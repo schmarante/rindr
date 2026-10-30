@@ -1138,6 +1138,52 @@ ${tab}}${m}`);
 // inf/NaN (rough glass, independent of the glass split), such a sample would stay in the pixel's mean until the next
 // restart. The sample is dropped instead – the pixel keeps its mean (first sample: black). Checked on the bits: a
 // compiler may fold x != x away.
+// Adaptive sampling (src/scripts/adaptive-sampling.js, docs/pathtracer.md "Adaptives Sampling" – fails loudly if the
+// library changed, check on every update):
+// - megakernel: a pixel whose sample count carries the done flag (top bit) returns at once; before a sample is stored
+//   its running moments are updated (after rindr-nan-guard: the guarded sample; before rindr-light-passes: both kernel
+//   variants get it – off while passes render)
+// - render task: after every full sample the adaptive pass (pathtracer.js _adaptiveCycle via adaptiveCycle()) – it
+//   may declare the image finished (returns the maximum)
+const ADAPTIVE_MODULE = fileURLToPath(new URL('./src/scripts/adaptive-sampling.js', import.meta.url));
+function adaptivePatch() {
+  return {
+    name: 'rindr-adaptive',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.replace(/\\/g, '/').split('?')[0];
+      const name = file.split('/').pop();
+      const replaceOnce = (from, to) => {
+        if (code.split(from).length !== 2) this.error(`rindr-adaptive: "${from.trim()}" not found exactly once in ${name} (three-gpu-pathtracer changed?)`);
+        code = code.replace(from, () => to);
+      };
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) {
+        replaceOnce('let sampleCount = textureLoad( ${ params.sampleCountTarget }, indexUV ).r;', `let sampleCount = textureLoad( \${ params.sampleCountTarget }, indexUV ).r;
+				// RINDR adaptive sampling (astro.config.mjs): the pixel's noise is below the threshold
+				if ( ( sampleCount & 0x80000000u ) != 0u ) {
+
+					return;
+
+				}`);
+        replaceOnce('textureStore( ${ params.sampleCountTarget }, indexUV, vec4( nextSampleCount ) );', `\${ __AD_MOMENTS }( indexUV.y * targetDimensions.x + indexUV.x, sampleCount, resultColor.rgb );
+				textureStore( \${ params.sampleCountTarget }, indexUV, vec4( nextSampleCount ) );`);
+        return { code: `import { AD_MOMENTS_WGSL as __AD_MOMENTS } from ${JSON.stringify(ADAPTIVE_MODULE)};\n` + code, map: null };
+      }
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/MegaKernelPathTracer.js')) {
+        replaceOnce('\t\tlet completedSamples = 0;\n', '\t\tlet completedSamples = 0;\n\t\tconst adaptiveTask = {};   // RINDR adaptive sampling: state of this render (a restart makes a new task)\n');
+        replaceOnce('\t\t\tcompletedSamples ++;\n', `\t\t\tcompletedSamples ++;
+			// RINDR adaptive sampling: may finish the image early (every pixel below the noise threshold)
+			completedSamples = __adaptiveCycle( this, completedSamples, adaptiveTask );
+			this._completedSamples = completedSamples;
+			this._tileProgress = 0;
+`);
+        return { code: `import { adaptiveCycle as __adaptiveCycle } from ${JSON.stringify(ADAPTIVE_MODULE)};\n` + code, map: null };
+      }
+      return null;
+    },
+  };
+}
+
 function nanGuardPatch() {
   return {
     name: 'rindr-nan-guard',
@@ -1567,7 +1613,7 @@ export default defineConfig({
     headers: isolationHeaders,
   },
   vite: {
-    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), bucketPatch(), ptStandInPatch(), openPbrPatch(), mediumPatch(), glassBouncesPatch(), motionJitterPatch(), cloudPatch(), gaussianPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch(), glassSplitPatch(), nanGuardPatch(), lightPassesPatch()],
+    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), bucketPatch(), ptStandInPatch(), openPbrPatch(), mediumPatch(), glassBouncesPatch(), motionJitterPatch(), cloudPatch(), gaussianPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch(), glassSplitPatch(), nanGuardPatch(), adaptivePatch(), lightPassesPatch()],
     server: { headers: isolationHeaders },
     preview: { headers: isolationHeaders },
     worker: { format: 'es' },

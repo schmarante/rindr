@@ -209,7 +209,7 @@ export function captureState(ctx) {
         pathtracing: {
             enabled: pt.enabled, bounces: pt.bounces, renderScale: pt.renderScale, maxSamples: pt.maxSamples,
             filterGlossyFactor: pt.filterGlossyFactor, denoise: pt.denoiseEnabled, upscale: pt.upscaleEnabled,
-            sharpness: pt.sharpness ?? 1, hidpi: pt.hidpi,
+            sharpness: pt.sharpness ?? 1, hidpi: pt.hidpi, adaptive: { ...pt.adaptive },
             motion: { ...pt.motion },
             glassShadow: { ...pt.glassShadow },
             refractionBounces: pt.refractionBounces, glassSplit: pt.glassSplit,
@@ -317,6 +317,7 @@ export async function applyState(ctx, state) {
         if (p.renderScale != null) pt.renderScale = p.renderScale;
         if (p.hidpi != null) pt.hidpi = p.hidpi;
         if (p.maxSamples != null) pt.maxSamples = p.maxSamples;
+        if (p.adaptive) pt.setAdaptive(p.adaptive);
         if (p.filterGlossyFactor != null) pt.filterGlossyFactor = p.filterGlossyFactor;
         if (p.denoise != null) pt.setDenoise(p.denoise);
         if (p.upscale != null) pt.setUpscale(p.upscale);

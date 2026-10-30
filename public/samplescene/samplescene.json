@@ -245,7 +245,7 @@
   "enabled": true,
   "bounces": 8,
   "renderScale": 1,
-  "maxSamples": 32,
+  "maxSamples": 128,
   "filterGlossyFactor": 1,
   "denoise": true,
   "upscale": true,
