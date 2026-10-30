@@ -13,6 +13,7 @@ import { messageDialog } from './dialog.js';
 import { materialDragData, libraryDragData } from './material-transfer.js';
 import { PARAMS, buildMaterial } from './material-manager.js';
 import { thumbKey } from './material-thumbs.js';
+import { shadingGraph } from './material-graph.js';
 import { MATERIALS } from './config.js';
 import { MATERIAL_TYPES, materialType, typeShows, typeAllowsGraph } from './material-types.js';
 import { MATERIAL_PRESETS, PRESET_CATEGORIES, presetName, presetCategoryLabel, libraryComplete, loadLibraryPresets } from './material-presets.js';
@@ -344,7 +345,7 @@ export class MaterialPanel {
         const material = async () => { await this.hooks.graphApplier?.settled(def.id); return entry.material; };
         if (preset) return { ...this._libraryThumb(preset), group: def.id, dispose: false, material };
         return {
-            key: thumbKey({ id: def.id, params: def.params, graph: def.graph, maps: Object.keys(def.render?.maps || {}) }),
+            key: thumbKey({ id: def.id, params: def.params, graph: shadingGraph(def.graph), maps: Object.keys(def.render?.maps || {}) }),
             group: def.id, persist: false, material, previous: this.thumbs?.url(this.lastThumb.get(def.id)),
         };
     }

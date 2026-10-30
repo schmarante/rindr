@@ -36,6 +36,9 @@ const GLASS_FRINGE_SPREAD = 0.3;   // glass shadow colour fringe 1 = IOR ±15 % 
 const MOTION_FRAME_BUDGET = 2 ** 30;
 const _size = new Vector2();
 const _adaptiveSize = new Vector2();
+// time of one OIDN tile ≈ fixed + perPixel × its input pixels (ms, RTX 3080, measured: 576² 130 ms, 704² 176 ms,
+// 960² 270 ms, 1216² 375 ms) – other GPUs: scaled by the measured speed (_learnDenoiseSpeed)
+const DENOISE_TILE_COST = { fixed: 60, perPixel: 0.215e-3 };
 
 export class PathTracingView {
     constructor(renderer, { denoiseWeightsUrl }) {
@@ -198,6 +201,7 @@ export class PathTracingView {
         this.denoiser = new OIDNDenoiser({
             initUNetFromURL: (url, backend, options) => this._initUNet(url, backend, options),
             auxWeightsUrl: this._denoiseWeightsUrl,
+            ...this._denoiseTileOptions(),
         });
         this.upscaler = new FSRUpscaler({ Upscaler });
         this.upscaler.sharpness = s.sharpness;
@@ -280,6 +284,13 @@ export class PathTracingView {
     get sharpness() { return this.upscaler?.sharpness ?? this._settings.sharpness; }
     set sharpness(v) { this._settings.sharpness = v; if (this.upscaler) this.upscaler.sharpness = v; }
 
+    /** OIDN tile sizing (PATHTRACING.denoiseTiles) – the library's defaults in cautious mode */
+    _denoiseTileOptions() {
+        if (this.gpuCautious) return { maxTileSize: null, dynamicTile: null };
+        const { maxTileSize, ...dynamicTile } = PATHTRACING.denoiseTiles;
+        return { maxTileSize, dynamicTile };
+    }
+
     // Load the oidn-web network and wrap tileExecute: track progress, but do NOT show
     // intermediate results. oidn-web writes into a reused output buffer; the
     // OIDNDenoiser copies the whole buffer per tile -> tiles not processed yet
@@ -294,16 +305,60 @@ export class PathTracingView {
             this.denoiseLoading = false;
         }
         const tileExecute = unet.tileExecute.bind(unet);
+        // tile edge per image (_denoiseTileEdge) – oidn-web keeps it in its tile controller (internal field of 0.4;
+        // without it the library's own sizing stays)
+        const controller = unet._dynamicTileController;
+        const overlap = Math.ceil((unet._modelSpec?.receptiveField ?? 174) / 2 / 16) * 16;
         unet.tileExecute = inputs => {
             this.denoiseProgress = 0;
+            const { width, height } = inputs.color;
+            const edge = this._denoiseTileEdge(width, height, overlap);
+            if (edge && typeof controller?._tileSize === 'number') controller._tileSize = edge;
             return tileExecute({
                 ...inputs,
                 progress: (output, tileData, tile, current, total) => {
                     this.denoiseProgress = total ? Math.min((current + 1) / total, 1) : 0;
                 },
+                done: output => {
+                    this._learnDenoiseSpeed(unet.getRuntimeInfo?.().lastExecution, overlap);
+                    inputs.done(output);
+                },
             });
         };
         return unet;
+    }
+
+    // OIDN tile edge for a w × h image (docs/pathtracer.md "OIDN-Kacheln"): tiles are square, each output tile is read
+    // with `overlap` pixels around it (none when one tile covers the image); a tile costs about a fixed share plus one
+    // per input pixel (DENOISE_TILE_COST, measured, scaled by this GPU's speed from the last denoise). The fewest,
+    // tightest tiles whose predicted time stays within the target – the view can stall for one tile (one per frame).
+    // null before anything was measured: the library's start size (safe on slow GPUs). Chosen anew per denoise, so a
+    // resized window or another resolution gets its own.
+    _denoiseTileEdge(w, h, overlap) {
+        const speed = this._denoiseSpeed, cfg = PATHTRACING.denoiseTiles;
+        if (!speed || this.gpuCautious || !(w > 0 && h > 0)) return null;
+        const cost = side => speed * (DENOISE_TILE_COST.fixed + DENOISE_TILE_COST.perPixel * side * side);
+        let best = null, smallest = null;
+        for (let e = cfg.minTileSize; e <= cfg.maxTileSize; e += 16) {
+            const single = w <= e && h <= e;
+            const edge = single ? Math.ceil(Math.max(w, h) / 16) * 16 : e;
+            const t = cost(edge + (single ? 0 : 2 * overlap));
+            const total = Math.ceil(w / edge) * Math.ceil(h / edge) * t;
+            smallest ??= edge;
+            if (t <= cfg.targetTileTimeMs && (!best || total < best.total)) best = { edge, total };
+            if (single) break;
+        }
+        return best?.edge ?? smallest;
+    }
+
+    // speed of this GPU against DENOISE_TILE_COST – from the slowest tile and never below the mean of the last two (the
+    // median of small tiles came out optimistic: the next, larger tile overshot the target)
+    _learnDenoiseSpeed(run, overlap) {
+        if (!run?.tileTimeMs || !(run.tileTimeMs.max > 0)) return;
+        const single = run.tileCount === 1 && run.width <= run.tileWidth && run.height <= run.tileHeight;
+        const side = run.tileWidth + (single ? 0 : 2 * overlap);
+        const speed = run.tileTimeMs.max / (DENOISE_TILE_COST.fixed + DENOISE_TILE_COST.perPixel * side * side);
+        this._denoiseSpeed = this._denoiseSpeed ? Math.max(speed, (this._denoiseSpeed + speed) / 2) : speed;
     }
 
     get samples() {

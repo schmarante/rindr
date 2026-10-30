@@ -443,7 +443,7 @@ export function createPlaybar(root, { onPlay, onScrub, onScrubEnd, onClip }, { t
         setTime(current, duration) {
             slider.max = duration || 1;
             if (!scrubbing) slider.value = current;
-            time.textContent = `${current.toFixed(1)} / ${duration.toFixed(1)} s`;
+            time.textContent = `${current.toFixed(1)} / ${duration.toFixed(1)}\u00a0s`;
         },
         setClips(names, index) {
             clips.replaceChildren(...names.map((n, i) => new Option(n || t('animation.clipName', { n: i + 1 }), i)));

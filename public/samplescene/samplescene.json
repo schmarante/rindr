@@ -89,7 +89,8 @@
    "fStop": 5,
    "focusDistance": 3186.887,
    "blades": 0,
-   "autoFocus": false
+   "autoFocus": false,
+   "showPlane": false
   },
   "views": [],
   "lens": {
@@ -177,12 +178,12 @@
  },
  "renderer": {
   "exposure": 1,
-  "toneMapping": "aces"
+  "toneMapping": "neutral"
  },
  "environment": {
   "on": true,
   "hdri": null,
-  "intensity": 0.8,
+  "intensity": 0.5,
   "lightBoost": 1,
   "rotation": 0,
   "background": true,
@@ -214,7 +215,7 @@
      0,
      0
     ],
-    "intensity": 0.4,
+    "intensity": 0.25,
     "color": "#ffffff"
    },
    {
@@ -226,8 +227,8 @@
      2133.2618,
      1325.6653
     ],
-    "intensity": 3,
-    "color": "#ffeebb"
+    "intensity": 1.875,
+    "color": "#ffffff"
    },
    {
     "name": "Fülllicht",
@@ -238,8 +239,8 @@
      1263.8601,
      -1671.1721
     ],
-    "intensity": 1.5,
-    "color": "#aaccff"
+    "intensity": 0.94,
+    "color": "#ffffff"
    }
   ]
  },

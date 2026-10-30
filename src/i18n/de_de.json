@@ -310,6 +310,8 @@
             "glass-tinted": "Glas getönt",
             "plastic-clear": "Kunststoff transparent",
             "glass-milk": "Milchglas",
+            "gem-diamond-clear": "Diamant klar",
+            "gem-diamond-blue": "Diamant hellblau",
             "ceramic-white": "Keramik weiß",
             "emissive-white": "Leuchtend weiß",
             "emissive-neon-green": "Neon-Grün leuchtend",
@@ -1668,10 +1670,10 @@
         "resolution": "Auflösung {size}",
         "send": "An KI senden",
         "rendering": "KI rendert…",
-        "renderingTimer": "KI rendert… {seconds} s (meist 10–60 s)",
+        "renderingTimer": "KI rendert… {seconds} s (meist 10–60 s)",
         "error": "Fehler: {message}",
-        "resultInfo": "{model} · {size} · {seconds} s",
-        "resultInfoCached": "aus dem Zwischenspeicher · {model} · {size} · {seconds} s",
+        "resultInfo": "{model} · {size} · {seconds} s",
+        "resultInfoCached": "aus dem Zwischenspeicher · {model} · {size} · {seconds} s",
         "regenerate": "Neu erzeugen",
         "regenerateTitle": "Gleicher Prompt, neuer KI-Aufruf (Zwischenspeicher ignorieren)",
         "editPrompt": "Prompt ändern",
@@ -1730,7 +1732,7 @@
             "IMAGE_UNREADABLE": "KI-Bild nicht lesbar",
             "NO_API_KEY": "Kein API-Schlüssel eingetragen (Einstellungen → KI-Rendering)",
             "INVALID_API_KEY": "API-Schlüssel abgelehnt: {detail}",
-            "TIMEOUT": "Keine Antwort nach {seconds} s"
+            "TIMEOUT": "Keine Antwort nach {seconds} s"
         },
         "deleteDialogTitle": "KI-Ergebnis löschen",
         "noKey": "Für das KI-Rendering brauchst du einen eigenen Gemini-API-Schlüssel. Trage ihn in den Einstellungen unter „KI-Rendering“ ein – er bleibt in diesem Browser.",
@@ -1746,9 +1748,9 @@
                 "share": "Anteil je Teil"
             },
             "inactive": "LOD      aus – erst ab {min} Mio. Dreiecken",
-            "status": "LOD      {built}/{total} Geometrien · {triangles} Mio. Dreiecke · {seconds} s",
+            "status": "LOD      {built}/{total} Geometrien · {triangles} Mio. Dreiecke · {seconds} s",
             "building": " · baut …",
-            "select": "         {cuts} Stufen · Auswahl {ms} ms",
+            "select": "         {cuts} Stufen · Auswahl {ms} ms",
             "legendFull": "alle",
             "legendCoarse": "≤ 1/128 Dreiecke · grau = ohne LOD",
             "preparing": "Farben werden vorbereitet … (Shader, ohne Einfrieren)"
@@ -1760,15 +1762,15 @@
             "units": "Geom.    {units} gespeichert · {instances} Meshes · {triangles} Dreiecke",
             "duplicates": "gleich   {count} Geometrien in {groups} Gruppen → −{triangles} Dreiecke ({percent} %)",
             "mirrored": "gespieg. {count} Geometrien → −{triangles} Dreiecke ({percent} %)",
-            "time": "         {ms} ms · Gruppen-Tabelle in der Konsole",
+            "time": "         {ms} ms · Gruppen-Tabelle in der Konsole",
             "isotropic": "         {count} isotrop (Kugel/Würfel – nicht vergleichbar)"
         },
         "noWebGpu": "WebGL2 (kein WebGPU)",
         "integrated": "integriert",
         "millions": "{value} Mio.",
         "thousands": "{value} Tsd.",
-        "fps": "fps      {fps}  ({ms} ms CPU/Bild)",
-        "cpuSplit": "         Szene {scene} · Schatten {shadow} · Abgleich {sync} · Rest {rest} ms",
+        "fps": "fps      {fps}  ({ms} ms CPU/Bild)",
+        "cpuSplit": "         Szene {scene} · Schatten {shadow} · Abgleich {sync} · Rest {rest} ms",
         "gpu": "GPU      {name}",
         "gpuUsed": "  belegt {size}",
         "gpuBreakdown": "         Geom. {geometry} · Tex. {textures} · PT {storage}",
@@ -1776,7 +1778,7 @@
         "gpuTotalMaxBuffer": "  gesamt n/v (WebGPU) · max. Puffer {size}",
         "device": " · Gerät ≥ {gb} GB",
         "ramPage": "RAM      Seite+Worker {size}{device}",
-        "ramHeap": "RAM      ~{size} (Schätzung, ≤ 20 min alt){device}",
+        "ramHeap": "RAM      ~{size} (Schätzung, ≤ 20 min alt){device}",
         "ramNone": "RAM      n/v{device}",
         "triangles": "Dreiecke {total}  (sichtbar {visible})",
         "unique": "         eindeutig {unique} · {meshes} Meshes",
@@ -1788,7 +1790,7 @@
             "tasks": "{tasks} · {memory}",
             "messages": "{messages} Nachr. · {memory}",
             "more": "… {count} weitere",
-            "ended": "{count} beendet · {seconds} s gerechnet"
+            "ended": "{count} beendet · {seconds} s gerechnet"
         }
     },
     "benchmark": {
@@ -1936,8 +1938,8 @@
         "samples": "{samples} / {maxSamples} Samples",
         "samplesAdaptive": "Ø {samples} / {maxSamples} Samples",
         "percent": "{value} %",
-        "seconds": "{value} s",
-        "minutes": "{minutes}:{seconds} min",
+        "seconds": "{value} s",
+        "minutes": "{minutes}:{seconds} min",
         "detail": {
             "unsupported": "Browser ohne WebGPU – nur Rasterizer",
             "bufferTooSmall": "Modell zu groß für die GPU-Puffer – Qualität reduzieren",
@@ -2092,8 +2094,8 @@
             "sending": "Sendet {percent} % · {sent} / {total}",
             "loadingScene": "Lädt die Szene …",
             "close": "Schließen",
-            "done": "Verteilt gerendert in {time} s – {buckets} Buckets ({who})",
-            "doneLocal": "Gerendert in {time} s – {buckets} Buckets",
+            "done": "Verteilt gerendert in {time} s – {buckets} Buckets ({who})",
+            "doneLocal": "Gerendert in {time} s – {buckets} Buckets",
             "startHint": "Gestartet wird über „Rendern“ (Teekanne in der Leiste unten) – dort auch Größe, Samples und Format.",
             "busy": "Es läuft schon ein verteilter Auftrag.",
             "pair": "Rechner koppeln …",
@@ -2200,7 +2202,7 @@
             }
         },
         "benchmark": {
-            "start": "Benchmark starten (~1 min)",
+            "start": "Benchmark starten (~1 min)",
             "needsModel": "Benchmark: erst ein Modell laden",
             "error": "Benchmark-Fehler: {message}"
         },

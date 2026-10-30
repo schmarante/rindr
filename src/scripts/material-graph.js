@@ -237,6 +237,11 @@ export const optionLabel = (type, param, option) => (has(`nodes.types.${type}.op
     ? t(`nodes.types.${type}.options.${param}.${option}`) : t(`nodes.mapping.options.${param}.${option}`));
 
 /** Empty graph with output */
+/** The graph as far as it shapes the material – without where the nodes sit in the editor (moving a node changes nothing) */
+export function shadingGraph(graph) {
+    return graph ? { ...graph, nodes: graph.nodes?.map(({ x, y, ...n }) => n) } : null;
+}
+
 export function createGraph() {
     return { nodes: [{ id: 'out', type: 'output', x: 520, y: 40, params: { reliefStrength: 1 } }], links: [] };
 }
@@ -576,10 +581,12 @@ export class GraphBaker {
         renderer.setRenderTarget(prev);
         const pixels = await renderer.readRenderTargetPixelsAsync(target, 0, 0, size, size);
         const src = new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength), row = size * 4;
-        if (src.length === row * size) return src.slice();
-        // WebGPU pads each row to 256 bytes (sizes that are no multiple of 64, e.g. 200 px previews): drop the padding
+        const bottomUp = !!renderer.backend.isWebGLBackend;
+        if (src.length === row * size && !bottomUp) return src.slice();
+        // WebGPU pads each row to 256 bytes (sizes that are no multiple of 64, e.g. 200 px previews): drop the padding;
+        // WebGL (fallback, e.g. browsers without WebGPU) reads the rows the other way round – the maps stood on their head
         const stride = src.length / size, packed = new Uint8Array(row * size);
-        for (let y = 0; y < size; y++) packed.set(src.subarray(y * stride, y * stride + row), y * row);
+        for (let y = 0; y < size; y++) packed.set(src.subarray(y * stride, y * stride + row), (bottomUp ? size - 1 - y : y) * row);
         return packed;
     }
 
@@ -595,8 +602,9 @@ export class GraphBaker {
         renderer.setRenderTarget(target);
         this.quad.render(renderer);
         renderer.setRenderTarget(prev);
-        const src = await renderer.readRenderTargetPixelsAsync(target, 0, 0, size, size);
+        let src = await renderer.readRenderTargetPixelsAsync(target, 0, 0, size, size);
         const n = size;
+        if (renderer.backend.isWebGLBackend) src = flipRows(src, n, 4);   // rows the other way round (see bakePixels)
         const out = new Uint8Array(n * n * 4);
         const at = (x, y) => src[(((y + n) % n) * n + ((x + n) % n)) * 4];
         const k = strength * 8;
@@ -614,6 +622,12 @@ export class GraphBaker {
         }
         return makeTexture(out, false, n);
     }
+}
+
+function flipRows(src, size, channels) {
+    const row = size * channels, out = new src.constructor(row * size);
+    for (let y = 0; y < size; y++) out.set(src.subarray(y * row, (y + 1) * row), (size - 1 - y) * row);
+    return out;
 }
 
 // Every number in a bake shader becomes a uniform of the same value, so a changed node value leaves the shader code

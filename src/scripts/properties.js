@@ -694,7 +694,7 @@ export class PropertiesPanel {
             const reset = el('button', BUTTON + ' mt-0.5', t('properties.look.reset'));
             reset.onclick = () => {
                 const before = { look: { ...l }, exposure: look.exposure, curve: look.toneMapping };
-                const neutral = { look: { temperature: 6500, tint: 0, contrast: 1, saturation: 1 }, exposure: 0, curve: 'aces' };
+                const neutral = { look: { temperature: 6500, tint: 0, contrast: 1, saturation: 1 }, exposure: 0, curve: 'neutral' };
                 const apply = s => { Object.assign(l, s.look); look.exposure = s.exposure; look.toneMapping = s.curve; lens.apply(); this.show(this.entry); };
                 apply(neutral);
                 this.ctx.record?.({ label: t('properties.look.undo.reset'), undo: () => apply(before), redo: () => apply(neutral) });

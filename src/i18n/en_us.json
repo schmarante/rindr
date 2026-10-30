@@ -310,6 +310,8 @@
             "glass-tinted": "Glass tinted",
             "plastic-clear": "Plastic transparent",
             "glass-milk": "Milk glass",
+            "gem-diamond-clear": "Diamond clear",
+            "gem-diamond-blue": "Diamond light blue",
             "ceramic-white": "Ceramic white",
             "emissive-white": "Emissive white",
             "emissive-neon-green": "Neon green (emissive)",
@@ -1668,10 +1670,10 @@
         "resolution": "Resolution {size}",
         "send": "Send to AI",
         "rendering": "AI is rendering…",
-        "renderingTimer": "AI is rendering… {seconds} s (usually 10–60 s)",
+        "renderingTimer": "AI is rendering… {seconds} s (usually 10–60 s)",
         "error": "Error: {message}",
-        "resultInfo": "{model} · {size} · {seconds} s",
-        "resultInfoCached": "from cache · {model} · {size} · {seconds} s",
+        "resultInfo": "{model} · {size} · {seconds} s",
+        "resultInfoCached": "from cache · {model} · {size} · {seconds} s",
         "regenerate": "Regenerate",
         "regenerateTitle": "Same prompt, new AI call (ignore the cache)",
         "editPrompt": "Edit prompt",
@@ -1730,7 +1732,7 @@
             "IMAGE_UNREADABLE": "AI image not readable",
             "NO_API_KEY": "No API key entered (settings → AI rendering)",
             "INVALID_API_KEY": "API key rejected: {detail}",
-            "TIMEOUT": "No answer after {seconds} s"
+            "TIMEOUT": "No answer after {seconds} s"
         },
         "deleteDialogTitle": "Delete AI result",
         "noKey": "AI rendering needs your own Gemini API key. Enter it in the settings under “AI rendering” – it stays in this browser.",
@@ -1746,9 +1748,9 @@
                 "share": "Share per part"
             },
             "inactive": "LOD      off – only from {min} M triangles",
-            "status": "LOD      {built}/{total} geometries · {triangles} M triangles · {seconds} s",
+            "status": "LOD      {built}/{total} geometries · {triangles} M triangles · {seconds} s",
             "building": " · building …",
-            "select": "         {cuts} cuts · choice {ms} ms",
+            "select": "         {cuts} cuts · choice {ms} ms",
             "legendFull": "all",
             "legendCoarse": "≤ 1/128 triangles · grey = no LOD",
             "preparing": "Preparing colours … (shaders, no freeze)"
@@ -1760,15 +1762,15 @@
             "units": "Geom.    {units} stored · {instances} meshes · {triangles} triangles",
             "duplicates": "equal    {count} geometries in {groups} groups → −{triangles} triangles ({percent} %)",
             "mirrored": "mirrored {count} geometries → −{triangles} triangles ({percent} %)",
-            "time": "         {ms} ms · group table in the console",
+            "time": "         {ms} ms · group table in the console",
             "isotropic": "         {count} isotropic (sphere/cube – not comparable)"
         },
         "noWebGpu": "WebGL2 (no WebGPU)",
         "integrated": "integrated",
         "millions": "{value} M",
         "thousands": "{value} k",
-        "fps": "fps      {fps}  ({ms} ms CPU/frame)",
-        "cpuSplit": "         scene {scene} · shadows {shadow} · sync {sync} · other {rest} ms",
+        "fps": "fps      {fps}  ({ms} ms CPU/frame)",
+        "cpuSplit": "         scene {scene} · shadows {shadow} · sync {sync} · other {rest} ms",
         "gpu": "GPU      {name}",
         "gpuUsed": "  used   {size}",
         "gpuBreakdown": "         Geom. {geometry} · Tex. {textures} · PT {storage}",
@@ -1776,7 +1778,7 @@
         "gpuTotalMaxBuffer": "  total  n/a (WebGPU) · max. buffer {size}",
         "device": " · device ≥ {gb} GB",
         "ramPage": "RAM      page+workers {size}{device}",
-        "ramHeap": "RAM      ~{size} (estimate, ≤ 20 min old){device}",
+        "ramHeap": "RAM      ~{size} (estimate, ≤ 20 min old){device}",
         "ramNone": "RAM      n/a{device}",
         "triangles": "Triangles {total}  (visible {visible})",
         "unique": "         unique {unique} · {meshes} meshes",
@@ -1788,7 +1790,7 @@
             "tasks": "{tasks} · {memory}",
             "messages": "{messages} msgs · {memory}",
             "more": "… {count} more",
-            "ended": "{count} ended · {seconds} s computed"
+            "ended": "{count} ended · {seconds} s computed"
         }
     },
     "benchmark": {
@@ -1936,8 +1938,8 @@
         "samples": "{samples} / {maxSamples} samples",
         "samplesAdaptive": "avg. {samples} / {maxSamples} samples",
         "percent": "{value} %",
-        "seconds": "{value} s",
-        "minutes": "{minutes}:{seconds} min",
+        "seconds": "{value} s",
+        "minutes": "{minutes}:{seconds} min",
         "detail": {
             "unsupported": "Browser without WebGPU – rasterizer only",
             "bufferTooSmall": "Model too large for the GPU buffers – reduce the quality",
@@ -2092,8 +2094,8 @@
             "sending": "Sending {percent} % · {sent} / {total}",
             "loadingScene": "Loading the scene …",
             "close": "Close",
-            "done": "Rendered distributed in {time} s – {buckets} buckets ({who})",
-            "doneLocal": "Rendered in {time} s – {buckets} buckets",
+            "done": "Rendered distributed in {time} s – {buckets} buckets ({who})",
+            "doneLocal": "Rendered in {time} s – {buckets} buckets",
             "startHint": "Started from “Render” (teapot in the bottom bar) – size, samples and format are there too.",
             "busy": "A distributed job is already running.",
             "pair": "Pair computer …",
@@ -2200,7 +2202,7 @@
             }
         },
         "benchmark": {
-            "start": "Start benchmark (~1 min)",
+            "start": "Start benchmark (~1 min)",
             "needsModel": "Benchmark: load a model first",
             "error": "Benchmark error: {message}"
         },

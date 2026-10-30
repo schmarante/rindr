@@ -164,7 +164,7 @@ export class NodeEditor {
             else if (this.materialId) this.title.textContent = t('nodeEditor.title', { name: manager.get(this.materialId).def.name });
         });
         // undo/redo: take the graph over from the material again (view stays)
-        manager.addEventListener('update', e => {
+        const takeOver = e => {
             if (e.detail?.id !== this.materialId) return;
             // switched to a type without node editor (cloud, wool, ...): nothing to edit here
             if (!typeAllowsGraph(materialType(manager.get(this.materialId)?.def.params))) { this.close(); return; }
@@ -173,7 +173,9 @@ export class NodeEditor {
             this.drag = null;
             this.graph = graph ? structuredClone(graph) : createGraph();
             this.render();
-        });
+        };
+        manager.addEventListener('update', takeOver);
+        manager.addEventListener('layout', takeOver);   // undo of a node move: same material, nodes back in place
     }
 
     get isOpen() {
@@ -658,7 +660,8 @@ export class NodeEditor {
         this.drag = null;
         if (!d) return;
         this.canvas.classList.replace('cursor-grabbing', 'cursor-grab');
-        if (d.kind === 'node') { this.commit(); return; }
+        // position only: stored with the graph (undo, saving) – the material and the previews stay as they are
+        if (d.kind === 'node') { if (this.materialId) this.manager.setGraph(this.materialId, structuredClone(this.graph)); return; }
         if (d.kind !== 'link') return;
         const port = document.elementFromPoint(e.clientX, e.clientY)?.closest('[data-port][data-dir="in"]');
         if (port && port.dataset.portNode !== d.from.node) {
