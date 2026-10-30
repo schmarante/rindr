@@ -61,6 +61,11 @@ export class PathTracingView {
 
         this.denoiseEnabled = PATHTRACING.denoise;
         this.upscaleEnabled = PATHTRACING.upscale;
+        // HiDPI screens (device pixel ratio > 1): traced at the CSS pixel size and upscaled unless `hidpi` (a 2× screen
+        // has four times the pixels – the path tracer was that much slower for little gain); exports set
+        // `fullResolution` for the picture they render (viewer.js applyExportScale)
+        this.hidpi = PATHTRACING.hidpi;
+        this.fullResolution = false;
         this.denoiseProgress = 0;       // 0..1 of the OIDN tiles
         this.denoiseLoading = false;    // network/weights are loading
 
@@ -172,6 +177,8 @@ export class PathTracingView {
         this._initUNetFromURL = initUNetFromURL;
         const pt = this.pathTracer = new WebGPUPathTracer(this.renderer);
         pt.renderScale = s.renderScale;
+        // read by the library's own size sync (Vite patch in astro.config.mjs) – the same size as _syncSize
+        Object.defineProperty(pt, 'sizeFactor', { get: () => this.sizeFactor });
         pt.maxSamples = s.maxSamples;
         pt.maxBounces = this.bounces;
         pt.filterGlossyFactor = s.filterGlossyFactor;
@@ -1293,10 +1300,20 @@ export class PathTracingView {
     // the raster image covered the path tracer: Default view flashed up when orbiting/zooming began and whenever
     // the orbit resolution changed)
     _syncSize() {
-        const pt = this.pathTracer, size = this.renderer.getDrawingBufferSize(_size);
-        const w = Math.floor(pt.renderScale * size.x), h = Math.floor(pt.renderScale * size.y);
-        pt.setSize(w, h);
+        const { w, h } = this.traceSize();
+        this.pathTracer.setSize(w, h);
         return { w, h };
+    }
+
+    /** share of the canvas' drawing buffer traced on top of renderScale: < 1 on HiDPI screens (see `hidpi`) */
+    get sizeFactor() {
+        return this.hidpi || this.fullResolution ? 1 : Math.min(1, 1 / (window.devicePixelRatio || 1));
+    }
+
+    /** the traced image size for the canvas as it is now */
+    traceSize() {
+        const size = this.renderer.getDrawingBufferSize(_size), scale = this.pathTracer.renderScale * this.sizeFactor;
+        return { w: Math.floor(scale * size.x), h: Math.floor(scale * size.y) };
     }
 
     // first sample of the restart complete? (megakernel tile progress)

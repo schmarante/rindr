@@ -3443,10 +3443,8 @@ async function exportImage(transparent, onProgress, isOpen, scale = 1, samples =
     }
 }
 async function exportScaled(transparent, onProgress, isOpen, scale) {
-    if (scale === 1) return exportPasses(transparent, onProgress, isOpen);
     const ratio = renderer.getPixelRatio();
-    renderer.setPixelRatio(ratio * scale);
-    lens.setPixelScale(scale);
+    applyExportScale(ratio, scale);
     loadRender.force = true;
     await nextFrame(); await nextFrame();   // path tracer noticed the new size and restarted
     let done = false;
@@ -3465,9 +3463,16 @@ async function exportScaled(transparent, onProgress, isOpen, scale) {
 // the finished picture was gone, rendered and denoised a second time right after the file was saved (user: "the image
 // is done, the download triggered, but it denoises again").
 let heldExportRatio = null;
+// exports always at every device pixel – also at scale 1 on a HiDPI screen, whose view is traced smaller (pathtracer.js
+// sizeFactor); held like the scale until the view changes
+function applyExportScale(ratio, scale) {
+    pathTracing.fullResolution = true;
+    if (scale !== 1) { renderer.setPixelRatio(ratio * scale); lens.setPixelScale(scale); }
+}
 function restoreExportScale(ratio) {
     renderer.setPixelRatio(ratio);
     lens.setPixelScale(1);
+    pathTracing.fullResolution = false;
     loadRender.force = true;
 }
 function holdExportScale(ratio) {
@@ -4836,6 +4841,8 @@ function setupGUI() {
         pt.range(t('setup.bouncesReflection'), () => pathTracing.bounces, v => pathTracing.setBounces(v), 1, 20, 1);
         pt.range(t('setup.bouncesRefraction'), () => pathTracing.refractionBounces, v => pathTracing.setRefractionBounces(v), 0, 20, 1);
         pt.range(t('setup.resolution'), () => pathTracing.renderScale, v => { pathTracing.renderScale = v; }, 0.25, 1, 0.05);
+        // HiDPI screens: by default traced at the CSS pixel size and upscaled (pathtracer.js sizeFactor)
+        pt.toggle(t('setup.hidpi'), () => pathTracing.hidpi, v => { pathTracing.hidpi = v; });
         pt.range(t('setup.maxSamples'), () => pathTracing.maxSamples, v => { pathTracing.maxSamples = v; }, 1, 256, 1);
         pt.range(t('setup.glossyFilter'), () => pathTracing.filterGlossyFactor, v => { pathTracing.filterGlossyFactor = v; }, 0, 1, 0.01);
         // shadows of glass (glass-shadow.js): transparent with an optional colour fringe, or opaque
@@ -5777,6 +5784,17 @@ if (new URLSearchParams(location.search).has('debug')) {
 }
 
 // --- Resize ---
+// device pixel ratio changed (window moved to a screen with another scaling, browser zoom): the canvas follows – it was
+// set once at the start, afterwards blurred or needlessly large
+function watchPixelRatio() {
+    matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener('change', () => {
+        releaseExportScale();
+        renderer.setPixelRatio(window.devicePixelRatio);
+        loadRender.force = true;
+        watchPixelRatio();
+    }, { once: true });
+}
+watchPixelRatio();
 window.addEventListener('resize', () => {
     releaseExportScale();
     // rendering is cancelled like with ✕ (user: "on resize everything should be cancelled, the rendering is started again"
@@ -6532,18 +6550,14 @@ async function renderDistributedImage(scale, samples, transparent = false) {
     pathTracing.holdKernel = true;   // the view traces nothing until the picture comes (this computer's buckets: renderRegion)
     try { await ensurePathTracer(); await pathTracerApplied(); } catch (err) { pathTracing.holdKernel = false; throw err; }
     const ratio = renderer.getPixelRatio();
-    if (scale !== 1) { renderer.setPixelRatio(ratio * scale); lens.setPixelScale(scale); }
+    applyExportScale(ratio, scale);
     const { grey, greyY } = matteGrey();
     const passes = transparent ? [0, grey] : [null];
     let outcome = null;   // 'done' | 'cancelled'
     const render = distRender = { cancelled: false };
     const check = () => { if (render.cancelled) throw new DOMException('Render cancelled', 'AbortError'); };
     // path tracer resolution of the (scaled) canvas (the HQ image of the start comes back only at the same size)
-    const size = () => {
-        const buffer = renderer.getDrawingBufferSize(new THREE.Vector2());
-        const rs = pathTracing.pathTracer.renderScale;
-        return { w: Math.floor(rs * buffer.x), h: Math.floor(rs * buffer.y) };
-    };
+    const size = () => pathTracing.traceSize();
     try {
         loadRender.force = true;
         await nextFrame(); await nextFrame();   // canvas and path tracer at the export size
@@ -6580,18 +6594,16 @@ async function renderDistributedImage(scale, samples, transparent = false) {
         pathTracing.holdKernel = false;
         distRender = null;
         distPass = null;
-        const matted = setMatte(null);
-        if (scale !== 1) {
-            if (outcome === 'done' && !transparent) holdExportScale(ratio);   // the picture stays (see holdExportScale)
-            else restoreExportScale(ratio);
-        }
+        setMatte(null);
+        if (outcome === 'done' && !transparent) holdExportScale(ratio);   // the picture stays (see holdExportScale)
+        else restoreExportScale(ratio);
         loadRender.force = true;
         // cancelled, or a transparent image (its passes leave the path tracer without the view's background): back to the
         // mode it started from – from HQ its image as it was (scale 1; after the restart with the background)
         if (outcome === 'cancelled' || (outcome === 'done' && transparent)) {
             if (mode !== 'hq') setViewMode(mode);
             else if (keep && scale === 1 && keep.w === size().w && keep.h === size().h) {   // not after a resize
-                if (matted || scale !== 1) { await nextFrame(); await nextFrame(); }
+                await nextFrame(); await nextFrame();   // restarted (background, size)
                 await pathTracing.injectImage(keep.data, keep.w, keep.h, keep.samples).catch(() => {});
             }
         } else if (outcome === 'done') holdRenderView(mode);
@@ -6620,14 +6632,10 @@ async function renderLightPasses(scale, samples, distributed, format) {
     try { await ensurePathTracer(); await pathTracerApplied(); } catch (err) { pathTracing.holdKernel = false; pathTracing.holdPassKernel(false); throw err; }
     const renderHere = !distributed || renderMaster.renderLocal;
     const ratio = renderer.getPixelRatio();
-    if (scale !== 1) { renderer.setPixelRatio(ratio * scale); lens.setPixelScale(scale); }
+    applyExportScale(ratio, scale);
     let outcome = null, release = null;
     const render = distRender = { cancelled: false };
-    const size = () => {
-        const buffer = renderer.getDrawingBufferSize(new THREE.Vector2());
-        const rs = pathTracing.pathTracer.renderScale;
-        return { w: Math.floor(rs * buffer.x), h: Math.floor(rs * buffer.y) };
-    };
+    const size = () => pathTracing.traceSize();
     try {
         loadRender.force = true;
         await nextFrame(); await nextFrame();   // canvas and path tracer at the export size
@@ -6688,10 +6696,8 @@ async function renderLightPasses(scale, samples, distributed, format) {
         controls.enabled = true;
         release?.();
         if (outcome !== 'done') lightMix?.disposeTextures();
-        if (scale !== 1) {
-            if (outcome === 'done') holdExportScale(ratio);   // the picture stays at the export size (holdExportScale)
-            else restoreExportScale(ratio);
-        }
+        if (outcome === 'done') holdExportScale(ratio);   // the picture stays at the export size (holdExportScale)
+        else restoreExportScale(ratio);
         loadRender.force = true;
         if (outcome === 'cancelled' && mode !== 'hq') setViewMode(mode);
         else if (outcome === 'done') holdRenderView(mode);
