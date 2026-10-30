@@ -220,6 +220,9 @@ export class PathTracingView {
         const denoiseUpdate = this.denoiser.update.bind(this.denoiser);
         this.denoiser.update = target => {
             if (this._denoisePrep && !this._denoisePrep.done) return this.denoiser.texture;
+            // never while orbiting: with the camera still the reduced image reached the sample limit and got denoised –
+            // a finished-looking picture at a third of the resolution (user: stuck in the low-res mode)
+            if (this._motion) return this.denoiser.texture;
             // light passes: each pass is denoised instead of the image (the mix is made of them)
             if (this.lightMix) { this._denoiseLightMix(); return this.denoiser.texture; }
             return denoiseUpdate(target);
@@ -1153,9 +1156,16 @@ export class PathTracingView {
         // release); the orbit history fades over the new image (_seedWeight), the next move orbits again. At least a
         // few frames without a change, not only the time: a slow frame is no standstill
         const m = this._motion;
+        // the release was missed (no end of the interaction while orbiting): end it like a release
+        if (m && !m.end && !this._dragging) m.end = performance.now();
         if (m && !m.end && this._dragging && this.motion.stillMs > 0) {
             if (m.seen !== m.moved) { m.seen = m.moved; m.still = 0; } else m.still++;
             if (m.still >= 3 && performance.now() - m.moved > this.motion.stillMs) this._exitMotion();
+        }
+        // outside orbiting the resolution of the settings – should anything have left a reduced one behind
+        if (!this._motion && pt.renderScale !== this._settings.renderScale) {
+            console.warn(`[Pathtracer] resolution ${pt.renderScale} left behind, back to ${this._settings.renderScale}`);
+            pt.renderScale = this._settings.renderScale;
         }
         this._syncSize();
         // upscaling with history: one known offset within the pixel per frame (motion-upscale.js)
@@ -1217,9 +1227,14 @@ export class PathTracingView {
         this._holdShown = this._holdCover = false;   // orbiting shows every frame anew
         if (this._motion) { this._motion.end = 0; return; }
         const pt = this.pathTracer;
-        this._motion = { saved: { renderScale: pt.renderScale, bounces: this.bounces, minSamples: pt.minSamples, frameBudget: pt.frameBudget }, end: 0,
-            moved: performance.now(), seen: 0, still: 0 };   // last change / frames since (_renderPathTraced: standstill)
-        pt.renderScale = Math.min(this.motion.renderScale, pt.renderScale) * this._motionScale;   // learned from the GPU time
+        // what to return to: the settings, not the path tracer's current values – those may still be the reduced ones
+        // or the first full sample's (minSamples 0, see _exitMotion); taken from there a reduced resolution became
+        // the standing-still one for good (user: stuck at a fraction of the resolution, also after orbiting again)
+        const saved = { renderScale: this._settings.renderScale, bounces: this.bounces,
+            minSamples: this._fullFirst ? this._fullFirstMin : pt.minSamples,
+            frameBudget: pt.frameBudget === MOTION_FRAME_BUDGET ? PATHTRACING.startFrameBudget : pt.frameBudget };
+        this._motion = { saved, end: 0, moved: performance.now(), seen: 0, still: 0 };   // last change / frames since (_renderPathTraced: standstill)
+        pt.renderScale = Math.min(this.motion.renderScale, saved.renderScale) * this._motionScale;   // learned from the GPU time
         pt.maxBounces = Math.min(this.motion.bounces, this.bounces);
         // glass and smooth mirrors keep the bounces of standing still (within this budget they are not counted, pt-motion.js)
         PT_MOTION.glassBounces.value = Math.max(this.bounces - pt.maxBounces, 0) + this.refractionBounces;

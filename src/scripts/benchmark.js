@@ -56,7 +56,7 @@ export async function runBenchmark(view, { renderer, onProgress = () => {} }) {
                 currentMega = mega;
             }
             pt.frameBudget = c.budget;
-            pt.renderScale = c.scale;
+            view.renderScale = c.scale;   // through the view: its settings are what the render loop keeps (pathtracer.js)
             pt.maxSamples = 0;
             pt.reset();
 
@@ -101,7 +101,7 @@ export async function runBenchmark(view, { renderer, onProgress = () => {} }) {
         // restore the initial state
         if (currentMega !== saved.megakernel) { pt.useMegakernel(saved.megakernel); pt.maxBounces = view.bounces; }
         pt.frameBudget = saved.frameBudget;
-        pt.renderScale = saved.renderScale;
+        view.renderScale = saved.renderScale;
         pt.maxSamples = saved.maxSamples;
         view.setDenoise(saved.denoise);
         pt.reset();
