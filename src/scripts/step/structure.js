@@ -3,7 +3,7 @@
 // faces are distributed to all workers.
 
 import { Ref, partArgs } from './parser.js';
-import { GeometryBuilder } from './geometry.js';
+import { GeometryBuilder, dot } from './geometry.js';
 
 // Types whose ids are collected while indexing
 export const INDEX_TYPES = [
@@ -12,7 +12,8 @@ export const INDEX_TYPES = [
     'SHAPE_REPRESENTATION_RELATIONSHIP', 'NEXT_ASSEMBLY_USAGE_OCCURRENCE',
     'SHAPE_REPRESENTATION', 'ADVANCED_BREP_SHAPE_REPRESENTATION', 'MANIFOLD_SURFACE_SHAPE_REPRESENTATION',
     'FACETED_BREP_SHAPE_REPRESENTATION', 'GEOMETRICALLY_BOUNDED_SURFACE_SHAPE_REPRESENTATION',
-    'MANIFOLD_SOLID_BREP', 'BREP_WITH_VOIDS', 'FACETED_BREP', 'SHELL_BASED_SURFACE_MODEL',
+    'NON_MANIFOLD_SURFACE_SHAPE_REPRESENTATION',
+    'MANIFOLD_SOLID_BREP', 'BREP_WITH_VOIDS', 'FACETED_BREP', 'SHELL_BASED_SURFACE_MODEL', 'FACE_BASED_SURFACE_MODEL',
     'COMPLEX',
 ];
 
@@ -47,7 +48,7 @@ export function angleFactor(step, typeIds) {
     return conv ? factorOf(conv) : angles.length ? factorOf(angles[0]) : 1;
 }
 
-const SOLID_TYPES = new Set(['MANIFOLD_SOLID_BREP', 'BREP_WITH_VOIDS', 'FACETED_BREP', 'SHELL_BASED_SURFACE_MODEL', 'CLOSED_SHELL', 'OPEN_SHELL']);
+const SOLID_TYPES = new Set(['MANIFOLD_SOLID_BREP', 'BREP_WITH_VOIDS', 'FACETED_BREP', 'SHELL_BASED_SURFACE_MODEL', 'FACE_BASED_SURFACE_MODEL', 'CLOSED_SHELL', 'OPEN_SHELL']);
 
 const PREDEFINED_COLOURS = {
     red: [1, 0, 0], green: [0, 1, 0], blue: [0, 0, 1], yellow: [1, 1, 0],
@@ -73,8 +74,8 @@ function invRigid(m) {
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
 export function buildPlan(step, typeIds) {
-    const geo = new GeometryBuilder(step);
     const angleUnit = angleFactor(step, typeIds);
+    const geo = new GeometryBuilder(step, angleUnit);
     const ids = t => typeIds[t] || [];
     const refId = r => (r instanceof Ref ? r.id : null);
 
@@ -139,7 +140,7 @@ export function buildPlan(step, typeIds) {
     const addRep = id => { if (id !== null && !parent.has(id)) parent.set(id, id); reps.add(id); };
 
     for (const t of ['SHAPE_REPRESENTATION', 'ADVANCED_BREP_SHAPE_REPRESENTATION', 'MANIFOLD_SURFACE_SHAPE_REPRESENTATION',
-        'FACETED_BREP_SHAPE_REPRESENTATION', 'GEOMETRICALLY_BOUNDED_SURFACE_SHAPE_REPRESENTATION']) {
+        'FACETED_BREP_SHAPE_REPRESENTATION', 'GEOMETRICALLY_BOUNDED_SURFACE_SHAPE_REPRESENTATION', 'NON_MANIFOLD_SURFACE_SHAPE_REPRESENTATION']) {
         for (const id of ids(t)) addRep(id);
     }
     for (const id of ids('SHAPE_REPRESENTATION_RELATIONSHIP')) {
@@ -170,11 +171,18 @@ export function buildPlan(step, typeIds) {
         const def = refId(pds.args[2]);
         if (def === null) continue;
         const d = step.get(def);
-        if (!d || !d.type.startsWith('PRODUCT_DEFINITION')) continue;
+        if (!d || !isProductDefinition(d)) continue;
         addRep(rep);
         if (!pdReps.has(def)) pdReps.set(def, []);
         pdReps.get(def).push(rep);
         if (!pdName.has(def)) pdName.set(def, productName(def));
+    }
+    // product definition or one of its subtypes written as an entity of its own (e.g. PACKAGE in electronics
+    // files): (id, description, formation, frame) – the formation tells it from occurrences (NAUO: name, description …)
+    function isProductDefinition(d) {
+        if (d.type.startsWith('PRODUCT_DEFINITION')) return true;
+        const form = d.args && step.get(d.args[2]);
+        return !!form && !!form.type && form.type.startsWith('PRODUCT_DEFINITION_FORMATION');
     }
     const groupName = new Map();
     for (const [pd, rs] of pdReps) for (const r of rs) {
@@ -260,7 +268,8 @@ export function buildPlan(step, typeIds) {
     const shellFaces = (shellRef, flip = false) => {
         const s = step.get(shellRef);
         if (!s) return [];
-        if (s.type === 'CLOSED_SHELL' || s.type === 'OPEN_SHELL') return s.args[1].map(r => faceRef(r, flip));
+        // CONNECTED_FACE_SET: the face sets of a FACE_BASED_SURFACE_MODEL (surface models of hull and plate exports)
+        if (s.type === 'CLOSED_SHELL' || s.type === 'OPEN_SHELL' || s.type === 'CONNECTED_FACE_SET') return s.args[1].map(r => faceRef(r, flip));
         // ORIENTED_*_SHELL('', *, shell_element, orientation)
         if (s.type === 'ORIENTED_CLOSED_SHELL' || s.type === 'ORIENTED_OPEN_SHELL') {
             return shellFaces(s.args[2], s.args[3] === false ? !flip : flip);
@@ -271,7 +280,7 @@ export function buildPlan(step, typeIds) {
         switch (e.type) {
             case 'MANIFOLD_SOLID_BREP': case 'FACETED_BREP': return shellFaces(e.args[1]);
             case 'BREP_WITH_VOIDS': return [...shellFaces(e.args[1]), ...e.args[2].flatMap(v => shellFaces(v))];
-            case 'SHELL_BASED_SURFACE_MODEL': return e.args[1].flatMap(v => shellFaces(v));
+            case 'SHELL_BASED_SURFACE_MODEL': case 'FACE_BASED_SURFACE_MODEL': return e.args[1].flatMap(v => shellFaces(v));
             case 'CLOSED_SHELL': case 'OPEN_SHELL': return shellFaces(e.id);
         }
         return [];
@@ -287,11 +296,30 @@ export function buildPlan(step, typeIds) {
         const faceColors = faces.map(f => colorOf.get(Math.abs(f)) || null);
         const idx = solids.length;
         // surface: sheet body without a defined inside (orientFaces turns its skins outward)
-        const surface = e.type === 'SHELL_BASED_SURFACE_MODEL' || e.type === 'OPEN_SHELL';
-        solids.push({ id, name: e.args[0] || '', faces, faceColors, color: solidColor, size: solidSize(step, geo, faces), surface });
+        const surface = e.type === 'SHELL_BASED_SURFACE_MODEL' || e.type === 'FACE_BASED_SURFACE_MODEL' || e.type === 'OPEN_SHELL';
+        const features = [];
+        solids.push({ id, name: e.args[0] || '', faces, faceColors, color: solidColor, size: solidSize(step, geo, faces, features), surface, features });
         solidIndex.set(id, idx);
         return idx;
     };
+
+    // groups placed below g (mapped representations, assembly children)
+    function reachableGroups(g) {
+        const seen = new Set(), stack = [g];
+        const push = x => { if (!seen.has(x)) { seen.add(x); stack.push(x); } };
+        while (stack.length && seen.size < 100000) {
+            const x = stack.pop();
+            for (const it of groupItems.get(x) || []) {
+                const e = step.get(it);
+                if (!e || e.type !== 'MAPPED_ITEM') continue;
+                const map = step.get(e.args[1]);
+                if (map && map.type === 'REPRESENTATION_MAP' && refId(map.args[1]) !== null) push(find(refId(map.args[1])));
+            }
+            for (const c of children.get(x) || []) push(c.child);
+        }
+        seen.delete(g);
+        return seen;
+    }
 
     // --- Instances + object tree by traversal ---
     // nodes: [{ name, parent }] – assemblies/parts (parent = index, -1 = root).
@@ -338,13 +366,22 @@ export function buildPlan(step, typeIds) {
     const productGroups = new Set();
     for (const rs of pdReps.values()) for (const r of rs) productGroups.add(find(r));
     const groups = new Set([...reps].map(find));
-    const roots = [...groups].filter(g => !hasParent.has(g) && (productGroups.size === 0 || productGroups.has(g)));
+    let roots = [...groups].filter(g => !hasParent.has(g) && (productGroups.size === 0 || productGroups.has(g)));
+    // A root that another root places via MAPPED_ITEM (or as an assembly child) is a component, not a part of
+    // its own – shown as a root as well, it appeared a second time, unplaced at the origin (seen in a file
+    // whose product definitions were not recognised: every mapped body, lead and tab twice)
+    if (roots.length > 1) {
+        const reached = new Map(roots.map(g => [g, reachableGroups(g)]));
+        const placed = new Set();
+        for (const [r, set] of reached) for (const g of set) if (reached.has(g) && !reached.get(g).has(r)) placed.add(g);
+        roots = roots.filter(g => !placed.has(g));
+    }
     for (const g of roots) visitGroup(g, IDENTITY, groupName.get(g) || '', 0, -1);
 
     // Fallback: solids not assigned to any representation
     if (instances.length === 0) {
         const root = addNode('', -1, ['model']);
-        for (const t of ['MANIFOLD_SOLID_BREP', 'BREP_WITH_VOIDS', 'FACETED_BREP', 'SHELL_BASED_SURFACE_MODEL']) {
+        for (const t of ['MANIFOLD_SOLID_BREP', 'BREP_WITH_VOIDS', 'FACETED_BREP', 'SHELL_BASED_SURFACE_MODEL', 'FACE_BASED_SURFACE_MODEL']) {
             for (const id of ids(t)) {
                 const si = getSolid(id);
                 const n = addNode(solids[si].name, root, ['solid', si + 1]);
@@ -353,29 +390,116 @@ export function buildPlan(step, typeIds) {
         }
     }
 
-    return { solids, instances, nodes, angleUnit };
+    return { solids, instances, nodes, angleUnit, edgeLimits: featureLimits(step, geo, solids, angleUnit) };
 }
 
-// Rough size of a solid (diagonal of the vertex bounding box) for the relative tolerance
-function solidSize(step, geo, faces) {
+// Edges next to a feature narrower than the tessellation tolerance: { ids, widths, radii } per EDGE_CURVE (Infinity =
+// none). An edge is sampled once for both of its faces (watertight), by its own curvature – but the chords of a circle
+// along a small fillet sag deeper than the fillet's first row of triangles lies from it (torus with a small minor
+// radius: folded triangles along the whole fillet), and the chords of two concentric circles bounding a narrow ring
+// cross each other (the ring's triangulation lost pieces, its neighbours got open edges). Tessellator.edgePoints
+// samples such edges finer, with the same result for both faces.
+// Collected while solidSize walks the faces (features), resolved here once the solid's size is known.
+function featureLimits(step, geo, solids, angleUnit) {
+    const limit = new Map();   // id → [width, radius]
+    const set = (id, size, k) => {
+        if (!(size > 0)) return;
+        let l = limit.get(id);
+        if (!l) limit.set(id, l = [Infinity, Infinity]);
+        if (size < l[k]) l[k] = size;
+    };
+    // only features that can matter: the coarsest tolerance is 0.004 × solid size (TESS_PRESETS) – a feature limits the
+    // sampling below RING_FEATURE × width resp. FILLET_FEATURE × radius × ang (ang ≤ 0.6) only if it is narrower than this
+    const NARROW = 0.02;
+    for (const s of solids) {
+        const narrow = NARROW * s.size;
+        for (const ft of s.features) {
+            if (ft.torus !== undefined) {
+                if (ft.torus < narrow) for (const id of ft.edges) set(id, ft.torus, 1);
+                continue;
+            }
+            // ring, band or crescent face: coaxial circles of different radii. The chords sag radially; within the face
+            // that is the full sagitta on a plane, sin(semi-angle) of it on a cone, whose band is Δr / sin(semi-angle)
+            // wide – the chords of the two circles cross once the sagitta exceeds Δr / sin²(semi-angle)
+            const { circles, type, f } = ft;
+            let sin2 = null;   // decided on the first close pair
+            const factor = a => {
+                if (sin2 !== null) return sin2;
+                sin2 = 0;
+                if (type === 'PLANE') sin2 = 1;
+                else if (type === 'CONICAL_SURFACE') sin2 = Math.sin(step.get(f.args[2]).args[3] * angleUnit) ** 2;
+                else {
+                    // spline surface lying in the plane of the circles (a plane exported as a degree 1 spline)
+                    try {
+                        const sf = geo.surface(f.args[2]), dom = sf.domain && sf.domain();
+                        if (dom) {
+                            let flat = true;
+                            for (let i = 0; i <= 2 && flat; i++) for (let j = 0; j <= 2 && flat; j++) {
+                                const q = sf.eval(dom[0] + (dom[1] - dom[0]) * i / 2, dom[2] + (dom[3] - dom[2]) * j / 2);
+                                if (Math.abs(dot([q[0] - a.o[0], q[1] - a.o[1], q[2] - a.o[2]], a.z)) > 1e-6 * (1 + a.r)) flat = false;
+                            }
+                            if (flat) sin2 = 1;
+                        }
+                    } catch { /* not decidable – no limit */ }
+                }
+                return sin2;
+            };
+            for (let i = 0; i < circles.length; i++) for (let j = i + 1; j < circles.length; j++) {
+                const a = circles[i], b = circles[j];
+                const dr = Math.abs(a.r - b.r);
+                if (!(dr > 0) || dr >= narrow) continue;
+                a.pl ??= geo.placement(a.ref); b.pl ??= geo.placement(b.ref);
+                const za = a.pl.z, zb = b.pl.z, oa = a.pl.o, ob = b.pl.o;
+                if (Math.abs(dot(za, zb)) < 1 - 1e-9) continue;
+                // centres on the common axis
+                const d = [ob[0] - oa[0], ob[1] - oa[1], ob[2] - oa[2]], along = dot(d, za);
+                const off = Math.hypot(d[0] - za[0] * along, d[1] - za[1] * along, d[2] - za[2] * along);
+                if (off > 1e-6 * Math.max(a.r, b.r)) continue;
+                const k = factor({ o: oa, z: za, r: a.r });
+                if (k < 1e-6) continue;
+                set(a.id, dr / k, 0); set(b.id, dr / k, 0);
+            }
+        }
+        delete s.features;   // not part of the plan sent to the main thread
+    }
+    const ids = new Int32Array(limit.size), widths = new Float64Array(limit.size), radii = new Float64Array(limit.size);
+    let k = 0;
+    for (const [id, [w, r]] of limit) { ids[k] = id; widths[k] = w; radii[k++] = r; }
+    return { ids, widths, radii };
+}
+
+// Rough size of a solid (diagonal of the vertex bounding box) for the relative tolerance.
+// Also collects the candidates for featureLimits (small fillets, faces with several circles) into features.
+function solidSize(step, geo, faces, features) {
     const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
     const seen = new Set();
     for (const fid of faces) {
         const f = step.get(Math.abs(fid));
         if (!f || !f.args) continue;
+        // surface type only (a spline surface is not parsed here)
+        const st = f.type === 'ADVANCED_FACE' || f.type === 'FACE_SURFACE' ? step.typeOf(f.args[2]) : null;
+        const torus = st === 'TOROIDAL_SURFACE' || st === 'DEGENERATE_TOROIDAL_SURFACE';
+        const rings = st === 'PLANE' || st === 'CONICAL_SURFACE' || /SPLINE|COMPLEX/.test(st || '');
+        const torusEdges = torus ? [] : null, circles = rings ? [] : null;
+        let edged = false;
         for (const bRef of f.args[1] || []) {
             const b = step.get(bRef);
             const loop = b && step.get(b.args[1]);
             if (!loop) continue;
+            // a pole of the face (apex of a cone, end of a degenerate torus)
+            if (loop.type === 'VERTEX_LOOP') { try { ext(geo.point(loop.args[1])); } catch { /* no point */ } continue; }
             if (loop.type === 'POLY_LOOP') {
+                edged = true;
                 for (const r of loop.args[1]) ext(geo.point(r));
                 continue;
             }
             if (loop.type !== 'EDGE_LOOP') continue;
+            if (loop.args[1].length) edged = true;
             for (const oeRef of loop.args[1]) {
                 const oe = step.get(oeRef);
                 const ec = oe && step.get(oe.args[3]);
                 if (!ec || ec.type !== 'EDGE_CURVE') continue;
+                if (torusEdges) torusEdges.push(ec.id);
                 for (const v of [ec.args[1], ec.args[2]]) {
                     if (seen.has(v.id)) continue;
                     seen.add(v.id);
@@ -386,6 +510,7 @@ function solidSize(step, geo, faces) {
                 // 200 m radius ("homeo Torus") whose edges are tiny arcs of huge circles;
                 // the full circle made the solid 1 km large (-> far too coarse tessellation).
                 const c = step.get(ec.args[3]);
+                if (c && c.type === 'CIRCLE' && circles) circles.push({ id: ec.id, ref: c.args[1], r: c.args[2], pl: null });
                 if (c && c.type === 'CIRCLE') {
                     if (ec.args[1].id === ec.args[2].id) {
                         const p = geo.placement(c.args[1]).o, r = c.args[2];
@@ -400,10 +525,29 @@ function solidSize(step, geo, faces) {
                 }
             }
         }
+        // no edges (a whole sphere or torus bounded by a vertex loop, a face without bounds): the face is its
+        // surface's whole domain – otherwise the size fell back to 1 (far too fine for a sphere of radius 10)
+        if (!edged) surfaceExtent(geo, f.args[2], ext);
+        if (torusEdges && torusEdges.length) features.push({ torus: Math.abs(step.get(f.args[2]).args[3]), edges: torusEdges });
+        if (circles && circles.length > 1) features.push({ circles, type: st, f });
     }
     function ext(p) {
+        if (!p.every(isFinite)) return;
         for (let i = 0; i < 3; i++) { if (p[i] < mn[i]) mn[i] = p[i]; if (p[i] > mx[i]) mx[i] = p[i]; }
     }
     if (!isFinite(mn[0])) return 1;
     return Math.hypot(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]) || 1;
+}
+
+// Sample points of a surface over its finite parameter domain (faces without bounds)
+function surfaceExtent(geo, surfRef, ext) {
+    let surf;
+    try { surf = geo.surface(surfRef); } catch { return; }
+    const dom = surf.domain && surf.domain();
+    if (!dom || !dom.every(isFinite)) return;
+    const n = 8;
+    for (let i = 0; i <= n; i++) for (let j = 0; j <= n; j++) {
+        const p = surf.eval(dom[0] + (dom[1] - dom[0]) * i / n, dom[2] + (dom[3] - dom[2]) * j / n);
+        if (p.every(isFinite)) ext(p);
+    }
 }

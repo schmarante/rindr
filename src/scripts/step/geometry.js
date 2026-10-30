@@ -192,6 +192,28 @@ class EllipseCurve {
     }
 }
 
+// Parabola (ISO 10303-42): C + a·(t²·x + 2t·y), a = focal distance
+class ParabolaCurve {
+    constructor(pl, a) { this.pl = pl; this.a = a; this.kind = 'curve'; this.t0 = -Infinity; this.t1 = Infinity; this.period = 0; }
+    eval(t) { return this.pl.toWorld(this.a * t * t, 2 * this.a * t, 0); }
+    d1(t) {
+        const { x, y } = this.pl, s = 2 * this.a * t, c = 2 * this.a;
+        return [x[0] * s + y[0] * c, x[1] * s + y[1] * c, x[2] * s + y[2] * c];
+    }
+    closest(P) { return newtonCurve(this, P, this.pl.toLocal(P)[1] / (2 * this.a)); }
+}
+
+// Hyperbola (ISO 10303-42): C + a·cosh(t)·x + b·sinh(t)·y (the branch on the positive x side)
+class HyperbolaCurve {
+    constructor(pl, a, b) { this.pl = pl; this.a = a; this.b = b; this.kind = 'curve'; this.t0 = -Infinity; this.t1 = Infinity; this.period = 0; }
+    eval(t) { return this.pl.toWorld(this.a * Math.cosh(t), this.b * Math.sinh(t), 0); }
+    d1(t) {
+        const { x, y } = this.pl, s = this.a * Math.sinh(t), c = this.b * Math.cosh(t);
+        return [x[0] * s + y[0] * c, x[1] * s + y[1] * c, x[2] * s + y[2] * c];
+    }
+    closest(P) { return newtonCurve(this, P, Math.asinh(this.pl.toLocal(P)[1] / this.b)); }
+}
+
 class PolylineCurve {
     constructor(pts) { this.pts = pts; this.kind = 'poly'; this.t0 = 0; this.t1 = pts.length - 1; this.period = 0; }
     eval(t) {
@@ -305,11 +327,19 @@ class SurfaceBase {
         }
         return bl > 0 ? scale(best, 1 / bl) : [0, 0, 1];
     }
-    // Gauss-Newton refinement of a projection
+    // Is the normal at (u, v) only a substitute (pole, cone apex: du × dv vanishes)?
+    singular(u, v) {
+        const d = this.evalD(u, v), l = len(cross(d.du, d.dv));
+        return !(l > 1e-14 * (len(d.du) * len(d.dv) + 1e-300) && l > 1e-24);
+    }
+    // Gauss-Newton refinement of a projection. A step is only taken if it does not move away from P (halved
+    // otherwise): on a thin band with a clamped direction a full step could jump around a periodic surface and
+    // end on the wrong side (a bound point 33 units off its face, the face covered the whole band).
     refine(P, u, v, iters = 20) {
+        const uStart = u, vStart = v;
+        let e = this.evalD(u, v), r = sub(P, e.p), err = dot(r, r);
         for (let it = 0; it < iters; it++) {
-            const { p, du, dv } = this.evalD(u, v);
-            const r = sub(P, p);
+            const { du, dv } = e;
             const a = dot(du, du), b = dot(du, dv), c = dot(dv, dv);
             const ru = dot(r, du), rv = dot(r, dv);
             const det = a * c - b * b;
@@ -320,12 +350,26 @@ class SurfaceBase {
                 // singular (e.g. pole): only the non-degenerate direction
                 su = a > 1e-30 ? ru / a : 0; sv = c > 1e-30 ? rv / c : 0;
             }
-            let un = u + su, vn = v + sv;
-            if (this.clamp) [un, vn] = this.clamp(un, vn);
+            // periodic directions: at most half a period per step – next to a pole (|dv| small, but not yet
+            // singular) a step went to v ~1e14, where the parameter has no resolution left
+            if (this.uPeriod && Math.abs(su) > this.uPeriod / 2) su = Math.sign(su) * this.uPeriod / 2;
+            if (this.vPeriod && Math.abs(sv) > this.vPeriod / 2) sv = Math.sign(sv) * this.vPeriod / 2;
+            let un, vn, en, rn, errN;
+            for (let k = 0; ; k++) {
+                un = u + su; vn = v + sv;
+                if (this.clamp) [un, vn] = this.clamp(un, vn);
+                en = this.evalD(un, vn); rn = sub(P, en.p); errN = dot(rn, rn);
+                if (errN <= err || k === 8) break;
+                su /= 2; sv /= 2;
+            }
+            if (errN > err) break;
             const conv = Math.abs(un - u) <= 1e-12 * (1 + Math.abs(u)) && Math.abs(vn - v) <= 1e-12 * (1 + Math.abs(v));
-            u = un; v = vn;
+            u = un; v = vn; e = en; r = rn; err = errN;
             if (conv) break;
         }
+        // periodic: the representative next to the start value
+        if (this.uPeriod) u = wrapNear(u, uStart, this.uPeriod);
+        if (this.vPeriod) v = wrapNear(v, vStart, this.vPeriod);
         return [u, v];
     }
 }
@@ -389,6 +433,7 @@ class SphereSurface extends SurfaceBase {
         };
     }
     normal(u, v) { return normalize(sub(this.eval(u, v), this.pl.o)); }
+    singular() { return false; }   // the normal is exact at the poles too
     domain() { return [0, TAU, -Math.PI / 2, Math.PI / 2]; }
     project(P) {
         const l = this.pl.toLocal(P);
@@ -398,7 +443,17 @@ class SphereSurface extends SurfaceBase {
 }
 
 class TorusSurface extends SurfaceBase {
-    constructor(pl, R, r) { super(); this.pl = pl; this.R = R; this.r = r; this.uPeriod = TAU; this.vPeriod = TAU; }
+    // Degenerate torus (minor radius ≥ major radius, DEGENERATE_TOROIDAL_SURFACE): the tube passes through the
+    // axis and the surface splits into an outer part (rho = R + r cos v > 0, "apple") and an inner part (rho < 0,
+    // "lemon"); select_outer picks one. Each part is bounded by the poles on the axis (v = ±vs) – v does not wrap.
+    constructor(pl, R, r, selectOuter = true) {
+        super(); this.pl = pl; this.R = R; this.r = r; this.uPeriod = TAU; this.vPeriod = TAU;
+        if (r >= R && r > 0) {
+            this.vs = Math.acos(Math.max(-1, Math.min(1, -R / r)));
+            this.inner = !selectOuter;
+            this.vPeriod = 0;
+        }
+    }
     evalD(u, v) {
         const { x, y, z } = this.pl, R = this.R, r = this.r;
         const cu = Math.cos(u), su = Math.sin(u), cv = Math.cos(v), sv = Math.sin(v);
@@ -414,9 +469,17 @@ class TorusSurface extends SurfaceBase {
     project(P) {
         const l = this.pl.toLocal(P);
         const h = Math.hypot(l[0], l[1]);
+        if (this.inner) {
+            // inner part: the point lies on the far side of the axis (rho = −h), v around π
+            const v = Math.atan2(l[2], -h - this.R);
+            return [Math.atan2(-l[1], -l[0]), v < 0 ? v + TAU : v];
+        }
         return [Math.atan2(l[1], l[0]), Math.atan2(l[2], h - this.R)];
     }
-    domain() { return [0, TAU, 0, TAU]; }
+    domain() {
+        if (this.vs === undefined) return [0, TAU, 0, TAU];
+        return this.inner ? [0, TAU, this.vs, TAU - this.vs] : [0, TAU, -this.vs, this.vs];
+    }
 }
 
 class BSplineSurface extends SurfaceBase {
@@ -523,9 +586,14 @@ class BSplineSurface extends SurfaceBase {
         };
     }
     buildGrid() {
-        const nu = Math.min(Math.max((this.nu + 1) * 3, 12), 80);
-        const nv = Math.min(Math.max((this.nv + 1) * 3, 12), 80);
-        const pts = new Float64Array((nu + 1) * (nv + 1) * 3);
+        // ~3 samples per knot span: a fixed limit of 80 per direction was too coarse for long surfaces with many spans
+        // (a helical thread flank, 14 turns: 6 samples per turn – the nearest sample often lay on the neighbouring turn,
+        // whole boundary edges were projected there). At most ~12 000 points in single precision (only a start value) –
+        // not more memory per cached surface than the former 81 × 81 doubles.
+        let nu = Math.max((this.nu + 1) * 3, 12), nv = Math.max((this.nv + 1) * 3, 12);
+        const f = Math.sqrt(Math.min(1, 12000 / ((nu + 1) * (nv + 1))));
+        nu = Math.max(12, Math.round(nu * f)); nv = Math.max(12, Math.round(nv * f));
+        const pts = new Float32Array((nu + 1) * (nv + 1) * 3);
         for (let i = 0; i <= nu; i++) for (let j = 0; j <= nv; j++) {
             const p = this.evalD(this.u0 + (this.u1 - this.u0) * i / nu, this.v0 + (this.v1 - this.v0) * j / nv).p;
             const k = (i * (nv + 1) + j) * 3;
@@ -542,13 +610,27 @@ class BSplineSurface extends SurfaceBase {
         }
         if (!this.grid) this.buildGrid();
         const { nu, nv, pts } = this.grid;
-        let bd = Infinity, bi = 0, bj = 0;
+        // the nearest samples as start values, nearest first, until one converges (the very nearest can lie on another
+        // sheet of the surface, e.g. a neighbouring turn of a helix – Gauss-Newton then ends at a local minimum there;
+        // a fine thread has a dozen turns closer than the next sample of the right one); otherwise the best of them
+        const K = 48, cd = new Float64Array(K).fill(Infinity), ci = new Int32Array(K), cj = new Int32Array(K);
         for (let i = 0; i <= nu; i++) for (let j = 0; j <= nv; j++) {
             const k = (i * (nv + 1) + j) * 3;
             const d = (pts[k] - P[0]) ** 2 + (pts[k + 1] - P[1]) ** 2 + (pts[k + 2] - P[2]) ** 2;
-            if (d < bd) { bd = d; bi = i; bj = j; }
+            if (d >= cd[K - 1]) continue;
+            let m = K - 1;
+            while (m > 0 && cd[m - 1] > d) { cd[m] = cd[m - 1]; ci[m] = ci[m - 1]; cj[m] = cj[m - 1]; m--; }
+            cd[m] = d; ci[m] = i; cj[m] = j;
         }
-        return this.refine(P, this.u0 + (this.u1 - this.u0) * bi / nu, this.v0 + (this.v1 - this.v0) * bj / nv, 30);
+        const tol = 1e-4 * (1 + this.size());
+        let best = null, bestD = Infinity;
+        for (let m = 0; m < K && cd[m] < Infinity; m++) {
+            const r = this.refine(P, this.u0 + (this.u1 - this.u0) * ci[m] / nu, this.v0 + (this.v1 - this.v0) * cj[m] / nv, 30);
+            const d = dist(this.evalD(r[0], r[1]).p, P);
+            if (d < bestD) { bestD = d; best = r; }
+            if (d < tol) break;
+        }
+        return best;
     }
     size() {
         if (this._size === undefined) {
@@ -564,13 +646,25 @@ class BSplineSurface extends SurfaceBase {
     }
 }
 
+// Period of a swept curve: conics have their own, a closed B-spline (start = end point, e.g. a full circle as a
+// rational spline) is periodic too – otherwise bounds running once around it cannot be resolved (the face's
+// loops all collapse onto one side of the curve's parameter range)
+function curvePeriod(curve) {
+    if (curve.period) return curve.period;
+    if (curve.kind !== 'spline' || !(curve.t1 > curve.t0)) return 0;
+    const a = curve.eval(curve.t0), b = curve.eval(curve.t1);
+    return dist(a, b) < 1e-9 * (1 + len(a) + dist(a, curve.eval((curve.t0 + curve.t1) / 2))) ? curve.t1 - curve.t0 : 0;
+}
+// Parameter of a swept curve wrapped into its range (B-splines clamp outside of it)
+const wrapper = (curve, per) => (!curve.period && per ? t => curve.t0 + ((((t - curve.t0) % per) + per) % per) : t => t);
+
 class ExtrusionSurface extends SurfaceBase {
     // S(u, v) = C(u) + v * D
     constructor(curve, D) {
-        super(); this.c = curve; this.D = D; this.uPeriod = curve.period;
-        if (isFinite(curve.t0) && !curve.period) this.clamp = (u, v) => [Math.min(Math.max(u, curve.t0), curve.t1), v];
+        super(); this.c = curve; this.D = D; this.uPeriod = curvePeriod(curve); this.wrapT = wrapper(curve, this.uPeriod);
+        if (isFinite(curve.t0) && !this.uPeriod) this.clamp = (u, v) => [Math.min(Math.max(u, curve.t0), curve.t1), v];
     }
-    evalD(u, v) { return { p: madd2(this.c.eval(u), this.D, v, this.D, 0), du: this.c.d1(u), dv: this.D }; }
+    evalD(u, v) { u = this.wrapT(u); return { p: madd2(this.c.eval(u), this.D, v, this.D, 0), du: this.c.d1(u), dv: this.D }; }
     project(P, guess) {
         const dd = dot(this.D, this.D);
         // move P into the plane perpendicular to D at the curve start, then project onto the curve
@@ -589,14 +683,16 @@ class ExtrusionSurface extends SurfaceBase {
 class RevolutionSurface extends SurfaceBase {
     // S(u, v) = rotation of C(v) about the axis by angle u
     constructor(curve, o, k) {
-        super(); this.c = curve; this.o = o; this.k = normalize(k); this.uPeriod = TAU; this.vPeriod = curve.period;
-        if (isFinite(curve.t0) && !curve.period) this.clamp = (u, v) => [u, Math.min(Math.max(v, curve.t0), curve.t1)];
+        super(); this.c = curve; this.o = o; this.k = normalize(k); this.uPeriod = TAU; this.vPeriod = curvePeriod(curve);
+        this.wrapT = wrapper(curve, this.vPeriod);
+        if (isFinite(curve.t0) && !this.vPeriod) this.clamp = (u, v) => [u, Math.min(Math.max(v, curve.t0), curve.t1)];
     }
     rot(w, c, s) {
         const k = this.k, kw = dot(k, w), kx = cross(k, w);
         return [w[0] * c + kx[0] * s + k[0] * kw * (1 - c), w[1] * c + kx[1] * s + k[1] * kw * (1 - c), w[2] * c + kx[2] * s + k[2] * kw * (1 - c)];
     }
     evalD(u, v) {
+        v = this.wrapT(v);
         const C = this.c.eval(v), dC = this.c.d1(v), c = Math.cos(u), s = Math.sin(u);
         const w = sub(C, this.o), k = this.k, kw = dot(k, w), kx = cross(k, w);
         return {
@@ -711,6 +807,8 @@ export class GeometryBuilder {
             case 'LINE': return new LineCurve(this.point(a[1]), this.direction(a[2]));
             case 'CIRCLE': return new CircleCurve(this.placement(a[1]), a[2]);
             case 'ELLIPSE': return new EllipseCurve(this.placement(a[1]), a[2], a[3]);
+            case 'PARABOLA': return new ParabolaCurve(this.placement(a[1]), a[2]);
+            case 'HYPERBOLA': return new HyperbolaCurve(this.placement(a[1]), a[2], a[3]);
             case 'POLYLINE': return new PolylineCurve(a[1].map(r => this.point(r)));
             case 'SURFACE_CURVE': case 'SEAM_CURVE': case 'BOUNDED_SURFACE_CURVE': case 'INTERSECTION_CURVE':
                 return this.curve(a[1]);
@@ -757,8 +855,8 @@ export class GeometryBuilder {
             case 'CYLINDRICAL_SURFACE': return new CylinderSurface(this.placement(a[1]), a[2]);
             case 'CONICAL_SURFACE': return new ConeSurface(this.placement(a[1]), a[2], a[3] * this.angleUnit);
             case 'SPHERICAL_SURFACE': return new SphereSurface(this.placement(a[1]), a[2]);
-            case 'TOROIDAL_SURFACE': case 'DEGENERATE_TOROIDAL_SURFACE':
-                return new TorusSurface(this.placement(a[1]), a[2], a[3]);
+            case 'TOROIDAL_SURFACE': return new TorusSurface(this.placement(a[1]), a[2], a[3]);
+            case 'DEGENERATE_TOROIDAL_SURFACE': return new TorusSurface(this.placement(a[1]), a[2], a[3], a[4] !== false);
             case 'SURFACE_OF_LINEAR_EXTRUSION': return new ExtrusionSurface(this.curve(a[1]), this.direction(a[2]));
             case 'SURFACE_OF_REVOLUTION': {
                 const pl = this.placement(a[2]);

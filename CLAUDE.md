@@ -111,7 +111,7 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 - Node-Editor: Box-UVs haben auf gekrümmten Flächen gerade Nähte (seit Okt. 2026 je Dreieck – vorher Zickzack-Streifen; nahtlos über das Mapping je Objekt: Zylinder/Kugel); importierte Materialien landen in der Szene, nicht dauerhaft in der Bibliothek.
 - Ungenutzte STEP-Dummy-Materialien werden beim Neu-Tessellieren entfernt.
 - Sehr große STEP-Dateien (~400 MB, ~6 Mio. Dreiecke) laden im Headless-Chrome in ~30 s; Dateien ≥ 1 GB kaum getestet. Weitere Hebel: Worker-Zahl an Dateigröße koppeln, Tangenten nur bei Normal-Maps, CPU-Kopien nach GPU-Upload freigeben.
-- Nicht unterstützt: Nähte in u *und* v, OFFSET_CURVE, COMPOSITE_CURVE; Längeneinheit ignoriert.
+- Nicht unterstützt: Nähte in u *und* v, OFFSET_CURVE, COMPOSITE_CURVE, CURVE_BOUNDED_SURFACE, reine CSG-Dateien; Längeneinheit ignoriert. STEP-Härtung mit Prüfwerkzeug: `docs/step-import.md` „Härtung“.
 - Echte GPU / echter Browser nur vom Nutzer getestet.
 
 ## Umgesetzte Wünsche
