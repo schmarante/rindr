@@ -97,6 +97,12 @@ aus den Poren (offene Poren rauer); lackiert = Klarlack über glatterer Basis. M
 - Größen real: NF-Ziegel 240 × 71 mm + 10 mm Fuge (4 × 12 je 1 m), Betonstein 390 × 190 mm (3 × 6 je 1,2 m), Pflaster/Flechtziegel 200 × 100 mm, Quader 600–1200 mm.
 - Granit: zwei verkettete Speckle-Nodes (dunkle Glimmer + helle Quarze); Ziegel/Quader: Kachel-`uv` → Rauschen für Flecken je Stein.
 
+## Presets SSS (`src/scripts/presets/subsurface.js`, Kategorie `subsurface`)
+
+Die schlichten SSS-Materialien (Gelee, Schleim, Jade, Wachs) sind Grund-Presets in `material-presets.js`; hier die mit Node-Graph.
+
+- „Jade wolkig“ (`sss-jade-cloudy`, Kategorie SSS – `src/scripts/presets/subsurface.js`; erst unter Stein, Nutzer: „packs in die SSS-Kategorie“) (30.10.2026, Referenzbild des Nutzers: tiefgrüne polierte Jade, Licht scheint durch, dunklere Wolken, feine Fasern, wenige gelbgrüne Stellen) – Streumedium (HQ: Tönung #2e8a48 über 5 mm, Trübung weiß, IOR 1,62); die Struktur tönt nur die Oberfläche (Farbkarte = Tönung der Glas-Lobe: Wolken-Rauschen × Haarrisse aus dem Marmor-Node ohne scharfe Adern → Rampe dunkelgrün … fast weiß, gelbgrün eingemischt, wo es klar ist); Rauheit 0,2–0,32. Verworfen: Durchlässigkeits-Karte (trübe Stellen wurden milchig weiß – der diffuse Rest nimmt die Grundfarbe), genaues SSS (rot läuft am weitesten → gelb-beige Kanten), Rauheit 0,07–0,13 (wirkte wie grünes Glas), scharfe Adern (Zellumrisse wie Marmor). Prüfskript Scratchpad `jade.js` + `jade/gen.py` (Material auf die Teile der Beispielszene). Die schlichte „Jade“ (`sss-jade`, homogen) bleibt
+
 ## Presets Beton & Putz / Fliesen & Böden (`src/scripts/presets/concrete.js`)
 
 Alle Looks prozedural (Node-Graph, auf der GPU gebacken), eigene Werte und Namen; MAX-Bibliotheken nur zur Orientierung.

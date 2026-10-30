@@ -269,6 +269,9 @@ export async function applyState(ctx, state) {
     sceneGraph.deleted = new Set(deleted);
     ctx.refreshSceneGraph?.();
     sceneGraph.setHiddenModel(hidden);
+    // the file's own materials that no part uses any more after the saved assignments (sample scene: the model has no
+    // materials of its own – its parts got placeholders on import): out of the list, as after loading a model
+    materialManager.pruneUnused();
     materialManager.dispatchEvent(new CustomEvent('change'));
 
     // camera
