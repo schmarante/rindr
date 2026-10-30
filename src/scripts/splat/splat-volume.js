@@ -165,13 +165,12 @@ export class SplatVolume {
         return true;
     }
 
-    // the Gaussians' buffer (null: a small empty one) – the previous one is freed on the GPU. three.js frees attributes
-    // only with their geometry (nobody listens to an attribute's 'dispose'): through the renderer's attribute store, as
-    // it does then (the next dispatch binds the new buffer)
+    // the Gaussians' buffer (null: a small empty one) – the previous one is freed on the GPU (three.js r187 frees an
+    // attribute on its 'dispose'; r186 only with its geometry – we went through the renderer's attribute store then)
     _setGaussians(data) {
         const old = GAUSS.data.value;
         GAUSS.data.value = new THREE.StorageBufferAttribute(data ?? new Float32Array(16), 4);
-        if (old) this._renderer?._attributes?.delete(old);
+        old?.dispose();
     }
 
     // the traced Gaussians fit on this device: their buffer (64 bytes per splat + ~0.7 BVH nodes of 32 bytes – measured,

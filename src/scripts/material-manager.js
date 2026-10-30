@@ -536,7 +536,7 @@ function applyParams(material, params) {
     material.color.set(p.color);
     material.metalness = p.metalness;
     material.roughness = p.roughness;
-    material.diffuseRoughness = p.diffuseRoughness;   // read by the path tracer (EON diffuse); not in the raster
+    material.diffuseRoughness = p.diffuseRoughness;   // EON diffuse: path tracer, raster (three.js r187); × diffuseRoughnessMap (node graph)
     material.specularIntensity = p.specularIntensity;
     material.specularColor.set(p.specularColor);
     material.anisotropy = p.anisotropy;
@@ -571,7 +571,7 @@ function applyParams(material, params) {
     if (!material.soap) {
         // thin film (the soap film sets its own)
         material.iridescenceIOR = p.iridescenceIOR;
-        material.iridescenceThicknessRange = [p.iridescenceThickness, p.iridescenceThickness];
+        material.iridescenceThicknessMinimum = material.iridescenceThicknessMaximum = p.iridescenceThickness;
     }
     material.setEdges(p.edgeRadius, p.edgeConcave);
     material.toon = p.toon > 0;
@@ -606,7 +606,7 @@ function applyRender(material, r, hasGraph) {
 }
 // Graph slot -> map property (like SLOTS in graph-apply.js)
 const GRAPH_MAP_SLOTS = {
-    color: 'map', metalness: 'metalnessMap', roughness: 'roughnessMap', clearcoat: 'clearcoatMap',
+    color: 'map', metalness: 'metalnessMap', roughness: 'roughnessMap', diffuseRoughness: 'diffuseRoughnessMap', clearcoat: 'clearcoatMap',
     clearcoatRoughness: 'clearcoatRoughnessMap', transmission: 'transmissionMap', sheen: 'sheenColorMap',
     emissive: 'emissiveMap', normal: 'normalMap', ao: 'aoMap', height: 'normalMap',
     coatNormal: 'clearcoatNormalMap', coatHeight: 'clearcoatNormalMap', anisotropyMap: 'anisotropyMap', coatAnisotropyMap: 'coatAnisotropyMap',

@@ -150,7 +150,7 @@
 								gsCaustic = false;
 
 								// next event estimation: one light or the environment (transmittance through all media + glass)
-								if ( misEnabled != 0u && lightsDenom > 0.0 ) {
+								if ( misEnabled != 0u ) {
 
 									vmRng = vmRng * 747796405u + 2891336453u;
 									let vmL0 = ${ __CLOUD.pcg }( vmRng );
@@ -158,7 +158,10 @@
 									let vmL1 = ${ __CLOUD.pcg }( vmRng );
 									vmRng = vmRng * 747796405u + 2891336453u;
 									let vmL2 = ${ __CLOUD.pcg }( vmRng );
-									let vmLightIndex = min( u32( vmL0 * lightsDenom ), u32( lightsDenom ) - 1u );
+									// the light chosen by its estimated contribution (three-gpu-pathtracer 0.0.27's selection, the same weights the
+									// forward hits are MIS-weighted with)
+									var vmSel = 0.0;
+									let vmLightIndex = ${ selectLightFn }( vmPos, envWeight, vmL0, &vmSel );
 									var vmLight: ${ lightRecordStruct };
 									if ( envActive && vmLightIndex == lightsCount ) {
 
@@ -174,14 +177,14 @@
 										vmLight = ${ randomLightSampleFn }( vmLightIndex, vmPos, vec2f( vmL1, vmL2 ) );
 
 									}
-									if ( vmLight.pdf > 0.0 ) {
+									if ( vmSel > 0.0 && vmLight.pdf > 0.0 ) {
 
-										let vmShadowMax = vmLight.dist - ${ LIGHT_EPSILON };
+										let vmShadowMax = vmLight.dist * ( 1.0 - ${ LIGHT_EPSILON } );
 										//@glass-shadow vmPos | vmLight.direction | vmShadowMax | vmLight.direction | false
 										if ( any( gsShadow > vec3f( 0.0 ) ) ) {
 
 											let vmPhase = ${ __CLOUD.pdfHG }( dot( vmDir, vmLight.direction ), vmG );
-											let vmLightPdf = vmLight.pdf / lightsDenom;
+											let vmLightPdf = vmLight.pdf * vmSel;
 											let vmMis = select( 1.0, ${ misHeuristicFn }( vmLightPdf, vmPhase ), ${ isMISWeightLightFn }( vmLight.lightType ) && ! gsGlass );
 											let vmDirect = throughputColor * vmLight.emission * vmPhase * vmMis * gsShadow / vmLightPdf;
 											resultColor += vec4f( ${ clampPathContributionFunc }( vmDirect, bounce + 1u, clampDirect, clampIndirect ), 0.0 );

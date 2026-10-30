@@ -252,8 +252,10 @@ export class AdaptiveSampler {
         const bx = Math.ceil(size.x / BLOCK), by = Math.ceil(size.y / BLOCK);
         if (this._blocks.x !== bx || this._blocks.y !== by) {
             this._blocks.set(bx, by);
+            const old = this._blockErr;
             this._blockErr = new THREE.StorageBufferAttribute(new Float32Array(bx * by), 1);
             this._blockErrNode.value = this._blockErr;
+            old.dispose();   // its GPU buffer (three.js r187 frees attributes on 'dispose')
         }
         if (this.heat.image.width !== size.x || this.heat.image.height !== size.y) {
             const old = this.heat;
@@ -320,6 +322,8 @@ export class AdaptiveSampler {
     }
 
     dispose() {
+        this._blockErr.dispose();
+        this._counters.dispose();
         this.heat.dispose();
         this._overlayTarget.dispose();
         this._overlayMaterial.dispose();

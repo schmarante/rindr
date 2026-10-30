@@ -71,8 +71,10 @@ export function bucketBuffer(floats) {
         const grown = new Float32Array(BUCKET_FLOATS + floats);
         grown.set(data.subarray(0, BUCKET_FLOATS));
         data = grown;
+        const old = attribute;
         attribute = new THREE.StorageBufferAttribute(data, 1);
         BUCKET_DATA.value = attribute;
+        old.dispose();   // its GPU buffer (three.js r187 frees attributes on 'dispose')
     }
     return attribute;
 }

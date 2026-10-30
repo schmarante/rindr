@@ -581,6 +581,7 @@
                     "color": "Farbe",
                     "metalness": "Metall",
                     "roughness": "Rauheit",
+                    "diffuseRoughness": "Diffuse Rauheit",
                     "anisotropy": "Anisotropie",
                     "anisotropyDirection": "Anisotropie-Richtung (0–1 = 0–180°)",
                     "specularIntensity": "Spiegelstärke",

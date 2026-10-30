@@ -339,6 +339,12 @@ function openPbrPatch() {
         return { code, map: null };
       }
       if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/material.wgsl.js')) {
+        // base_diffuse_roughness per pixel: × the map's red channel (three.js r187 raster: the same)
+        replaceOnce(/\n(\t+)surf\.diffuseRoughness = material\.diffuseRoughness;\n/, (m, tab) => `\n${tab}surf.diffuseRoughness = material.diffuseRoughness;\n`
+          + `${tab}if ( material.diffuseRoughnessMap != -1 ) {\n\n`
+          + `${tab}\tlet diffuseUv = material.diffuseRoughnessMapTransform * vec3f( getUvFromChannel( vertexData, material.diffuseRoughnessMap ), 1.0 );\n`
+          + `${tab}\tsurf.diffuseRoughness *= sampleTexel( diffuseUv.xy, material.diffuseRoughnessMap, 0 ).r;\n\n`
+          + `${tab}}\n`);
         replaceOnce(/\n(\t+)surf\.clearcoat = clearcoat;\n/, (m, tab) => `${m}${tab}surf.coatIor = max( material.coatIor, 1.0 );\n`
           + `${tab}surf.coatColor = vec3f( material.coatColorR, material.coatColorG, material.coatColorB );\n`
           + `${tab}surf.coatDarkening = material.coatDarkening;\n`);
@@ -444,7 +450,8 @@ function mediumPatch() {
       if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/structs.wgsl.js')) {
         replaceOnce(/\n(\t)anisotropyMapTransform: 'mat3',\n/, (m, tab) => `${m}${tab}// rindr-medium\n${tab}mediumScatter: 'vec3',\n${tab}mediumAnisotropy: 'float',\n${tab}mediumTint: 'float',\n`
           + `${tab}// rindr-openpbr (in the medium's padding): coat darkening, anisotropy, rotation (radians)\n${tab}coatDarkening: 'float',\n${tab}coatAnisotropy: 'float',\n${tab}coatAnisotropyRotation: 'float',\n`
-          + `${tab}// rindr-openpbr: the coat's anisotropy map (RG direction, B strength – swirl marks) + its transform\n${tab}coatAnisotropyMap: 'int',\n${tab}coatPad0: 'float',\n${tab}coatPad1: 'float',\n${tab}coatPad2: 'float',\n${tab}coatAnisotropyMapTransform: 'mat3',\n`);
+          + `${tab}// rindr-openpbr: the coat's anisotropy map (RG direction, B strength – swirl marks) + its transform\n${tab}coatAnisotropyMap: 'int',\n${tab}coatPad0: 'float',\n${tab}coatPad1: 'float',\n${tab}coatPad2: 'float',\n${tab}coatAnisotropyMapTransform: 'mat3',\n`
+          + `${tab}// rindr-openpbr: base_diffuse_roughness per pixel (red channel × diffuseRoughness, like three.js r187) + its transform\n${tab}diffuseRoughnessMap: 'int',\n${tab}diffusePad0: 'float',\n${tab}diffusePad1: 'float',\n${tab}diffusePad2: 'float',\n${tab}diffuseRoughnessMapTransform: 'mat3',\n`);
         replaceOnce(/\n(\t)clearcoatRoughness: 'f32',\n/, (m, tab) => `${m}${tab}transmissionTint: 'vec3f',\n`);
         return { code, map: null };
       }
@@ -465,6 +472,10 @@ ${tab}// rindr-openpbr: the coat's anisotropy map + its transform
 ${tab}intArray[ index ++ ] = getTexture( m, 'coatAnisotropyMap' );
 ${tab}index += 3;
 ${tab}index += writeTextureMatrixToArray( m, 'coatAnisotropyMap', floatArray, index );
+${tab}// rindr-openpbr: the diffuse roughness map + its transform
+${tab}intArray[ index ++ ] = getTexture( m, 'diffuseRoughnessMap' );
+${tab}index += 3;
+${tab}index += writeTextureMatrixToArray( m, 'diffuseRoughnessMap', floatArray, index );
 `);
         return { code, map: null };
       }
@@ -481,8 +492,8 @@ ${tab}index += writeTextureMatrixToArray( m, 'coatAnisotropyMap', floatArray, in
       replaceOnce(/\n(\t+)var transparentBounce = 0u;/, (m, tab) => `${m}\n${tab}var mdScattered = false;\n${tab}var mdPassed = false;\n${tab}var mdNoLight = false;\n${tab}var mdEvents = 0u;`);
       replaceOnce(/\n\t+materialInfo\.opacity \*= objectInfo\.color\.a;\n/, m => m + gate('medium', readFileSync(MEDIUM_WALK_PATCH, 'utf8')));
       replaceOnce('if ( hitResult.side < 0.0 && materialInfo.transmission > 0.0 ) {', () => 'if ( hitResult.side < 0.0 && materialInfo.transmission > 0.0 && ! mdPassed ) {');
-      replaceOnce(/(\/\/ next event estimation: draw one light or the environment, each with\n\t+\/\/ probability 1 \/ lightsDenom\n\t+)if \( misEnabled != 0u && lightsDenom > 0\.0 \) \{/,
-        (_, head) => `${head}if ( misEnabled != 0u && lightsDenom > 0.0 && ! mdNoLight ) {`);
+      replaceOnce(/(\/\/ next event estimation: choose one light or the environment by its estimated\n\t+\/\/ contribution\n\t+)if \( misEnabled != 0u \) \{/,
+        (_, head) => `${head}if ( misEnabled != 0u && ! mdNoLight ) {`);
       return { code, map: null };
     },
   };
@@ -589,10 +600,14 @@ function glassShadowPatch() {
       });
       // next event estimation: transmitted light instead of a plain occlusion test; through glass the full weight
       // (the bsdf-sampled counterpart is a caustic path, not counted, see below)
-      replaceOnce(/\n\t+var shadowHit: \$\{ raycastOutput \};\n\t+let occluded = \$\{ raycastFirstHitFn \}\( shadowRay, &shadowHit \);\n(\t+)if \( ! occluded \) \{/,
-        (_, tab) => '\n' + snippet({ origin: 'vertexData.position.xyz', dir: 'lightRec.direction', maxDist: 'shadowRay.maxDist', normal: 'hitResult.normal', primary: 'bounce == 0u' })
+      // (three-gpu-pathtracer 0.0.27: its own shadow ray test hits both sides – ours keeps the first-hit test of
+      // 0.0.26 with the material's side; shadowHit stays declared, its forwardBlocked – objects hidden from shadow
+      // rays, not used here – false)
+      replaceOnce(/\n(\t+)var shadowHit: \$\{ raycastOutput \};\n\t+let occluded = \$\{ raycastShadowFn \}\( shadowRay, &shadowHit \);\n\t+if \( ! occluded \) \{/,
+        (_, tab) => `\n${tab}var shadowHit: \${ raycastOutput };\n` + snippet({ origin: 'vertexData.position.xyz', dir: 'lightRec.direction', maxDist: 'shadowRay.maxDist', normal: 'hitResult.normal', primary: 'bounce == 0u' })
           + `${tab}if ( any( gsShadow > vec3f( 0.0 ) ) ) {`);
-      replaceOnce('${ isMISWeightLightFn }( lightRec.lightType ) );', () => '${ isMISWeightLightFn }( lightRec.lightType ) && ! gsGlass );');
+      replaceOnce('let isMISWeighted = ${ isMISWeightLightFn }( lightRec.lightType ) && ! shadowHit.forwardBlocked;',
+        () => 'let isMISWeighted = ${ isMISWeightLightFn }( lightRec.lightType ) && ! shadowHit.forwardBlocked && ! gsGlass;');
       replaceOnce('let directLight = throughputColor * lightRec.emission * evalRec.color * misWeight / lightPdf;',
         () => 'let directLight = throughputColor * lightRec.emission * evalRec.color * misWeight * gsShadow / lightPdf;');
       // caustic paths: a refraction after a rough bounce (low pdf, not transmissive) – their light/environment hit is
@@ -602,8 +617,8 @@ function glassShadowPatch() {
       const drop = '( gsCaustic && ${ __GS.mode } == 1u )';
       replaceOnce('let contribution = ${ clampPathContributionFunc }( environment, bounce, clampDirect, clampIndirect );',
         () => `let contribution = select( \${ clampPathContributionFunc }( environment, bounce, clampDirect, clampIndirect ), vec3f( 0.0 ), ${drop} );`);
-      replaceOnce('let lightHit = ${ clampPathContributionFunc }( lightRec.emission * throughputColor * misWeight, bounce, clampDirect, clampIndirect );',
-        () => `let lightHit = select( \${ clampPathContributionFunc }( lightRec.emission * throughputColor * misWeight, bounce, clampDirect, clampIndirect ), vec3f( 0.0 ), ${drop} );`);
+      replaceOnce('lightHits += ${ clampPathContributionFunc }( lightRec.emission * throughputColor * misWeight, bounce, clampDirect, clampIndirect );',
+        () => `lightHits += select( \${ clampPathContributionFunc }( lightRec.emission * throughputColor * misWeight, bounce, clampDirect, clampIndirect ), vec3f( 0.0 ), ${drop} );`);
       // __GX (traced Gaussians) is imported by rindr-gaussians, which runs before
       return { code: `import { GLASS_SHADOW as __GS } from ${JSON.stringify(GLASS_SHADOW_MODULE)};\n` + code, map: null };
     },
@@ -997,15 +1012,17 @@ ${tab}}${lpT(tab, 'scShadow * scSurf.z * ( 1.0 - scSurf.x )')}`);
       // the background seen through traced Gaussians (rindr-gaussians)
       replaceN(/\n(\t+)let gxBg = background \* throughputColor;\n/, (m, tab) => `${m}${lpAdd(tab, `${LP.BG}u`, 'gxBg', { direct: LP.DIRECT_BG })}${lpT(tab, 'vec3f( bg.a ) * throughputColor')}\n`);
       // lights hit, emission
-      replaceN(/\n(\t+)resultColor \+= vec4f\( lightHit, 0\.0 \);/, (m, tab) => `${m}${lpAdd(tab, `min( li, ${LP.LAST_LIGHT}u )`, 'lightHit', { direct: LP.DIRECT_EMISSION })}`);
+      // (three-gpu-pathtracer 0.0.27 collects the hits in lightHits and adds them at the end – camera rays only see
+      // lights with visibleToCameraRays, which RINDR does not set, so a later background clear never drops one)
+      replaceN(/\n(\t+)lightHits \+= ([^\n]+);/, (m, tab, value) => `\n${tab}{\n\n${tab}\tlet lpV = ${value};\n${tab}\tlightHits += lpV;${lpAdd(`${tab}\t`, `min( li, ${LP.LAST_LIGHT}u )`, 'lpV', { direct: LP.DIRECT_EMISSION })}\n\n${tab}}`);
       replaceN(/\n(\t+)resultColor \+= vec4f\( emission, 0\.0 \);/, (m, tab) => `${m}${lpAdd(tab, `${LP.EMISSION}u`, 'emission', { direct: LP.DIRECT_EMISSION })}`);
       // direct light at a surface: kinds by its own evaluation (the lobes still hold it – the glass shadow ray evaluates
       // no material); at the first surface the light lost to the shadow (light sampling alone, no MIS: an estimate of the
       // occluded direct light by itself)
-      replaceN(/\n(\t+)if \( any\( gsShadow > vec3f\( 0\.0 \) \) \) \{(\n\n\t+var lightPdf = lightRec\.pdf;)/, (m, tab, rest) => `
+      replaceN(/\n(\t+)if \( any\( gsShadow > vec3f\( 0\.0 \) \) \) \{(\n\n\t+let lightPdf = lightRec\.pdf \* selectionPdf;)/, (m, tab, rest) => `
 ${tab}if ( lpOn && ! lpSplit ) {
 
-${tab}\t\${ __LP_ADD }( lpB, ${LP.SHADOW}u, \${ clampPathContributionFunc }( throughputColor * lightRec.emission * evalRec.color * max( vec3f( 1.0 ) - gsShadow, vec3f( 0.0 ) ) * lightsDenom / lightRec.pdf, bounce + 1u, clampDirect, clampIndirect ) );
+${tab}\t\${ __LP_ADD }( lpB, ${LP.SHADOW}u, \${ clampPathContributionFunc }( throughputColor * lightRec.emission * evalRec.color * max( vec3f( 1.0 ) - gsShadow, vec3f( 0.0 ) ) / ( lightRec.pdf * selectionPdf ), bounce + 1u, clampDirect, clampIndirect ) );
 
 ${tab}}
 ${tab}if ( any( gsShadow > vec3f( 0.0 ) ) ) {${rest}`);
@@ -1184,6 +1201,55 @@ function adaptivePatch() {
   };
 }
 
+// three.js r187 (Renderer.compileAsync, precompile state): three issues with how RINDR calls it – a pass sets its render
+// target, calls compileAsync and restores the target right away; several passes do so one after another.
+//  1. compileAsync begins its first work item synchronously and stops in the middle of the node build (awaiting it)
+//     with that item's state active; the next compileAsync of the caller overwrote it and set it to null – the first
+//     one then failed ("Cannot destructure property 'useFrameBufferTarget' of 'this._precompilationState'").
+//  2. Finishing a work item restored the render target and MRT of the time of the call, not what was active when it
+//     began – later, in another task, it set the pass's target again that the caller had long restored.
+//  3. Work items of two calls interleaved, each overwriting the one state.
+// Patched: _beginPreCompile remembers what is active (target, MRT, an outer state), _finishPreCompile restores exactly
+// that; work items start at the earliest in the next microtask (the caller has restored its target by then – objects
+// and their state are still collected synchronously at the call) and calls work off their items one after another
+// (pipelines still compile in parallel). Remove when three.js handles this itself.
+function threeCompileStatePatch() {
+  return {
+    name: 'rindr-three-compile-state',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.replace(/\\/g, '/').split('?')[0];
+      if (!file.endsWith('three/build/three.webgpu.js')) return null;
+      const replaceOnce = (from, to) => {
+        if (code.split(from).length !== 2) this.error(`rindr-three-compile-state: anchor not found exactly once in three.webgpu.js (three.js changed?): ${from.slice(0, 70)}`);
+        code = code.replace(from, () => to);
+      };
+      // 1 + 2: begin remembers what is active, finish restores it (and an outer state begun before)
+      replaceOnce('\t\tconst { useFrameBufferTarget, renderTarget, mrt, renderContext, item } = precompilationState;',
+        '\t\tconst { useFrameBufferTarget, renderTarget, mrt, renderContext, item } = precompilationState;\n'
+        + '\t\tprecompilationState.__rindrRestore = { target: this._renderTarget, face: this._activeCubeFace, mip: this._activeMipmapLevel, mrt: this._mrt, outer: this._precompilationState };');
+      replaceOnce('const { useFrameBufferTarget, outputRenderTarget, activeCubeFace, activeMipmapLevel, outputMRT, previousRenderContext, item, materialSide } = this._precompilationState;',
+        'const __rindrState = this._precompilationState;\n\t\tif ( __rindrState === null ) return;\n'
+        + '\t\tconst { previousRenderContext, item, materialSide, __rindrRestore } = __rindrState;');
+      replaceOnce('if ( useFrameBufferTarget === true ) this.setRenderTarget( outputRenderTarget, activeCubeFace, activeMipmapLevel );\n\t\tthis.setMRT( outputMRT );',
+        'this.setRenderTarget( __rindrRestore.target, __rindrRestore.face, __rindrRestore.mip );\n\t\tthis.setMRT( __rindrRestore.mrt );');
+      replaceOnce('\t\tthis._callDepth --;\n\n\t\tthis._precompilationState = null;',
+        '\t\tthis._callDepth --;\n\n\t\tthis._precompilationState = __rindrRestore.outer;');
+      // 1 + 3: work items never start synchronously, calls one after another
+      replaceOnce('\t\tfor ( const item of compilationPromises ) {',
+        '\t\tconst __rindrPrevious = this.__rindrCompileChain;\n\t\tlet __rindrDone;\n'
+        + '\t\tconst __rindrChain = this.__rindrCompileChain = new Promise( resolve => { __rindrDone = resolve; } );\n'
+        + '\t\tawait __rindrPrevious;\n'
+        + '\t\ttry {\n\t\tfor ( const item of compilationPromises ) {');
+      replaceOnce('\t\t\tif ( scheduler.needsYield() ) await scheduler.yield();\n\n\t\t}\n\n\t\tawait Promise.all( compilingPipelines );',
+        '\t\t\tif ( scheduler.needsYield() ) await scheduler.yield();\n\n\t\t}\n'
+        + '\t\t} finally {\n\t\t\t__rindrDone();\n\t\t\tif ( this.__rindrCompileChain === __rindrChain ) this.__rindrCompileChain = null;\n\t\t}\n\n'
+        + '\t\tawait Promise.all( compilingPipelines );');
+      return { code, map: null };
+    },
+  };
+}
+
 function nanGuardPatch() {
   return {
     name: 'rindr-nan-guard',
@@ -1280,10 +1346,12 @@ ${tab}\t\t\tlet gxScatter = true;
 ${tab}\t\t\tisFullyTransmissive = false;
 ${tab}\t\t\tgsRough = true;
 ${tab}\t\t\tgsCaustic = false;
-${tab}\t\t\tif ( misEnabled != 0u && lightsDenom > 0.0 ) {
+${tab}\t\t\tif ( misEnabled != 0u ) {
 
 ${tab}\t\t\t\tlet gxL = \${ rand3 }( 212u );
-${tab}\t\t\t\tlet gxLightIndex = min( u32( gxL.x * lightsDenom ), u32( lightsDenom ) - 1u );
+${tab}\t\t\t\t// the light chosen by its estimated contribution (three-gpu-pathtracer 0.0.27's selection)
+${tab}\t\t\t\tvar gxSel = 0.0;
+${tab}\t\t\t\tlet gxLightIndex = \${ selectLightFn }( gxPos, envWeight, gxL.x, &gxSel );
 ${tab}\t\t\t\tvar gxLight: \${ lightRecordStruct };
 ${tab}\t\t\t\tif ( envActive && gxLightIndex == lightsCount ) {
 
@@ -1301,13 +1369,13 @@ ${tab}\t\t\t\t\tgxLight = \${ randomLightSampleFn }( gxLightIndex, gxPos, gxL.yz
 ${tab}\t\t\t\t}
 ${tab}\t\t\t\tlet gxCos = dot( gxN, gxLight.direction );
 ${tab}\t\t\t\tlet gxPhase = select( 0.0795774715, max( gxCos, 0.0 ) * 0.318309886, gxSurface );
-${tab}\t\t\t\tif ( gxLight.pdf > 0.0 && gxPhase > 0.0 ) {
+${tab}\t\t\t\tif ( gxSel > 0.0 && gxLight.pdf > 0.0 && gxPhase > 0.0 ) {
 
-${tab}\t\t\t\t\tlet gxShadowMax = gxLight.dist - \${ LIGHT_EPSILON };
+${tab}\t\t\t\t\tlet gxShadowMax = gxLight.dist * ( 1.0 - \${ LIGHT_EPSILON } );
 ${tab}\t\t\t\t\t//@glass-shadow gxPos | gxLight.direction | gxShadowMax | gxLight.direction | false
 ${tab}\t\t\t\t\tif ( any( gsShadow > vec3f( 0.0 ) ) ) {
 
-${tab}\t\t\t\t\t\tlet gxLightPdf = gxLight.pdf / lightsDenom;
+${tab}\t\t\t\t\t\tlet gxLightPdf = gxLight.pdf * gxSel;
 ${tab}\t\t\t\t\t\tlet gxMis = select( 1.0, \${ misHeuristicFn }( gxLightPdf, gxPhase ), \${ isMISWeightLightFn }( gxLight.lightType ) && ! gsGlass );
 ${tab}\t\t\t\t\t\tlet gxDirect = throughputColor * gxLight.emission * gxPhase * gxMis * gsShadow / gxLightPdf;
 ${tab}\t\t\t\t\t\tresultColor += vec4f( \${ clampPathContributionFunc }( gxDirect, bounce + 1u, clampDirect, clampIndirect ), 0.0 );
@@ -1522,8 +1590,9 @@ function soapPatch() {
 
 // Rounded edges (src/scripts/materials/edges.js – fails loudly if the library changed, check on every update):
 // - BVHComputeData: remembers per geometry where its vertices start in the packed attribute buffer
-// - PathtracerBVHComputeData.writeMaterialData: spare transform fields = the geometry's block in EDGE_DATA
-//   (_alignment0) and that vertex start (_alignment1)
+// - PathtracerBVHComputeData: two own transform fields after the colour (three-gpu-pathtracer 0.0.27 took the spare
+//   _alignment1 for visibleToShadowRays; fixed offsets of the library – colour at 36 – stay): the geometry's block in
+//   EDGE_DATA (rindrEdgeBase) and that vertex start (rindrVertexStart), + padding to 16 bytes
 // - megakernel: a hit on a material with an edge radius (stand-in anisotropyRotation, anisotropy 0) bends the
 //   object-space normal with the same function as the raster (EDGE_WGSL), before it goes to world space
 const EDGES_MODULE = fileURLToPath(new URL('./src/scripts/materials/edges.js', import.meta.url));
@@ -1533,7 +1602,7 @@ const EDGE_NORMAL = `
 						if ( materialInfo.anisotropyRotation != 0.0 && materialInfo.anisotropy == 0.0 && bounce < \${ __EDGE_BOUNCES } ) {
 
 							let edScale = ( length( objectInfo.matrixWorld[ 0 ].xyz ) + length( objectInfo.matrixWorld[ 1 ].xyz ) + length( objectInfo.matrixWorld[ 2 ].xyz ) ) / 3.0;
-							vertexData.normal = vec4f( \${ __EDGES }( vertexData.position.xyz, vertexData.normal.xyz, hitResult.indices.x - objectInfo._alignment1, objectInfo._alignment0, materialInfo.anisotropyRotation / max( edScale, 1e-30 ) ), 0.0 );
+							vertexData.normal = vec4f( \${ __EDGES }( vertexData.position.xyz, vertexData.normal.xyz, hitResult.indices.x - objectInfo.rindrVertexStart, objectInfo.rindrEdgeBase, materialInfo.anisotropyRotation / max( edScale, 1e-30 ) ), 0.0 );
 							materialInfo.anisotropyRotation = 0.0;
 
 						}
@@ -1557,9 +1626,11 @@ function edgesPatch() {
         return { code, map: null };
       }
       if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/PathtracerBVHComputeData.js')) {
+        replaceOnce(/\n(\t)color: 'vec4f',\n\}, 'TransformStruct' \);/, (m, tab) => `\n${tab}color: 'vec4f',\n${tab}rindrEdgeBase: 'uint',\n${tab}rindrVertexStart: 'uint',\n`
+          + `${tab}_rindrPad0: 'uint',\n${tab}_rindrPad1: 'uint',\n}, 'TransformStruct' );`);
         replaceOnce(/\n(\t+)transformBufferU32\[ writeOffset \* transformStruct\.getLength\(\) \+ 33 \] = index;\n/, (m, tab) => `${m}`
-          + `${tab}transformBufferU32[ writeOffset * transformStruct.getLength() + 34 ] = __edgeBase( object.geometry );\n`
-          + `${tab}transformBufferU32[ writeOffset * transformStruct.getLength() + 35 ] = this.rindrVertexStart?.get( object.geometry ) ?? 0;\n`);
+          + `${tab}transformBufferU32[ writeOffset * transformStruct.getLength() + 40 ] = __edgeBase( object.geometry );\n`
+          + `${tab}transformBufferU32[ writeOffset * transformStruct.getLength() + 41 ] = this.rindrVertexStart?.get( object.geometry ) ?? 0;\n`);
         return { code: `import { edgeBase as __edgeBase } from ${JSON.stringify(EDGES_MODULE)};\n` + code, map: null };
       }
       if (file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) {
@@ -1613,7 +1684,7 @@ export default defineConfig({
     headers: isolationHeaders,
   },
   vite: {
-    plugins: [tailwindcss(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), bucketPatch(), ptStandInPatch(), openPbrPatch(), mediumPatch(), glassBouncesPatch(), motionJitterPatch(), cloudPatch(), gaussianPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch(), glassSplitPatch(), nanGuardPatch(), adaptivePatch(), lightPassesPatch()],
+    plugins: [tailwindcss(), threeCompileStatePatch(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), bucketPatch(), ptStandInPatch(), openPbrPatch(), mediumPatch(), glassBouncesPatch(), motionJitterPatch(), cloudPatch(), gaussianPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch(), glassSplitPatch(), nanGuardPatch(), adaptivePatch(), lightPassesPatch()],
     server: { headers: isolationHeaders },
     preview: { headers: isolationHeaders },
     worker: { format: 'es' },

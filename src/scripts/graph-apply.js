@@ -23,6 +23,7 @@ const SLOTS = {
     color: { prop: 'color', map: 'map', unit: '#ffffff', srgb: true },
     metalness: { prop: 'metalness', map: 'metalnessMap', unit: 1 },
     roughness: { prop: 'roughness', map: 'roughnessMap', unit: 1 },
+    diffuseRoughness: { prop: 'diffuseRoughness', map: 'diffuseRoughnessMap', unit: 1 },
     specularIntensity: { prop: 'specularIntensity', map: 'specularIntensityMap', unit: 1, alpha: true },
     specularColor: { prop: 'specularColor', map: 'specularColorMap', unit: '#ffffff', srgb: true },
     clearcoat: { prop: 'clearcoat', map: 'clearcoatMap', unit: 1 },
@@ -310,7 +311,7 @@ export class GraphApplier {
     }
 }
 
-// Workaround three.js r186 (Renderer._getShadowNodes): if a material had a color map, the shared
+// Workaround three.js r186/r187 (Renderer._getShadowNodes, still in r187): if a material had a color map, the shared
 // shadow material keeps its color node even after the map was removed
 // ("if (colorNode !== null)") -> the shadow pass reads map = null -> "reading 'matrix' of null",
 // the render loop aborts. Hence never set the color map to null, but to white (× color = color).

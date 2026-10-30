@@ -20,8 +20,8 @@
     "oidn-web": "^0.4.0",
     "polygon-clipping": "^0.15.7",
     "tailwindcss": "^4.3.3",
-    "three": "^0.186.1",
-    "three-gpu-pathtracer": "^0.0.26",
+    "three": "^0.187.0",
+    "three-gpu-pathtracer": "^0.0.27",
     "three-mesh-bvh": "^0.9.15",
     "web-ifc": "0.0.78"
   }

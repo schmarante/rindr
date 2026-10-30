@@ -153,10 +153,8 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         // coat anisotropy per pixel (node graph: RG direction, B strength – as three's anisotropyMap); a cache key
         this.coatAnisotropyMap = null;
         // OpenPBR terms of the raster lighting (openpbr-lighting.js) – cache keys, only where a material needs them
-        this.eon = false;        // diffuse roughness (EON)
         this.f82 = false;        // metal edge tint
         this.coatExtra = false;  // coat IOR ≠ 1.5 or coat anisotropy
-        this._diffRough = own(this, '_diffRoughValue', 'float', 0);
         // raster: the observed colour of a medium inside the glass (setTransmissionScatter) – a factor of its own, the
         // node graph sets the material colour to white under a colour map (the medium's colour was lost there)
         this._mediumColor = own(this, '_mediumColorValue', 'color', new THREE.Color(1, 1, 1));
@@ -247,7 +245,7 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         if (this.soap) {
             this.iridescence = 1;
             this.iridescenceIOR = SOAP_IOR;
-            this.iridescenceThicknessRange = [film, film];
+            this.iridescenceThicknessMinimum = this.iridescenceThicknessMaximum = film;
             Object.assign(pt, { ptVolume: 5, sheen: 0, sheenRoughness: swirl });
             Object.defineProperty(pt, 'iridescenceThicknessRange', {
                 get: () => [film, soapSceneCell() * scale], enumerable: true, configurable: true,
@@ -300,10 +298,9 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         this.coatExtra = Math.abs(this.coatIor - 1.5) > 1e-3 || anisotropy > 0;
     }
 
-    /** raster flags of the OpenPBR terms (after the physical params): diffuse roughness, metal edge tint */
+    /** raster flags of the OpenPBR terms (after the physical params): metal edge tint (diffuse roughness: three's EON
+     *  since r187, useDiffuseRoughness) */
     setOpenPbr() {
-        this._diffRough.value = this.diffuseRoughness ?? 0;
-        this.eon = this.diffuseRoughness > 0;
         this.f82 = this.metalness > 0 && this.specularColor.getHex() !== 0xffffff;
     }
 
@@ -460,10 +457,10 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
     }
 
     setupLightingModel(builder) {
-        const flags = [this.useClearcoat, this.useSheen, this.useIridescence, this.useAnisotropy, this.useTransmission, this.useDispersion, this.useRetroreflection];
+        const flags = [this.useClearcoat, this.useSheen, this.useIridescence, this.useAnisotropy, this.useTransmission, this.useDispersion, this.useRetroreflection, this.useDiffuseRoughness];
         if (this.subsurface) return new SubsurfaceLightingModel(this, ...flags);
         // OpenPBR's fuzz replaces three's sheen: every material with sheen
-        if (this.eon || this.f82 || (this.coatExtra && this.useClearcoat) || this.useSheen) return new OpenPbrLightingModel(this, ...flags);
+        if (this.f82 || (this.coatExtra && this.useClearcoat) || this.useSheen) return new OpenPbrLightingModel(this, ...flags);
         return super.setupLightingModel(builder);
     }
 
@@ -490,7 +487,6 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         this._sssRadius.value = source._sssRadius.value;
         this._sssKeys = [...(source._sssKeys ?? [])];   // stand-in fields of subsurface / medium (userData is copied)
         this._scatterKeys = [...(source._scatterKeys ?? [])];
-        this.diffuseRoughness = source.diffuseRoughness;
         this.setOpenPbr();
         this._mediumColor.value.copy(source._mediumColor.value);
         this.setCoat(source.coatColor, source.coatIor, source.coatDarkening, source.coatAnisotropy, THREE.MathUtils.radToDeg(source.coatAnisotropyRotation));

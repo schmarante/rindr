@@ -51,7 +51,7 @@
 
 								// next event estimation: one light or the environment, straight through the surface (the light refracted
 								// out of the medium after this event is a caustic path – not counted while glass shadows are transparent)
-								if ( misEnabled != 0u && lightsDenom > 0.0 ) {
+								if ( misEnabled != 0u ) {
 
 									mdRng = mdRng * 747796405u + 2891336453u;
 									let mdL0 = ${ __CLOUD.pcg }( mdRng );
@@ -59,7 +59,10 @@
 									let mdL1 = ${ __CLOUD.pcg }( mdRng );
 									mdRng = mdRng * 747796405u + 2891336453u;
 									let mdL2 = ${ __CLOUD.pcg }( mdRng );
-									let mdLightIndex = min( u32( mdL0 * lightsDenom ), u32( lightsDenom ) - 1u );
+									// the light chosen by its estimated contribution (three-gpu-pathtracer 0.0.27's selection, the same weights the
+									// forward hits are MIS-weighted with)
+									var mdSel = 0.0;
+									let mdLightIndex = ${ selectLightFn }( mdPos, envWeight, mdL0, &mdSel );
 									var mdLight: ${ lightRecordStruct };
 									if ( envActive && mdLightIndex == lightsCount ) {
 
@@ -75,14 +78,14 @@
 										mdLight = ${ randomLightSampleFn }( mdLightIndex, mdPos, vec2f( mdL1, mdL2 ) );
 
 									}
-									if ( mdLight.pdf > 0.0 ) {
+									if ( mdSel > 0.0 && mdLight.pdf > 0.0 ) {
 
-										let mdShadowMax = mdLight.dist - ${ LIGHT_EPSILON };
+										let mdShadowMax = mdLight.dist * ( 1.0 - ${ LIGHT_EPSILON } );
 										//@glass-shadow mdPos | mdLight.direction | mdShadowMax | mdLight.direction | false
 										if ( any( gsShadow > vec3f( 0.0 ) ) ) {
 
 											let mdPhase = ${ __CLOUD.pdfHG }( dot( mdDir, mdLight.direction ), mdG );
-											let mdLightPdf = mdLight.pdf / lightsDenom;
+											let mdLightPdf = mdLight.pdf * mdSel;
 											let mdMis = select( 1.0, ${ misHeuristicFn }( mdLightPdf, mdPhase ), ${ isMISWeightLightFn }( mdLight.lightType ) && ! gsGlass );
 											let mdDirect = throughputColor * mdLight.emission * mdPhase * mdMis * gsShadow / mdLightPdf;
 											resultColor += vec4f( ${ clampPathContributionFunc }( mdDirect, bounce + 1u, clampDirect, clampIndirect ), 0.0 );

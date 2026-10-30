@@ -120,7 +120,7 @@ function openPbrValues(m, p) {
         coat_ior: m.coatIor ?? 1.5,
         coat_darkening: m.coatDarkening ?? 0,
         thin_film_weight: m.iridescence,
-        thin_film_thickness: (m.iridescenceThicknessRange?.[1] ?? 400) / 1000,   // nm → µm
+        thin_film_thickness: (m.iridescenceThicknessMaximum ?? 400) / 1000,   // nm → µm
         thin_film_ior: m.iridescenceIOR,
         emission_luminance: m.emissive.getHex() === 0 ? 0 : m.emissiveIntensity * EMISSION_NITS,
         emission_color: m.emissive.clone(),
@@ -408,7 +408,7 @@ ${inputs.join('\n')}
 const GLTF_PROPS = ['color', 'map', 'metalness', 'metalnessMap', 'roughness', 'roughnessMap', 'normalMap', 'normalScale', 'emissive',
     'emissiveMap', 'emissiveIntensity', 'clearcoat', 'clearcoatMap', 'clearcoatRoughness', 'clearcoatRoughnessMap', 'transmission',
     'transmissionMap', 'ior', 'thickness', 'attenuationColor', 'attenuationDistance', 'sheen', 'sheenColor', 'sheenColorMap',
-    'sheenRoughness', 'iridescence', 'iridescenceIOR', 'iridescenceThicknessRange', 'specularIntensity', 'specularColor',
+    'sheenRoughness', 'iridescence', 'iridescenceIOR', 'iridescenceThicknessMinimum', 'iridescenceThicknessMaximum', 'specularIntensity', 'specularColor',
     'anisotropy', 'anisotropyRotation', 'dispersion', 'opacity', 'transparent', 'alphaMap', 'alphaTest', 'aoMap'];
 // GLTFExporter draws textures onto a canvas – the baked maps are pixel data (DataTexture): as a canvas, v 1 on top
 async function gltfTexture(tex) {

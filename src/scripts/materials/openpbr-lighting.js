@@ -1,8 +1,7 @@
 // OpenPBR in the raster view (docs/material-format.md): three.js' physical lighting with the parts it lacks – wrapped
-// around PhysicalLightingModel (its terms are scaled or replaced, not copied):
-//  - base_diffuse_roughness: energy-preserving Oren-Nayar (EON, like the path tracer) – per light the ratio EON /
-//    Lambert on three's diffuse term; the environment keeps Lambert (EON preserves the energy – the difference is the
-//    view-dependent flattening, mostly a direct-light effect)
+// around PhysicalLightingModel (its terms are scaled or replaced, not copied). base_diffuse_roughness is three's own
+// since r187 (EON like the path tracer, direct light and environment, diffuseRoughnessMap – its flag is passed on);
+// before, a ratio EON / Lambert on the direct diffuse term here, the environment stayed Lambert.
 //  - specular_color on metals: F82 edge tint (OpenPBR / the path tracer's rindr-openpbr) – ratio F82 / Schlick on the
 //    metallic share of the specular term (direct: at the half vector, environment: at the view)
 //  - coat_ior: the coat's reflectance from its IOR instead of three's fixed 0.04 (direct, environment, and the
@@ -13,7 +12,7 @@
 //  - fuzz: OpenPBR's lobe (Zeltner et al. 2022, see fuzzLobe) instead of three's Charlie sheen, on top of everything
 //    (three puts its sheen under the coat): what lies below × (1 − weight × E(view)), E without the fuzz colour
 import * as THREE from 'three/webgpu';
-import { float, vec3, mix, exp, normalView, positionViewDirection, clearcoatNormalView, diffuseContribution, diffuseColor,
+import { float, vec3, mix, exp, normalView, positionViewDirection, clearcoatNormalView, diffuseColor,
     metalness, clearcoat, clearcoatRoughness, tangentView, bitangentView, materialSpecularColor, F_Schlick, EnvironmentBRDF,
     D_GGX_Anisotropic, V_GGX_SmithCorrelated_Anisotropic, sheen, sheenRoughness, materialReference, materialClearcoatRoughness } from 'three/tsl';
 
@@ -27,27 +26,6 @@ function f82Ratio(mu, f0, tint) {
     const w = mu.mul(float(1).sub(mu).pow(6)).div(F82_MU * (1 - F82_MU) ** 6);
     const s = schlick(mu);
     return s.sub(b.mul(w)).max(0).div(s.max(1e-4));
-}
-
-/** EON / Lambert per channel (rho: albedo, sigma: diffuse roughness) – Portsmouth et al. 2024, as eon.wgsl.js */
-function eonRatio(lightDirection, rho, sigma) {
-    const nv = normalView.dot(positionViewDirection).clamp(1e-4, 1);
-    const nl = normalView.dot(lightDirection).clamp(1e-4, 1);
-    const vl = positionViewDirection.dot(lightDirection);
-    const A = float(1).div(sigma.mul(0.5 - 2 / (3 * Math.PI)).add(1));
-    const s = vl.sub(nv.mul(nl));
-    const sOverT = s.greaterThan(0).select(s.div(nv.max(nl)), s);
-    const single = A.mul(sigma.mul(sOverT).add(1));
-    const albedo = mu => {
-        const c = float(1).sub(mu);
-        const g = c.mul(c.mul(c.mul(c.mul(0.0714429953).add(-0.332181442)).add(0.491881867)).add(0.0571085289));
-        return A.mul(sigma.mul(g).add(1));
-    };
-    const avg = A.mul(sigma.mul(2 / 3 - 28 / (15 * Math.PI)).add(1));
-    // multiple scattering: ρ_ms / ρ = ρ Ē / (1 − ρ (1 − Ē)) – no division by ρ
-    const msOverRho = rho.mul(avg).div(vec3(1).sub(rho.mul(float(1).sub(avg))).max(1e-6));
-    const ms = msOverRho.mul(float(1).sub(albedo(nv)).max(1e-6)).mul(float(1).sub(albedo(nl)).max(1e-6)).div(float(1).sub(avg).max(1e-6));
-    return vec3(single).add(ms);
 }
 
 // OpenPBR fuzz: Zeltner, Burley, Chiang 2022, "Practical Multiple-Scattering Sheen Using Linearly Transformed Cosines" –
@@ -84,15 +62,13 @@ function fuzzLobe(l, mu, r) {
 }
 
 export class OpenPbrLightingModel extends THREE.PhysicalLightingModel {
-    /** material: a RindrMaterial (its flags eon / f82 / coatExtra pick the terms, its uniforms carry the values) */
+    /** material: a RindrMaterial (its flags f82 / coatExtra pick the terms, its uniforms carry the values) */
     constructor(material, ...flags) {
         // flags[1]: sheen – three's own sheen off, the fuzz below replaces it
         super(flags[0], false, ...flags.slice(2));
         this.fuzz = !!flags[1];
-        this.eon = material.eon;
         this.f82 = material.f82;
         this.coatExtra = material.coatExtra && flags[0];   // flags[0]: clearcoat
-        this.sigma = material._diffRough;
         this.coatF0 = vec3(material._coatKs);
         this.coatAniso = material._coatAniso;
         this.coatRot = material._coatRot;
@@ -113,7 +89,7 @@ export class OpenPbrLightingModel extends THREE.PhysicalLightingModel {
     direct(data, builder) {
         const { lightDirection, lightColor, reflectedLight } = data;
         if (this.fuzz) this.fuzzDirect.addAssign(lightColor.mul(fuzzLobe(lightDirection, this.fuzzMu, this.fuzzR)));
-        const wrap = this.eon || this.f82;
+        const wrap = this.f82;
         const target = wrap ? { ...reflectedLight, directDiffuse: vec3(0).toVar(), directSpecular: vec3(0).toVar() } : reflectedLight;
         const coatDirect = this.clearcoatSpecularDirect;
         if (this.coatExtra) this.clearcoatSpecularDirect = vec3(0).toVar();   // three's coat lobe (0.04, isotropic) – replaced below
@@ -123,7 +99,7 @@ export class OpenPbrLightingModel extends THREE.PhysicalLightingModel {
             this.clearcoatSpecularDirect.addAssign(this._coatDirect(lightDirection, lightColor));
         }
         if (!wrap) return;
-        reflectedLight.directDiffuse.addAssign(this.eon ? target.directDiffuse.mul(eonRatio(lightDirection, diffuseContribution.rgb, this.sigma)) : target.directDiffuse);
+        reflectedLight.directDiffuse.addAssign(target.directDiffuse);
         if (this.f82) {
             const vh = positionViewDirection.dot(lightDirection.add(positionViewDirection).normalize()).clamp();
             reflectedLight.directSpecular.addAssign(target.directSpecular.mul(mix(vec3(1), f82Ratio(vh, diffuseColor.rgb, materialSpecularColor), metalness)));
