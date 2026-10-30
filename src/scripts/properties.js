@@ -12,6 +12,7 @@ import { STYLE_MODES } from './style-filters.js';
 import { MAPPING_TYPES, MAPPING_AXES, DEFAULT_MAPPING, isPlain } from './uv-mapping.js';
 import { draggable, fmt, INPUT, colorField } from './ui-controls.js';
 import { icon } from './icons.js';
+import { DOF_RAMP } from './dof.js';
 
 let checkId = 0;   // ids for <label for>
 
@@ -653,7 +654,15 @@ export class PropertiesPanel {
             const setBlades = set(t('properties.dof.undo.blades'), 'blades');
             blades.onchange = () => setBlades(Number(blades.value));
             if (!splats) sub.push(this._row(t('properties.dof.bokeh'), blades));
-            sub.push(this._checkRow(t('properties.dof.plane'), t('properties.dof.planeTitle'), dof.showPlane, v => { dof.showPlane = v; this.ctx.onDofChange(); }));
+            sub.push(this._checkRow(t('properties.dof.plane'), t('properties.dof.planeTitle'), dof.showPlane, v => { dof.showPlane = v; this.ctx.onDofChange(); this.show(this.entry); }));
+            // legend of the blur tint (dof.js: green sharp → red very blurred)
+            if (dof.showPlane && !splats) {
+                const rgb = c => `rgb(${c.map(v => Math.round(v * 255)).join(' ')})`;
+                const bar = el('div', 'h-2 min-w-0 flex-1 rounded-sm');
+                bar.style.background = `linear-gradient(to right, ${rgb(DOF_RAMP.sharp)}, ${rgb(DOF_RAMP.mid)}, ${rgb(DOF_RAMP.blurred)})`;
+                bar.title = t('properties.dof.legendTitle');
+                sub.push(this._row('', el('span', 'shrink-0 text-white/50', t('properties.dof.legendSharp')), bar, el('span', 'shrink-0 text-white/50', t('properties.dof.legendBlurred'))));
+            }
             sub.push(el('div', 'mt-1 text-white/40', t(splats ? 'properties.dof.hintSplats' : 'properties.dof.hint')));
             return sub;
         }));

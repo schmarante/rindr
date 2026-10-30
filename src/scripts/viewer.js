@@ -6197,8 +6197,11 @@ function renderFrame() {
     };
     // while parts are still fading in, raster view (the path tracer does not know the mask)
     if (fading.size || !pathTracing.render(rasterize)) rasterize();
-    // focus line over the raster image (uses its depth buffer; fisheye: already in the cube faces)
+    // focus line + degree of blur over the raster image (uses its depth buffer; fisheye: already in the cube faces);
+    // over the path traced image with a depth pass of its own (HQ, not with the fisheye – its cube faces would
+    // replace the picture)
     if (focusLine && rasterDrawn && !rasterFisheye.active) dof.renderLine(renderer, scene, [ground.material]);
+    else if (focusLine && !rasterDrawn && !rasterFisheye.active) dof.renderLine(renderer, scene, [ground.material], null, { ownDepth: true });
     if (splatPass) {
         // splats over the frame (HDR target), then out through the lens effects or the normal output path
         // path traced: object splats are in the image (volume); scans are drawn over it like in Default (splat-volume.js)
