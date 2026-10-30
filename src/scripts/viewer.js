@@ -4881,14 +4881,17 @@ function setupGUI() {
         motion.range(t('setup.samplesPerFrame'), () => pathTracing.motion.samples, v => { pathTracing.motion.samples = v; }, 1, 4, 1);
         // image filter while orbiting and while the image refines: Kuwahara (kuwahara.js, painterly) or edge-aware
         // denoiser (motion-denoise.js), optionally with history over several frames (config.js)
-        let temporalToggle = null;
+        // and upscaling with history (motion-upscale.js)
+        let temporalToggle = null, taauToggle = null;
         motion.select(t('setup.motionFilter'), [
             { label: t('setup.motionFilterOff'), value: 'off' },
             { label: t('setup.kuwahara'), value: 'kuwahara' },
             { label: t('setup.motionDenoise'), value: 'denoise' },
-        ], () => pathTracing.motion.filter, v => { pathTracing.motion.filter = v; temporalToggle?.enable(v === 'denoise'); pathTracing.reset(); });
+        ], () => pathTracing.motion.filter, v => { pathTracing.motion.filter = v; temporalToggle?.enable(v === 'denoise'); taauToggle?.enable(v === 'denoise'); pathTracing.reset(); });
         temporalToggle = motion.toggle(t('setup.motionTemporal'), () => pathTracing.motion.temporal, v => { pathTracing.motion.temporal = v; });
+        taauToggle = motion.toggle(t('setup.motionUpscale'), () => pathTracing.motion.taau, v => { pathTracing.motion.taau = v; });
         temporalToggle.enable(pathTracing.motion.filter === 'denoise');
+        taauToggle.enable(pathTracing.motion.filter === 'denoise');
     }
 
     // changing the quality -> re-tessellate automatically, path tracing restarts afterwards

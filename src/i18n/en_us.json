@@ -2045,6 +2045,7 @@
         "motionFilterOff": "Off",
         "motionDenoise": "Denoise (À-trous)",
         "motionTemporal": "History over several frames",
+        "motionUpscale": "Upscale with history",
         "tessellation": "Tessellation",
         "quality": "Quality",
         "close": "Close (Esc)",
