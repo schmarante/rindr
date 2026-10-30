@@ -381,7 +381,7 @@ export class GuideKernel {
                         if ( materialInfo.anisotropyRotation != 0.0 && materialInfo.anisotropy == 0.0 ) {
 
                             let edScale = ( length( objectInfo.matrixWorld[ 0 ].xyz ) + length( objectInfo.matrixWorld[ 1 ].xyz ) + length( objectInfo.matrixWorld[ 2 ].xyz ) ) / 3.0;
-                            vertexData.normal = vec4f( ${ EDGE_WGSL }( vertexData.position.xyz, vertexData.normal.xyz, hit.indices.x - objectInfo._alignment1, objectInfo._alignment0, materialInfo.anisotropyRotation / max( edScale, 1e-30 ) ), 0.0 );
+                            vertexData.normal = vec4f( ${ EDGE_WGSL }( vertexData.position.xyz, vertexData.normal.xyz, hit.indices.x - objectInfo.rindrVertexStart, objectInfo.rindrEdgeBase, materialInfo.anisotropyRotation / max( edScale, 1e-30 ) ), 0.0 );
                             materialInfo.anisotropyRotation = 0.0;
 
                         }

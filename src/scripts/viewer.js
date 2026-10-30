@@ -82,21 +82,6 @@ import { textureMaxSide } from './memory-budget.js';
 import { RasterAO } from './ambient-occlusion.js';
 import { icon } from './icons.js';
 
-// Workaround three.js r186 (cf. mrdoob/three.js#34608, fix announced for r187):
-// ViewportTextureNode creates its own framebuffer texture per render target via clone()
-// (glass/transmission). But clone() shares the image object with the original – if e.g. the
-// OIDN denoiser renders its helper buffers at a lower resolution, this also "shrinks" the canvas
-// texture. It is then recreated in the middle of the render pass and every further frame uses
-// the destroyed texture ("Destroyed texture used in a submit"). Clones get their own image here.
-{
-    const clone = THREE.FramebufferTexture.prototype.clone;
-    THREE.FramebufferTexture.prototype.clone = function () {
-        const copy = clone.call(this);
-        copy.source = new THREE.TextureSource({ width: this.image.width, height: this.image.height });
-        return copy;
-    };
-}
-
 // static page texts (data-i18n in index.astro) in the current language
 applyDom();
 
@@ -268,6 +253,9 @@ const requiredLimits = adapter ? {
     // the raster ambient occlusion adds one texture to every lit material (ambient-occlusion.js) – heavily textured
     // imports stay below the limit
     maxSampledTexturesPerShaderStage: adapter.limits.maxSampledTexturesPerShaderStage,
+    // the path tracer's kernel with many features at once (rounded edges, traced Gaussians, volumes, buckets …) binds
+    // more than the default 8 storage buffers (9 with every feature, ?kernel=all)
+    maxStorageBuffersPerShaderStage: adapter.limits.maxStorageBuffersPerShaderStage,
 } : undefined;
 // stencil: closed cut surfaces of the section plane (slicer.js)
 const renderer = new THREE.WebGPURenderer({ antialias: true, stencil: true, ...GPU_OPTIONS, requiredLimits });

@@ -47,6 +47,8 @@ export const NODE_TYPES = {
             { key: 'color', type: 'color' },
             { key: 'metalness', type: 'float' },
             { key: 'roughness', type: 'float' },
+            // OpenPBR base_diffuse_roughness (EON – raster, path tracer; a map in the red channel)
+            { key: 'diffuseRoughness', type: 'float' },
             // OpenPBR specular_roughness_anisotropy + direction (0..1 = 0..180°, along the UVs' u) – one anisotropy map
             { key: 'anisotropy', type: 'float' },
             { key: 'anisotropyDirection', type: 'float' },
