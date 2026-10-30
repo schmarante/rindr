@@ -16,6 +16,14 @@ export const PATHTRACING = {
                                 // upscaled, true = every device pixel (GUI "Full HiDPI resolution")
     filterGlossyFactor: 1,      // glossy filter 0–1: dampens glossy noise (fireflies), slightly softer
     denoise: true,              // OIDN denoising after maxSamples
+    // OIDN tiles (oidn-web): it adapts the tile edge to a GPU time per tile (default 16 ms – 256 px tiles, ~55 ms each on
+    // a fast GPU, half the time spent on the overlaps and an underused GPU: 15 tiles, ~950 ms for 1200 × 700). Larger tiles
+    // are far cheaper per pixel (768 px ~270 ms for four times the area). Starts at the library's 384 (safe on slow GPUs),
+    // grows by `adjustmentStep` after each denoise while a tile stays under 65 % of the target; from the second denoise on
+    // pathtracer.js picks the edge per image (_denoiseTileEdge: fewest tight tiles within the target – resized windows
+    // too); one tile per frame – a tile is the longest the view can stall. Cautious mode (after a GPU reset): the
+    // library's defaults.
+    denoiseTiles: { maxTileSize: 1536, minTileSize: 256, initialTileSize: 384, targetTileTimeMs: 250, adjustmentStep: 384 },
     denoiseGuideSamples: 8,     // rays per pixel of OIDN's albedo/normal guides (antialiasing, depth of field; pt-guides.js)
     helperPassSamples: 64,      // rays per pixel of the helper passes of EXR/PSD (alpha, depth, ids – their antialiasing)
     // shadows of glass (glass-shadow.js): 'transparent' = light passes (Fresnel, colour, absorption), 'opaque' = black

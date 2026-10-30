@@ -53,6 +53,12 @@ export const MATERIAL_PRESETS = [
     { libraryId: 'plastic-clear', category: 'glass', params: { color: '#ffffff', metalness: 0, roughness: 0.05, transmission: 1, ior: 1.49, thickness: 2 } },
     // scattering inside the glass (OpenPBR transmission_scatter; HQ: random walk, raster: an approximation)
     { libraryId: 'glass-milk', category: 'glass', params: { color: '#ffffff', metalness: 0, roughness: 0, transmission: 1, ior: 1.5, thickness: 2, attenuationDistance: 10, transmissionScatter: '#ffffff' } },
+    // diamond (user's references: brilliant cuts, clear and light blue): IOR 2.417, dispersion with the stone's Abbe
+    // number 55 (HQ traces one wavelength per path → coloured flashes and rainbow caustics); the sparkle comes from the
+    // facets of the model – on a smooth sphere it is a very strongly refracting glass ball. Blue by absorption: pale
+    // on small stones, deeper on large ones (at 18 cm a darker colour/shorter distance looked steel blue)
+    { libraryId: 'gem-diamond-clear', category: 'glass', params: { color: '#ffffff', metalness: 0, roughness: 0, transmission: 1, ior: 2.417, thickness: 5, dispersion: 1, dispersionAbbe: 55 } },
+    { libraryId: 'gem-diamond-blue', category: 'glass', params: { color: '#ffffff', metalness: 0, roughness: 0, transmission: 1, ior: 2.417, thickness: 5, dispersion: 1, dispersionAbbe: 55, attenuationColor: '#b0dcff', attenuationDistance: 180 } },
 
     // --- subsurface scattering (fast approximation; "accurate" = random walk in the path tracer; radius in mm) ---
     { libraryId: 'sss-jelly', category: 'subsurface', params: { color: '#ffffff', metalness: 0, roughness: 0.06, ior: 1.35, thickness: 1, subsurface: 1, subsurfaceColor: '#e8203a', subsurfaceRadius: 8 } },

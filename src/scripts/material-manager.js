@@ -8,7 +8,7 @@
 import * as THREE from 'three/webgpu';
 import { uniform, screenCoordinate, fract, dot, vec2, materialThickness, modelWorldMatrix } from 'three/tsl';
 import { MATERIAL_PRESETS, presetName } from './material-presets.js';
-import { createImportGraph, IMPORT_SLOTS } from './material-graph.js';
+import { createImportGraph, IMPORT_SLOTS, shadingGraph } from './material-graph.js';
 import { t } from './i18n.js';
 import { RindrMaterial } from './materials/toon.js';
 import { normalizeType, paramsForType, typeAllowsGraph } from './material-types.js';
@@ -256,10 +256,13 @@ export class MaterialManager extends EventTarget {
         const e = this.get(id);
         if (!e) return;
         const before = snapshot(e);
+        const layoutOnly = sameShading(e.def.graph, graph);   // nodes moved: no rebuild, no path tracer restart
         e.def.graph = graph;
-        e.def.modified = true;
-        this._apply(e);
-        this._emit('update', { id });
+        if (!layoutOnly) {
+            e.def.modified = true;
+            this._apply(e);
+            this._emit('update', { id });
+        }
         this._recordEdit(id, t('materials.undo.editGraph'), before, mergeKey && `graph:${id}:${mergeKey}`);
     }
 
@@ -498,11 +501,12 @@ export class MaterialManager extends EventTarget {
         const renamed = e.def.name !== s.name;
         e.def.name = s.name;
         e.material.name = s.name;
+        const layoutOnly = JSON.stringify(e.def.params) === JSON.stringify(s.params) && sameShading(e.def.graph, s.graph);
         e.def.params = { ...s.params };
         e.def.graph = s.graph ? structuredClone(s.graph) : null;
         e.def.modified = s.modified;
-        this._apply(e);
-        this._emit('update', { id, restored: true });
+        if (!layoutOnly) this._apply(e);
+        this._emit(layoutOnly ? 'layout' : 'update', { id, restored: true });
         if (renamed) this._emit('change');
     }
 
@@ -613,6 +617,11 @@ const GRAPH_MAP_SLOTS = {
 const hasGraphMaps = render => [...Object.keys(render?.maps || {}), ...Object.keys(render?.missing || {})].some(k => IMPORT_SLOTS[k]);
 
 // editable part of a material (undo)
+// same material result: graphs differ at most in where the nodes sit in the editor
+function sameShading(a, b) {
+    return JSON.stringify(shadingGraph(a)) === JSON.stringify(shadingGraph(b));
+}
+
 function snapshot(entry) {
     const { def } = entry;
     return { name: def.name, params: { ...def.params }, graph: def.graph ? structuredClone(def.graph) : null, modified: def.modified };

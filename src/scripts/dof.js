@@ -126,8 +126,8 @@ export class DepthOfField {
     }
 
     toJSON() {
-        const { enabled, fStop, focusDistance, blades, autoFocus } = this;
-        return { enabled, fStop, focusDistance: +focusDistance.toFixed(3), blades, autoFocus };
+        const { enabled, fStop, focusDistance, blades, autoFocus, showPlane } = this;
+        return { enabled, fStop, focusDistance: +focusDistance.toFixed(3), blades, autoFocus, showPlane };
     }
 
     fromJSON(s) {
@@ -137,6 +137,7 @@ export class DepthOfField {
         if (s.focusDistance != null) { this.focusDistance = s.focusDistance; this.focusSet = true; }
         if (s.blades != null) this.blades = s.blades;
         this.autoFocus = !!s.autoFocus;
+        this.showPlane = s.showPlane ?? true;   // older scenes: shown
         this.apply();
     }
 }

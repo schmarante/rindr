@@ -285,14 +285,17 @@ renderer.setPixelRatio(window.devicePixelRatio);
 // ambient occlusion of the raster view: its hook into the materials' lighting goes in before any shader is built
 const rasterAO = new RasterAO(renderer);
 rasterAO.install();
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
+// default tone curve Neutral (user, Oct. 2026): material colours come out as set up – ACES bent mid tones and hues (a
+// 25 % black floor needed the lights at 0.55 to read right); ACES, AgX & co. stay selectable in the camera panel
+const DEFAULT_TONE_MAPPING = THREE.NeutralToneMapping;
+renderer.toneMapping = DEFAULT_TONE_MAPPING;
 renderer.toneMappingExposure = 1.0;
 // tone mapping curves selectable in the camera panel ("Image"); key = stored value
 const TONE_MAPPINGS = {
     aces: THREE.ACESFilmicToneMapping, agx: THREE.AgXToneMapping, neutral: THREE.NeutralToneMapping,
     reinhard: THREE.ReinhardToneMapping, cineon: THREE.CineonToneMapping, none: THREE.NoToneMapping,
 };
-const toneMappingKey = () => Object.keys(TONE_MAPPINGS).find(k => TONE_MAPPINGS[k] === renderer.toneMapping) || 'aces';
+const toneMappingKey = () => Object.keys(TONE_MAPPINGS).find(k => TONE_MAPPINGS[k] === renderer.toneMapping) || 'neutral';
 // Bloom / chromatic aberration (camera panel): the image then goes through an HDR target
 const lens = new LensEffects(renderer);
 renderer.shadowMap.enabled = true;
@@ -311,11 +314,12 @@ const lightsGroup = new THREE.Group();
 lightsGroup.name = t('sceneEntries.lights');
 scene.add(lightsGroup);
 
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+// default lights white and calibrated with the Neutral curve: a lit 25 % black floor reads ~192 (sample scene)
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.25);
 ambientLight.name = t('sceneEntries.ambientLight');
 lightsGroup.add(ambientLight);
 
-const dirLight1 = new THREE.DirectionalLight(0xffeebb, 3.0);
+const dirLight1 = new THREE.DirectionalLight(0xffffff, 1.875);
 dirLight1.position.set(5, 10, 7);
 dirLight1.castShadow = true;
 dirLight1.shadow.mapSize.width = 2048;
@@ -324,7 +328,7 @@ dirLight1.shadow.bias = -0.0005;
 dirLight1.name = t('sceneEntries.mainLight');
 lightsGroup.add(dirLight1);
 
-const dirLight2 = new THREE.DirectionalLight(0xaaccff, 1.5);
+const dirLight2 = new THREE.DirectionalLight(0xffffff, 0.94);
 dirLight2.position.set(-8, 5, -5);
 dirLight2.castShadow = true;
 dirLight2.shadow.mapSize.width = 2048;
@@ -412,13 +416,21 @@ function updateShadowMaps() {
 }
 
 // Directional lights: keep the direction, adapt distance and shadow camera to the model size
-// (the default shadow camera of ±5 units would be far too small for models in mm)
+// (the default shadow camera of ±5 units would be far too small for models in mm). The direction is taken from the
+// centre the lights aim at (lightCenter) – from the origin it drifted with every refit when the centre was elsewhere;
+// a light moved by hand or restored from a scene keeps its new direction (rememberLightDirection)
 const LIGHT_DIRECTIONS = new Map();
+const lightCenter = new THREE.Vector3();
+function rememberLightDirection(light) {
+    LIGHT_DIRECTIONS.set(light, light.position.clone().sub(lightCenter).normalize());
+}
 function fitShadows(size, center = new THREE.Vector3()) {
     for (const light of lightsGroup.children) {
         if (!light.isDirectionalLight) continue;
-        if (!LIGHT_DIRECTIONS.has(light)) LIGHT_DIRECTIONS.set(light, light.position.clone().normalize());
+        if (!LIGHT_DIRECTIONS.has(light)) rememberLightDirection(light);
+        const before = light.position.clone();
         light.position.copy(LIGHT_DIRECTIONS.get(light)).multiplyScalar(size * 2).add(center);
+        debugLog(`[Lights] fit ${light.name}: ${before.toArray().map(v => v.toFixed(0))} → ${light.position.toArray().map(v => v.toFixed(0))} (size ${size.toFixed(0)})`);
         light.target.position.copy(center);
         light.target.updateMatrixWorld();
         const cam = light.shadow.camera;
@@ -431,6 +443,7 @@ function fitShadows(size, center = new THREE.Vector3()) {
         light.shadow.normalBias = size * 0.002;
         light.updateMatrixWorld();
     }
+    lightCenter.copy(center);
 }
 
 // --- Pathtracing (three-gpu-pathtracer, WebGPU) ---
@@ -648,7 +661,7 @@ const environment = {
     puddles: 0.4,        // share of the ground covered by puddles
     puddleSize: 0.5,     // puddle pattern size (× model size)
     dome: true,          // "flatten ground": HDRI background as a dome with flat floor instead of infinitely far away
-    intensity: 0.8,      // brightness of the HDRI (visible background and base of the light)
+    intensity: 0.5,      // brightness of the HDRI (visible background and base of the light; calibrated with the lights)
     lightBoost: 1,       // extra light energy on the model – the visible background stays as it is
     domeShift: 0,        // "HDRI height": HDRI pushed up (share of 90°) – sphere and projected floor
     groundHeight: 1,     // "floor height": projection point above the ground (× model size) – floor distortion
@@ -691,9 +704,15 @@ const environment = {
         if (!this.hdris.includes(file.name)) this.hdris.push(file.name);
         return this.select(file.name, onProgress);
     },
+    pending: null,   // the latest select() until its HDRI is in place (material previews wait for it)
+    select(name, onProgress) {
+        const run = this._select(name, onProgress);
+        this.pending = run.catch(() => false);
+        return run;
+    },
     // Progress (loading, decoding, rendering an own HDRI) in the status monitor bottom left – not in the panel;
     // hidden afterwards unless a model is loading (that one owns the display then)
-    async select(name, onProgress) {
+    async _select(name, onProgress) {
         const id = ++this._loadId;
         this.hdri = name;
         if (!name) upgradeStudio();
@@ -879,20 +898,21 @@ skeletonView.addEventListener('edit', e => {
 transformer.addEventListener('change', e => {
     if (e.detail.kind === 'slicer') { slicer.update(); return; }   // also live while dragging
     if (transformer.controls.dragging || fieldDragging) return;   // while dragging (gizmo or number field), update only at the end
-    if (e.detail.kind === 'light') pathTracing.updateLights();
+    if (e.detail.kind === 'light') { rememberLightDirection(e.detail.object); pathTracing.updateLights(); }
     else pathTracing.updateTransforms();
 });
 // completed move/rotation (gizmo or panel) -> undo
 transformer.addEventListener('edit', e => {
     const { object, kind, before, after } = e.detail;
     if (pendingInstances) { recordInstances(pendingInstances, after); pendingInstances = null; return; }
+    if (kind === 'light') rememberLightDirection(object);   // a refit (model size) keeps the new direction
     const resolve = objectResolver(object, kind);
     const set = state => {
         const o = resolve();
         if (!o) return;
         restoreTransform(o, kind, state);
         if (kind === 'slicer') slicer.update();
-        else if (kind === 'light') { pathTracing.updateLights(); if (ground.enabled) environment.apply({ params: true }); }
+        else if (kind === 'light') { rememberLightDirection(o); pathTracing.updateLights(); if (ground.enabled) environment.apply({ params: true }); }
         else pathTracing.updateTransforms();
     };
     history.record({ label: t(kind === 'light' ? 'viewer.undo.moveLight' : kind === 'selection' ? 'viewer.undo.transformSelection' : 'viewer.undo.transform'), undo: () => set(before), redo: () => set(after) });
@@ -1013,7 +1033,7 @@ const properties = new PropertiesPanel(document.getElementById('properties'), {
         get exposure() { return Math.log2(renderer.toneMappingExposure); },
         set exposure(ev) { renderer.toneMappingExposure = 2 ** ev; },
         get toneMapping() { return toneMappingKey(); },
-        set toneMapping(key) { renderer.toneMapping = TONE_MAPPINGS[key] ?? THREE.ACESFilmicToneMapping; },
+        set toneMapping(key) { renderer.toneMapping = TONE_MAPPINGS[key] ?? DEFAULT_TONE_MAPPING; },
     },
     focusRange: () => Math.ceil(Math.max(camera.position.distanceTo(controls.target) * 3, dof.focusDistance * 1.5, 1)),
     focusOnTarget: ({ record = true } = {}) => setFocus(dof.depthOf(controls.target), { label: t('viewer.undo.focusOnPivot'), record }),
@@ -1758,11 +1778,18 @@ const materialPanel = new MaterialPanel(document.getElementById('materials'), ma
     onImportMaterials: () => materialFileInput.click(),
     graphApplier,
     // rendered previews under the current environment, as bright as in the scene (switched off: the studio)
-    thumbs: new MaterialThumbs(renderer, () => (environment.on
-        ? { texture: environment.texture, intensity: environment.intensity * environment.lightBoost, rotation: scene.environmentRotation.y }
-        : { texture: studioTexture, intensity: 0.8, rotation: 0 }),
+    thumbs: new MaterialThumbs(renderer, () => {
+        const e = environment.on
+            ? { texture: environment.texture, intensity: environment.intensity * environment.lightBoost, rotation: scene.environmentRotation.y }
+            : { texture: studioTexture, intensity: 0.8, rotation: 0 };
+        // name + resolution (the small studio of the start is not the 4k one) + brightness + rotation
+        const name = environment.on ? environment.hdri || 'studio' : 'off';
+        return { ...e, id: `${name}|${e.texture?.image?.width ?? 0}|${e.intensity.toFixed(3)}|${e.rotation.toFixed(3)}` };
+    },
     // the cloud material has no surface: its preview is a cloud volume around the sphere; wool: the sphere with fibres
-    (material, radius) => clouds.previewFor(material, radius) ?? wool.previewFor(material, radius) ?? grass.previewFor(material, radius)),
+    (material, radius) => clouds.previewFor(material, radius) ?? wool.previewFor(material, radius) ?? grass.previewFor(material, radius),
+    // previews wait for the HDRI being loaded / the 4k studio (the small one of the start lit them differently)
+    () => Promise.all([environment.pending, environment.on && environment.hdri ? null : upgradeStudio()])),
     // select all meshes with this material (multi-selection, "assign" replaces it on all of them)
     onSelectUsers: id => {
         const entry = materialManager.get(id);
@@ -2940,7 +2967,7 @@ function updateSplatMix() {
     if (!splatMesh) return;
     const mixed = extraModels.length > 0;
     if (mixed && renderer.toneMapping === THREE.NoToneMapping && splatToneSet === THREE.NoToneMapping) {
-        renderer.toneMapping = splatToneSet = toneMappingBeforeSplats ?? THREE.ACESFilmicToneMapping;
+        renderer.toneMapping = splatToneSet = toneMappingBeforeSplats ?? DEFAULT_TONE_MAPPING;
     } else if (!mixed && renderer.toneMapping === splatToneSet && splatToneSet !== THREE.NoToneMapping) {
         renderer.toneMapping = splatToneSet = THREE.NoToneMapping;
     }
@@ -5248,7 +5275,7 @@ const sceneStateContext = {
     getViewMode: () => viewMode,
     exploder,
     setViewMode: mode => setViewMode(mode),
-    onLightMoved: light => LIGHT_DIRECTIONS.set(light, light.position.clone().normalize()),
+    onLightMoved: light => rememberLightDirection(light),
     setSlicerEnabled: v => { slicer.enabled = v; pathTracing.setSuspended(v); updateSlicerHelper(); },
     afterRestore: () => {
         // HDRI editor: show the restored description of the edited HDRI, close it if that one is gone

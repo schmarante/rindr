@@ -21,7 +21,7 @@ import { uvCheckerTexture, sampleUvChecker } from './uv-checker.js';
 
 export const THUMB_SIZE = 64;               // output pixels of the material browser (tile sphere 56 CSS px; user's choice, was 96)
 // rendered at twice the output size, box-filtered down (anti-aliasing); a request may ask for another size
-const THUMB_VERSION = 27;                   // raise when the look changes (old images are not used any more)
+const THUMB_VERSION = 28;                   // raise when the look changes (old images are not used any more)
 const RADIUS = 25;                          // scene units (mm for CAD) – subsurface radius, marble scale etc. fit
 const SOAP_PREVIEW_CELL = 0.5;              // soap film: swirl cell × radius (a few bands across the sphere)
 const FOV = 30;
@@ -53,14 +53,17 @@ export class MaterialThumbs extends EventTarget {
      * Events: 'start' (detail: { key } – its render begins; `active` = that key), 'ready' (detail: { key, url } – url
      * null if rendering failed), 'reload' (all images are stale)
      * @param {THREE.WebGPURenderer} renderer
-     * @param {() => { texture: THREE.Texture, intensity: number, rotation: number }} getEnvironment  current one
+     * @param {() => { texture: THREE.Texture, intensity: number, rotation: number, id: string }} getEnvironment  current
+     *        one; id names it across sessions (stored images are only reused under the same one)
      * @param {(material, radius) => THREE.Mesh | null} [special]  a mesh to show instead of the sphere (cloud volume)
+     * @param {() => Promise | null} [environmentReady]  awaited before each image (environment still loading)
      */
-    constructor(renderer, getEnvironment, special = null) {
+    constructor(renderer, getEnvironment, special = null, environmentReady = null) {
         super();
         this.renderer = renderer;
         this.getEnvironment = getEnvironment;
         this.special = special;
+        this.environmentReady = environmentReady;
         this.urls = new Map();      // key -> object URL | null (failed)
         this.stale = new Set();     // keys whose image is from before reload() (shown until the new one is there)
         this.generation = 0;
@@ -142,6 +145,7 @@ export class MaterialThumbs extends EventTarget {
             while (this.jobs.size) {
                 const [group, job] = this.jobs.entries().next().value;
                 this.jobs.delete(group);
+                await this.environmentReady?.();
                 const generation = this.generation;
                 let url = await this._stored(job);
                 if (url === undefined) {
@@ -189,10 +193,13 @@ export class MaterialThumbs extends EventTarget {
     }
 
     // stored image (object URL) or undefined
+    // stored under the key + the environment it was made with (an image from another HDRI, intensity or rotation of
+    // an earlier session was used as is – a library preset looked darker than the scene's own materials)
     async _stored(job) {
         if (!job.persist) return undefined;
+        job.dbKey = `${job.key}@${this.getEnvironment().id ?? ''}`;
         const db = await this._db;
-        const blob = db && await dbGet(db, job.key);
+        const blob = db && await dbGet(db, job.dbKey);
         return blob ? URL.createObjectURL(blob) : undefined;
     }
 
@@ -243,7 +250,7 @@ export class MaterialThumbs extends EventTarget {
             const canvas = toCanvas(rgb, material.userData.contour, !this.checker, n);
             const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', 0.85));
             if (!blob) return null;
-            if (job.persist && generation === this.generation) this._db.then(db => db && dbPut(db, job.key, blob));
+            if (job.persist && generation === this.generation && env.id === this.getEnvironment().id) this._db.then(db => db && dbPut(db, `${job.key}@${env.id ?? ''}`, blob));
             return URL.createObjectURL(blob);
         } finally {
             if (special) { s.scene.remove(special); if (special.userData.dispose) special.userData.dispose(); else special.material.dispose(); }

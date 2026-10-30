@@ -24,6 +24,7 @@ import * as THREE from 'three/webgpu';
 import { normalizeHdri } from './hdri/hdri-model.js';
 import { normalizeQuality } from './step-importer.js';
 import { t } from './i18n.js';
+import { debugLog } from './log.js';
 
 export const SCENE_FORMAT = 'step-viewer-scene';
 const VERSION = 2;
@@ -297,13 +298,15 @@ export async function applyState(ctx, state) {
         ctx.renderer.toneMapping = ctx.toneMappings?.[state.renderer.toneMapping] ?? ctx.toneMappings?.aces ?? ctx.renderer.toneMapping;
     }
 
-    // lights (matched by order, name as a check)
+    // lights: by name (same type), otherwise by order – names are those of the language the scene was saved in
     if (state.lights) {
         lightsGroup.visible = state.lights.visible !== false;
         const list = lights();
         state.lights.items?.forEach((s, i) => {
-            const l = list[i];
+            const byName = list.find(l => l.name === s.name && l.type === s.type);
+            const l = byName ?? list[i];
             if (!l || l.type !== s.type) { warnings.push(t('sceneState.lightNotFound', { name: s.name })); return; }
+            debugLog(`[Lights] restore ${s.name} → ${l.name}${byName ? '' : ' (by order)'}: ${s.position.map(v => Math.round(v))}`);
             l.visible = s.visible !== false;
             l.position.fromArray(s.position);
             l.intensity = s.intensity;
