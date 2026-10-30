@@ -654,7 +654,8 @@ export class PropertiesPanel {
             const setBlades = set(t('properties.dof.undo.blades'), 'blades');
             blades.onchange = () => setBlades(Number(blades.value));
             if (!splats) sub.push(this._row(t('properties.dof.bokeh'), blades));
-            sub.push(this._checkRow(t('properties.dof.plane'), t('properties.dof.planeTitle'), dof.showPlane, v => { dof.showPlane = v; this.ctx.onDofChange(); this.show(this.entry); }));
+            // display only (drawn over the picture every frame): no onDofChange – that restarted the path tracer
+            sub.push(this._checkRow(t('properties.dof.plane'), t('properties.dof.planeTitle'), dof.showPlane, v => { dof.showPlane = v; this.show(this.entry); }));
             // legend of the blur tint (dof.js: green sharp → red very blurred)
             if (dof.showPlane && !splats) {
                 const rgb = c => `rgb(${c.map(v => Math.round(v * 255)).join(' ')})`;
