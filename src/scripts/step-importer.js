@@ -182,7 +182,7 @@ async function prepare(source, onStatus) {
             if (node.autoName) node.name = t(`import.step.autoName.${node.autoName[0]}`, { number: node.autoName[1] });
         }
         onStatus(t('import.step.initWorkers', { count: pool.workers.length }));
-        const init = (w, data) => pool.request(w, { type: 'init', bytes: data, offsets: res.offsets, angleUnit: res.plan.angleUnit }, shared ? [] : [data]);
+        const init = (w, data) => pool.request(w, { type: 'init', bytes: data, offsets: res.offsets, angleUnit: res.plan.angleUnit, edgeLimits: res.plan.edgeLimits }, shared ? [] : [data]);
         if (shared) await Promise.all(rest.map(w => init(w, bytes.buffer)));
         else for (const w of rest) await init(w, copy());   // one after another: at most one extra copy here at a time
         orientUpAxis(res.plan, bytes);
@@ -715,7 +715,182 @@ function collectEdgeUses(results) {
             if (c < 2) { uses[ei * 5 + 1 + c * 2] = fi; uses[ei * 5 + 2 + c * 2] = dir; }
         }
     }
-    return { edgeCount, uses };
+    // read-only lookup of a position's vertex id (-1: not a boundary vertex)
+    const find = (x, y, z) => {
+        for (let h = vHash(x, y, z), id = vSlots[h]; id >= 0; h = (h + 1) & vMask, id = vSlots[h]) {
+            if (coords[id * 3] === x && coords[id * 3 + 1] === y && coords[id * 3 + 2] === z) return id;
+        }
+        return -1;
+    };
+    return { edgeCount, uses, ends, coords, find };
+}
+
+/**
+ * Close cracks between neighbouring faces whose shared edge got different boundary points: a face on a curved
+ * surface adds true curve points where its parametrisation needs them (densifyForSurface in tessellate.js), a
+ * seam may be cut at an interpolated point – the neighbour, tessellated independently, keeps the plain edge
+ * samples. Then one face has a single open edge A→B where another face has a chain of open edges A→M1→…→B (a
+ * crack up to the chord error, or a T-junction). The long edge is split at the chain's points (positions copied
+ * bit-exactly), its triangle is triangulated again with them (refan). Only chains of one other face between the
+ * same two end points, ordered along the segment and close to it, and only if every new triangle faces like the old one.
+ * Changes positions/normals/indices/edges of the affected results in place. Returns the number of split edges.
+ */
+function weldOpenChains(results, { edgeCount, uses, ends, coords, find }) {
+    const open = [];
+    for (let ei = 0; ei < edgeCount; ei++) if (uses[ei * 5] === 1) open.push(ei);
+    if (!open.length) return 0;
+    const at = new Map();   // vertex id -> open edges at it
+    const link = (v, ei) => { const l = at.get(v); if (l) l.push(ei); else at.set(v, [ei]); };
+    for (const ei of open) { link(ends[ei * 2], ei); link(ends[ei * 2 + 1], ei); }
+    const other = (ei, v) => (ends[ei * 2] === v ? ends[ei * 2 + 1] : ends[ei * 2]);
+    const splits = new Map();   // face -> [[A, B, chain]] (A→B in the running direction of its triangle)
+    for (const ei of open) {
+        const F = uses[ei * 5 + 1], fwd = uses[ei * 5 + 2] > 0;
+        const A = ends[ei * 2 + (fwd ? 0 : 1)], B = ends[ei * 2 + (fwd ? 1 : 0)];
+        const ax = coords[A * 3], ay = coords[A * 3 + 1], az = coords[A * 3 + 2];
+        const dx = coords[B * 3] - ax, dy = coords[B * 3 + 1] - ay, dz = coords[B * 3 + 2] - az;
+        const L2 = dx * dx + dy * dy + dz * dz;
+        if (!(L2 > 0)) continue;
+        let chain = null;
+        for (const e1 of at.get(A)) {
+            const G = uses[e1 * 5 + 1];
+            if (e1 === ei || G === F) continue;
+            const pts = [];
+            let prev = e1, v = other(e1, A), tPrev = 0;
+            while (v !== B && pts.length < 64) {
+                // ordered along the segment, close to it (a curve point off the chord is fine)
+                const wx = coords[v * 3] - ax, wy = coords[v * 3 + 1] - ay, wz = coords[v * 3 + 2] - az;
+                const t = (wx * dx + wy * dy + wz * dz) / L2;
+                const ex = wx - dx * t, ey = wy - dy * t, ez = wz - dz * t;
+                if (!(t > tPrev && t < 1) || ex * ex + ey * ey + ez * ez > 0.0625 * L2) break;
+                pts.push(v); tPrev = t;
+                let next = -1;
+                for (const e2 of at.get(v)) if (e2 !== prev && uses[e2 * 5 + 1] === G) { next = next < 0 ? e2 : -2; if (next === -2) break; }
+                if (next < 0) break;
+                prev = next; v = other(next, v);
+            }
+            if (v === B && pts.length) { chain = pts; break; }
+        }
+        if (!chain) continue;
+        let l = splits.get(F);
+        if (!l) splits.set(F, l = []);
+        l.push([A, B, chain]);
+    }
+    let welded = 0;
+    for (const [F, list] of splits) {
+        const r = results[F];
+        const P = Array.from(r.positions), N = Array.from(r.normals), E = Array.from(r.edges);
+        const tri = Array.from(r.indices);
+        let nv = P.length / 3;
+        // local vertex per boundary vertex id
+        const local = new Map();
+        for (const v of r.edges) local.set(find(P[v * 3], P[v * 3 + 1], P[v * 3 + 2]), v);
+        // directed edge -> triangle (offset into tri)
+        const K = 4294967296, byEdge = new Map();
+        const register = o => { for (let k = 0; k < 3; k++) byEdge.set(tri[o + k] * K + tri[o + (k + 1) % 3], o); };
+        for (let o = 0; o < tri.length; o += 3) register(o);
+        for (const [A, B, chain] of list) {
+            const a = local.get(A), b = local.get(B);
+            const o = a === undefined || b === undefined ? undefined : byEdge.get(a * K + b);
+            if (o === undefined) continue;
+            const k = tri.indexOf(a, o) - o, c = tri[o + (k + 2) % 3];
+            const tris = refan(P, N, a, b, c, chain.map(v => [coords[v * 3], coords[v * 3 + 1], coords[v * 3 + 2]]));
+            if (!tris) continue;
+            // new vertices (polygon positions 1..chain.length), then the triangles; the first one takes the old one's place
+            const ids = [a];
+            for (const { p, n } of tris.points) { P.push(p[0], p[1], p[2]); N.push(n[0], n[1], n[2]); ids.push(nv++); }
+            ids.push(b, c);
+            tris.faces.forEach(([x, y, z], q) => {
+                const off = q === 0 ? o : tri.length;
+                tri[off] = ids[x]; tri[off + 1] = ids[y]; tri[off + 2] = ids[z];
+                register(off);
+            });
+            byEdge.delete(a * K + b);
+            // boundary edge a→b becomes the chain
+            for (let q = 0; q < E.length; q += 2) {
+                if (E[q] !== a || E[q + 1] !== b) continue;
+                const chainEdges = [];
+                for (let m = 0; m < ids.length - 2; m++) chainEdges.push(ids[m], ids[m + 1]);
+                E.splice(q, 2, ...chainEdges);
+                break;
+            }
+            welded++;
+        }
+        r.positions = Float32Array.from(P); r.normals = Float32Array.from(N);
+        r.indices = Uint32Array.from(tri); r.edges = Int32Array.from(E);
+    }
+    return welded;
+}
+
+// Ear clipping of a small simple counter-clockwise polygon [{x, y}] → [[i, j, k]] (counter-clockwise), null if stuck
+function clipEars(pts) {
+    const idx = pts.map((_, i) => i), out = [];
+    const cr = (o, p, q) => (p.x - o.x) * (q.y - o.y) - (p.y - o.y) * (q.x - o.x);
+    while (idx.length > 3) {
+        let cut = -1;
+        for (let k = 0; k < idx.length && cut < 0; k++) {
+            const i0 = idx[(k + idx.length - 1) % idx.length], i1 = idx[k], i2 = idx[(k + 1) % idx.length];
+            const p = pts[i0], q = pts[i1], r = pts[i2];
+            if (!(cr(p, q, r) > 0)) continue;
+            // no other vertex inside or on the ear
+            let empty = true;
+            for (const j of idx) {
+                if (j === i0 || j === i1 || j === i2) continue;
+                const v = pts[j];
+                if (cr(p, q, v) >= 0 && cr(q, r, v) >= 0 && cr(r, p, v) >= 0) { empty = false; break; }
+            }
+            if (empty) cut = k;
+        }
+        if (cut < 0) return null;
+        out.push([idx[(cut + idx.length - 1) % idx.length], idx[cut], idx[(cut + 1) % idx.length]]);
+        idx.splice(cut, 1);
+    }
+    out.push([idx[0], idx[1], idx[2]]);
+    return out;
+}
+
+/**
+ * Triangulate triangle a,b,c (local vertices of P/N, running a→b→c) again with the points chain between a and b:
+ * polygon a, chain…, b, c in the triangle's plane (a fan from c flips where c lies close to a bulging chain).
+ * Returns { points: [{ p, n }] (the chain with normals interpolated along a→b), faces: [[i, j, k]] (polygon
+ * positions, running like a→b→c) } or null if the polygon is not simple there or a triangle would face differently
+ * from the old one (or from the vertex normals, where the old one agreed with them).
+ */
+function refan(P, N, a, b, c, chain) {
+    const pos = i => [P[i * 3], P[i * 3 + 1], P[i * 3 + 2]], nor = i => [N[i * 3], N[i * 3 + 1], N[i * 3 + 2]];
+    const sub3 = (p, q) => [p[0] - q[0], p[1] - q[1], p[2] - q[2]], dot3 = (p, q) => p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+    const cross3 = (p, q) => [p[1] * q[2] - p[2] * q[1], p[2] * q[0] - p[0] * q[2], p[0] * q[1] - p[1] * q[0]];
+    const pa = pos(a), pb = pos(b), pc = pos(c), ab = sub3(pb, pa);
+    const n0 = cross3(ab, sub3(pc, pa)), l0 = Math.hypot(...n0), lab = Math.hypot(...ab);
+    if (!(l0 > 0) || !(lab > 0)) return null;
+    const points = chain.map(p => {
+        const t = dot3(sub3(p, pa), ab) / (lab * lab), na = nor(a), nb = nor(b);
+        const m = [na[0] * (1 - t) + nb[0] * t, na[1] * (1 - t) + nb[1] * t, na[2] * (1 - t) + nb[2] * t], ml = Math.hypot(...m) || 1;
+        return { p, n: [m[0] / ml, m[1] / ml, m[2] / ml] };
+    });
+    const poly = [pa, ...chain, pb, pc], pn = [nor(a), ...points.map(q => q.n), nor(b), nor(c)];
+    // 2D in the triangle's plane: a→b along x, c on the positive side
+    const ex = ab.map(x => x / lab), nz = n0.map(x => x / l0), ey = cross3(nz, ex);
+    const flat = poly.map(p => { const d = sub3(p, pa); return { x: dot3(d, ex), y: dot3(d, ey) }; });
+    let area = 0;
+    for (let i = 0; i < flat.length; i++) { const p = flat[i], q = flat[(i + 1) % flat.length]; area += p.x * q.y - q.x * p.y; }
+    if (!(area > 0)) return null;
+    const faces = clipEars(flat);
+    if (!faces) return null;
+    const agrees = (n, f) => dot3(n, [pn[f[0]][0] + pn[f[1]][0] + pn[f[2]][0], pn[f[0]][1] + pn[f[1]][1] + pn[f[2]][1], pn[f[0]][2] + pn[f[1]][2] + pn[f[2]][2]]) > 0;
+    const strict = agrees(n0, [0, poly.length - 2, poly.length - 1]);
+    let sum = 0;
+    for (const f of faces) {
+        const [x, y, z] = f.map(i => flat[i]);
+        let s2 = (y.x - x.x) * (z.y - x.y) - (y.y - x.y) * (z.x - x.x);
+        if (s2 < 0) { [f[1], f[2]] = [f[2], f[1]]; s2 = -s2; }
+        sum += s2;
+        const n = cross3(sub3(poly[f[1]], poly[f[0]]), sub3(poly[f[2]], poly[f[0]])), ln = Math.hypot(...n);
+        if (!(ln > 1e-12 * l0) || dot3(n, n0) <= 1e-9 * l0 * ln || (strict && !agrees(n, f))) return null;
+    }
+    // the triangles must cover the polygon exactly (not simple in this projection otherwise)
+    if (Math.abs(sum - area) > 1e-6 * area) return null;
+    return { points, faces };
 }
 
 /**
@@ -732,7 +907,10 @@ function collectEdgeUses(results) {
  */
 export function orientFaces(s, results) {
     const n = results.length;
-    const { edgeCount, uses } = collectEdgeUses(results);
+    // first close cracks of differently sampled shared edges (same edge matching, then matched again)
+    let edgeUses = collectEdgeUses(results);
+    if (weldOpenChains(results, edgeUses)) edgeUses = collectEdgeUses(results);
+    const { edgeCount, uses } = edgeUses;
     // Face pairs via edges with exactly two faces (otherwise touching sub-solids, seams …):
     // weight = number of opposite minus same-direction shared edges
     const pairW = new Map();
@@ -808,6 +986,29 @@ export function orientFaces(s, results) {
         for (let q = 0; q < nr.length; q++) nr[q] = -nr[q];
     };
     let flipped = 0;
+    // Surface models have no inside for the ray test: a skin with two classes is made consistent along its edges
+    // (the smaller class by area turns), orientSkins then chooses its side. Seen: a hull of 39 spline patches with
+    // half of them reversed – invisible from outside with FrontSide materials.
+    if (s.surface) {
+        const area = fi => {
+            const { positions: p, indices: ix } = results[fi];
+            let a = 0;
+            for (let t = 0; t < ix.length; t += 3) {
+                const i = ix[t] * 3, j = ix[t + 1] * 3, k = ix[t + 2] * 3;
+                const ux = p[j] - p[i], uy = p[j + 1] - p[i + 1], uz = p[j + 2] - p[i + 2], vx = p[k] - p[i], vy = p[k + 1] - p[i + 1], vz = p[k + 2] - p[i + 2];
+                a += Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx);
+            }
+            return a;
+        };
+        for (const c of comps.values()) {
+            if (c.faces.length < 2 || c.bad > c.weight * 0.02) continue;
+            let a1 = 0, a0 = 0;
+            c.faces.forEach((fi, k) => { if (c.flip[k]) a1 += area(fi); else a0 += area(fi); });
+            if (!a1 || !a0) continue;
+            const turn = a1 <= a0 ? 1 : 0;
+            c.faces.forEach((fi, k) => { candidate[fi] = 0; if (c.flip[k] === turn) { flipFace(fi); flipped++; } });
+        }
+    }
     if (candidate.some(Boolean) && openEdges <= edgeCount * 0.05) {
         const inside = insideTester(results);
         // check connected candidate groups (via adjacency) together

@@ -15,6 +15,10 @@ import cdt2d from 'cdt2d';
 import { GeometryBuilder, sub, dot, cross, len, dist, dist2, wrapNear } from './geometry.js';
 
 const MAX_FACE_VERTS = 60000;
+// Edges next to a narrow feature (plan.edgeLimits): chord error at most RING_FEATURE × the width of a ring face, at most
+// FILLET_FEATURE × minor radius × angle step of a fillet (its rows of triangles lie about r × ang/2 apart) – but not
+// finer than 1/256 of the face tolerance (sample count)
+const RING_FEATURE = 0.25, FILLET_FEATURE = 0.5, EDGE_FEATURE_FLOOR = 1 / 256;
 
 // --- Edge sampling ---
 
@@ -54,7 +58,10 @@ function sampleParams(curve, ta, tb, defl, ang) {
     }
     const out = [ta];
     const pts = base.map(t => curve.eval(t));
-    const cosA = Math.cos(ang);
+    // the two half chords of an arc of angle θ enclose θ/2: against ang/2, so that a spline arc gets the same
+    // angular steps as a circle (≤ ang) – with ang, spline edges ran up to 2 · ang per segment, the refinement
+    // of the face next to them then split towards the boundary chord (slivers standing on the edge)
+    const cosA = Math.cos(ang / 2);
     const rec = (t0, p0, t1, p1, depth) => {
         const tm = (t0 + t1) / 2, pm = curve.eval(tm);
         const mx = (p0[0] + p1[0]) / 2 - pm[0], my = (p0[1] + p1[1]) / 2 - pm[1], mz = (p0[2] + p1[2]) / 2 - pm[2];
@@ -308,14 +315,24 @@ class TriMesh {
 // --- Face tessellator ---
 
 export class Tessellator {
-    constructor(step, angleUnit = 1) {
+    constructor(step, angleUnit = 1, edgeLimits = null) {
         this.step = step;
         this.geo = new GeometryBuilder(step, angleUnit);
         this.edgeCache = new Map();
+        // EDGE_CURVE id → index into plan.edgeLimits (narrow ring / small fillet next to it)
+        this.limits = edgeLimits;
+        this.edgeLimit = new Map();
+        if (edgeLimits) for (let i = 0; i < edgeLimits.ids.length; i++) this.edgeLimit.set(edgeLimits.ids[i], i);
     }
 
     // 3D points of an EDGE_CURVE in edge direction (start vertex -> end vertex)
     edgePoints(e, defl, ang) {
+        // same result for both faces of the edge: depends only on the edge and the solid's tolerance
+        const li = this.edgeLimit.get(e.id);
+        if (li !== undefined) {
+            const cap = Math.min(RING_FEATURE * this.limits.widths[li], FILLET_FEATURE * this.limits.radii[li] * ang);
+            defl = Math.min(defl, Math.max(cap, defl * EDGE_FEATURE_FLOOR));
+        }
         const key = e.id * 64 + Math.round(Math.log2(defl) * 2) + 32;
         let pts = this.edgeCache.get(key);
         if (pts) return pts;
@@ -351,10 +368,25 @@ export class Tessellator {
                 ta = curve.closest(P1);
                 tb = curve.closest(P2);
             }
-            const ts = sampleParams(curve, ta, tb, defl, ang);
+            let ts = sampleParams(curve, ta, tb, defl, ang);
             pts = ts.map(t => curve.eval(t));
-            pts[0] = P1;
-            pts[pts.length - 1] = P2;
+            // The vertices make neighbouring edges meet exactly – unless the single vertex of a closed curve lies far
+            // off it (broken data, seen: the vertices of two circles of a 0.4 mm lead 10 and 23 mm away – a spike
+            // reached out to them): then the curve's own start, for both ends
+            if (closedLoop && dist(P1, pts[0]) > 10 * Math.max(defl, extent3(pts))) pts[pts.length - 1] = pts[0];
+            else { pts[0] = P1; pts[pts.length - 1] = P2; }
+            // Samples closer together than the faces' duplicate tolerance (dedupe3) are removed here, once per edge:
+            // per face, dedupe3 dropped the second point of such a pair in the face's running direction – the two faces
+            // of an edge run it in opposite directions, so each kept a different point (gap between them)
+            const eps2 = (defl * 1e-3) ** 2, last = pts[pts.length - 1];
+            if (pts.length > 2) {
+                const keep = [0];
+                for (let i = 1; i < pts.length - 1; i++) {
+                    if (dist2(pts[i], pts[keep[keep.length - 1]]) > eps2 && dist2(pts[i], last) > eps2) keep.push(i);
+                }
+                keep.push(pts.length - 1);
+                if (keep.length < pts.length) { pts = keep.map(i => pts[i]); ts = keep.map(i => ts[i]); }
+            }
             pts.ts = ts;
             pts.f = t => curve.eval(t);
         }
@@ -404,11 +436,20 @@ export class Tessellator {
         // --- Bounds in 3D ---
         const loops = [];
         let discarded = false;   // a real (non-point) bound was discarded as degenerate
+        // curve piece between two consecutive boundary points (both directions), for splitCrossings
+        const segOf = new Map();
+        const link = (a, b, f, t0, t1) => {
+            if (!segOf.has(a)) segOf.set(a, new Map());
+            if (!segOf.has(b)) segOf.set(b, new Map());
+            segOf.get(a).set(b, { f, t0, t1 });
+            segOf.get(b).set(a, { f, t0: t1, t1: t0 });
+        };
         for (const bRef of bounds) {
             const b = this.step.get(bRef);
             let pts = this.loopPoints(b.args[1], defl, ang);
             if (!pts) continue;
-            if (!surf.isPlane && pts.segs) pts = densifyForSurface(pts, pts.segs, surf, defl);
+            if (pts.segs) pts.segs.forEach((sg, i) => { if (sg) link(pts[i], pts[(i + 1) % pts.length], sg.f, sg.t0, sg.t1); });
+            if (!surf.isPlane && pts.segs) pts = densifyForSurface(pts, pts.segs, surf, defl, link);
             const hint = pts.uvHint || null;
             if (b.args[2] === false) pts.reverse();
             if (loopFlip) pts.reverse();
@@ -431,9 +472,9 @@ export class Tessellator {
             if (discarded) return null;
             const dom = surf.domain && surf.domain();
             if (!dom) return null;
-            rings = [rectRing(surf, dom)];
+            rings = [rectRing(surf, dom, defl, ang)];
         } else {
-            rings = this.buildRings(surf, valid, uP, vP);
+            rings = this.buildRings(surf, valid, uP, vP, defl, ang);
         }
         if (!rings || rings.length === 0) return null;
 
@@ -454,7 +495,7 @@ export class Tessellator {
         // garbage, the parity fallback then fills e.g. a hole instead of the ring. In that case clean
         // up the polygon (polygon-clipping, nonzero rule) and only then triangulate.
         let repaired = false;
-        if (!rings.multi && ringsCross(rings)) {
+        if (!rings.multi && ringsCross(rings) && !splitCrossings(rings, segOf, surf, defl)) {
             const fixed = repairRings(rings);
             if (fixed) { rings = fixed; repaired = true; }
         }
@@ -548,6 +589,12 @@ export class Tessellator {
         for (let t = 0; t < nt; t++) {
             const a = V[3 * t], b = V[3 * t + 1], c = V[3 * t + 2];
             if (a === b || b === c || a === c) continue;
+            // two corners on the same point (pole, cone apex: one 3D point, many uv points): no area, but
+            // it made the edges at the pole non-manifold
+            if (samePos(positions, a, b) || samePos(positions, b, c) || samePos(positions, a, c)) continue;
+            // three boundary points on one line (the triangulation can return such an ear on a straight edge): no
+            // area, its long edge stayed open next to the neighbour's two short ones
+            if (a < nBoundary && b < nBoundary && c < nBoundary && collinear(P3[a], P3[b], P3[c])) continue;
             if (flip) { indices[k++] = a; indices[k++] = c; indices[k++] = b; }
             else { indices[k++] = a; indices[k++] = b; indices[k++] = c; }
         }
@@ -567,15 +614,22 @@ export class Tessellator {
             freeU[i] = lu < 1e-7 * lv;
             freeV[i] = lv < 1e-7 * lu;
         }
-        // Start at a regular point
+        // Start at a regular point – right after a singular one if there is one (the bound then closes over it)
         let s = 0;
         while (s < n && (freeU[s] || freeV[s])) s++;
         if (s === n) { L.uv = []; return; }
+        for (let i = 0; i < n; i++) if ((freeU[i] || freeV[i]) && !freeU[(i + 1) % n] && !freeV[(i + 1) % n]) { s = (i + 1) % n; break; }
         const rot = a => a.slice(s).concat(a.slice(0, s));
         let p3 = rot(L.p3), UV = rot(uv), FU = rot(freeU), FV = rot(freeV);
 
-        const driftU = unwrapCoord(UV, FU, 0, uP);
-        const driftV = unwrapCoord(UV, FV, 1, vP);
+        let driftU = unwrapCoord(UV, FU, 0, uP);
+        let driftV = unwrapCoord(UV, FV, 1, vP);
+        // A bound through a pole that runs once around (a cone face from its apex with an explicit seam edge, a cap
+        // through the pole of a sphere) closes over the pole, where the parameter is free: the drift is taken up by the
+        // pole segment. As a wrapping bound it was opened at a cut line and closed once more at the domain limit – the
+        // seam edge's points fell outside the band (folded triangles across the face, e.g. on every hexagon nut chamfer).
+        if (driftU && FU[n - 1] && !FV[n - 1]) driftU = 0;
+        if (driftV && FV[n - 1] && !FU[n - 1]) driftV = 0;
 
         // Duplicate singular points (pole, cone apex, degenerate spline edge):
         // incoming and outgoing parameter value
@@ -602,7 +656,7 @@ export class Tessellator {
     }
 
     // Creates the earcut rings (first = outer bound) incl. seam handling
-    buildRings(surf, loops, uP, vP) {
+    buildRings(surf, loops, uP, vP, defl, ang) {
         const wrapU = loops.filter(L => L.kU !== 0), wrapV = loops.filter(L => L.kV !== 0);
         if (wrapU.length && wrapV.length) {
             // Bounds wrapping in both directions (e.g. torus) – discard outer bound, rest as usual
@@ -610,11 +664,19 @@ export class Tessellator {
         }
         if (!wrapU.length && !wrapV.length) {
             let outer = loops.find(L => L.outer);
-            const areas = loops.map(L => Math.abs(area2(L.uv)));
             if (!outer || loops.filter(L => L.outer).length !== 1) {
-                let bi = 0;
-                for (let i = 1; i < loops.length; i++) if (areas[i] > areas[bi]) bi = i;
-                outer = loops[bi];
+                // No (single) FACE_OUTER_BOUND: the bounds' sense says it – the outer one runs counter-clockwise in uv
+                // (material on its left), holes clockwise (holds for 99.9 % of the bounds in the test files). Only if
+                // that is not unique, the largest area: for a thin ring a coarse circle's polygon can be smaller
+                // than the toothed profile inside it (the face became the profile, filled).
+                const signed = loops.map(L => area2(L.uv));
+                const ccw = loops.filter((L, i) => signed[i] > 0);
+                if (ccw.length === 1) outer = ccw[0];
+                else {
+                    let bi = 0;
+                    for (let i = 1; i < loops.length; i++) if (Math.abs(signed[i]) > Math.abs(signed[bi])) bi = i;
+                    outer = loops[bi];
+                }
             }
             const rings = [mkRing(outer.uv, outer.p3, 2)];
             const [umin, umax] = range(outer.uv, 0), [vmin, vmax] = range(outer.uv, 1);
@@ -665,8 +727,14 @@ export class Tessellator {
             }
             if (bestGap > 0) cut = cut + bestAt;
         }
+        // A bound that swings back and forth in c (e.g. an intersection curve around a cylinder) crosses some cut lines
+        // three times – openLoop keeps only the points between the first crossing and its periodic copy, the others
+        // were lost (crack to the neighbouring face). Move the cut to where every wrapping bound crosses only once.
+        if (W.some(L => crossings(L, c, P, cut) !== 1)) {
+            const at = singleCrossingCut(W, holes, c, P);
+            if (at !== null) cut = at;
+        }
 
-        let ring;
         const dom = surf.domain ? surf.domain() : null;
         const lim = dom ? (mirror ? [dom[0], dom[1]] : [dom[2], dom[3]]) : [-Infinity, Infinity];
         // running direction of a wrapping bound in the periodic coordinate
@@ -680,36 +748,73 @@ export class Tessellator {
             const shift = -k * Po + (b - k * Po <= a ? Po : 0);
             if (shift) for (const p of H0.uv) p[o] += shift;
         }
-        if (L0 && H0) {
-            const dA = dirOf(L0), dB = dirOf(H0);
-            const a = openLoop(L0, c, cut, P, dA), b = openLoop(H0, c, cut + dA * P, P, dB);
-            ring = { uv: a.uv.concat(b.uv), p3: a.p3.concat(b.p3), c: [] };
-            for (let i = 0; i < a.uv.length - 1; i++) ring.c.push(2);
-            ring.c.push(1);
-            for (let i = 0; i < b.uv.length - 1; i++) ring.c.push(2);
-            ring.c.push(1);
-        } else if (L0) {
-            // material on one side up to the domain limit (pole)
-            const top = lim[1];
-            if (!isFinite(top)) throw new Error('Open periodic bound');
-            const dA = dirOf(L0);
-            const a = openLoop(L0, c, cut, P, dA);
-            ring = closeAt(a, c, cut, top);
-        } else {
-            const bot = lim[0];
-            if (!isFinite(bot)) throw new Error('Open periodic bound');
-            const dB = dirOf(H0);
-            const b = openLoop(H0, c, cut, P, dB);
-            ring = closeAt(b, c, cut, bot);
-        }
-        const rings = [ring];
+        // The first opened bound runs from cut to cut + side·P: the band (fundamental domain) lies on that side
+        const side = dirOf(L0 || H0);
+        const bandLo = side > 0 ? cut : cut - P;
         const holeLoops = loops.filter(L => L.kU === 0 && L.kV === 0);
-        for (const L of holeLoops) shiftInto(L.uv, c, cut + P / 2, P);
+        for (const L of holeLoops) shiftInto(L.uv, c, bandLo + P / 2, P);
+        // other coordinate periodic too (torus, closed swept profile): holes into the band between the bounds
+        if (L0 && H0 && Po) for (const L of holeLoops) shiftInto(L.uv, o, (avg(L0.uv, o) + avg(H0.uv, o)) / 2, Po);
         const eps = P * 1e-9;
         const crossing = holeLoops.some(L => {
             const [a, b] = range(L.uv, c);
-            return a < cut - eps || b > cut + P + eps;
+            return a < bandLo - eps || b > bandLo + P + eps;
         });
+        // Open the wrapping bounds at one of their own points (snap): an interpolated cut point is a vertex
+        // only this face has – a T-junction in the neighbouring face's edge (a crack at the seam of every
+        // cylinder bounded by full circles). The seam then runs slightly slanted between the two chosen
+        // points. Candidates: the pair of points with the least slant, the point next to the cut; a candidate
+        // is taken only if the ring stays simple and clear of the holes, otherwise cut as before
+        // (interpolated; also for holes across the seam).
+        const open = (at, snap) => {
+            if (L0 && H0) {
+                const dA = dirOf(L0), dB = dirOf(H0);
+                const a = openLoop(L0, c, at, P, dA, snap);
+                const b = openLoop(H0, c, a.uv[0][c] + dA * P, P, dB, snap);
+                // seam from the end of a to the start of b, its twin (shifted by one period) from the end of b
+                // to the start of a: sampled once, both sides share the points
+                const s = seamPoints(surf, a.uv[a.uv.length - 1], a.p3[a.p3.length - 1], b.uv[0], b.p3[0], defl, ang);
+                const back = s.uv.map(p => { const q = p.slice(); q[c] += dB * P; return q; }).reverse();
+                const uv = [...a.uv, ...s.uv, ...b.uv, ...back], p3 = [...a.p3, ...s.p3, ...b.p3, ...s.p3.slice().reverse()];
+                return { ring: { uv, p3, c: uv.map(() => 2) }, ends: [a.uv[0][c], b.uv[b.uv.length - 1][c]] };
+            }
+            // material on one side up to the domain limit (pole)
+            const L = L0 || H0, limit = L0 ? lim[1] : lim[0];
+            if (!isFinite(limit)) throw new Error('Open periodic bound');
+            const a = openLoop(L, c, at, P, dirOf(L), snap);
+            return { ring: closeAt(a, c, a.uv[0][c], limit, surf, defl, ang), ends: [a.uv[0][c]] };
+        };
+        let ring = null;
+        if (!crossing) {
+            const first = L0 || H0, mod = x => ((x % P) + P) % P;
+            const nearest = (vals, x) => {   // value of the sorted list vals (mod P) nearest to x (mod P)
+                let lo = 0, hi = vals.length;
+                const m = mod(x);
+                while (lo < hi) { const k = (lo + hi) >> 1; if (vals[k] < m) lo = k + 1; else hi = k; }
+                let best = Infinity;
+                for (const k of [lo - 1, lo, 0, vals.length - 1]) if (k >= 0 && k < vals.length) {
+                    const d = Math.abs(vals[k] - m), w = Math.min(d, P - d);
+                    if (w < best) best = w;
+                }
+                return best;
+            };
+            // candidates: points of the first bound by the slant of the seam (two bounds), with holes by the distance
+            // to the cut (placed in the largest gap between them)
+            const hv = L0 && H0 ? H0.uv.map(p => mod(p[c])).sort((x, y) => x - y) : null;
+            const toCut = x => Math.abs(mod(x - cut + P / 2) - P / 2);
+            const score = x => (hv ? nearest(hv, x) : 0) + toCut(x) * (holeLoops.length ? 1 : 1e-3);
+            const cands = [...new Set(first.uv.map(p => p[c]))].map(x => [score(x), x]).sort((a, b) => a[0] - b[0]).slice(0, 6).map(e => e[1]);
+            const holeRings = holeLoops.map(L => ({ uv: L.uv }));
+            for (const at of cands) {
+                const r = open(at, true);
+                // band between the (slanted) seam lines
+                const lo = Math.max(...r.ends) - (side > 0 ? 0 : P), hi = Math.min(...r.ends) + (side > 0 ? P : 0);
+                const clear = holeLoops.every(L => { const [a, b] = range(L.uv, c); return a > lo + eps && b < hi - eps; });
+                if (clear && !ringsCross([r.ring, ...holeRings])) { ring = r.ring; break; }
+            }
+        }
+        if (!ring) ring = open(cut, false).ring;
+        const rings = [ring];
         if (!crossing) {
             for (const L of holeLoops) rings.push(mkRing(L.uv, L.p3, 2));
             return rings;
@@ -717,7 +822,7 @@ export class Tessellator {
         // Holes cover the whole circumference, every seam cut line cuts through one
         // (e.g. staggered slots in a ring): region = band minus holes (periodically
         // continued) via polygon boolean operation. Result: possibly several polygons.
-        return clipBand(ring, holeLoops, c, cut, P);
+        return clipBand(ring, holeLoops, c, bandLo, P);
     }
 
     refine(mesh, surf, U, Vv, X, Y, P3, normals, su, sv, defl, ang) {
@@ -735,12 +840,35 @@ export class Tessellator {
         const uvSeen = new Set();
         for (let i = 0; i < U.length; i++) uvSeen.add(uvKey(U[i], Vv[i]));
 
+        // Boundary points lie on the edge curves, which exports place within their tolerance, not exactly on the surface.
+        // An offset beyond the chord tolerance can never be refined away: a boundary 3e-3 off a small face (tolerance
+        // 1.8e-3) made the refinement split every triangle along it down to the minimum length (hundreds of tiny, partly
+        // folded triangles). Such offsets are subtracted (smaller ones are left alone – refined as before, which keeps the
+        // triangles along the boundary small; interior points: none).
+        const n0 = U.length;
+        const off = new Float64Array(n0 * 3);
+        let anyOff = false;
+        for (let i = 0; i < n0; i++) {
+            const q = surf.eval(U[i], Vv[i]), p = P3[i];
+            const ox = p[0] - q[0], oy = p[1] - q[1], oz = p[2] - q[2];
+            if (ox * ox + oy * oy + oz * oz > defl2 * 0.25) { off[i * 3] = ox; off[i * 3 + 1] = oy; off[i * 3 + 2] = oz; anyOff = true; }
+        }
+        const offX = i => (anyOff && i < n0 ? off[i * 3] : 0), offY = i => (anyOff && i < n0 ? off[i * 3 + 1] : 0), offZ = i => (anyOff && i < n0 ? off[i * 3 + 2] : 0);
         const addVertex = (u, v) => {
             const i = U.length;
             U.push(u); Vv.push(v); X.push(u * su); Y.push(v * sv);
             P3.push(surf.eval(u, v));
             normals.push(surf.normal(u, v));
             return i;
+        };
+        // Parameter speed at a vertex relative to the scaling (1 = as at the centre of the bound, → 0 towards a pole or
+        // cone apex). Next to a pole the normal turns with the free parameter however short the edges get – splitting for
+        // the normal angle there only stacks slivers towards the pole (they fold), the chord criterion still applies.
+        const speed = [];
+        const speedOf = i => {
+            let sp = speed[i];
+            if (sp === undefined) { const d = surf.evalD(U[i], Vv[i]); sp = speed[i] = Math.min(len(d.du) / su, len(d.dv) / sv); }
+            return sp;
         };
         const edgeNeeds = (a, b) => {
             const key = a < b ? a * K + b : b * K + a;
@@ -750,9 +878,9 @@ export class Tessellator {
             let need = 0;
             if (l2 > minLen2) {
                 const pm = surf.eval((U[a] + U[b]) / 2, (Vv[a] + Vv[b]) / 2);
-                const mx = (pa[0] + pb[0]) / 2 - pm[0], my = (pa[1] + pb[1]) / 2 - pm[1], mz = (pa[2] + pb[2]) / 2 - pm[2];
+                const mx = (pa[0] + pb[0] - offX(a) - offX(b)) / 2 - pm[0], my = (pa[1] + pb[1] - offY(a) - offY(b)) / 2 - pm[1], mz = (pa[2] + pb[2] - offZ(a) - offZ(b)) / 2 - pm[2];
                 if (mx * mx + my * my + mz * mz > defl2) need = l2;
-                else if (dot(normals[a], normals[b]) < cosA) need = l2;
+                else if (dot(normals[a], normals[b]) < cosA && speedOf(a) > 0.1 && speedOf(b) > 0.1) need = l2;
             }
             if (!need) edgeOk.set(key, 1);
             return need;
@@ -816,7 +944,9 @@ export class Tessellator {
                 if (uvSeen.has(kc)) continue;
                 uvSeen.add(kc);
                 const pm = surf.eval(uc, vc);
-                const cx = (pa[0] + pc[0] + pd[0]) / 3 - pm[0], cy = (pa[1] + pc[1] + pd[1]) / 3 - pm[1], cz = (pa[2] + pc[2] + pd[2]) / 3 - pm[2];
+                const cx = (pa[0] + pc[0] + pd[0] - offX(a) - offX(c) - offX(d)) / 3 - pm[0];
+                const cy = (pa[1] + pc[1] + pd[1] - offY(a) - offY(c) - offY(d)) / 3 - pm[1];
+                const cz = (pa[2] + pc[2] + pd[2] - offZ(a) - offZ(c) - offZ(d)) / 3 - pm[2];
                 if (cx * cx + cy * cy + cz * cz <= defl2) continue;
                 if (!mesh.ccw(a, c, d)) continue;
                 const m = addVertex(uc, vc);
@@ -835,6 +965,13 @@ export class Tessellator {
     }
 }
 
+const samePos = (p, a, b) => p[a * 3] === p[b * 3] && p[a * 3 + 1] === p[b * 3 + 1] && p[a * 3 + 2] === p[b * 3 + 2];
+const collinear = (a, b, c) => {
+    const l = Math.max(dist2(a, b), dist2(b, c), dist2(c, a));
+    const n = cross(sub(b, a), sub(c, a));
+    return dot(n, n) <= 1e-24 * l * l;
+};
+
 // --- Ring helpers ---
 
 // Densify a bound for a curved surface: edges are sampled by their 3D shape,
@@ -842,7 +979,7 @@ export class Tessellator {
 // uv midpoint on the surface does not lie at the true curve midpoint is subdivided with true
 // curve points – otherwise the uv bound cuts straight across the region (wrong triangles,
 // endless refinement).
-function densifyForSurface(pts, segs, surf, defl) {
+function densifyForSurface(pts, segs, surf, defl, link) {
     const n = pts.length;
     const uvCache = new Map();
     let guess = null;
@@ -854,18 +991,38 @@ function densifyForSurface(pts, segs, surf, defl) {
     };
     const tol2 = (defl * 0.5) ** 2;
     const out = [];
+    // free parameter at a pole / cone apex (like projectLoop): 0 = u, 1 = v, -1 = regular point
+    const freeOf = uv => {
+        const d = surf.evalD(uv[0], uv[1]), lu = len(d.du), lv = len(d.dv);
+        return lu < 1e-7 * lv ? 0 : lv < 1e-7 * lu ? 1 : -1;
+    };
     const rec = (a, ta, b, tb, f, depth) => {
         if (depth > 8) return;
-        const ua = uvOf(a), ub = uvOf(b);
+        let ua = uvOf(a), ub = uvOf(b);
+        // the projection of a pole has an arbitrary value in its free parameter – take the other end's, otherwise
+        // the uv segment towards the apex looks bent and is split again and again (points the neighbour lacks)
+        const fa = freeOf(ua), fb = freeOf(ub);
+        if (fa >= 0 && fb < 0) { ua = ua.slice(); ua[fa] = ub[fa]; }
+        else if (fb >= 0 && fa < 0) { ub = ub.slice(); ub[fb] = ua[fb]; }
         let u2 = ub[0], v2 = ub[1];
         if (surf.uPeriod) u2 = wrapNear(u2, ua[0], surf.uPeriod);
         if (surf.vPeriod) v2 = wrapNear(v2, ua[1], surf.vPeriod);
         const ps = surf.eval((ua[0] + u2) / 2, (ua[1] + v2) / 2);
         const tm = (ta + tb) / 2, pc = f(tm);
         // Deviation must exceed the tolerance AND 1 % of the segment length – otherwise numerical
-        // noise of the spline projection splits down to the maximum depth at tiny tolerances
-        const d2 = dist2(ps, pc);
+        // noise of the spline projection splits down to the maximum depth at tiny tolerances.
+        // Measured within the surface (curve points projected onto it – an edge curve lying slightly off its surface, e.g. a
+        // spline approximating the arc of a cylinder, otherwise never got closer than its offset: 18 000 boundary points)
+        // and against the chord and the curve near pc, not against pc alone: the uv segment is fine if its middle lies on
+        // the curve (a cylinder: the arc – only the curve's parameter speed differs, rational splines) or on the chord
+        // (a plane-like spline). Every added point is a vertex the neighbouring face does not have (welded afterwards:
+        // weldOpenChains in step-importer.js).
+        const uc = uvOf(pc);
+        const as = surf.eval(ua[0], ua[1]), bs = surf.eval(u2, v2);
+        const cs = surf.eval(surf.uPeriod ? wrapNear(uc[0], ua[0], surf.uPeriod) : uc[0], surf.vPeriod ? wrapNear(uc[1], ua[1], surf.vPeriod) : uc[1]);
+        const d2 = Math.min(dist2Seg(ps, as, bs), dist2Seg(ps, as, cs), dist2Seg(ps, cs, bs));
         if (d2 <= tol2 || d2 <= 1e-4 * dist2(a, b)) return;
+        link(a, pc, f, ta, tm); link(pc, b, f, tm, tb);
         rec(a, ta, pc, tm, f, depth + 1);
         out.push(pc);
         rec(pc, tm, b, tb, f, depth + 1);
@@ -878,6 +1035,13 @@ function densifyForSurface(pts, segs, surf, defl) {
     // pass already computed uv values on to projectLoop (projection is expensive for splines)
     out.uvHint = uvCache;
     return out;
+}
+
+// squared distance of point p from segment a–b
+function dist2Seg(p, a, b) {
+    const d = sub(b, a), l = dot(d, d);
+    const t = l > 0 ? Math.max(0, Math.min(1, dot(sub(p, a), d) / l)) : 0;
+    return dist2(p, [a[0] + d[0] * t, a[1] + d[1] * t, a[2] + d[2] * t]);
 }
 
 // Is triangle (p, m, o) or (m, p, o) with new point m=(mx,my) strictly counter-clockwise?
@@ -925,6 +1089,14 @@ function constrainedTriangulation(X, Y, ringStarts, n, ringOuter) {
         return (a < 0 ? -1 : 1) * (ringOuter[r] ? 1 : -1);   // outer ring inside +1, hole inside −1
     });
     const cells = all.filter(([a, b, c]) => {
+        // cells without area (boundary points on a uv line, e.g. a circle at constant v on a cylinder): their centroid lies
+        // on the bound, the winding number there is chance – kept, the sliver became a fin standing on the face's rim.
+        // Only cells flat to rounding: a looser limit (1e-9) also dropped real thin cells of a coiled spline face (the
+        // holes made the refinement overlap the face with itself, 40 % too much area)
+        const ax = pts[a][0], ay = pts[a][1], bx = pts[b][0], by = pts[b][1], qx = pts[c][0], qy = pts[c][1];
+        const o = (bx - ax) * (qy - ay) - (by - ay) * (qx - ax);
+        const l = (bx - ax) ** 2 + (by - ay) ** 2 + (qx - bx) ** 2 + (qy - by) ** 2 + (ax - qx) ** 2 + (ay - qy) ** 2;
+        if (Math.abs(o) <= 1e-14 * l) return false;
         const cx = (pts[a][0] + pts[b][0] + pts[c][0]) / 3, cy = (pts[a][1] + pts[b][1] + pts[c][1]) / 3;
         let w = 0;
         for (let r = 0; r < ringStarts.length; r++) w += sign[r] * windingAt(X, Y, starts[r], starts[r + 1], cx, cy);
@@ -1008,6 +1180,67 @@ function unwrapCoord(uv, free, c, period) {
     const closeVal = step(prevIdx, 0, gap, 0);
     drift = closeVal - uv[0][c];
     return drift;
+}
+
+// The shared 3D point if the uv points a and b map to the same point (a pole: the surface collapses along a domain
+// limit), otherwise null
+function poleAt(surf, a, b) {
+    const p = surf.eval(a[0], a[1]), m = surf.eval(b[0], b[1]);
+    return dist2(p, m) <= 1e-18 * (1 + dot(p, p)) ? p : null;
+}
+
+// Segments of a closed, unwrapped bound in coordinate c: f(lo, hi) per segment (the closing one back to the start
+// includes the drift of the wrap)
+function forSegments(L, c, P, f) {
+    const uv = L.uv, n = uv.length, drift = (c === 0 ? L.kU : L.kV) * P;
+    for (let i = 0; i < n; i++) {
+        const a = uv[i][c], b = uv[(i + 1) % n][c] + (i === n - 1 ? drift : 0);
+        f(Math.min(a, b), Math.max(a, b));
+    }
+}
+
+// How often the bound L crosses the lines x + k·P in coordinate c
+function crossings(L, c, P, x) {
+    let count = 0;
+    forSegments(L, c, P, (lo, hi) => { count += Math.floor((hi - x) / P) - Math.floor((lo - x) / P); });
+    return count;
+}
+
+// Cut position (mod P) where every wrapping bound crosses exactly once – preferably outside the holes; the middle of
+// the largest such interval, null if there is none
+function singleCrossingCut(wrapping, holes, c, P) {
+    const ev = [];   // [position in [0, P), delta, list]: list 0..n-1 = coverage of bound i, n = holes
+    const n = wrapping.length;
+    const base = new Array(n + 1).fill(0);
+    const addSpan = (lo, hi, k) => {
+        let len = hi - lo;
+        if (!(len > 0)) return;
+        const full = Math.floor(len / P);
+        base[k] += full;
+        len -= full * P;
+        if (len <= 0) return;
+        const a = ((lo % P) + P) % P, b = a + len;
+        ev.push([a, 1, k]);
+        if (b <= P) ev.push([b, -1, k]);
+        else { ev.push([P, -1, k]); ev.push([0, 1, k]); ev.push([b - P, -1, k]); }
+    };
+    wrapping.forEach((L, k) => forSegments(L, c, P, (lo, hi) => addSpan(lo, hi, k)));
+    for (const L of holes) { const [a, b] = range(L.uv, c); addSpan(a, b, n); }
+    ev.push([0, 0, 0], [P, 0, 0]);
+    ev.sort((x, y) => x[0] - y[0]);
+    const cov = base.slice();
+    let best = null, bestFree = null, bestLen = 0, bestFreeLen = 0;
+    for (let i = 0; i < ev.length - 1; i++) {
+        cov[ev[i][2]] += ev[i][1];
+        const a = ev[i][0], b = ev[i + 1][0];
+        if (!(b > a)) continue;
+        let ok = true;
+        for (let k = 0; k < n; k++) if (cov[k] !== 1) { ok = false; break; }
+        if (!ok) continue;
+        if (b - a > bestLen) { bestLen = b - a; best = (a + b) / 2; }
+        if (cov[n] === 0 && b - a > bestFreeLen) { bestFreeLen = b - a; bestFree = (a + b) / 2; }
+    }
+    return bestFree ?? best;
 }
 
 function area2(uv) {
@@ -1100,7 +1333,7 @@ function collinearRestorer(p3map) {
 
 // Do boundary segments cross (of one ring with itself or of two rings)? Proper crossings
 // (no touching at endpoints); segments distributed over a grid -> nearly linear.
-function ringsCross(rings) {
+function ringsCross(rings, out = null) {
     let n = 0;
     for (const R of rings) n += R.uv.length;
     if (n < 4) return false;
@@ -1141,11 +1374,58 @@ function ringsCross(rings) {
                 const d1 = orient(AX[s], AY[s], BX[s], BY[s], AX[t], AY[t]), d2 = orient(AX[s], AY[s], BX[s], BY[s], BX[t], BY[t]);
                 if (!((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0))) continue;
                 const d3 = orient(AX[t], AY[t], BX[t], BY[t], AX[s], AY[s]), d4 = orient(AX[t], AY[t], BX[t], BY[t], BX[s], BY[s]);
-                if ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0)) return true;
+                if (!((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) continue;
+                if (!out) return true;
+                out.push(RI[s], II[s], RI[t], II[t]);
             }
         }
     }
-    return false;
+    return out ? out.length > 0 : false;
+}
+
+// Bounds crossing each other because two edges run closer together than their chord error (a thin face, e.g. a
+// narrow ring between a circle and a toothed profile): sample the crossing boundary pieces finer with true curve
+// points (halving their chord error per round) until no crossing remains. Points only this face has – the
+// importer welds the neighbouring face to them (weldOpenChains). Cutting the polygon apart instead (repairRings)
+// kept the crossing chords: a thin ring got up to twice its area, overlapping its neighbours.
+// Returns true if the rings no longer cross (changed in place); otherwise they are left as they were – points only this
+// face has would stay open where the polygon repair takes over (a thin band got dozens of open edges).
+function splitCrossings(rings, segOf, surf, defl) {
+    const uP = surf.uPeriod, vP = surf.vPeriod;
+    const tiny2 = (defl * 1e-3) ** 2;
+    const saved = rings.map(R => [R.uv.slice(), R.p3.slice(), R.c.slice()]);
+    const fail = () => { rings.forEach((R, r) => { [R.uv, R.p3, R.c] = saved[r]; }); return false; };
+    for (let round = 0; round < 6; round++) {
+        const hits = [];
+        if (!ringsCross(rings, hits)) return true;
+        const per = rings.map(() => new Set());
+        for (let k = 0; k < hits.length; k += 2) per[hits[k]].add(hits[k + 1]);
+        let added = 0;
+        per.forEach((set, r) => {
+            const R = rings[r], n = R.uv.length;
+            for (const i of [...set].sort((x, y) => y - x)) {
+                const a = R.p3[i], b = R.p3[(i + 1) % n];
+                const sg = a && b && segOf.get(a) && segOf.get(a).get(b);
+                if (!sg) continue;
+                const tm = (sg.t0 + sg.t1) / 2, pm = sg.f(tm);
+                // a straight piece cannot be resolved by splitting
+                if (dist2(pm, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2]) <= tiny2) continue;
+                const ua = R.uv[i], ub = R.uv[(i + 1) % n];
+                const g = surf.project(pm, ua);
+                const uv = [g[0], g[1]];
+                if (uP) uv[0] = wrapNear(uv[0], (ua[0] + ub[0]) / 2, uP);
+                if (vP) uv[1] = wrapNear(uv[1], (ua[1] + ub[1]) / 2, vP);
+                R.uv.splice(i + 1, 0, uv); R.p3.splice(i + 1, 0, pm); R.c.splice(i + 1, 0, R.c[i]);
+                const m = segOf.get(a);
+                m.set(pm, { f: sg.f, t0: sg.t0, t1: tm });
+                segOf.set(pm, new Map([[a, { f: sg.f, t0: tm, t1: sg.t0 }], [b, { f: sg.f, t0: tm, t1: sg.t1 }]]));
+                segOf.get(b).set(pm, { f: sg.f, t0: sg.t1, t1: tm });
+                added++;
+            }
+        });
+        if (!added) return fail();
+    }
+    return ringsCross(rings) ? fail() : true;
 }
 
 // Clean up the boundary polygon: outer ring minus holes with polygon-clipping (self-intersections
@@ -1215,12 +1495,14 @@ function areaMatches(T, rings, su, sv) {
     return Math.abs(tri - poly) <= 0.02 * poly;
 }
 
-// Opens a wrapping bound at coordinate cut: result runs from cut to cut + dir*P
-function openLoop(L, c, cut, P, dir) {
+// Opens a wrapping bound at coordinate cut: result runs from cut to cut + dir*P.
+// snap: open at the bound's own point nearest to cut instead of an interpolated point (result runs from that
+// point's value to value + dir*P, all points of the bound in order, the point itself at both ends)
+function openLoop(L, c, cut, P, dir, snap = false) {
     const n = L.uv.length;
     const drift = dir * P;
-    // Extended sequence: points 0..n-1, then 0..n-1 + drift
-    const val = i => L.uv[i % n][c] + (i >= n ? drift : 0);
+    // Extended sequence: points 0..n-1, then 0..n-1 + drift, …
+    const val = i => L.uv[i % n][c] + Math.floor(i / n) * drift;
     // Shift the loop start value so that the cut lies in the first round
     const k = Math.floor((dir * (L.uv[0][c] - cut)) / P);
     const shift = -dir * k * P;
@@ -1233,6 +1515,16 @@ function openLoop(L, c, cut, P, dir) {
     if (i0 < 0) {
         // No cut found: return unchanged
         return { uv: L.uv.map(p => p.slice()), p3: L.p3.slice() };
+    }
+    if (snap) {
+        const j = Math.abs(val(i0) + shift - target) <= Math.abs(val(i0 + 1) + shift - target) ? i0 : i0 + 1;
+        const o = 1 - c, uv = [], p3 = [];
+        for (let i = j; i <= j + n; i++) {
+            const q = [0, 0];
+            q[c] = val(i) + shift - drift; q[o] = L.uv[i % n][o];
+            uv.push(q); p3.push(L.p3[i % n]);
+        }
+        return { uv, p3 };
     }
     const a = val(i0) + shift, b = val(i0 + 1) + shift;
     const f = b !== a ? (target - a) / (b - a) : 0;
@@ -1264,32 +1556,115 @@ function openLoop(L, c, cut, P, dir) {
     return { uv: outUV, p3: outP };
 }
 
-// Closes an opened bound via a domain limit (pole / surface edge)
-function closeAt(a, c, cut, limit) {
+// Closes an opened bound via a domain limit (pole / surface edge). The seam from the bound's end to the limit and
+// its twin from the limit back to the bound's start share their points (seamPoints).
+function closeAt(a, c, cut, limit, surf, defl, ang) {
     const o = 1 - c;
     const uv = a.uv.slice(), p3 = a.p3.slice(), cons = [];
     for (let i = 0; i < uv.length - 1; i++) cons.push(2);
     const endC = uv[uv.length - 1][c];
+    const lim = q => { const r = [0, 0]; r[c] = q; r[o] = limit; return r; };
+    const s = seamPoints(surf, uv[uv.length - 1], p3[p3.length - 1], lim(endC), null, defl, ang);
+    for (let i = 0; i < s.uv.length; i++) { uv.push(s.uv[i]); p3.push(s.p3[i]); cons.push(2); }
+    cons.push(2);
     const n = Math.max(2, Math.ceil(Math.abs(endC - cut) / (Math.PI / 8)));
+    // a pole (the limit maps to one point): one shared point – evaluated per u, the copies differed by rounding
+    const pole = poleAt(surf, lim(endC), lim((endC + cut) / 2));
     // back along the limit
     for (let k = 0; k <= n; k++) {
-        const q = [0, 0];
-        q[c] = endC + (cut - endC) * k / n;
-        q[o] = limit;
-        uv.push(q); p3.push(null); cons.push(1);
+        uv.push(lim(endC + (cut - endC) * k / n)); p3.push(pole); cons.push(1);
     }
-    cons.push(1);
+    cons[cons.length - 1] = 2;
+    for (let i = s.uv.length - 1; i >= 0; i--) {
+        const q = s.uv[i].slice();
+        q[c] += cut - endC;
+        uv.push(q); p3.push(s.p3[i]); cons.push(2);
+    }
     return { uv, p3, c: cons };
 }
 
-function rectRing(surf, dom) {
+// Points strictly between the uv points p and q on the straight uv segment, sampled by its 3D shape like an edge
+// (chord error, normal angle). For seams: both sides of a seam use the same points (bit-exact 3D positions) and
+// are not split again by refine – splitting them there independently left cracks inside the face.
+function seamPoints(surf, p, pp, q, pq, defl, ang) {
+    const uv = [], p3 = [];
+    const cosA = Math.cos(ang), d2 = defl * defl;
+    // like refine: no angle test at a pole or cone apex (substitute normal)
+    const node = (w, pw) => ({ w, p: pw || surf.eval(w[0], w[1]), n: surf.singular(w[0], w[1]) ? null : surf.normal(w[0], w[1]) });
+    const rec = (A, B, depth) => {
+        if (depth >= 12 || dist2(A.p, B.p) <= d2 * 0.01) return;
+        const m = [(A.w[0] + B.w[0]) / 2, (A.w[1] + B.w[1]) / 2], M = node(m);
+        const dx = (A.p[0] + B.p[0]) / 2 - M.p[0], dy = (A.p[1] + B.p[1]) / 2 - M.p[1], dz = (A.p[2] + B.p[2]) / 2 - M.p[2];
+        if (dx * dx + dy * dy + dz * dz <= d2 && !(A.n && B.n && dot(A.n, B.n) < cosA)) return;
+        rec(A, M, depth + 1);
+        uv.push(m); p3.push(M.p);
+        rec(M, B, depth + 1);
+    };
+    // base pieces: the seam of a closed surface can start and end at the same 3D point (a few first), splines start
+    // with their knot spans (a midpoint test alone misses an S-shaped seam)
+    let prev = node(p, pp);
+    const last = node(q, pq);
+    const N0 = dist2(prev.p, last.p) <= d2 ? 4 : 1;
+    const ts = [];
+    for (let k = 1; k < N0; k++) ts.push(k / N0);
+    [surf.Uu, surf.Uv].forEach((knots, d) => {
+        if (!knots || q[d] === p[d]) return;
+        for (const kn of knots) { const t = (kn - p[d]) / (q[d] - p[d]); if (t > 1e-9 && t < 1 - 1e-9) ts.push(t); }
+    });
+    ts.sort((a, b) => a - b);
+    ts.push(1);
+    let tPrev = 0;
+    for (const t of ts) {
+        if (t - tPrev <= 1e-9) continue;
+        const w = [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t];
+        const cur = t === 1 ? last : node(w);
+        rec(prev, cur, 0);
+        if (t < 1) { uv.push(w); p3.push(cur.p); }
+        prev = cur; tPrev = t;
+    }
+    return { uv, p3 };
+}
+
+// Ring around the whole parameter domain (face without bounds, or bounded by vertex loops only). Periodic
+// directions: the two sides are one seam – sampled once, shared (seamPoints); other sides as before.
+function rectRing(surf, dom, defl, ang) {
     const [u0, u1, v0, v1] = dom;
-    const uv = [], n = 8;
-    for (let i = 0; i < n; i++) uv.push([u0 + (u1 - u0) * i / n, v0]);
-    for (let i = 0; i < n; i++) uv.push([u1, v0 + (v1 - v0) * i / n]);
-    for (let i = 0; i < n; i++) uv.push([u1 - (u1 - u0) * i / n, v1]);
-    for (let i = 0; i < n; i++) uv.push([u0, v1 - (v1 - v0) * i / n]);
-    return { uv, p3: uv.map(() => null), c: uv.map(() => 1) };
+    const uP = !!surf.uPeriod, vP = !!surf.vPeriod;
+    const corners = new Map();
+    const bottomPole = !vP && poleAt(surf, [u0, v0], [(u0 + u1) / 2, v0]), topPole = !vP && poleAt(surf, [u0, v1], [(u0 + u1) / 2, v1]);
+    const corner = (u, v) => {
+        const k = (uP || (v === v0 && bottomPole) || (v === v1 && topPole) ? u0 : u) + ',' + (vP ? v0 : v);
+        let p = corners.get(k);
+        if (!p) corners.set(k, p = surf.eval(u, v));
+        return p;
+    };
+    const uv = [], p3 = [], c = [];
+    const side = (from, to, twin, cons) => {
+        // twin: points of the opposite side (reversed, moved onto this side)
+        uv.push(from); p3.push(corner(from[0], from[1])); c.push(cons);
+        if (twin) {
+            for (let i = twin.uv.length - 1; i >= 0; i--) {
+                const w = twin.uv[i];
+                uv.push(twin.alongU ? [w[0], from[1]] : [from[0], w[1]]); p3.push(twin.p3[i]); c.push(cons);
+            }
+            return null;
+        }
+        if (cons === 2) {
+            const s = seamPoints(surf, from, corner(from[0], from[1]), to, corner(to[0], to[1]), defl, ang);
+            for (let i = 0; i < s.uv.length; i++) { uv.push(s.uv[i]); p3.push(s.p3[i]); c.push(2); }
+            return s;
+        }
+        // a side collapsing to a pole (sphere): one shared point, like closeAt
+        const n = 8, pole = poleAt(surf, from, [(from[0] + to[0]) / 2, (from[1] + to[1]) / 2]);
+        for (let i = 1; i < n; i++) { uv.push([from[0] + (to[0] - from[0]) * i / n, from[1] + (to[1] - from[1]) * i / n]); p3.push(pole); c.push(1); }
+        return null;
+    };
+    const bottom = side([u0, v0], [u1, v0], null, vP ? 2 : 1);
+    if (bottom) bottom.alongU = true;
+    const right = side([u1, v0], [u1, v1], null, uP ? 2 : 1);
+    side([u1, v1], [u0, v1], bottom, vP ? 2 : 1);
+    side([u0, v1], [u0, v0], right, uP ? 2 : 1);
+    return { uv, p3, c };
 }
 
 // Boundary edges of a face (edges belonging to only one triangle) with the triangle's running direction,

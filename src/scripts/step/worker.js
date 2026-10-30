@@ -1,7 +1,7 @@
 // Web worker for the STEP import.
 // Messages:
 //   {type:'index', bytes, shared}          -> index + product structure (one worker only)
-//   {type:'init', bytes, offsets, angleUnit} -> initialise worker with the finished index
+//   {type:'init', bytes, offsets, angleUnit, edgeLimits} -> initialise worker with the finished index
 //   {type:'faces', job, faces, defl, ang}  -> tessellate faces
 //   {type:'bvh', positions, index, shape}  -> build BVH (three-mesh-bvh, SAH) for one geometry;
 //                                             shape: true → also its fingerprint (shape-match.js, instancing)
@@ -114,11 +114,11 @@ self.onmessage = e => {
             const idx = buildIndex(bytes, INDEX_TYPES, m.shared);
             const step = new StepFile(bytes, idx.offsets);
             const plan = buildPlan(step, idx.typeIds);
-            tess = new Tessellator(step, plan.angleUnit);
+            tess = new Tessellator(step, plan.angleUnit, plan.edgeLimits);
             trimCaches(true); // building the structure parsed almost the whole file
             self.postMessage({ type: 'index', offsets: idx.offsets, plan, entityCount: idx.count });
         } else if (m.type === 'init') {
-            tess = new Tessellator(new StepFile(new Uint8Array(m.bytes), m.offsets), m.angleUnit);
+            tess = new Tessellator(new StepFile(new Uint8Array(m.bytes), m.offsets), m.angleUnit, m.edgeLimits);
             self.postMessage({ type: 'init' });
         } else if (m.type === 'faces') {
             tessellateFaces(m);

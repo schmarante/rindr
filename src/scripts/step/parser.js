@@ -29,6 +29,32 @@ export class Enum {
     constructor(name) { this.name = name; }
 }
 
+// Short entity names (ISO 10303-21 allows the schema's short names instead of the full ones; older exports use
+// them throughout) → full names, for the entities the kernel reads. Keywords of 6 characters or fewer only.
+const SHORT_NAMES = new Map(Object.entries({
+    ABSR: 'ADVANCED_BREP_SHAPE_REPRESENTATION', ADVFC: 'ADVANCED_FACE', A1PL: 'AXIS1_PLACEMENT', A2PL2D: 'AXIS2_PLACEMENT_2D',
+    A2PL3D: 'AXIS2_PLACEMENT_3D', BRWTVD: 'BREP_WITH_VOIDS', BSPCR: 'B_SPLINE_CURVE', BSCWK: 'B_SPLINE_CURVE_WITH_KNOTS',
+    BSPSR: 'B_SPLINE_SURFACE', BSSWK: 'B_SPLINE_SURFACE_WITH_KNOTS', BZRCRV: 'BEZIER_CURVE', BZRSRF: 'BEZIER_SURFACE',
+    CRTPNT: 'CARTESIAN_POINT', CTO3: 'CARTESIAN_TRANSFORMATION_OPERATOR_3D', CLSSHL: 'CLOSED_SHELL', CNCSRF: 'CONICAL_SURFACE',
+    CDSR: 'CONTEXT_DEPENDENT_SHAPE_REPRESENTATION', CYLSRF: 'CYLINDRICAL_SURFACE', DGTRSR: 'DEGENERATE_TOROIDAL_SURFACE',
+    DRCTN: 'DIRECTION', EDGCRV: 'EDGE_CURVE', EDGLP: 'EDGE_LOOP', ELLPS: 'ELLIPSE', FCTBR: 'FACETED_BREP',
+    FBSR: 'FACETED_BREP_SHAPE_REPRESENTATION', FCBND: 'FACE_BOUND', FCOTBN: 'FACE_OUTER_BOUND', FCSRF: 'FACE_SURFACE',
+    GBSSR: 'GEOMETRICALLY_BOUNDED_SURFACE_SHAPE_REPRESENTATION', HYPRBL: 'HYPERBOLA', INTCRV: 'INTERSECTION_CURVE',
+    ITDFTR: 'ITEM_DEFINED_TRANSFORMATION', MNSLBR: 'MANIFOLD_SOLID_BREP', MSSR: 'MANIFOLD_SURFACE_SHAPE_REPRESENTATION',
+    MPPITM: 'MAPPED_ITEM', NAUO: 'NEXT_ASSEMBLY_USAGE_OCCURRENCE', OFFSRF: 'OFFSET_SURFACE', OPNSHL: 'OPEN_SHELL',
+    ORCLSH: 'ORIENTED_CLOSED_SHELL', ORNEDG: 'ORIENTED_EDGE', ORNFC: 'ORIENTED_FACE', PRBL: 'PARABOLA', PLYLN: 'POLYLINE',
+    PLYLP: 'POLY_LOOP', PRDCT: 'PRODUCT', PRDDFN: 'PRODUCT_DEFINITION', PRDFSH: 'PRODUCT_DEFINITION_SHAPE',
+    QSUNCR: 'QUASI_UNIFORM_CURVE', QSUNSR: 'QUASI_UNIFORM_SURFACE', RCTRSR: 'RECTANGULAR_TRIMMED_SURFACE',
+    RPRMP: 'REPRESENTATION_MAP', RPRRLT: 'REPRESENTATION_RELATIONSHIP', RRWT: 'REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION',
+    SMCRV: 'SEAM_CURVE', SHDFRP: 'SHAPE_DEFINITION_REPRESENTATION', SHPRPR: 'SHAPE_REPRESENTATION',
+    SHRPRL: 'SHAPE_REPRESENTATION_RELATIONSHIP', SBSM: 'SHELL_BASED_SURFACE_MODEL', SPHSRF: 'SPHERICAL_SURFACE',
+    SRFCRV: 'SURFACE_CURVE', SRFLNE: 'SURFACE_OF_LINEAR_EXTRUSION', SRFRVL: 'SURFACE_OF_REVOLUTION', TRDSRF: 'TOROIDAL_SURFACE',
+    TRMCRV: 'TRIMMED_CURVE', UNFCRV: 'UNIFORM_CURVE', UNFSRF: 'UNIFORM_SURFACE', VRTLP: 'VERTEX_LOOP', VRTPNT: 'VERTEX_POINT',
+    RBSC: 'RATIONAL_B_SPLINE_CURVE', RBSS: 'RATIONAL_B_SPLINE_SURFACE', GUAC: 'GLOBAL_UNIT_ASSIGNED_CONTEXT',
+    CNBSUN: 'CONVERSION_BASED_UNIT', PLANUN: 'PLANE_ANGLE_UNIT',
+}));
+const fullName = s => (s.length <= 6 && SHORT_NAMES.get(s)) || s;
+
 function isSpace(c) { return c === 32 || c === 10 || c === 13 || c === 9; }
 function isLetter(c) { return (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95; }
 function isDigit(c) { return c >= 48 && c <= 57; }
@@ -95,7 +121,7 @@ export function buildIndex(bytes, collectTypes = [], shared = false) {
                 let s = '';
                 let p = pos;
                 while (p < n && (isLetter(bytes[p]) || isDigit(bytes[p]))) s += String.fromCharCode(bytes[p++]);
-                s = s.toUpperCase();
+                s = fullName(s.toUpperCase());
                 if (collect.has(s)) typeIds[s].push(id);
             }
 
@@ -171,6 +197,18 @@ export class StepFile {
         return e;
     }
 
+    /** Type of an entity without parsing it ('COMPLEX' for complex entities, null if missing) – e.g. a large spline surface */
+    typeOf(id) {
+        if (id instanceof Ref) id = id.id;
+        const e = this.cache.get(id);
+        if (e !== undefined) return e.type;
+        if (!this.has(id)) return null;
+        this.pos = this.offsets[id];
+        this.skipWs();
+        if (this.bytes[this.pos] === C_LPAR) return 'COMPLEX';
+        return this.readKeyword();
+    }
+
     skipWs() {
         const b = this.bytes;
         let p = this.pos;
@@ -191,7 +229,7 @@ export class StepFile {
         let p = this.pos, s = '';
         while (isLetter(b[p]) || isDigit(b[p]) || b[p] === C_MINUS) s += String.fromCharCode(b[p++]);
         this.pos = p;
-        return s.toUpperCase();
+        return fullName(s.toUpperCase());
     }
 
     parseEntity() {
