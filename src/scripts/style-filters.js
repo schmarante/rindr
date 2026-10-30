@@ -19,7 +19,7 @@ import * as THREE from 'three/webgpu';
 import { Fn, texture, uniform, vec2, vec3, vec4, float, floor, fract, clamp, mix, step, smoothstep, select, dot, max, min, abs, exp,
     sin, sqrt, pow, log2, screenCoordinate, screenSize, time, sRGBTransferOETF, sRGBTransferEOTF, toneMapping, toneMappingExposure } from 'three/tsl';
 
-export const STYLE_MODES = ['none', 'handheld', 'pixel', 'lcd', 'crt', 'sketch', 'ascii', 'rain'];
+export const STYLE_MODES = ['none', 'handheld', 'pixel', 'lcd', 'crt', 'sketch', 'ascii', 'rain', 'zebra'];
 
 const DEFAULTS = {
     handheld: { rows: 144, dither: 0.8, palette: 'green' },
@@ -29,6 +29,7 @@ const DEFAULTS = {
     sketch: { lines: 1, hatching: 0.8, spacing: 7, color: 0.25 },
     ascii: { size: 12, color: 1, brightness: 1.2 },
     rain: { size: 16, speed: 1, image: 0.85 },
+    zebra: { highlights: 0.95, shadows: 0, size: 6 },
 };
 
 // own palettes (display sRGB), dark → light
@@ -118,6 +119,7 @@ export class StyleFilter {
             sketch: [s.lines, s.hatching, s.spacing, s.color],
             ascii: [s.size, s.color, s.brightness, 0],
             rain: [s.size, s.speed, s.image, 0],
+            zebra: [s.highlights, s.size, s.shadows, 0],
         }[this.mode];
         [u.a.value, u.b.value, u.c.value, u.d.value] = v;
         if (this.mode === 'handheld') (PALETTES[s.palette] || PALETTES.green).forEach((c, i) => u.palette[i].value.setRGB(...c));
@@ -317,6 +319,17 @@ export class StyleFilter {
                 const green = vec3(0.2, 1, 0.42);
                 const col = mix(green.mul(intensity), vec3(0.8, 1, 0.85).mul(vis), head.mul(0.8));
                 return out(col.mul(mask).add(green.mul(base).mul(0.08)));
+            }),
+            // exposure check (user: "which parts burn out"): moving diagonal stripes where the display value (after
+            // tone mapping, exposure and look) reaches the limit in any channel – black over burnt-out highlights,
+            // blue over crushed shadows (limit 0 = off)
+            zebra: Fn(() => {
+                const c = show(px.div(size));
+                const peak = max(c.r, max(c.g, c.b));
+                const stripe = step(0.5, fract(px.x.add(px.y).div(u.b.mul(u.scale).mul(2)).sub(time.mul(0.6))));
+                const hi = peak.greaterThanEqual(u.a).and(stripe.greaterThan(0.5));
+                const lo = peak.lessThan(u.c).and(stripe.greaterThan(0.5));
+                return out(select(hi, vec3(0), select(lo, vec3(0.2, 0.45, 1), c)));
             }),
         };
         return build[this.mode]();

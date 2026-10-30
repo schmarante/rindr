@@ -1464,7 +1464,8 @@
                 "crt": "Scanlines (CRT)",
                 "sketch": "Sketch",
                 "ascii": "ASCII art",
-                "rain": "Code rain"
+                "rain": "Code rain",
+                "zebra": "Zebra (exposure)"
             },
             "rows": "Rows",
             "dither": "Dithering",
@@ -1488,6 +1489,9 @@
             "brightness": "Brightness",
             "speed": "Speed",
             "image": "Picture",
+            "zebraHighlights": "Highlights from",
+            "zebraShadows": "Shadows up to",
+            "zebraSize": "Stripes px",
             "undo": {
                 "mode": "Style filter",
                 "param": "Style filter: {name}"

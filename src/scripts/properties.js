@@ -787,6 +787,7 @@ export class PropertiesPanel {
             sketch: [['lines', 'lines', 0, 2, 0.01], ['hatching', 'hatching', 0, 1, 0.01], ['spacing', 'hatchSpacing', 3, 20, 0.5], ['color', 'color', 0, 1, 0.01]],
             ascii: [['size', 'size', 6, 40, 1], ['color', 'color', 0, 1, 0.01], ['brightness', 'brightness', 0.5, 2, 0.01]],
             rain: [['size', 'size', 8, 40, 1], ['speed', 'speed', 0, 3, 0.01], ['image', 'image', 0, 1, 0.01]],
+            zebra: [['highlights', 'zebraHighlights', 0.7, 1, 0.01], ['shadows', 'zebraShadows', 0, 0.2, 0.005], ['size', 'zebraSize', 2, 24, 1]],
         };
         return this._section('style', t('properties.style.title'), null, true, null, () => {
             const rows = [this._row(t('properties.style.mode'), mode)];
