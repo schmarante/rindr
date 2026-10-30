@@ -2033,6 +2033,7 @@
         "bouncesReflection": "Bounces Reflexion",
         "bouncesRefraction": "Bounces Refraktion",
         "resolution": "Auflösung",
+        "hidpi": "Volle HiDPI-Auflösung",
         "maxSamples": "Max. Samples",
         "glossyFilter": "Glossy-Filter",
         "glassShadow": "Glas-Schatten",

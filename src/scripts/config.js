@@ -8,6 +8,8 @@ export const PATHTRACING = {
     refractionBounces: 4,       // scatters at glass on top of that – glass does not use up the bounces (GUI: 0–20)
     maxSamples: 32,             // samples per pixel, then stop + denoise (GUI: 1–256)
     renderScale: 1,           // resolution relative to the window (0.25–1); < 1 is upscaled via FSR
+    hidpi: false,               // HiDPI screens: false = traced at the CSS pixel size (1/devicePixelRatio of the canvas) and
+                                // upscaled, true = every device pixel (GUI "Full HiDPI resolution")
     filterGlossyFactor: 1,      // glossy filter 0–1: dampens glossy noise (fireflies), slightly softer
     denoise: true,              // OIDN denoising after maxSamples
     denoiseGuideSamples: 8,     // rays per pixel of OIDN's albedo/normal guides (antialiasing, depth of field; pt-guides.js)

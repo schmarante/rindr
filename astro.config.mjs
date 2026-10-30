@@ -133,6 +133,9 @@ function pathTracerPerfPatch() {
         replaceOnce(`value = value.clone();
 			hash = value.uuid + '_' + value.version;`, `hash = value.uuid + '_' + value.version;
 			value = value.clone();`, 'WebGPUPathTracer.js');
+        // size sync with RINDR's HiDPI reduction (pathtracer.js sizeFactor)
+        replaceOnce('renderScale * _resolution.x', 'renderScale * ( this.sizeFactor ?? 1 ) * _resolution.x', 'WebGPUPathTracer.js');
+        replaceOnce('renderScale * _resolution.y', 'renderScale * ( this.sizeFactor ?? 1 ) * _resolution.y', 'WebGPUPathTracer.js');
         return { code, map: null };
       }
       return null;
