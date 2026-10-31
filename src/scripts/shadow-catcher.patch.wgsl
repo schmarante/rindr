@@ -106,9 +106,12 @@
 								var scBase = vec3f( 0.0 );   // what is seen of the ground without reflection
 								if ( bounce == 0u ) {
 
+									// × throughput: what lies in front of the ground on the camera ray (traced Gaussians, volumes)
+									// lets this much through – added to their light (assigned, it overwrote it: a smoke splat
+									// reaching below the ground edge was cut off there in HQ, user)
 									let scBg = ${ sampleBackground }( scLookup, ${ rand2 }( ${ RNG_INDEX_BACKGROUND_SAMPLE } ) );
-									scBase = scBg.rgb * scShadow * scSurf.z;
-									resultColor = vec4f( scBase * ( 1.0 - scSurf.x ), 1.0 );
+									scBase = scBg.rgb * scShadow * scSurf.z * throughputColor;
+									resultColor = vec4f( resultColor.rgb + scBase * ( 1.0 - scSurf.x ), 1.0 );
 
 								} else {
 

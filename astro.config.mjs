@@ -1037,12 +1037,13 @@ ${tab}\t}
 ${tab}}
 ${tab}${add}${lpAdd(tab, '${ __LP_MSRC }( lpB )', 'scMirrorBg', { mirror: true })}${lpT(tab, LP_MIRROR_T)}`);
       replaceN(/(if \( scMirrorTaken \) \{\n\n)(\t+)(resultColor \+= vec4f\( scMirrorBg, 0\.0 \);)/, (m, before, tab, add) => `${before}${tab}${add}${lpAdd(tab, '${ __LP_MSRC }( lpB )', 'scMirrorBg', { mirror: true })}${lpT(tab, LP_MIRROR_T)}`, 2);   // volume walk + the box of traced Gaussians (rindr-gaussians)
-      replaceN(/\n(\t+)resultColor = vec4f\( scBase \* \( 1\.0 - scSurf\.x \), 1\.0 \);/, (m, tab) => `${lpClear(tab)}${m}${lpAdd(tab, `${LP.BG}u`, 'scBase * ( 1.0 - scSurf.x )', { direct: LP.DIRECT_BG })}
+      // camera ray on the ground: added to what lies in front (traced Gaussians, volumes – × throughput), the passes too
+      replaceN(/\n(\t+)resultColor = vec4f\( resultColor\.rgb \+ scBase \* \( 1\.0 - scSurf\.x \), 1\.0 \);/, (m, tab) => `${m}${lpAdd(tab, `${LP.BG}u`, 'scBase * ( 1.0 - scSurf.x )', { direct: LP.DIRECT_BG })}
 ${tab}if ( lpOn ) {
 
-${tab}\t\${ __LP_ADD }( lpB, ${LP.SHADOW}u, scBg.rgb * scSurf.z * ( 1.0 - scSurf.x ) * max( vec3f( 1.0 ) - scShadow, vec3f( 0.0 ) ) );
+${tab}\t\${ __LP_ADD }( lpB, ${LP.SHADOW}u, scBg.rgb * scSurf.z * ( 1.0 - scSurf.x ) * max( vec3f( 1.0 ) - scShadow, vec3f( 0.0 ) ) * throughputColor );
 
-${tab}}${lpT(tab, 'scShadow * scSurf.z * ( 1.0 - scSurf.x )')}`);
+${tab}}${lpT(tab, 'scShadow * scSurf.z * ( 1.0 - scSurf.x ) * throughputColor')}`);
       replaceN(/\n(\t+)resultColor \+= vec4f\( scBase \* \( 1\.0 - scSurf\.x \), 0\.0 \);/, (m, tab) => `${m}${lpAdd(tab, `${LP.ENV}u`, 'scBase * ( 1.0 - scSurf.x )', { direct: LP.DIRECT_BG })}`);
       replaceN(/\n(\t+)throughputColor \*= scSurf\.x \* scScale;/, (m, tab) => `${m}${lpClassify(tab, lpKind(1))}`);
       replaceN(/\n(\t+)throughputColor \*= scAlbedo \* [^\n]*/, (m, tab) => `${m}${lpClassify(tab, lpKind(0))}`);
