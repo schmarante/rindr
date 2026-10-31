@@ -49,7 +49,8 @@ import { kiSettings } from './ki-gemini.js';
 import { PhysicalCamera } from 'three-gpu-pathtracer/src/objects/PhysicalCamera.js';
 import { captureState, applyState, matchesModel, sceneModels, SCENE_FORMAT } from './scene-state.js';
 import { encodePng } from './png-encode.js';
-import { LightHelper } from './light-helper.js';
+import { LightHelper, CameraMarkers } from './light-helper.js';
+import { LIGHT_KINDS, LOCAL_KINDS, IES_PROFILES, lightKind, createLight, placeLight, aimLight, refitLight, setStrength, strengthOf, prepareAreaLights, lightState, applyLightState, setIesProfile } from './scene-lights.js';
 import { setFisheye, RasterFisheye, patchRaycaster, viewAngle, setViewAngle, fisheyeEnabled, fisheyeProject, PERSPECTIVE_LIMIT, MIN_VIEW_ANGLE } from './fisheye.js';
 import { PropertiesPanel } from './properties.js';
 import { Slicer, isClosedGeometry } from './slicer.js';
@@ -325,6 +326,21 @@ dirLight2.shadow.mapSize.height = 2048;
 dirLight2.shadow.bias = -0.0005;
 dirLight2.name = t('sceneEntries.fillLight');
 lightsGroup.add(dirLight2);
+// lights of the scene (scene-lights.js): the ambient light plus any number of others ("+ Light"); main and fill light
+// are the defaults of a new scene, ordinary lights otherwise. Keys of the Scene Graph: the first three as before
+// (saved selections / hidden states), new ones by a counter
+[ambientLight, dirLight1, dirLight2].forEach((light, i) => {
+    light.userData.key = 'light-' + i;
+    light.userData.rindr = { kind: lightKind(light), strength: light.intensity, size: 1 };
+});
+let lightSeq = 2;
+const sceneLights = () => lightsGroup.children.filter(l => l.isLight);
+// lights with a raster shadow map (one pass each; point lights: six)
+const shadowLights = () => sceneLights().filter(l => l.shadow);
+const directionalLights = () => sceneLights().filter(l => l.isDirectionalLight);
+// the main light of the splat passes (shadow of models on the scan, opacity map, relit splats): the first shown
+// directional light
+const mainLight = () => directionalLights().find(l => shownInScene(l)) ?? directionalLights()[0] ?? null;
 
 // --- Section plane: the model hangs in its ClippingGroup ---
 const slicer = new Slicer();
@@ -345,7 +361,7 @@ const batcher = new RenderBatcher({
     // views)
     occlusion: new OcclusionCuller(renderer),
     occlusionAllowed: () => !slicer.enabled && !splatMesh
-        && ![dirLight1, dirLight2].some(l => l.castShadow && (l.shadow.needsUpdate || l.shadow.autoUpdate)),
+        && !shadowLights().some(l => l.castShadow && (l.shadow.needsUpdate || l.shadow.autoUpdate)),
 });
 if (Number(lodParam) > 0) batcher.lod.threshold = Number(lodParam);
 const batchingParam = new URLSearchParams(location.search).get('batching');
@@ -355,7 +371,17 @@ slicer.capBatches = () => batcher.meshes;
 const splatShadow = new SplatShadow();
 // shadow of the splats on the models (through the main light's shadow) and the relit splats' own shadow
 const splatOpacity = new SplatOpacity(SPLATS.opacitySize);
+// (attached to the main light – moves along when another becomes the main light, syncSplatLight)
+let splatLight = dirLight1;
 splatOpacity.attachTo(dirLight1);
+function syncSplatLight() {
+    const main = mainLight();
+    if (!main || main === splatLight) return;
+    if (splatLight) splatLight.shadow.shadowNode = null;
+    splatOpacity.attachTo(main);
+    splatLight = main;
+    splatOpacity.markDirty();
+}
 // scan as the models' environment: reflections + image-based light (splat-environment.js)
 const splatEnv = new SplatEnvironment(renderer, SPLATS.environment.size);
 // splats in HQ: baked into a density + colour grid, traced as a volume like the clouds (splat-volume.js)
@@ -393,19 +419,19 @@ function markShadowsDirty() {
     splatModels.dirty = true;
     rasterAO.markDirty();      // raster ambient occlusion: new snapshot
     if (!shadowsWanted()) return;
-    for (const light of [dirLight1, dirLight2]) light.shadow.needsUpdate = true;
+    for (const light of shadowLights()) light.shadow.needsUpdate = true;
 }
 batcher.onChange = markShadowsDirty;
 // the AO pre-pass's variants of new batches compile with them (otherwise its first draw builds them synchronously)
 batcher.compilePasses.push(compile => rasterAO.compile(scene, slicer.group, compile));
 function updateShadowMaps() {
     const live = !batcher.enabled && shadowsWanted();
-    for (const light of [dirLight1, dirLight2]) light.shadow.autoUpdate = live;
+    for (const light of shadowLights()) light.shadow.autoUpdate = live;
     if (live || !shadowsWanted()) return;
-    const sig = [dirLight1, dirLight2].map(l => {
+    const sig = shadowLights().map(l => {
         const c = l.shadow.camera;
-        return [l.visible, l.castShadow, ...l.position.toArray(), ...l.quaternion.toArray(), ...l.target.position.toArray(),
-            c.left, c.right, c.top, c.bottom, c.near, c.far, l.shadow.mapSize.x, l.shadow.mapSize.y, l.shadow.bias, l.shadow.normalBias, l.shadow.radius].join();
+        return [l.uuid, l.visible, l.castShadow, ...l.position.toArray(), ...l.quaternion.toArray(), ...(l.target?.position.toArray() ?? []),
+            l.angle ?? '', l.penumbra ?? '', c.left, c.right, c.top, c.bottom, c.near, c.far, l.shadow.mapSize.x, l.shadow.mapSize.y, l.shadow.bias, l.shadow.normalBias, l.shadow.radius].join();
     }).join('|') + `|${lightsGroup.visible}|${slicer.group.enabled}|${slicer.plane.normal.toArray()}|${slicer.plane.constant}`;
     if (sig !== shadowInputs || fading.size) { shadowInputs = sig; markShadowsDirty(); }
 }
@@ -421,6 +447,12 @@ function rememberLightDirection(light) {
 }
 function fitShadows(size, center = new THREE.Vector3()) {
     for (const light of lightsGroup.children) {
+        // point / spot / area lights: keep their place relative to the model, strength → intensity (scene-lights.js)
+        if (LOCAL_KINDS.has(lightKind(light))) {
+            refitLight(light, { fromCenter: lightCenter, toCenter: center, size });
+            if (light.shadow) fitLocalShadow(light, size);
+            continue;
+        }
         if (!light.isDirectionalLight) continue;
         if (!LIGHT_DIRECTIONS.has(light)) rememberLightDirection(light);
         const before = light.position.clone();
@@ -439,6 +471,17 @@ function fitShadows(size, center = new THREE.Vector3()) {
         light.updateMatrixWorld();
     }
     lightCenter.copy(center);
+    lightSize = size;
+}
+let lightSize = 1;   // scene size the lights were last fitted to (new lights, strength of local lights)
+// shadow camera of a spot / point light: near/far from the scene size (three.js sets the spot's angle itself)
+function fitLocalShadow(light, size) {
+    const cam = light.shadow.camera;
+    cam.near = size * 0.01;
+    cam.far = size * 20;
+    cam.updateProjectionMatrix();
+    light.shadow.bias = -0.0005;
+    light.shadow.normalBias = size * 0.002;
 }
 
 // --- Pathtracing (three-gpu-pathtracer, WebGPU) ---
@@ -818,11 +861,11 @@ const sceneEntries = [
     },
     {
         key: 'lights', get name() { return t('sceneEntries.lights'); }, kind: 'folder', object: lightsGroup,
-        children: lightsGroup.children.map((light, i) => ({ key: 'light-' + i, name: light.name, kind: 'light', object: light })),
+        get children() { return sceneLights().map(lightEntry); },
     },
     {
         key: 'camera', get name() { return t('sceneEntries.camera'); }, kind: 'camera', object: camera,
-        get children() { return cameraViews.map(viewEntry); },   // saved views
+        get children() { return [FREE_CAMERA, ...cameraViews].map(viewEntry); },   // free camera + own cameras
     },
     {
         key: 'slicer', get name() { return t('sceneEntries.slicer'); }, kind: 'slicer', object: slicer.object,
@@ -866,6 +909,9 @@ transformer.overlayScene.add(slicer.helper);
 // the selected directional light: its rays through the scene (light-helper.js)
 const lightHelper = new LightHelper();
 transformer.overlayScene.add(lightHelper.object);
+// own cameras other than the active one, while the camera or a camera is selected: a frustum where each stands
+const cameraMarkers = new CameraMarkers();
+transformer.overlayScene.add(cameraMarkers.object);
 // skeleton of an animated/skinned model (skeleton-view.js): joints clickable, own gizmo; dragging shows the puppet live
 // (GPU skinning), release bakes the pose (like scrubbing) + one undo step per drag
 const skeletonView = new SkeletonView(camera, renderer.domElement, transformer.overlayScene);
@@ -893,6 +939,7 @@ skeletonView.addEventListener('edit', e => {
 });
 transformer.addEventListener('change', e => {
     if (e.detail.kind === 'slicer') { slicer.update(); return; }   // also live while dragging
+    if (e.detail.kind === 'light') aimLight(e.detail.object);   // spot / area light: on its target, also live
     if (transformer.controls.dragging || fieldDragging) return;   // while dragging (gizmo or number field), update only at the end
     if (e.detail.kind === 'light') { rememberLightDirection(e.detail.object); pathTracing.updateLights(); }
     else pathTracing.updateTransforms();
@@ -901,14 +948,14 @@ transformer.addEventListener('change', e => {
 transformer.addEventListener('edit', e => {
     const { object, kind, before, after } = e.detail;
     if (pendingInstances) { recordInstances(pendingInstances, after); pendingInstances = null; return; }
-    if (kind === 'light') rememberLightDirection(object);   // a refit (model size) keeps the new direction
+    if (kind === 'light') { aimLight(object); rememberLightDirection(object); }   // a refit (model size) keeps the new direction
     const resolve = objectResolver(object, kind);
     const set = state => {
         const o = resolve();
         if (!o) return;
         restoreTransform(o, kind, state);
         if (kind === 'slicer') slicer.update();
-        else if (kind === 'light') { rememberLightDirection(o); pathTracing.updateLights(); if (ground.enabled) environment.apply({ params: true }); }
+        else if (kind === 'light') { aimLight(o); rememberLightDirection(o); pathTracing.updateLights(); if (ground.enabled) environment.apply({ params: true }); }
         else pathTracing.updateTransforms();
     };
     history.record({ label: t(kind === 'light' ? 'viewer.undo.moveLight' : kind === 'selection' ? 'viewer.undo.transformSelection' : 'viewer.undo.transform'), undo: () => set(before), redo: () => set(after) });
@@ -990,6 +1037,7 @@ const properties = new PropertiesPanel(document.getElementById('properties'), {
     sceneSize: () => environment.modelSize || 1000,
     onCameraChange: () => pathTracing.updateCamera(),
     get cameraViews() { return cameraViewApi; },   // defined further down
+    get lights() { return lightApi; },
     get morphs() { return morphApi; },   // defined further down
     get skeleton() { return skeletonApi; },
     get hdriEditor() { return hdriApi; },   // defined further down
@@ -1095,7 +1143,7 @@ function endFocusPick() {
     hideStatus();
 }
 controls.addEventListener('change', () => {
-    if (selection?.kind === 'camera') properties.refreshCamera();   // live position/rotation in the panel
+    if (cameraSelected()) properties.refreshCamera();   // live position/rotation in the panel
     if (!dof.enabled || !dof.autoFocus) return;
     dof.focusDistance = dof.depthOf(controls.target);
     dof.apply();
@@ -1163,7 +1211,8 @@ window.addEventListener('keydown', e => {
     // Space: play/pause the animation
     if (e.key === ' ' && clipAnims().length && !e.ctrlKey && !e.metaKey) { e.preventDefault(); setAnimPlaying(!animPlaying); }
     // Del: delete the selection (parts, models, saved camera views)
-    if ((e.key === 'Delete' || e.key === 'Del') && selection?.kind === 'view') cameraViewApi.remove(selection.view);
+    if ((e.key === 'Delete' || e.key === 'Del') && selection?.kind === 'light') lightApi.remove(selection.object);
+    else if ((e.key === 'Delete' || e.key === 'Del') && selection?.kind === 'view') cameraViewApi.remove(selection.view);
     else if ((e.key === 'Delete' || e.key === 'Del') && selection?.kind === 'views') cameraViewApi.removeMany(selection.entries.map(v => v.view));
     else if ((e.key === 'Delete' || e.key === 'Del') && isModelEntry(selection)) deleteSelection();
     else if ((e.key === 'Delete' || e.key === 'Del') && selection?.kind === 'missing') removeMissingModel(selection);
@@ -1876,7 +1925,7 @@ const sceneGraph = new SceneGraph(document.getElementById('scene-graph'), {
         updateHighlight();
     },
     onSelect: entry => {
-        if (entry?.kind === 'view' && entry !== selection) flyToView(entry.view);   // click on a saved view: fly there
+        if (entry?.kind === 'view') activateCamera(entry.view);   // click on a camera: it becomes the active one
         selection = entry;
         if (skeletonView.selected >= 0) skeletonView.select(-1);
         transformer.attach(gizmoTarget(entry), entry?.kind ?? null);
@@ -1900,15 +1949,224 @@ const sceneGraph = new SceneGraph(document.getElementById('scene-graph'), {
         redo: () => sceneGraph.applyVisibility(after),
     }),
 });
-// --- Saved camera views (camera panel "Save view", entries below "Camera" in the Scene Graph) ---
-// position, orbit target, field of view and depth of field; a click flies there. In the scene state,
-// adding/renaming/overwriting/deleting can be undone.
-const cameraViews = [];   // [{ id, name, position, target, fov, dof }]
+// --- Cameras (entries below "Camera" in the Scene Graph; user: "there is always the free camera, it cannot be deleted,
+// and then the actual cameras – turning a selected one marks it 'Camera XY (not saved)', saved with a button") ---
+// The free camera is the working view. Own cameras (cameraViews, formerly "saved views"): position, orbit target,
+// field of view, roll and depth of field; a click makes one active and flies there. Orbiting, zooming or changing the
+// lens while one is active changes it unsaved – its entry says so (cameraDirty), "Save" stores the view, "Reset" flies
+// back. Leaving a camera with unsaved changes drops them – a camera is always its saved state (user); one undo step
+// brings the camera back with them. The scene file stores the saved states. The free camera has no saved state: its
+// view is kept when one leaves it (freePose).
+// Adding/renaming/saving/deleting can be undone.
+const cameraViews = [];   // [{ id, name, position, target, fov, roll, dof, exposure?, toneMapping?, lens?, near?, dirty? }]
 let cameraViewSeq = 0;
-function viewEntry(view) {
-    return (view.entry ??= { key: 'view-' + view.id, kind: 'view', view, children: [], get name() { return view.name; } });
+const FREE_CAMERA = { id: 0, free: true, get name() { return t('cameraViews.free'); } };
+let activeView = FREE_CAMERA;   // the camera looked through
+// the camera settings are in the panel (a camera or the free camera selected – the focus plane shows then)
+const cameraSelected = () => selection?.kind === 'view' || selection?.kind === 'camera';
+let freePose = null;            // the free camera's view when it was left
+function lightEntry(light) {
+    return (light.userData.entry ??= { key: light.userData.key ??= 'light-' + (++lightSeq), kind: 'light', object: light, get name() { return light.name; } });
 }
-const captureView = () => ({ position: camera.position.toArray(), target: controls.target.toArray(), fov: viewAngle(camera), roll: camera.userData.roll || 0, dof: dof.toJSON() });
+// Lights (scene-lights.js): add, copy, rename, delete – each one undo step. The light objects themselves come back on
+// undo (references in the undo history of moves and panel edits stay valid).
+function lightsChanged() {
+    refreshSceneGraph();
+    markShadowsDirty();
+    pathTracing.updateLights();
+    if (ground.enabled) environment.apply({ params: true });   // shadow catcher weights
+    pathTracing.updateCamera();
+    loadRender.force = true;
+}
+function setSceneLights(list) {
+    for (const l of sceneLights()) if (!list.includes(l)) lightsGroup.remove(l);
+    for (const l of list) if (l.parent !== lightsGroup) lightsGroup.add(l);   // (a spot's target: aimLight keeps its matrix)
+    // order as in the list (the path tracer's light order: light passes, shadow catcher)
+    lightsGroup.children.sort((a, b) => (list.indexOf(a) + 1 || 1e9) - (list.indexOf(b) + 1 || 1e9));
+    if (selection?.kind === 'light' && !list.includes(selection.object)) sceneGraph.select(null);
+    lightsChanged();
+}
+const lightNameOf = kind => {
+    const base = t(`sceneEntries.lightKinds.${kind}`);
+    let n = 1;
+    while (sceneLights().some(l => l.name === (n === 1 ? base : `${base} ${n}`))) n++;
+    return n === 1 ? base : `${base} ${n}`;
+};
+const lightApi = {
+    kinds: LIGHT_KINDS,
+    async add(kind, ies = null) {
+        if (kind === 'rect' || kind === 'disc') await prepareAreaLights();
+        const light = createLight(kind, ies?.name ? ies.name.replace(/\.ies$/i, '') : lightNameOf(kind));
+        if (kind === 'ies') await setIesProfile(light, ies ?? { id: 'wide' });
+        placeLight(light, { center: lightCenter, size: lightSize, eye: camera.position });
+        if (light.shadow) {
+            if (kind === 'directional') { rememberLightDirection(light); fitShadows(lightSize, lightCenter.clone()); }
+            else fitLocalShadow(light, lightSize);
+            light.shadow.intensity = shadowsOn ? 1 : 0;
+        }
+        this._commit(light, t('viewer.undo.addLight', { name: light.name }));
+    },
+    async duplicate(light) {
+        const kind = lightKind(light);
+        if (kind === 'rect' || kind === 'disc') await prepareAreaLights();
+        const copy = createLight(kind, lightNameOf(kind));
+        await applyLightState(copy, { ...lightState(light), name: copy.name }, lightSize);
+        // a little to the side, so it can be told apart and grabbed
+        if (kind !== 'directional') copy.position.addScaledVector(new THREE.Vector3(1, 0, 0), lightSize * 0.1);
+        aimLight(copy);
+        if (kind === 'directional') { rememberLightDirection(copy); fitShadows(lightSize, lightCenter.clone()); }
+        else if (copy.shadow) fitLocalShadow(copy, lightSize);
+        this._commit(copy, t('viewer.undo.copyLight', { name: copy.name }));
+    },
+    _commit(light, label) {
+        const before = sceneLights(), after = [...before, light];
+        setSceneLights(after);
+        history.record({ label, undo: () => setSceneLights(before), redo: () => setSceneLights(after) });
+        sceneGraph.select(lightEntry(light));
+    },
+    remove(light) {
+        if (light.isAmbientLight) return;   // the ambient light stays (one per scene)
+        const before = sceneLights(), after = before.filter(l => l !== light);
+        setSceneLights(after);
+        history.record({ label: t('viewer.undo.deleteLight', { name: light.name }), undo: () => setSceneLights(before), redo: () => setSceneLights(after) });
+    },
+    rename(light, name) {
+        const before = light.name;
+        if (!name || name === before) return;
+        const apply = n => { light.name = n; sceneGraph.render(); properties.show(selection); };
+        apply(name);
+        history.record({ label: t('viewer.undo.renameLight'), undo: () => apply(before), redo: () => apply(name) });
+    },
+    strengthOf,
+    setStrength: (light, v) => setStrength(light, v, light.userData.rindr?.size || lightSize),
+    // IES lights: own profiles, the profile of a light, set one (undo step), load an .ies file (onto `light` or a new one)
+    iesProfiles: Object.keys(IES_PROFILES),
+    iesOf: light => light.userData.rindr?.ies ?? { id: 'wide' },
+    async setIes(light, ies) {
+        const before = { ...this.iesOf(light) };
+        const apply = async v => {
+            await setIesProfile(light, v);
+            fitLocalShadow(light, lightSize);
+            lightsChanged();
+            if (selection?.kind === 'light' && selection.object === light) properties.show(selection);
+        };
+        try { await apply(ies); } catch (err) {
+            showError(err, { title: t('status.iesFailed', { name: ies.name ?? '' }) });
+            return;
+        }
+        history.record({ label: t('viewer.undo.iesProfile'), undo: () => apply(before), redo: () => apply(ies) });
+    },
+    async openIes(file, light = null) {
+        const text = await file.text();
+        const ies = { name: file.name, text };
+        if (light) return this.setIes(light, ies);
+        try { await this.add('ies', ies); } catch (err) { showError(err, { title: t('status.iesFailed', { name: file.name }) }); }
+    },
+    // file picker for an .ies file
+    pickIes(light = null) {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.ies,.IES';
+        input.onchange = () => { if (input.files[0]) this.openIes(input.files[0], light); };
+        input.click();
+    },
+    aim: light => aimLight(light),
+    fitShadow: light => (light.isDirectionalLight ? fitShadows(lightSize, lightCenter.clone()) : fitLocalShadow(light, lightSize)),
+};
+
+// lights of a scene file (scene-state.js): by name and kind, otherwise the next unused light of that kind; missing ones
+// created, the rest removed (the ambient light stays). Older files (no kind – only the fixed lights back then): the
+// existing lights are adjusted and all of them kept. No undo step (loading a scene).
+async function restoreLights(items, warnings) {
+    const existing = sceneLights(), used = new Set(), list = [];
+    const full = items.some(s => s.kind);
+    for (const s of items) {
+        const kind = s.kind ?? (s.type === 'AmbientLight' ? 'ambient' : s.type === 'DirectionalLight' ? 'directional' : null);
+        if (!kind) { warnings.push(t('sceneState.lightNotFound', { name: s.name })); continue; }
+        let light = existing.find(l => !used.has(l) && lightKind(l) === kind && l.name === s.name)
+            ?? existing.find(l => !used.has(l) && lightKind(l) === kind);
+        if (!light && kind !== 'ambient' && full) {
+            if (kind === 'rect' || kind === 'disc') await prepareAreaLights();
+            light = createLight(kind, s.name);
+        }
+        if (!light) { warnings.push(t('sceneState.lightNotFound', { name: s.name })); continue; }
+        used.add(light);
+        list.push(light);
+        await applyLightState(light, s, lightSize);
+        debugLog(`[Lights] restore ${s.name} (${kind}): ${s.position.map(v => Math.round(v))}`);
+        if (light.isDirectionalLight) rememberLightDirection(light);
+        else if (light.shadow) fitLocalShadow(light, lightSize);
+        if (light.shadow) light.shadow.intensity = shadowsOn ? 1 : 0;
+    }
+    const keep = existing.filter(l => !used.has(l) && (!full || l.isAmbientLight));
+    setSceneLights([...keep.filter(l => l.isAmbientLight), ...list, ...keep.filter(l => !l.isAmbientLight)]);
+    fitShadows(lightSize, lightCenter.clone());   // targets + shadow cameras of directional lights created here
+}
+
+function viewEntry(view) {
+    return (view.entry ??= { key: 'view-' + view.id, kind: 'view', view, children: [], get name() { return view.name; },
+        get active() { return activeView === view; }, get unsaved() { return !!view.dirty; } });
+}
+// make a camera the active one (Scene Graph click) and fly there (`to`: another state than its saved one – undo). The
+// free camera left: its view is kept; an own camera with unsaved changes: they are dropped, as an undo step that
+// brings it back with them (record false: called by undo/redo themselves)
+function activateCamera(view, { to = null, record = true } = {}) {
+    if (view === activeView && !to) return;
+    const pose = captureView();
+    const left = activeView;
+    if (left.free) freePose = pose;
+    else if (left.dirty && left !== view) {
+        left.dirty = false;
+        if (record) {
+            // the Scene Graph selection follows; its onSelect finds the camera already active
+            const show = v => { if (selection?.kind === 'view' && selection.view !== v) sceneGraph.select(viewEntry(v)); };
+            history.record({ label: t('viewer.undo.leaveCamera', { name: left.name }),
+                undo: () => { activateCamera(left, { to: pose, record: false }); show(left); },
+                redo: () => { activateCamera(view, { record: false }); show(view); } });
+        }
+    }
+    activeView = view;
+    const target = to ?? (view.free ? freePose : view);
+    if (target) flyToView(target);
+    sceneGraph.render();
+}
+// two camera states alike (position/target within 1/10 000 of the scene size, angle, roll, depth of field – the focus
+// distance only without auto focus, which follows the camera; not for cameras saved without it, e.g. imported ones)
+function samePose(a, b) {
+    const eps = Math.max(environment.modelSize, 1e-6) * 1e-4;
+    const near = (p, q) => p && q && Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]) <= eps;
+    if (!near(a.position, b.position) || !near(a.target, b.target)) return false;
+    if (Math.abs((a.fov ?? 0) - (b.fov ?? 0)) > 0.01 || Math.abs((a.roll || 0) - (b.roll || 0)) > 0.01) return false;
+    // picture: only what the saved state has (cameras from before / imported ones: not part of them)
+    if (b.exposure != null && Math.abs((a.exposure ?? 1) - b.exposure) > 1e-4) return false;
+    if (b.toneMapping && a.toneMapping !== b.toneMapping) return false;
+    if (b.lens && JSON.stringify(a.lens) !== JSON.stringify(b.lens)) return false;
+    if (!a.dof || !b.dof) return true;   // a camera without depth of field (imported): the lens is not part of it
+    const da = a.dof, db = b.dof;
+    if (!!da.enabled !== !!db.enabled || !!da.autoFocus !== !!db.autoFocus || da.fStop !== db.fStop || da.blades !== db.blades) return false;
+    return !!da.autoFocus || Math.abs((da.focusDistance ?? 0) - (db.focusDistance ?? 0)) <= Math.max(Math.abs(db.focusDistance ?? 0) * 1e-3, eps);
+}
+// per frame: does the active camera still show its saved state? (not during a flight – it ends on the state flown to)
+let cameraDirtyFrame = 0;
+function updateCameraDirty() {
+    if (activeView.free || flight || ++cameraDirtyFrame % 4) return;
+    const dirty = !samePose(captureView(), activeView);
+    if (dirty === !!activeView.dirty) return;
+    activeView.dirty = dirty;
+    sceneGraph.render();
+    // only the hint and the Save/Reset buttons – rebuilding the panel broke a slider being dragged (focus distance)
+    if (selection?.kind === 'view' && selection.view === activeView) properties.refreshViewState(activeView);
+}
+// a camera's state: pose, angle, roll, depth of field and its picture – exposure, tone curve, lens effects, colour
+// grading, style filter (user: "DOF, bloom etc. belong to the context of each camera")
+const captureView = () => ({ position: camera.position.toArray(), target: controls.target.toArray(), fov: viewAngle(camera), roll: camera.userData.roll || 0, dof: dof.toJSON(),
+    exposure: renderer.toneMappingExposure, toneMapping: toneMappingKey(), lens: lens.toJSON() });
+// the picture settings of a camera state (cameras saved before had none: the current ones stay)
+function applyViewLook(view) {
+    if (view.exposure != null) renderer.toneMappingExposure = view.exposure;
+    if (view.toneMapping) renderer.toneMapping = TONE_MAPPINGS[view.toneMapping] ?? renderer.toneMapping;
+    if (view.lens) { lens.fromJSON(view.lens); lens.apply(); }
+}
 
 // Roll (Dutch angle): the orbit controls keep the camera level; the roll (camera.userData.roll, degrees) is applied
 // every frame after them as a rotation about the view axis – raster, path tracer (reads the camera on its next
@@ -1939,7 +2197,9 @@ function rollFromUp(forward, up) {
 }
 function setCameraViews(list, { select = null } = {}) {
     cameraViews.splice(0, cameraViews.length, ...list);
-    if (cameraViews.length) sceneGraph.expanded.add('camera');
+    sceneGraph.expanded.add('camera');
+    if (!activeView.free && !cameraViews.includes(activeView)) activeView = FREE_CAMERA;   // the active one was deleted
+    for (const v of cameraViews) if (v !== activeView) v.dirty = false;   // only the active camera can be unsaved
     refreshSceneGraph();
     if (select) sceneGraph.select(viewEntry(select));
     else if (selection?.kind === 'view' && !cameraViews.includes(selection.view)) sceneGraph.select(null);
@@ -2015,14 +2275,20 @@ function flyToView(view) {
     }
     streamFit.active = false;
     if (view.dof) { dof.fromJSON(view.dof); dof.apply(); }
+    applyViewLook(view);
     flightInteraction = true;
     pathTracing.beginInteraction();
 }
 const cameraViewApi = {
+    get active() { return activeView; },
+    // "+ Camera": the current view as a new camera, which becomes the active one
     save() {
         const view = { id: ++cameraViewSeq, name: t('cameraViews.name', { n: cameraViewSeq }), ...captureView() };
         const before = [...cameraViews], after = [...cameraViews, view];
-        setCameraViews(after);
+        if (activeView.free) freePose = captureView();
+        else activeView.dirty = false;   // its unsaved changes went into the new camera
+        activeView = view;
+        setCameraViews(after, { select: view });
         history.record({ label: t('viewer.undo.saveView'), undo: () => setCameraViews(before), redo: () => setCameraViews(after) });
         flashStatus(t('status.viewSaved', { name: view.name }));
     },
@@ -2034,18 +2300,32 @@ const cameraViewApi = {
         apply(name);
         history.record({ label: t('viewer.undo.renameView'), undo: () => apply(before), redo: () => apply(name) });
     },
+    // "Save": the current view into the active camera (or a chosen one)
     overwrite(view) {
-        const before = { position: view.position, target: view.target, fov: view.fov, dof: view.dof };
+        const keys = ['position', 'target', 'fov', 'roll', 'dof', 'exposure', 'toneMapping', 'lens'];
+        const before = Object.fromEntries(keys.map(k => [k, view[k]]));
         const after = captureView();
-        Object.assign(view, after);
-        history.record({ label: t('viewer.undo.overwriteView'), undo: () => Object.assign(view, before), redo: () => Object.assign(view, after) });
+        const apply = state => {
+            Object.assign(view, state);
+            view.dirty = view === activeView ? !samePose(captureView(), view) : false;
+            sceneGraph.render();
+            if (selection?.kind === 'view' && selection.view === view) properties.show(selection);
+        };
+        apply(after);
+        history.record({ label: t('viewer.undo.overwriteView'), undo: () => apply(before), redo: () => apply(after) });
         flashStatus(t('status.viewOverwritten', { name: view.name }));
+    },
+    // "Reset": back to the saved state (unsaved changes dropped)
+    reset(view) {
+        if (view !== activeView) { activateCamera(view); return; }
+        flyToView(view);
     },
     remove(view) {
         this.removeMany([view]);
     },
     // several views at once (multi-selection) – one undo step
     removeMany(views) {
+        views = views.filter(v => !v.free);
         const before = [...cameraViews], after = cameraViews.filter(v => !views.includes(v));
         if (after.length === before.length) return;
         if (selection?.kind === 'views') sceneGraph.select(null);
@@ -4109,7 +4389,7 @@ function setViewMode(mode) {
     // of null", three r186). Instead: no shadow-map updates and shadow intensity 0 (uniform, no recompile)
     const shadows = !isAnalysis(mode);
     shadowsOn = shadows;
-    for (const light of [dirLight1, dirLight2]) {
+    for (const light of shadowLights()) {
         light.shadow.needsUpdate = shadows;
         light.shadow.intensity = shadows ? 1 : 0;
     }
@@ -5269,10 +5549,16 @@ const sceneStateContext = {
     runtimeModels: () => runtimeModels(),
     missingModels: () => missingModels,
     // saved camera views (scene state)
-    getCameraViews: () => cameraViews.map(({ entry, ...v }) => v),
-    setCameraViews: list => {
+    getCameraViews: () => cameraViews.map(({ entry, dirty, ...v }) => v),
+    getActiveCamera: () => (activeView.free ? null : activeView.id),
+    setCameraViews: (list, active = null) => {
         cameraViewSeq = Math.max(0, ...list.map(v => v.id || 0));
+        activeView = FREE_CAMERA;
+        freePose = null;
         setCameraViews(list.map(v => ({ ...v, id: v.id || ++cameraViewSeq })));
+        // the camera that was active when saving (the scene's camera pose is that camera's – unsaved or not)
+        const view = active != null && cameraViews.find(v => v.id === active);
+        if (view) { activeView = view; sceneGraph.render(); }
     },
     retessellate: async () => { qualityController.refresh(); await runLoad('reload'); },
     retessellateParts: () => runLoad('parts'),
@@ -5280,6 +5566,8 @@ const sceneStateContext = {
     exploder,
     setViewMode: mode => setViewMode(mode),
     onLightMoved: light => rememberLightDirection(light),
+    lightState,
+    restoreLights,
     setSlicerEnabled: v => { slicer.enabled = v; pathTracing.setSuspended(v); updateSlicerHelper(); },
     afterRestore: () => {
         // HDRI editor: show the restored description of the edited HDRI, close it if that one is gone
@@ -5692,6 +5980,13 @@ async function openFiles(files, { side = 'add', relink = false } = {}) {
         if (await openBcfFile(bcfFile.file, files) || !files.length) return;
     }
     if (relink) { relinkFiles(files); return; }
+    // IES profiles (.ies): onto the selected IES light, otherwise a new IES light each
+    const iesFiles = files.filter(f => extOf(f.path) === 'ies');
+    if (iesFiles.length) {
+        for (const f of iesFiles) await lightApi.openIes(f.file, iesFiles.length === 1 && selection?.kind === 'light' && lightKind(selection.object) === 'ies' ? selection.object : null);
+        files = files.filter(f => !iesFiles.includes(f));
+        if (!files.length) return;
+    }
     // HDRIs (.hdr/.exr) on their own: the environment (the first one). Dropped with a model they stay its files
     // (textures, e.g. of a USD scene)
     if (files.length && files.every(f => HDRI_EXTENSIONS.includes(extOf(f.path)))) {
@@ -5850,7 +6145,7 @@ if (new URLSearchParams(location.search).has('debug')) {
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel.thumbs, def)),
         // all library presets (categories loaded on demand) – tests bake their node graphs
         presets: () => loadLibraryPresets().then(() => MATERIAL_PRESETS),
-        skeletonView, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+        skeletonView, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 }
 
 // --- Resize ---
@@ -6201,7 +6496,7 @@ function renderFrame() {
     if (setFisheye(camera)) pathTracing.restartCamera();
     // Gaussian splats: re-sort (in workers) when the camera moved; the new order arrives a few frames later.
     // Depth of field + focus line in their shader (the raster is their final look; not in AI capture / export)
-    splatMesh?.update(camera, { fisheye: rasterFisheye.active, dof, focusLine: !captureRequest && !exportRequest && dof.showPlane && selection?.kind === 'camera' });
+    splatMesh?.update(camera, { fisheye: rasterFisheye.active, dof, focusLine: !captureRequest && !exportRequest && dof.showPlane && cameraSelected() });
     // the splats in a pass of their own, blended in display space (splat-composite.js; not with the fisheye – linear
     // there), darkened in the shadow of added models
     const splatPass = !!splatMesh && !rasterFisheye.active && viewMode !== 'wire';
@@ -6217,7 +6512,8 @@ function renderFrame() {
         splatMesh.setDisplayOutput(splatPass || splatFish);
         splatMesh.setShadow(shadowsOn && extraModels.length ? splatShadow : null);
         splatMesh.setRenderState({ renderer, toneMapping: renderer.toneMapping, exposure: renderer.toneMappingExposure, environment: environment.on ? environment.texture : null,
-            environmentIntensity: scene.environmentIntensity, environmentRotation: scene.environmentRotation, lights: [dirLight1, dirLight2], ambient: ambientLight });
+            environmentIntensity: scene.environmentIntensity, environmentRotation: scene.environmentRotation, lights: [mainLight(), directionalLights().find(l => l !== mainLight() && shownInScene(l))].filter(Boolean), ambient: ambientLight });
+        syncSplatLight();
     }
     // opacity map of the splats: shadow on the models, the ground shadow and own shadow of relit splats (not in Basic –
     // no shadows there)
@@ -6237,7 +6533,7 @@ function renderFrame() {
     captureRequest = null;
     const exportReq = exportRequest;   // image export: likewise
     exportRequest = null;
-    const focusLine = !capture && !exportReq && dof.enabled && dof.showPlane && selection?.kind === 'camera';
+    const focusLine = !capture && !exportReq && dof.enabled && dof.showPlane && cameraSelected();
     // clouds next to splats: drawn apart and composited by distance (splat-composite.js drawClouds) – in the frame the
     // splats were painted over them
     const splatClouds = splatPass && clouds.volumes.some(v => v.mesh.visible);
@@ -6316,14 +6612,14 @@ function renderFrame() {
         splatEnv.markDirty();
     }
     if (splatMesh && extraModels.length && shadowsOn && splatShadow.dirty) {
-        const active = splatShadow.update({ renderer, scene, light: dirLight1, casters: extraModels.map(x => x.holder), keep: [slicer.group, grass.group], hide: [rootGroup],
+        const active = splatShadow.update({ renderer, scene, light: mainLight() ?? dirLight1, casters: extraModels.map(x => x.holder), keep: [slicer.group, grass.group], hide: [rootGroup],
             receiverBox: new THREE.Box3().setFromObject(rootGroup) });
         if (active) loadRender.force = true;
     }
     // all splats once from the light: at most every 80 ms while models are dragged
     if (opacityWanted && splatOpacity.dirty && performance.now() - splatOpacity.drawnAt > 80) {
         splatOpacity.drawnAt = performance.now();
-        const active = splatOpacity.update({ renderer, scene, splat: splatMesh, light: dirLight1, receivers: extraModels.map(x => x.holder),
+        const active = splatOpacity.update({ renderer, scene, splat: splatMesh, light: mainLight() ?? dirLight1, receivers: extraModels.map(x => x.holder),
             splatReceives: splatMesh.look.mode !== 'baked', groundY: splatGround ? environment.groundY : null, keep: [slicer.group], hide: extraModels.map(x => x.holder) });
         if (active) loadRender.force = true;
     } else if (opacityWanted && splatOpacity.dirty) loadRender.force = true;   // throttled: another frame
@@ -6377,10 +6673,12 @@ function renderFrame() {
         return;
     }
     highlighter.render();
-    lightHelper.update(selection?.kind === 'light' && transformer.object ? selection.object : null);
+    lightHelper.update(selection?.kind === 'light' && transformer.object ? selection.object : null, lightSize);
+    updateCameraDirty();   // active camera: "(not saved)" once the view differs from it
+    cameraMarkers.update(selection?.kind === 'camera' || selection?.kind === 'view' || selection?.kind === 'views' ? cameraViews.filter(v => v !== activeView) : [], { aspect: camera.aspect, size: environment.modelSize });
     skeletonView.update();
     // gizmo (and skeleton) on top of everything
-    const overlay = transformer.object || skeletonView.visible;
+    const overlay = transformer.object || skeletonView.visible || cameraMarkers.object.visible;
     if (overlay && rasterFisheye.active) {
         rasterFisheye.render(renderer, camera, cam => renderer.render(transformer.overlayScene, cam), { overlay: true });
     } else if (overlay) {

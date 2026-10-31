@@ -17,6 +17,7 @@
 
 								let scParams = ${ __SC.params };
 								let scLights = ${ __SC.lights };
+								let scLights2 = ${ __SC.lights2 };
 								let scUp = vec3f( 0.0, 1.0, 0.0 );
 								let scRand = ${ rand3 }( ${ RNG_INDEX_DIRECT_LIGHT_SAMPLE } );
 								var scDir = vec3f( 0.0, 1.0, 0.0 );
@@ -52,13 +53,13 @@
 
 								} else {
 
-									// a light, chosen by its share (scLights = probabilities in path tracer order)
+									// a light, chosen by its share (scLights, scLights2 = probabilities in path tracer order, up to 8)
 									var scAcc = scParams.x;
 									var scIndex = 0u;
-									for ( var scI = 0u; scI < 4u; scI ++ ) {
+									for ( var scI = 0u; scI < 8u; scI ++ ) {
 
 										scIndex = scI;
-										scAcc += scLights[ scI ];
+										scAcc += select( scLights2[ scI & 3u ], scLights[ scI & 3u ], scI < 4u );
 										if ( scRand.x < scAcc ) {
 
 											break;
@@ -67,6 +68,7 @@
 
 									}
 
+									scIndex = min( scIndex, max( lightsCount, 1u ) - 1u );   // rounding past the last share
 									let scLight = ${ randomLightSampleFn }( scIndex, scPos, scRand.yz );
 									scDir = scLight.direction;
 									scDirectional = scLight.lightType == 3;

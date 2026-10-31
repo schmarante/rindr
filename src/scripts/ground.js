@@ -108,7 +108,7 @@ export class GroundProjection {
 
     /** Update the shadow catcher weights (after changes of HDRI, intensity or lights) */
     update(scene) {
-        updateShadowCatcher(scene, this._irradiance, { enabled: this.enabled, strength: this.strength, bounce: this.bounce });
+        updateShadowCatcher(scene, this._irradiance, { enabled: this.enabled, strength: this.strength, bounce: this.bounce, point: this.mesh.position });
     }
 }
 

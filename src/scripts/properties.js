@@ -10,7 +10,7 @@ import { Euler, Box3, Matrix4, Vector3, Quaternion } from 'three/webgpu';
 import { t, has, getLocale } from './i18n.js';
 import { STYLE_MODES } from './style-filters.js';
 import { MAPPING_TYPES, MAPPING_AXES, DEFAULT_MAPPING, isPlain } from './uv-mapping.js';
-import { draggable, fmt, INPUT, colorField } from './ui-controls.js';
+import { draggable, fmt, INPUT, SELECT, colorField } from './ui-controls.js';
 import { icon } from './icons.js';
 import { DOF_RAMP } from './dof.js';
 
@@ -34,9 +34,11 @@ const TRANSFORM_ICONS = {
 };
 const ACTION_ICONS = {
     flip: icon('flip', 'size-4'),         // mirror axis between two triangles (section plane: other side)
-    fly: icon('fly', 'size-4'),           // arrow heading off (fly to a saved view)
     capture: icon('capture', 'size-4'),   // view finder (overwrite a view with the current camera)
     delete: icon('delete', 'size-4'),
+    copy: icon('copy', 'size-4'),
+    save: icon('save', 'size-4'),
+    reset: icon('reset', 'size-4'),
 };
 // icon button: the label as tooltip and for screen readers
 function actionButton(className, name, label, title = label) {
@@ -86,8 +88,9 @@ export class PropertiesPanel {
         if (bim) parts.push(this._bimSection(entry, bim));
         if (this.ctx.partQuality?.available(entry)) parts.push(this._qualityRow(entry));
         else if (entry.kind === 'light') parts.push(...this._lightSection(entry.object));
+        else if (entry.key === 'lights' && this.ctx.lights) parts.push(...this._lightsFolderSection());
         else if (entry.kind === 'environment') parts.push(...this._environmentSection());
-        else if (entry.kind === 'camera') parts.push(...this._cameraSection(), ...this._lookSection(), ...this._lensSection(), ...this._styleSection());
+        else if (entry.kind === 'camera') parts.push(...this._camerasFolderSection());
         else if (entry.kind === 'view') parts.push(...this._viewSection(entry.view));
         else if (entry.kind === 'missing') parts.push(...this._missingSection(entry));
         else if (entry.kind === 'views') {
@@ -364,16 +367,117 @@ export class PropertiesPanel {
         return this._row(t('properties.quality.label'), select);
     }
 
+    // a light (scene-lights.js): name, strength, colour; spot: cone, edge, size; area: width/height; raster shadow;
+    // target (spot, area); copy / delete. The ambient light: strength and colour only.
     _lightSection(light) {
+        const api = this.ctx.lights;
+        const kind = light.userData.rindr?.kind ?? (light.isAmbientLight ? 'ambient' : 'directional');
+        const changed = () => this.ctx.onLightChange();
         const rows = [];
-        if (!light.isAmbientLight) rows.push(...this._transformSection(false));
-        rows.push(this._rangeRow(t('properties.light.intensity'), light.intensity, 0, 10, 0.05, this._tracked(t('properties.light.undo.intensity'), 'light-intensity:' + light.uuid,
-            () => light.intensity, v => { light.intensity = v; this.ctx.onLightChange(); }), this._dragHooks()));
+        if (!light.isAmbientLight) {
+            const name = el('input', INPUT.replace('text-right', 'text-left'));
+            name.type = 'text';
+            name.value = light.name;
+            name.addEventListener('change', () => api.rename(light, name.value.trim() || light.name));
+            name.addEventListener('keydown', e => { if (e.key === 'Enter') name.blur(); });
+            rows.push(this._row(t('properties.light.name'), name), el('div', 'mb-1 text-white/40', t(`properties.light.kinds.${kind}`)));
+            rows.push(...this._transformSection(false));
+        }
+        const strength = this._rangeRow(t('properties.light.intensity'), api.strengthOf(light), 0, 10, 0.05, this._tracked(t('properties.light.undo.intensity'), 'light-intensity:' + light.uuid,
+            () => api.strengthOf(light), v => { api.setStrength(light, v); changed(); }), this._dragHooks());
+        if (kind !== 'directional' && kind !== 'ambient') strength.title = t('properties.light.strengthTitle');
+        rows.push(strength);
         const setColor = this._tracked(t('properties.light.undo.color'), 'light-color:' + light.uuid,
-            () => '#' + light.color.getHexString(), v => { light.color.set(v); this.ctx.onLightChange(); });
+            () => '#' + light.color.getHexString(), v => { light.color.set(v); changed(); });
         const color = colorField('#' + light.color.getHexString(), { onInput: setColor });
         rows.push(this._row(t('properties.light.color'), color));
+        const size = this.ctx.sceneSize?.() || 1000;
+        // one number field, dragged sideways like the others
+        const number = (label, key, value, perPixel, min, apply, title = '') => {
+            const input = el('input', INPUT);
+            input.type = 'number';
+            input.step = 'any';
+            input.value = fmt(value);
+            if (title) input.title = title;
+            const set = this._tracked(label, `light-${key}:${light.uuid}`, () => apply(), v => { apply(Math.max(v, min)); changed(); });
+            input.addEventListener('change', () => set(Number(input.value) || 0));
+            draggable(input, { perPixel: () => perPixel, min, onDrag: v => set(v), onStart: () => this.ctx.onSliderDrag?.(true), onEnd: () => this.ctx.onSliderDrag?.(false) });
+            return this._row(label, input);
+        };
+        if (kind === 'ies') {
+            // profile: own ones or the loaded .ies file (its name); load another file
+            const ies = api.iesOf(light);
+            const profile = el('select', SELECT);
+            for (const id of api.iesProfiles) profile.append(new Option(t(`properties.light.iesProfiles.${id}`), id));
+            if (ies.text) profile.append(new Option(ies.name || t('properties.light.iesFile'), '__file'));
+            profile.value = ies.text ? '__file' : ies.id;
+            profile.title = t('properties.light.iesTitle');
+            profile.onchange = () => { if (profile.value !== '__file') api.setIes(light, { id: profile.value }); };
+            const load = el('button', BUTTON + ' shrink-0', t('properties.light.iesLoad'));
+            load.title = t('properties.light.iesLoadTitle');
+            load.onclick = () => api.pickIes(light);
+            rows.push(this._row(t('properties.light.iesProfile'), profile, load));
+        }
+        if (kind === 'spot') {
+            const deg = 180 / Math.PI;
+            rows.push(this._rangeRow(t('properties.light.angle'), light.angle * deg, 1, 89, 0.5, this._tracked(t('properties.light.undo.angle'), 'light-angle:' + light.uuid,
+                () => light.angle * deg, v => { light.angle = v / deg; changed(); }), this._dragHooks()));
+            rows.push(this._rangeRow(t('properties.light.penumbra'), light.penumbra, 0, 1, 0.01, this._tracked(t('properties.light.undo.penumbra'), 'light-penumbra:' + light.uuid,
+                () => light.penumbra, v => { light.penumbra = v; changed(); }), this._dragHooks()));
+        }
+        if (light.isSpotLight) {
+            rows.push(number(t('properties.light.radius'), 'radius', light.radius || 0, size / 1000, 0,
+                v => (v === undefined ? light.radius || 0 : (light.radius = v)), t('properties.light.radiusTitle')));
+        }
+        if (light.isRectAreaLight) {
+            const keep = () => api.setStrength(light, api.strengthOf(light));   // same strength, other area
+            rows.push(number(t('properties.light.width'), 'width', light.width, size / 500, size * 1e-4, v => (v === undefined ? light.width : (light.width = v, keep(), v))));
+            rows.push(number(t('properties.light.height'), 'height', light.height, size / 500, size * 1e-4, v => (v === undefined ? light.height : (light.height = v, keep(), v))));
+        }
+        if (light.shadow && kind !== 'ambient') {
+            rows.push(this._checkRow(t('properties.light.shadow'), t('properties.light.shadowTitle'), light.castShadow, this._tracked(t('properties.light.undo.shadow'), null,
+                () => light.castShadow, v => { light.castShadow = v; api.fitShadow(light); changed(); this.show(this.entry); })));
+        } else if (light.isRectAreaLight) {
+            rows.push(el('div', 'mb-1 text-white/40', t('properties.light.areaShadowHint')));
+        }
+        if (light.isSpotLight || light.isRectAreaLight) {
+            const meta = light.userData.rindr;
+            const target = this._vectorRow(t('properties.light.target'), 'lt', v => setTarget(JSON.stringify(v)));
+            const setTarget = this._tracked(t('properties.light.undo.target'), 'light-target:' + light.uuid, () => JSON.stringify(meta.target), v => {
+                meta.target = JSON.parse(v);
+                api.aim(light);
+                meta.target.forEach((x, i) => { if (this.fields['lt' + i] && document.activeElement !== this.fields['lt' + i]) this.fields['lt' + i].value = fmt(x); });
+                changed();
+            });
+            meta.target.forEach((x, i) => { this.fields['lt' + i].value = fmt(x); });
+            target.title = t('properties.light.targetTitle');
+            rows.push(target);
+        }
+        if (!light.isAmbientLight) {
+            const button = (icon, label, title, onClick, extra = '') => {
+                const b = actionButton(BUTTON + extra, icon, label, title);
+                b.onclick = onClick;
+                return b;
+            };
+            const buttons = el('div', 'mt-1 flex flex-wrap gap-1');
+            buttons.append(
+                button('copy', t('properties.light.copy'), t('properties.light.copyTitle'), () => api.duplicate(light)),
+                button('delete', t('properties.light.delete'), t('properties.light.deleteTitle'), () => api.remove(light), ' ml-auto hover:text-red-300'),
+            );
+            rows.push(buttons);
+        }
         return rows;
+    }
+
+    // Lights folder: add a light of a kind (scene-lights.js)
+    _lightsFolderSection() {
+        const api = this.ctx.lights;
+        const add = el('select', SELECT);
+        add.append(new Option(t('properties.light.add'), ''));
+        for (const kind of api.kinds) add.append(new Option(t(`properties.light.kinds.${kind}`), kind));
+        add.title = t('properties.light.addTitle');
+        add.onchange = () => { const kind = add.value; add.value = ''; if (kind) api.add(kind); };
+        return [this._row(t('properties.light.addLabel'), add), el('div', 'mt-1 text-white/40', t('properties.light.folderHint'))];
     }
 
     // preview of the current HDRI over the panel width (canvas, drawn by environment.drawPreview with intensity,
@@ -554,26 +658,58 @@ export class PropertiesPanel {
         return rows;
     }
 
-    // saved camera view: name, fly there, overwrite with the current camera, delete
+    // a camera (viewer.js cameraViews): the free camera – "+ Camera"; an own one – name, "not saved" with Save / Reset,
+    // delete; below the settings of the camera looked through (position, angle, depth of field – change it unsaved)
     _viewSection(view) {
         const api = this.ctx.cameraViews;
-        const name = el('input', INPUT.replace('text-right', 'text-left'));
-        name.type = 'text';
-        name.value = view.name;
-        name.addEventListener('change', () => api.rename(view, name.value.trim() || view.name));
-        name.addEventListener('keydown', e => { if (e.key === 'Enter') name.blur(); });
         const button = (name, label, title, onClick, extra = '') => {
             const b = actionButton(BUTTON + extra, name, label, title);
             b.onclick = onClick;
             return b;
         };
-        const buttons = el('div', 'mt-1 flex flex-wrap gap-1');
-        buttons.append(
-            button('fly', t('properties.view.fly'), t('properties.view.flyTitle'), () => api.fly(view)),
-            button('capture', t('properties.view.overwrite'), t('properties.view.overwriteTitle'), () => api.overwrite(view)),
-            button('delete', t('properties.view.delete'), t('properties.view.deleteTitle'), () => api.remove(view), ' ml-auto hover:text-red-300'),
-        );
-        return [this._row(t('properties.view.name'), name), buttons, el('div', 'mt-1.5 text-white/40', t('properties.view.hint'))];
+        // the camera looked through – its pose, angle, depth of field and picture (saved with it)
+        const settings = [...this._cameraSection().slice(1), ...this._lookSection(), ...this._lensSection(), ...this._styleSection()];
+        if (view.free) {
+            const add = el('button', BUTTON + ' mb-1', t('properties.view.save'));
+            add.title = t('properties.view.saveTitle');
+            add.onclick = () => api.save();
+            return [el('div', 'mb-1.5 text-white/50', t('properties.view.freeHint')), add, ...settings];
+        }
+        const name = el('input', INPUT.replace('text-right', 'text-left'));
+        name.type = 'text';
+        name.value = view.name;
+        name.addEventListener('change', () => api.rename(view, name.value.trim() || view.name));
+        name.addEventListener('keydown', e => { if (e.key === 'Enter') name.blur(); });
+        const save = button('save', t('properties.view.overwrite'), t('properties.view.overwriteTitle'), () => api.overwrite(view));
+        const reset = button('reset', t('properties.view.reset'), t('properties.view.resetTitle'), () => api.reset(view));
+        const buttons = el('div', 'mt-1 mb-1.5 flex flex-wrap gap-1');
+        buttons.append(save, reset,
+            button('delete', t('properties.view.delete'), t('properties.view.deleteTitle'), () => api.remove(view), ' ml-auto hover:text-red-300'));
+        const state = el('div');
+        Object.assign(this.fields, { viewState: state, viewSave: save, viewReset: reset });
+        this.refreshViewState(view);
+        return [this._row(t('properties.view.name'), name), state, buttons, ...settings];
+    }
+
+    /** a camera became unsaved / saved again: hint and Save/Reset buttons (the rest of the panel stays) */
+    refreshViewState(view) {
+        const { viewState: state, viewSave: save, viewReset: reset } = this.fields;
+        if (!state?.isConnected) return;
+        state.className = view.dirty ? 'text-amber-300/90' : 'text-white/40';
+        state.textContent = t(view.dirty ? 'properties.view.unsavedHint' : 'properties.view.hint');
+        for (const b of [save, reset]) {
+            b.disabled = !view.dirty;
+            b.classList.toggle('opacity-40', !view.dirty);
+            b.classList.toggle('pointer-events-none', !view.dirty);
+        }
+    }
+
+    // "Camera" folder: only adding a camera (like the lights); the settings are in each camera
+    _camerasFolderSection() {
+        const add = el('button', BUTTON + ' mb-1', t('properties.view.save'));
+        add.title = t('properties.view.saveTitle');
+        add.onclick = () => this.ctx.cameraViews.save();
+        return [add, el('div', 'text-white/40', t('properties.view.folderHint'))];
     }
 
     // model whose file (or .bin) is missing: relink in the asset window or remove it from the scene

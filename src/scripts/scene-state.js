@@ -6,7 +6,7 @@
 //   tessellation   quality level (STEP)
 //   camera         position, target, focal length, depth of field (aperture, focus plane, bokeh)
 //   environment    HDRI file (public/hdr), intensity, rotation, background, ground projection
-//   lights         per light: position, intensity, colour, visible
+//   lights         per light: kind, name, position, strength, colour, visible, kind-specific values (scene-lights.js)
 //   pathtracing    bounces, resolution, max. samples, glossy filter, denoise, upscaling, glass shadows
 //   slicer         section plane
 //   models         (version 2) every loaded model: file (name, type, size), placement, translations/rotations,
@@ -184,6 +184,7 @@ export function captureState(ctx) {
             fov: viewAngle(camera), near: camera.near, far: camera.far, roll: camera.userData.roll || 0,
             dof: ctx.dof?.toJSON(),
             views: ctx.getCameraViews?.() || [],
+            active: ctx.getActiveCamera?.() ?? null,   // id of the camera looked through (null: the free camera)
             lens: ctx.lens?.toJSON(),
         },
         renderer: {
@@ -202,10 +203,8 @@ export function captureState(ctx) {
         },
         lights: {
             visible: lightsGroup.visible,
-            items: lights().map(l => ({
-                name: l.name, type: l.type, visible: l.visible,
-                position: vec(l.position), intensity: l.intensity, color: '#' + l.color.getHexString(),
-            })),
+            // every light with its kind and settings (scene-lights.js lightState); restored by restoreLights
+            items: lights().map(l => ctx.lightState(l)),
         },
         pathtracing: {
             enabled: pt.enabled, bounces: pt.bounces, renderScale: pt.renderScale, maxSamples: pt.maxSamples,
@@ -239,7 +238,7 @@ export async function applyState(ctx, state) {
     if (state?.format !== SCENE_FORMAT) throw new Error(t('sceneState.notSceneFile'));
     if (state.version > VERSION) throw new Error(t('sceneState.newerVersion', { version: state.version }));
     const warnings = [];
-    const { scene, camera, controls, environment: env, lights, lightsGroup, pathTracing: pt, slicer, sceneGraph, materialManager } = ctx;
+    const { scene, camera, controls, environment: env, lightsGroup, pathTracing: pt, slicer, sceneGraph, materialManager } = ctx;
 
     // quality first (replaces the geometry); part levels alone -> only their solids anew
     // normalizeQuality: also accepts the German level names of older scene files
@@ -287,7 +286,7 @@ export async function applyState(ctx, state) {
         camera.far = c.far ?? camera.far;
         camera.userData.roll = c.roll || 0;   // older states: level
         if (c.dof) ctx.dof?.fromJSON(c.dof);
-        ctx.setCameraViews?.(c.views || []);
+        ctx.setCameraViews?.(c.views || [], c.active ?? null);
         ctx.lens?.fromJSON(c.lens || {});   // older states: effects off
         camera.updateProjectionMatrix();
         controls.update();
@@ -298,22 +297,12 @@ export async function applyState(ctx, state) {
         ctx.renderer.toneMapping = ctx.toneMappings?.[state.renderer.toneMapping] ?? ctx.toneMappings?.aces ?? ctx.renderer.toneMapping;
     }
 
-    // lights: by name (same type), otherwise by order – names are those of the language the scene was saved in
+    // lights (viewer.js restoreLights): by name and kind, otherwise the next of the same kind, missing ones created,
+    // others removed – older scenes (without kinds: only the fixed lights) adjust the existing lights and keep the rest;
+    // names are those of the language the scene was saved in
     if (state.lights) {
         lightsGroup.visible = state.lights.visible !== false;
-        const list = lights();
-        state.lights.items?.forEach((s, i) => {
-            const byName = list.find(l => l.name === s.name && l.type === s.type);
-            const l = byName ?? list[i];
-            if (!l || l.type !== s.type) { warnings.push(t('sceneState.lightNotFound', { name: s.name })); return; }
-            debugLog(`[Lights] restore ${s.name} → ${l.name}${byName ? '' : ' (by order)'}: ${s.position.map(v => Math.round(v))}`);
-            l.visible = s.visible !== false;
-            l.position.fromArray(s.position);
-            l.intensity = s.intensity;
-            l.color.set(s.color);
-            l.updateMatrixWorld();
-            ctx.onLightMoved(l);
-        });
+        await ctx.restoreLights(state.lights.items || [], warnings);
     }
 
     // path tracing settings

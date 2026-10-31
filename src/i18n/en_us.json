@@ -1207,8 +1207,8 @@
         "materialTitle": "Material: {name}",
         "settings": "Open settings",
         "views": {
-            "one": "{count} view",
-            "other": "{count} views"
+            "one": "{count} camera",
+            "other": "{count} cameras"
         },
         "missingModel": "File “{name}” is missing – relink it in the asset window",
         "missingTextures": {
@@ -1223,7 +1223,9 @@
             "one": "{count} morph target – sliders in the properties",
             "other": "{count} morph targets – sliders in the properties"
         },
-        "instance": "Instance of “{name}”"
+        "instance": "Instance of “{name}”",
+        "unsaved": "(not saved)",
+        "activeCamera": "{name} – active camera"
     },
     "properties": {
         "kind": {
@@ -1236,8 +1238,8 @@
             "camera": "Camera",
             "folder": "Group",
             "slicer": "Section",
-            "view": "View",
-            "views": "Views",
+            "view": "Camera",
+            "views": "Cameras",
             "missing": "Missing"
         },
         "surface": {
@@ -1307,11 +1309,57 @@
             "inherited": "As parent ({quality})"
         },
         "light": {
-            "intensity": "Intensity",
+            "intensity": "Strength",
             "color": "Colour",
             "undo": {
-                "intensity": "Light intensity",
-                "color": "Light colour"
+                "intensity": "Light strength",
+                "color": "Light colour",
+                "angle": "Light cone",
+                "penumbra": "Light edge",
+                "shadow": "Light shadow",
+                "target": "Light target"
+            },
+            "name": "Name",
+            "kinds": {
+                "ambient": "Ambient light – even from all sides",
+                "directional": "Directional light – parallel rays like the sun",
+                "point": "Point light – shines in all directions",
+                "spot": "Spotlight – cone of light onto the target",
+                "rect": "Area light (rectangle) – soft light onto the target",
+                "disc": "Area light (disc) – soft light onto the target",
+                "ies": "IES light – light distribution of a luminaire (profile)"
+            },
+            "strengthTitle": "Strength at one model size distance – 1 is about as bright as a directional light of strength 1",
+            "angle": "Cone °",
+            "penumbra": "Soft edge",
+            "radius": "Size",
+            "radiusTitle": "Diameter of the light source – soft shadows in HQ",
+            "width": "Width",
+            "height": "Height",
+            "shadow": "Shadow",
+            "shadowTitle": "Shadow in the raster (in HQ every light casts shadows)",
+            "areaShadowHint": "Area lights cast shadows in HQ only.",
+            "target": "Target",
+            "targetTitle": "Point the light aims at – it stays aimed at it when moved",
+            "copy": "Copy",
+            "copyTitle": "Copy light",
+            "delete": "Delete",
+            "deleteTitle": "Delete light (Del)",
+            "add": "+ Add light…",
+            "addTitle": "Create a new light in the scene",
+            "addLabel": "New",
+            "folderHint": "Point, spot and area lights relate their strength to the model size. Splats (“Surface”) and caustics use directional lights only.",
+            "iesProfile": "Profile",
+            "iesTitle": "Light distribution of the luminaire – own profiles or a loaded IES file",
+            "iesLoad": "File…",
+            "iesLoadTitle": "Load an IES file (.ies) – also by drag & drop into the window",
+            "iesFile": "IES file",
+            "iesProfiles": {
+                "narrow": "Downlight narrow",
+                "wide": "Downlight wide",
+                "batwing": "Batwing (wide, angled peak)",
+                "wallwash": "Wall washer (asymmetric)",
+                "globe": "Pendant (also upwards)"
             }
         },
         "environment": {
@@ -1567,21 +1615,24 @@
             "flareSoftness": "Softness"
         },
         "view": {
-            "save": "Save view",
-            "saveTitle": "Save the current camera view (position, target, field of view, depth of field) – appears below “Camera” in the Scene Graph",
+            "save": "+ Camera",
+            "saveTitle": "Add the current view as a new camera (position, target, field of view, depth of field) – appears below “Camera” in the Scene Graph",
             "name": "Name",
-            "fly": "Fly to",
-            "flyTitle": "Fly the camera to this view",
-            "overwrite": "Overwrite",
-            "overwriteTitle": "Overwrite with the current camera view",
+            "overwrite": "Save",
+            "overwriteTitle": "Save the current view in this camera",
             "delete": "Delete",
-            "deleteTitle": "Delete view (Del)",
-            "hint": "Clicking the view in the Scene Graph flies the camera there.",
+            "deleteTitle": "Delete camera (Del)",
+            "hint": "Orbiting, zooming or the settings below change the camera – “Save” keeps it.",
             "deleteAll": {
-                "one": "Delete {count} view",
-                "other": "Delete {count} views"
+                "one": "Delete {count} camera",
+                "other": "Delete {count} cameras"
             },
-            "multiHint": "Several views selected (Shift+click to add/remove). Del deletes all."
+            "multiHint": "Several cameras selected (Shift+click to add/remove). Del deletes all.",
+            "reset": "Reset",
+            "resetTitle": "Discard unsaved changes – back to the saved camera",
+            "unsavedHint": "Not saved – “Save” keeps the current view. “Reset” or switching to another camera discards it (Ctrl+Z brings it back).",
+            "freeHint": "Free camera – the working view. “+ Camera” turns the current view into a camera of its own.",
+            "folderHint": "The settings (depth of field, picture, lens effects, style filter) belong to each camera – select a camera. The free camera has its own too."
         },
         "missing": {
             "relink": "Link…",
@@ -1883,7 +1934,7 @@
         "unsupportedFormat": "Format not supported ({extensions})",
         "dropHint": "Drag a file into the window",
         "openFile": "Open file",
-        "dropFormats": "STEP (.stp/.step) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · BIM (.ifc/.ifczip) · MaterialX (.mtlx) · BCF issues (.bcfzip) · Gaussian splats (.ply/.sog) · HDRI (.hdr/.exr)",
+        "dropFormats": "STEP (.stp/.step) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · BIM (.ifc/.ifczip) · MaterialX (.mtlx) · BCF issues (.bcfzip) · Gaussian splats (.ply/.sog) · HDRI (.hdr/.exr) · IES light profiles (.ies)",
         "hdriDropped": "HDRI “{name}” as environment",
         "hdriOne": "Several HDRIs – “{name}” chosen as environment",
         "qualityReduced": "Large model (≈ {triangles} triangles at “{from}”) – quality automatically reduced to “{to}”",
@@ -1898,12 +1949,12 @@
         "splatsAlone": "Only one splat scan per scene – the others were ignored",
         "splatsTooMany": "Too many splats for this graphics card ({count})",
         "noSplats": "The file contains no splats",
-        "viewSaved": "“{name}” saved",
+        "viewSaved": "Camera “{name}” added",
         "camerasImported": {
             "one": "{count} camera taken over from the file (under \"Camera\")",
             "other": "{count} cameras taken over from the file (under \"Camera\")"
         },
-        "viewOverwritten": "“{name}” overwritten",
+        "viewOverwritten": "Camera “{name}” saved",
         "modelIncomplete": "{name} is incomplete – missing: {files}. Drag the files into the window or link them in the asset window",
         "relinked": {
             "one": "{count} file linked",
@@ -1919,7 +1970,8 @@
             "one": "The element of this issue is not in the loaded IFC models",
             "other": "The {count} elements of this issue are not in the loaded IFC models"
         },
-        "renderingHdri": "Rendering HDRI…"
+        "renderingHdri": "Rendering HDRI…",
+        "iesFailed": "IES file “{name}” not readable"
     },
     "viewCube": {
         "title": "Choose a view: click a face, edge or corner – drag to orbit the camera. Keys: T top, F front, B back, D bottom, L left, R right",
@@ -2153,7 +2205,15 @@
         "mainLight": "Key light",
         "fillLight": "Fill light",
         "camera": "Camera",
-        "slicer": "Section plane"
+        "slicer": "Section plane",
+        "lightKinds": {
+            "directional": "Directional light",
+            "point": "Point light",
+            "spot": "Spotlight",
+            "rect": "Area light",
+            "disc": "Disc light",
+            "ies": "IES light"
+        }
     },
     "viewer": {
         "undo": {
@@ -2172,12 +2232,12 @@
                 "one": "Delete part",
                 "other": "Delete {count} parts"
             },
-            "saveView": "Save view",
-            "renameView": "Rename view",
-            "overwriteView": "Overwrite view",
+            "saveView": "Add camera",
+            "renameView": "Rename camera",
+            "overwriteView": "Save camera",
             "deleteView": {
-                "one": "Delete view",
-                "other": "Delete {count} views"
+                "one": "Delete camera",
+                "other": "Delete {count} cameras"
             },
             "poseApply": "Pose “{name}”",
             "poseSave": "Save pose",
@@ -2191,7 +2251,13 @@
                 "one": "Create instance",
                 "other": "Create {count} instances"
             },
-            "makeUnique": "Make instance unique"
+            "makeUnique": "Make instance unique",
+            "addLight": "Add light “{name}”",
+            "copyLight": "Copy light “{name}”",
+            "deleteLight": "Delete light “{name}”",
+            "renameLight": "Rename light",
+            "leaveCamera": "Unsaved changes to “{name}” dropped",
+            "iesProfile": "IES profile"
         },
         "objectsWithMaterial": "Objects with “{name}”",
         "ki": {
@@ -2239,7 +2305,7 @@
         "sceneGraph": "Scene Graph",
         "drop": {
             "title": "Drop file here",
-            "hint": "STEP (.stp/.step), glTF/GLB, FBX, MAX (.max), C4D (.c4d), Blender (.blend), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, BIM (.ifc/.ifczip), MaterialX (.mtlx), BCF issues (.bcfzip), Gaussian splats (.ply/.sog), HDRI (.hdr/.exr) – just drop textures and .bin files along with it",
+            "hint": "STEP (.stp/.step), glTF/GLB, FBX, MAX (.max), C4D (.c4d), Blender (.blend), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, BIM (.ifc/.ifczip), MaterialX (.mtlx), BCF issues (.bcfzip), Gaussian splats (.ply/.sog), HDRI (.hdr/.exr), IES light profiles (.ies) – just drop textures and .bin files along with it",
             "addHint": "Several models: drop them together or one after another – they appear side by side",
             "replaceTitle": "Replace models",
             "replaceHint": "The loaded models are removed and replaced by the new file",
@@ -2256,7 +2322,7 @@
     },
     "about": {
         "title": "About",
-        "description": "Your Local 3D-File Viewer – STEP, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, MaterialX, BIM (IFC, BCF), Gaussian splats and HDRIs right in the browser, with real-time path tracing.",
+        "description": "Your Local 3D-File Viewer – STEP, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, MaterialX, BIM (IFC, BCF), Gaussian splats, HDRIs and IES light profiles right in the browser, with real-time path tracing.",
         "author": "Author",
         "email": "Email",
         "version": "Version",
@@ -2296,7 +2362,8 @@
         }
     },
     "cameraViews": {
-        "name": "View {n}"
+        "name": "Camera {n}",
+        "free": "Free camera"
     },
     "animation": {
         "play": "Play (Space)",

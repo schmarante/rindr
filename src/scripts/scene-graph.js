@@ -463,9 +463,16 @@ export class SceneGraph {
 
         const label = document.createElement('span');
         label.dataset.action = 'select';
-        label.className = 'min-w-0 flex-1 cursor-pointer truncate' + (state === 'off' || entry.kind === 'missing' ? ' text-white/40' : '');
+        label.className = 'min-w-0 flex-1 cursor-pointer truncate' + (state === 'off' || entry.kind === 'missing' ? ' text-white/40' : entry.active ? ' text-sky-300' : '');
         label.textContent = entry.name;
-        label.title = entry.kind === 'missing' ? t('sceneGraph.missingModel', { name: entry.name }) : entry.name;
+        label.title = entry.kind === 'missing' ? t('sceneGraph.missingModel', { name: entry.name }) : entry.active ? t('sceneGraph.activeCamera', { name: entry.name }) : entry.name;
+        // camera with unsaved changes (viewer.js cameraViews)
+        if (entry.unsaved) {
+            const note = document.createElement('span');
+            note.className = 'shrink-0 text-amber-300/90';
+            note.textContent = t('sceneGraph.unsaved');
+            label.append(' ', note);
+        }
         row.append(label);
         // linked instance of another part (duplicate.js)
         if (entry.kind === 'node' && entry.object?.userData.instanceOf && !entry.object.userData.unique) {

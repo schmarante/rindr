@@ -1207,8 +1207,8 @@
         "materialTitle": "Material: {name}",
         "settings": "Einstellungen öffnen",
         "views": {
-            "one": "{count} Ansicht",
-            "other": "{count} Ansichten"
+            "one": "{count} Kamera",
+            "other": "{count} Kameras"
         },
         "missingModel": "Datei „{name}“ fehlt – im Asset-Fenster neu verknüpfen",
         "missingTextures": {
@@ -1223,7 +1223,9 @@
             "one": "{count} Morph Target – Regler in den Eigenschaften",
             "other": "{count} Morph Targets – Regler in den Eigenschaften"
         },
-        "instance": "Instanz von „{name}“"
+        "instance": "Instanz von „{name}“",
+        "unsaved": "(nicht gespeichert)",
+        "activeCamera": "{name} – aktive Kamera"
     },
     "properties": {
         "kind": {
@@ -1236,8 +1238,8 @@
             "camera": "Kamera",
             "folder": "Gruppe",
             "slicer": "Schnitt",
-            "view": "Ansicht",
-            "views": "Ansichten",
+            "view": "Kamera",
+            "views": "Kameras",
             "missing": "Fehlt"
         },
         "surface": {
@@ -1307,11 +1309,57 @@
             "inherited": "Wie übergeordnet ({quality})"
         },
         "light": {
-            "intensity": "Intensität",
+            "intensity": "Stärke",
             "color": "Farbe",
             "undo": {
-                "intensity": "Licht-Intensität",
-                "color": "Licht-Farbe"
+                "intensity": "Licht-Stärke",
+                "color": "Licht-Farbe",
+                "angle": "Licht-Kegel",
+                "penumbra": "Licht-Rand",
+                "shadow": "Licht-Schatten",
+                "target": "Licht-Ziel"
+            },
+            "name": "Name",
+            "kinds": {
+                "ambient": "Umgebungslicht – gleichmäßig von allen Seiten",
+                "directional": "Richtungslicht – parallele Strahlen wie die Sonne",
+                "point": "Punktlicht – strahlt in alle Richtungen",
+                "spot": "Spotlicht – Lichtkegel auf das Ziel",
+                "rect": "Flächenlicht (Rechteck) – weiches Licht auf das Ziel",
+                "disc": "Flächenlicht (Kreis) – weiches Licht auf das Ziel",
+                "ies": "IES-Licht – Lichtverteilung einer Leuchte (Profil)"
+            },
+            "strengthTitle": "Stärke in einer Modellgröße Abstand – 1 ist etwa so hell wie ein Richtungslicht der Stärke 1",
+            "angle": "Kegel °",
+            "penumbra": "Rand weich",
+            "radius": "Größe",
+            "radiusTitle": "Durchmesser der Lichtquelle – weiche Schatten in HQ",
+            "width": "Breite",
+            "height": "Höhe",
+            "shadow": "Schatten",
+            "shadowTitle": "Schatten im Raster (in HQ werfen alle Lichter Schatten)",
+            "areaShadowHint": "Flächenlichter werfen Schatten nur in HQ.",
+            "target": "Ziel",
+            "targetTitle": "Punkt, auf den das Licht zeigt – beim Verschieben bleibt es darauf ausgerichtet",
+            "copy": "Kopieren",
+            "copyTitle": "Licht kopieren",
+            "delete": "Löschen",
+            "deleteTitle": "Licht löschen (Entf)",
+            "add": "+ Licht hinzufügen…",
+            "addTitle": "Neues Licht in der Szene anlegen",
+            "addLabel": "Neu",
+            "folderHint": "Punkt-, Spot- und Flächenlichter beziehen ihre Stärke auf die Modellgröße. Splats („Oberfläche“) und Kaustik nutzen nur Richtungslichter.",
+            "iesProfile": "Profil",
+            "iesTitle": "Lichtverteilung der Leuchte – eigene Profile oder eine geladene IES-Datei",
+            "iesLoad": "Datei…",
+            "iesLoadTitle": "IES-Datei laden (.ies) – auch per Drag & Drop ins Fenster",
+            "iesFile": "IES-Datei",
+            "iesProfiles": {
+                "narrow": "Downlight eng",
+                "wide": "Downlight breit",
+                "batwing": "Batwing (breit, Spitze schräg)",
+                "wallwash": "Wandfluter (asymmetrisch)",
+                "globe": "Pendelleuchte (auch nach oben)"
             }
         },
         "environment": {
@@ -1567,21 +1615,24 @@
             "flareSoftness": "Weichheit"
         },
         "view": {
-            "save": "Ansicht speichern",
-            "saveTitle": "Aktuelle Kameraansicht speichern (Position, Blickziel, Bildwinkel, Tiefenschärfe) – erscheint unter „Kamera“ im Scene Graph",
+            "save": "+ Kamera",
+            "saveTitle": "Aktuelle Ansicht als neue Kamera anlegen (Position, Blickziel, Bildwinkel, Tiefenschärfe) – erscheint unter „Kamera“ im Scene Graph",
             "name": "Name",
-            "fly": "Anfliegen",
-            "flyTitle": "Kamera zu dieser Ansicht fliegen lassen",
-            "overwrite": "Überschreiben",
-            "overwriteTitle": "Mit der aktuellen Kameraansicht überschreiben",
+            "overwrite": "Speichern",
+            "overwriteTitle": "Aktuelle Ansicht in dieser Kamera speichern",
             "delete": "Löschen",
-            "deleteTitle": "Ansicht löschen (Entf)",
-            "hint": "Klick auf die Ansicht im Scene Graph fliegt die Kamera dorthin.",
+            "deleteTitle": "Kamera löschen (Entf)",
+            "hint": "Drehen, Zoomen oder die Einstellungen unten ändern die Kamera – „Speichern“ übernimmt das.",
             "deleteAll": {
-                "one": "{count} Ansicht löschen",
-                "other": "{count} Ansichten löschen"
+                "one": "{count} Kamera löschen",
+                "other": "{count} Kameras löschen"
             },
-            "multiHint": "Mehrere Ansichten ausgewählt (Shift+Klick zum Hinzufügen/Entfernen). Entf löscht alle."
+            "multiHint": "Mehrere Kameras ausgewählt (Shift+Klick zum Hinzufügen/Entfernen). Entf löscht alle.",
+            "reset": "Zurücksetzen",
+            "resetTitle": "Ungespeicherte Änderungen verwerfen – zurück zur gespeicherten Kamera",
+            "unsavedHint": "Nicht gespeichert – „Speichern“ übernimmt die aktuelle Ansicht. „Zurücksetzen“ oder der Wechsel zu einer anderen Kamera verwirft sie (Strg+Z holt sie zurück).",
+            "freeHint": "Freie Kamera – die Arbeitsansicht. „+ Kamera“ macht die aktuelle Ansicht zu einer eigenen Kamera.",
+            "folderHint": "Die Einstellungen (Tiefenschärfe, Bild, Objektiv-Effekte, Stil-Filter) gehören zu jeder Kamera – Kamera auswählen. Auch die freie Kamera hat eigene."
         },
         "missing": {
             "relink": "Verknüpfen…",
@@ -1883,7 +1934,7 @@
         "unsupportedFormat": "Format nicht unterstützt ({extensions})",
         "dropHint": "Datei ins Fenster ziehen",
         "openFile": "Datei öffnen",
-        "dropFormats": "STEP (.stp/.step) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · BIM (.ifc/.ifczip) · MaterialX (.mtlx) · BCF-Tickets (.bcfzip) · Gaussian Splats (.ply/.sog) · HDRI (.hdr/.exr)",
+        "dropFormats": "STEP (.stp/.step) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · BIM (.ifc/.ifczip) · MaterialX (.mtlx) · BCF-Tickets (.bcfzip) · Gaussian Splats (.ply/.sog) · HDRI (.hdr/.exr) · IES-Lichtprofile (.ies)",
         "hdriDropped": "HDRI „{name}“ als Umgebung",
         "hdriOne": "Mehrere HDRIs – „{name}“ als Umgebung gewählt",
         "qualityReduced": "Großes Modell (≈ {triangles} Dreiecke bei „{from}“) – Qualität automatisch auf „{to}“ gesenkt",
@@ -1898,12 +1949,12 @@
         "splatsAlone": "Nur ein Splat-Scan pro Szene – die weiteren wurden ignoriert",
         "splatsTooMany": "Zu viele Splats für diese Grafikkarte ({count})",
         "noSplats": "Die Datei enthält keine Splats",
-        "viewSaved": "„{name}“ gespeichert",
+        "viewSaved": "Kamera „{name}“ angelegt",
         "camerasImported": {
             "one": "{count} Kamera aus der Datei übernommen (unter „Kamera“)",
             "other": "{count} Kameras aus der Datei übernommen (unter „Kamera“)"
         },
-        "viewOverwritten": "„{name}“ überschrieben",
+        "viewOverwritten": "Kamera „{name}“ gespeichert",
         "modelIncomplete": "{name} unvollständig – fehlt: {files}. Dateien ins Fenster ziehen oder im Asset-Fenster verknüpfen",
         "relinked": {
             "one": "{count} Datei verknüpft",
@@ -1919,7 +1970,8 @@
             "one": "Das Bauteil des Tickets ist in den geladenen IFC-Modellen nicht vorhanden",
             "other": "Die {count} Bauteile des Tickets sind in den geladenen IFC-Modellen nicht vorhanden"
         },
-        "renderingHdri": "Berechne HDRI…"
+        "renderingHdri": "Berechne HDRI…",
+        "iesFailed": "IES-Datei „{name}“ nicht lesbar"
     },
     "viewCube": {
         "title": "Ansicht wählen: Fläche, Kante oder Ecke anklicken – ziehen dreht die Kamera. Tasten: T oben, F vorne, B hinten, D unten, L links, R rechts",
@@ -2153,7 +2205,15 @@
         "mainLight": "Hauptlicht",
         "fillLight": "Fülllicht",
         "camera": "Kamera",
-        "slicer": "Schnittebene"
+        "slicer": "Schnittebene",
+        "lightKinds": {
+            "directional": "Richtungslicht",
+            "point": "Punktlicht",
+            "spot": "Spotlicht",
+            "rect": "Flächenlicht",
+            "disc": "Kreislicht",
+            "ies": "IES-Licht"
+        }
     },
     "viewer": {
         "undo": {
@@ -2172,12 +2232,12 @@
                 "one": "Bauteil löschen",
                 "other": "{count} Bauteile löschen"
             },
-            "saveView": "Ansicht speichern",
-            "renameView": "Ansicht umbenennen",
-            "overwriteView": "Ansicht überschreiben",
+            "saveView": "Kamera anlegen",
+            "renameView": "Kamera umbenennen",
+            "overwriteView": "Kamera speichern",
             "deleteView": {
-                "one": "Ansicht löschen",
-                "other": "{count} Ansichten löschen"
+                "one": "Kamera löschen",
+                "other": "{count} Kameras löschen"
             },
             "poseApply": "Pose „{name}“",
             "poseSave": "Pose speichern",
@@ -2191,7 +2251,13 @@
                 "one": "Instanz erstellen",
                 "other": "{count} Instanzen erstellen"
             },
-            "makeUnique": "Instanz eigenständig machen"
+            "makeUnique": "Instanz eigenständig machen",
+            "addLight": "Licht „{name}“ hinzufügen",
+            "copyLight": "Licht „{name}“ kopieren",
+            "deleteLight": "Licht „{name}“ löschen",
+            "renameLight": "Licht umbenennen",
+            "leaveCamera": "Ungespeicherte Änderungen an „{name}“ verworfen",
+            "iesProfile": "IES-Profil"
         },
         "objectsWithMaterial": "Objekte mit „{name}“",
         "ki": {
@@ -2239,7 +2305,7 @@
         "sceneGraph": "Scene Graph",
         "drop": {
             "title": "Datei hier ablegen",
-            "hint": "STEP (.stp/.step), glTF/GLB, FBX, MAX (.max), C4D (.c4d), Blender (.blend), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, BIM (.ifc/.ifczip), MaterialX (.mtlx), BCF-Tickets (.bcfzip), Gaussian Splats (.ply/.sog), HDRI (.hdr/.exr) – Texturen und .bin-Dateien einfach mit hineinziehen",
+            "hint": "STEP (.stp/.step), glTF/GLB, FBX, MAX (.max), C4D (.c4d), Blender (.blend), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, BIM (.ifc/.ifczip), MaterialX (.mtlx), BCF-Tickets (.bcfzip), Gaussian Splats (.ply/.sog), HDRI (.hdr/.exr), IES-Lichtprofile (.ies) – Texturen und .bin-Dateien einfach mit hineinziehen",
             "addHint": "Mehrere Modelle: zusammen oder nacheinander hineinziehen – sie erscheinen nebeneinander",
             "replaceTitle": "Modelle ersetzen",
             "replaceHint": "Die geladenen Modelle werden entfernt und durch die neue Datei ersetzt",
@@ -2256,7 +2322,7 @@
     },
     "about": {
         "title": "Über",
-        "description": "Your Local 3D-File Viewer – STEP, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, MaterialX, BIM (IFC, BCF), Gaussian Splats und HDRIs direkt im Browser, mit Pathtracing in Echtzeit.",
+        "description": "Your Local 3D-File Viewer – STEP, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, MaterialX, BIM (IFC, BCF), Gaussian Splats, HDRIs und IES-Lichtprofile direkt im Browser, mit Pathtracing in Echtzeit.",
         "author": "Autor",
         "email": "E-Mail",
         "version": "Version",
@@ -2296,7 +2362,8 @@
         }
     },
     "cameraViews": {
-        "name": "Ansicht {n}"
+        "name": "Kamera {n}",
+        "free": "Freie Kamera"
     },
     "animation": {
         "play": "Abspielen (Leertaste)",
