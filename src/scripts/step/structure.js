@@ -2,7 +2,7 @@
 // Runs once per file (in the first worker) and creates a "plan" according to which the
 // faces are distributed to all workers.
 
-import { Ref, partArgs } from './parser.js';
+import { Ref, partArgs, hasPart } from './parser.js';
 import { GeometryBuilder, dot } from './geometry.js';
 
 // Types whose ids are collected while indexing
@@ -48,6 +48,77 @@ export function angleFactor(step, typeIds) {
     return conv ? factorOf(conv) : angles.length ? factorOf(angles[0]) : 1;
 }
 
+// Length unit -> millimetres (RINDR works in mm). Per representation context: an assembly may place parts modelled in
+// inches into a millimetre assembly – geometry and placements of every representation are scaled by its own unit.
+const SI_PREFIX = {
+    EXA: 1e18, PETA: 1e15, TERA: 1e12, GIGA: 1e9, MEGA: 1e6, KILO: 1e3, HECTO: 1e2, DECA: 1e1,
+    DECI: 1e-1, CENTI: 1e-2, MILLI: 1e-3, MICRO: 1e-6, NANO: 1e-9, PICO: 1e-12, FEMTO: 1e-15, ATTO: 1e-18,
+};
+// conversion-based units without a usable conversion factor, by name
+const NAMED_LENGTHS = { INCH: 25.4, IN: 25.4, FOOT: 304.8, FT: 304.8, YARD: 914.4, MILE: 1609344, MIL: 0.0254, THOU: 0.0254, MM: 1, MILLIMETRE: 1, MILLIMETER: 1, CM: 10, CENTIMETRE: 10, CENTIMETER: 10, M: 1000, METRE: 1000, METER: 1000, MICRON: 1e-3, KM: 1e6 };
+
+export function lengthUnits(step, typeIds) {
+    const unitCache = new Map(), ctxCache = new Map();
+    // factor of a unit entity (SI_UNIT with prefix, CONVERSION_BASED_UNIT over a measure with its own unit), null = none
+    const unitFactor = (ref, depth = 0) => {
+        const id = ref instanceof Ref ? ref.id : ref;
+        if (unitCache.has(id)) return unitCache.get(id);
+        let f = null;
+        const u = depth < 8 ? step.get(id) : null;
+        const si = partArgs(u, 'SI_UNIT'), conv = partArgs(u, 'CONVERSION_BASED_UNIT');
+        if (conv) {
+            const m = step.get(conv[1]);
+            const mw = partArgs(m, 'MEASURE_WITH_UNIT') || partArgs(m, 'LENGTH_MEASURE_WITH_UNIT') || (m && m.args);
+            const val = mw && mw[0], num = typeof val === 'number' ? val : (val && val.args ? val.args[0] : null);
+            const base = mw && mw[1] instanceof Ref ? unitFactor(mw[1], depth + 1) : null;
+            if (typeof num === 'number' && num > 0 && base) f = num * base;
+            else f = NAMED_LENGTHS[String(conv[0] || '').trim().toUpperCase()] || null;
+        } else if (si) {
+            // SI_UNIT(prefix, name) – in a complex entity; as a plain entity with the NAMED_UNIT dimensions first
+            const a = si.length > 2 ? si.slice(-2) : si;
+            const name = a[1] && a[1].name;
+            if (name === 'METRE') f = 1000 * (a[0] && a[0].name ? (SI_PREFIX[a[0].name] ?? 1) : 1);
+        }
+        if (!(f > 0 && isFinite(f))) f = null;
+        unitCache.set(id, f);
+        return f;
+    };
+    const isLength = u => !!u && (hasPart(u, 'LENGTH_UNIT') || (u.type === 'SI_UNIT' && u.args && u.args[u.args.length - 1]?.name === 'METRE'));
+    // length unit assigned by a context (GLOBAL_UNIT_ASSIGNED_CONTEXT), null = none
+    const ofContext = ref => {
+        const id = ref instanceof Ref ? ref.id : ref;
+        if (ctxCache.has(id)) return ctxCache.get(id);
+        let f = null;
+        const assigned = partArgs(step.get(id), 'GLOBAL_UNIT_ASSIGNED_CONTEXT');
+        if (assigned && Array.isArray(assigned[0])) {
+            for (const r of assigned[0]) {
+                const u = step.get(r);
+                if (isLength(u)) { f = unitFactor(r); if (f) break; }
+            }
+        }
+        ctxCache.set(id, f);
+        return f;
+    };
+    // file default (representations without a readable context): the first assigned length unit, otherwise mm
+    let fallback = null;
+    for (const id of typeIds.COMPLEX || []) {
+        const e = step.get(id);
+        if (e && e.parts && e.parts.GLOBAL_UNIT_ASSIGNED_CONTEXT && (fallback = ofContext(id))) break;
+    }
+    fallback ??= 1;
+    // unit of a representation: (name, items, context_of_items)
+    const ofRep = ref => {
+        const e = step.get(ref);
+        const r = e && (e.type === 'COMPLEX' ? partArgs(e, 'REPRESENTATION') : e.args);
+        return (r && r[2] instanceof Ref && ofContext(r[2])) || fallback;
+    };
+    return { ofRep, fallback };
+}
+
+// Translation of a placement matrix in its representation's unit -> mm (rotations stay)
+const scaleTranslation = (m, f) => (f === 1 ? m : [...m.slice(0, 12), m[12] * f, m[13] * f, m[14] * f, m[15]]);
+
+const SET_FACE_TYPES = new Set(['CURVE_BOUNDED_SURFACE', 'ADVANCED_FACE', 'FACE_SURFACE']);
 const SOLID_TYPES = new Set(['MANIFOLD_SOLID_BREP', 'BREP_WITH_VOIDS', 'FACETED_BREP', 'SHELL_BASED_SURFACE_MODEL', 'FACE_BASED_SURFACE_MODEL', 'CLOSED_SHELL', 'OPEN_SHELL']);
 
 const PREDEFINED_COLOURS = {
@@ -75,6 +146,7 @@ const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
 export function buildPlan(step, typeIds) {
     const angleUnit = angleFactor(step, typeIds);
+    const units = lengthUnits(step, typeIds);
     const geo = new GeometryBuilder(step, angleUnit);
     const ids = t => typeIds[t] || [];
     const refId = r => (r instanceof Ref ? r.id : null);
@@ -198,15 +270,17 @@ export function buildPlan(step, typeIds) {
         if (!e) return IDENTITY;
         return geo.placement(ref).matrix();
     };
-    const transformOf = (opRef, childIsRep1) => {
+    // u1, u2: length units of rep_1 and rep_2 – transform_item_1 lies in rep_1, transform_item_2 in rep_2; the
+    // operator maps rep_1 into rep_2 (its translation in the units of rep_2). The result maps child mm to parent mm.
+    const transformOf = (opRef, childIsRep1, u1, u2) => {
         const op = step.get(opRef);
         if (!op) return IDENTITY;
         if (op.type === 'ITEM_DEFINED_TRANSFORMATION') {
-            const m1 = placementMatrix(op.args[2]), m2 = placementMatrix(op.args[3]);
+            const m1 = scaleTranslation(placementMatrix(op.args[2]), u1), m2 = scaleTranslation(placementMatrix(op.args[3]), u2);
             return childIsRep1 ? mul(m2, invRigid(m1)) : mul(m1, invRigid(m2));
         }
         if (op.type === 'CARTESIAN_TRANSFORMATION_OPERATOR_3D') {
-            const m = placementMatrix(opRef);
+            const m = scaleTranslation(placementMatrix(opRef), u2);
             return childIsRep1 ? m : invRigid(m);
         }
         return IDENTITY;
@@ -230,7 +304,7 @@ export function buildPlan(step, typeIds) {
             if (!groupName.has(find(childIsRep1 ? rep1 : rep2))) groupName.set(find(childIsRep1 ? rep1 : rep2), productName(childPd));
         }
         const rrt = partArgs(rel, 'REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION');
-        const m = rrt ? transformOf(rrt[0], childIsRep1) : IDENTITY;
+        const m = rrt ? transformOf(rrt[0], childIsRep1, units.ofRep(rep1), units.ofRep(rep2)) : IDENTITY;
         const pg = find(childIsRep1 ? rep2 : rep1), cg = find(childIsRep1 ? rep1 : rep2);
         if (pg === cg) continue;
         if (!children.has(pg)) children.set(pg, []);
@@ -239,13 +313,19 @@ export function buildPlan(step, typeIds) {
     }
 
     // --- Items per group ---
-    const groupItems = new Map();
+    // itemUnit: length unit (mm per unit) of the representation an item belongs to – the representations of one group
+    // (SRR) may have contexts of their own
+    const groupItems = new Map(), itemUnit = new Map();
     for (const r of reps) {
         const e = step.get(r);
         const items = e && e.args && Array.isArray(e.args[1]) ? e.args[1] : (partArgs(e, 'REPRESENTATION') || [])[1] || [];
         const g = find(r);
         if (!groupItems.has(g)) groupItems.set(g, []);
-        for (const it of items) if (it instanceof Ref) groupItems.get(g).push(it.id);
+        const unit = units.ofRep(r);
+        for (const it of items) if (it instanceof Ref) {
+            groupItems.get(g).push(it.id);
+            if (!itemUnit.has(it.id)) itemUnit.set(it.id, unit);
+        }
     }
 
     // --- Solids ---
@@ -276,16 +356,22 @@ export function buildPlan(step, typeIds) {
         }
         return [];
     };
+    // surfaces of a GEOMETRIC_SET (surface models of a GEOMETRICALLY_BOUNDED_SURFACE_SHAPE_REPRESENTATION): curve
+    // bounded surfaces are faces of their own (Tessellator.face); curves and points of the set are not drawn
+    const setFaces = e => (e.args[1] || []).filter(r => r instanceof Ref && SET_FACE_TYPES.has(step.typeOf(r))).map(r => r.id);
     const solidFaces = e => {
         switch (e.type) {
             case 'MANIFOLD_SOLID_BREP': case 'FACETED_BREP': return shellFaces(e.args[1]);
             case 'BREP_WITH_VOIDS': return [...shellFaces(e.args[1]), ...e.args[2].flatMap(v => shellFaces(v))];
             case 'SHELL_BASED_SURFACE_MODEL': case 'FACE_BASED_SURFACE_MODEL': return e.args[1].flatMap(v => shellFaces(v));
             case 'CLOSED_SHELL': case 'OPEN_SHELL': return shellFaces(e.id);
+            case 'GEOMETRIC_SET': return setFaces(e);
         }
         return [];
     };
-    const getSolid = id => {
+    // unit: mm per length unit of the representation the solid belongs to (the faces are tessellated in the file's
+    // units and scaled on output – tolerances, caches and the checker's numbers stay as they were)
+    const getSolid = (id, unit = units.fallback) => {
         if (solidIndex.has(id)) return solidIndex.get(id);
         const e = step.get(id);
         const faces = solidFaces(e).filter(f => f !== null);
@@ -296,9 +382,9 @@ export function buildPlan(step, typeIds) {
         const faceColors = faces.map(f => colorOf.get(Math.abs(f)) || null);
         const idx = solids.length;
         // surface: sheet body without a defined inside (orientFaces turns its skins outward)
-        const surface = e.type === 'SHELL_BASED_SURFACE_MODEL' || e.type === 'FACE_BASED_SURFACE_MODEL' || e.type === 'OPEN_SHELL';
+        const surface = e.type === 'SHELL_BASED_SURFACE_MODEL' || e.type === 'FACE_BASED_SURFACE_MODEL' || e.type === 'OPEN_SHELL' || e.type === 'GEOMETRIC_SET';
         const features = [];
-        solids.push({ id, name: e.args[0] || '', faces, faceColors, color: solidColor, size: solidSize(step, geo, faces, features), surface, features });
+        solids.push({ id, name: e.args[0] || '', faces, faceColors, color: solidColor, size: solidSize(step, geo, faces, features), surface, features, unit });
         solidIndex.set(id, idx);
         return idx;
     };
@@ -334,13 +420,14 @@ export function buildPlan(step, typeIds) {
         for (const it of groupItems.get(g) || []) {
             const e = step.get(it);
             if (!e) continue;
-            if (SOLID_TYPES.has(e.type)) {
-                solidsOut.push({ solid: getSolid(it), matrix });
+            if (SOLID_TYPES.has(e.type) || (e.type === 'GEOMETRIC_SET' && setFaces(e).length)) {
+                solidsOut.push({ solid: getSolid(it, itemUnit.get(it)), matrix });
             } else if (e.type === 'MAPPED_ITEM') {
                 const map = step.get(e.args[1]);
                 if (!map || map.type !== 'REPRESENTATION_MAP') continue;
-                const origin = placementMatrix(map.args[0]);
-                const target = placementMatrix(e.args[2]);
+                // mapping_origin lies in the mapped representation, mapping_target in the one holding the item
+                const origin = scaleTranslation(placementMatrix(map.args[0]), units.ofRep(map.args[1]));
+                const target = scaleTranslation(placementMatrix(e.args[2]), itemUnit.get(it) ?? units.fallback);
                 const sub = find(refId(map.args[1]));
                 visitContent(sub, mul(matrix, mul(target, invRigid(origin))), depth + 1, node, gname, solidsOut);
             }
@@ -390,7 +477,7 @@ export function buildPlan(step, typeIds) {
         }
     }
 
-    return { solids, instances, nodes, angleUnit, edgeLimits: featureLimits(step, geo, solids, angleUnit) };
+    return { solids, instances, nodes, angleUnit, lengthUnit: units.fallback, edgeLimits: featureLimits(step, geo, solids, angleUnit) };
 }
 
 // Edges next to a feature narrower than the tessellation tolerance: { ids, widths, radii } per EDGE_CURVE (Infinity =
@@ -476,6 +563,19 @@ function solidSize(step, geo, faces, features) {
     for (const fid of faces) {
         const f = step.get(Math.abs(fid));
         if (!f || !f.args) continue;
+        // curve bounded surface (a face of a GEOMETRIC_SET): points along its boundary curves, otherwise its domain
+        if (f.type === 'CURVE_BOUNDED_SURFACE') {
+            let any = false;
+            for (const bRef of f.args[2] || []) {
+                try {
+                    const c = geo.curve(bRef), n = c.kind === 'composite' ? 4 * c.t1 : 16;
+                    if (!isFinite(c.t0) || !isFinite(c.t1)) continue;
+                    for (let k = 0; k <= n; k++) { ext(c.eval(c.t0 + (c.t1 - c.t0) * k / n)); any = true; }
+                } catch { /* unreadable boundary */ }
+            }
+            if (!any || f.args[3] === true) surfaceExtent(geo, f.args[1], ext);
+            continue;
+        }
         // surface type only (a spline surface is not parsed here)
         const st = f.type === 'ADVANCED_FACE' || f.type === 'FACE_SURFACE' ? step.typeOf(f.args[2]) : null;
         const torus = st === 'TOROIDAL_SURFACE' || st === 'DEGENERATE_TOROIDAL_SURFACE';
@@ -510,6 +610,13 @@ function solidSize(step, geo, faces, features) {
                 // 200 m radius ("homeo Torus") whose edges are tiny arcs of huge circles;
                 // the full circle made the solid 1 km large (-> far too coarse tessellation).
                 const c = step.get(ec.args[3]);
+                // composite and offset curves: a closed one has a single vertex – points along the curve
+                if (c && (c.type === 'COMPOSITE_CURVE' || c.type === 'OFFSET_CURVE_3D')) {
+                    try {
+                        const curve = geo.curve(ec.args[3]);
+                        if (isFinite(curve.t0) && isFinite(curve.t1)) for (let k = 0; k <= 16; k++) ext(curve.eval(curve.t0 + (curve.t1 - curve.t0) * k / 16));
+                    } catch { /* unreadable curve – vertices only */ }
+                }
                 if (c && c.type === 'CIRCLE' && circles) circles.push({ id: ec.id, ref: c.args[1], r: c.args[2], pl: null });
                 if (c && c.type === 'CIRCLE') {
                     if (ec.args[1].id === ec.args[2].id) {
