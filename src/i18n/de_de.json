@@ -1756,6 +1756,11 @@
             "legendCoarse": "≤ 1/128 Dreiecke · grau = ohne LOD",
             "preparing": "Farben werden vorbereitet … (Shader, ohne Einfrieren)"
         },
+        "occlusion": {
+            "inactive": "Culling  aus – erst ab {min} Mio. Dreiecken",
+            "status": "Culling  {hidden}/{parts} Teile verdeckt · Tiefe {ms} ms",
+            "paused": " · pausiert"
+        },
         "scan": {
             "button": "Duplikate messen",
             "noModel": "Kein Modell geladen (oder Laden läuft noch)",

@@ -5,7 +5,7 @@
 // what the real drawing does – dropped, user's choice.)
 import { t } from '../i18n.js';
 import { RANGE, SELECT, CHECKBOX } from '../ui-controls.js';
-import { LOD } from '../config.js';
+import { LOD, OCCLUSION } from '../config.js';
 
 /** @param {HTMLElement} root debug display @param {{ batcher }} ctx */
 export function attachLodDebug(root, { batcher }) {
@@ -71,6 +71,13 @@ export function attachLodDebug(root, { batcher }) {
             lines.push(t('debugStats.lod.status', { built: s.built, total: s.built + lods.queued.size + s.failed, triangles: (s.triangles / 1e6).toFixed(2), seconds: (s.buildMs / 1000).toFixed(1) })
                 + (lods.busy ? t('debugStats.lod.building') : ''));
             lines.push(t('debugStats.lod.select', { cuts: s.cuts, ms: lod.selectMs.toFixed(2) }));
+        }
+        // occlusion culling (occlusion-culling.js): parts left out in the last result, or why it is off
+        const occ = batcher.occlusion;
+        if (occ) {
+            if (!occ.usable || !batcher.occModel) lines.push(t('debugStats.occlusion.inactive', { min: (OCCLUSION.minTriangles / 1e6).toFixed(1) }));
+            else lines.push(t('debugStats.occlusion.status', { hidden: batcher._occOn ? occ.stats.hidden : 0, parts: occ.stats.parts, ms: occ.stats.captureMs.toFixed(1) })
+                + (batcher._occOn ? '' : t('debugStats.occlusion.paused')));
         }
         text.textContent = lines.join('\n');
         controls.hidden = !lod.model;

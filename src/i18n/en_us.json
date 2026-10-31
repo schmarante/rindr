@@ -1756,6 +1756,11 @@
             "legendCoarse": "≤ 1/128 triangles · grey = no LOD",
             "preparing": "Preparing colours … (shaders, no freeze)"
         },
+        "occlusion": {
+            "inactive": "Culling  off – from {min} M triangles",
+            "status": "Culling  {hidden}/{parts} parts hidden · depth {ms} ms",
+            "paused": " · paused"
+        },
         "scan": {
             "button": "Measure duplicates",
             "noModel": "No model loaded (or still loading)",

@@ -175,6 +175,17 @@ export const LOD = {
     outsideFactor: 4,          // instances outside the view (only their shadows can be seen): coarser
 };
 
+// Occlusion culling (occlusion-culling.js, render-batcher.js): parts hidden behind others – or outside the view – are
+// left out of the raster image of large models (fewer draw calls and triangles; measured on a large vehicle assembly:
+// ~60 % of the triangles in view hidden, perfect culling 2.3× the frame rate). A small depth image of what is drawn,
+// the parts' bounding spheres tested against it on the GPU, the result read back a few frames later. Test: ?occlusion=0
+export const OCCLUSION = {
+    enabled: true,
+    minTriangles: 1_000_000,   // only models with at least this many triangles (counted per instance, like LOD)
+    width: 640,                // width of the depth image (px; height by the aspect) – finer = fewer gaps at thin parts
+    interval: 4,               // a new depth image at most every this many frames while the view changes
+};
+
 // Gaussian splats (.ply / .sog, splat/): memory protection for the spherical harmonics (view-dependent
 // colour). Degree 3 costs 48 bytes per splat on the GPU – large scenes are reduced to a lower degree so that
 // the SH data stays within the budget (13 M splats: degree 2). Positions/shape/colour: 32 bytes per splat.
