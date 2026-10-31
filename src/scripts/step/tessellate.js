@@ -13,6 +13,7 @@ import earcut from 'earcut';
 import polygonClipping from 'polygon-clipping';
 import cdt2d from 'cdt2d';
 import { GeometryBuilder, sub, dot, cross, len, dist, dist2, wrapNear } from './geometry.js';
+import { Ref } from './parser.js';
 
 const MAX_FACE_VERTS = 60000;
 // Edges next to a narrow feature (plan.edgeLimits): chord error at most RING_FEATURE × the width of a ring face, at most
@@ -24,6 +25,8 @@ const RING_FEATURE = 0.25, FILLET_FEATURE = 0.5, EDGE_FEATURE_FLOOR = 1 / 256;
 
 function sampleParams(curve, ta, tb, defl, ang) {
     const span = tb - ta;
+    if (curve.kind === 'composite') return compositeParams(curve, ta, tb, defl, ang);
+    if (curve.kind === 'line') return [ta, tb];
     if (curve.kind === 'conic') {
         let step = ang;
         const R = curve.radius;
@@ -80,6 +83,28 @@ function sampleParams(curve, ta, tb, defl, ang) {
         }
     };
     for (let i = 0; i < base.length - 1; i++) rec(base[i], pts[i], base[i + 1], pts[i + 1], 0);
+    return out;
+}
+
+// Composite curve: every segment sampled by its own curve (a circle as a circle, a line by its end points), the
+// pieces between the segment joins (global parameters k = 0, 1, …; past the end of a closed one again from the start)
+function compositeParams(curve, ta, tb, defl, ang) {
+    const n = curve.segs.length, dir = tb >= ta ? 1 : -1;
+    const brk = [ta];
+    for (let k = dir > 0 ? Math.floor(ta) + 1 : Math.ceil(ta) - 1; dir > 0 ? k < tb : k > tb; k += dir) brk.push(k);
+    brk.push(tb);
+    const out = [ta];
+    for (let i = 0; i < brk.length - 1; i++) {
+        const g0 = brk[i], g1 = brk[i + 1];
+        if (g0 === g1) continue;
+        const k = Math.floor((g0 + g1) / 2), seg = curve.segs[((k % n) + n) % n];
+        const s0 = seg.a + (seg.b - seg.a) * (g0 - k), s1 = seg.a + (seg.b - seg.a) * (g1 - k);
+        if (s0 !== s1) {
+            const ts = sampleParams(seg.c, s0, s1, defl, ang);
+            for (let j = 1; j < ts.length - 1; j++) out.push(g0 + (g1 - g0) * (ts[j] - s0) / (s1 - s0));
+        }
+        out.push(g1);
+    }
     return out;
 }
 
@@ -418,15 +443,54 @@ export class Tessellator {
         return out;
     }
 
+    // 3D points of a boundary curve of a CURVE_BOUNDED_SURFACE (composite curve) in its running direction, with the
+    // curve pieces between them (segs, as loopPoints). Every segment is sampled by its parent curve over the parent's
+    // trimmed range and cached like an edge – neighbouring surfaces built on the same curves get the same points.
+    boundaryPoints(ref, defl, ang) {
+        const c = this.step.get(ref);
+        if (!c || !c.args || !Array.isArray(c.args[1])) return null;
+        const out = [], segs = [];
+        for (const segRef of c.args[1]) {
+            const se = this.step.get(segRef);
+            if (!se || !se.args) continue;
+            const parent = se.args[2], pid = parent instanceof Ref ? parent.id : 0;
+            // negative keys: a separate range from the edges in the same cache (cleared together)
+            const key = -(pid * 64 + Math.round(Math.log2(defl) * 2) + 32) - 1;
+            let pts = this.edgeCache.get(key);
+            if (!pts) {
+                const { c: curve, a, b } = this.geo.bounded(parent);
+                const ts = sampleParams(curve, a, b, defl, ang);
+                pts = ts.map(t => curve.eval(t));
+                pts.ts = ts;
+                pts.f = t => curve.eval(t);
+                this.edgeCache.set(key, pts);
+            }
+            const ts = pts.ts;
+            if (se.args[1] !== false) {
+                for (let i = 0; i < pts.length - 1; i++) { out.push(pts[i]); segs.push({ f: pts.f, t0: ts[i], t1: ts[i + 1] }); }
+            } else {
+                for (let i = pts.length - 1; i > 0; i--) { out.push(pts[i]); segs.push({ f: pts.f, t0: ts[i], t1: ts[i - 1] }); }
+            }
+        }
+        out.segs = segs;
+        return out;
+    }
+
     /**
-     * Tessellates a face. Returns { positions, normals, indices } (local indices) or null.
+     * Tessellates a face (ADVANCED_FACE, FACE_SURFACE or CURVE_BOUNDED_SURFACE). Returns { positions, normals,
+     * indices } (local indices) or null. scale: factor applied to the output positions (length unit -> mm) – the
+     * face is tessellated in the file's units, defl is in those units too.
      */
-    face(faceId, defl, ang) {
+    face(faceId, defl, ang, scale = 1) {
         // negative ID = use the face reversed (void shell, ORIENTED_FACE)
         const reversed = faceId < 0;
         const f = this.step.get(Math.abs(faceId));
-        if (!f || (f.type !== 'ADVANCED_FACE' && f.type !== 'FACE_SURFACE')) return null;
-        const [, bounds, surfRef, sameSense] = f.args;
+        if (!f || (f.type !== 'ADVANCED_FACE' && f.type !== 'FACE_SURFACE' && f.type !== 'CURVE_BOUNDED_SURFACE')) return null;
+        // CURVE_BOUNDED_SURFACE(name, basis_surface, boundaries, implicit_outer): the surface is its own face, bounded
+        // by composite curves (at most one OUTER_BOUNDARY_CURVE; implicit_outer: the basis surface's own domain is the
+        // outer bound); the curves' sense is not reliable – oriented below by their area
+        const curveBounded = f.type === 'CURVE_BOUNDED_SURFACE';
+        const [, bounds, surfRef, sameSense] = curveBounded ? [null, f.args[2] || [], f.args[1], true] : f.args;
         const surf = this.geo.surface(surfRef);
         // Bounds are oriented relative to the surface itself (sameSense only); the reversal by
         // the shell (void) only affects the output (triangle winding, normals)
@@ -446,24 +510,25 @@ export class Tessellator {
         };
         for (const bRef of bounds) {
             const b = this.step.get(bRef);
-            let pts = this.loopPoints(b.args[1], defl, ang);
+            let pts = curveBounded ? this.boundaryPoints(bRef, defl, ang) : this.loopPoints(b.args[1], defl, ang);
             if (!pts) continue;
             if (pts.segs) pts.segs.forEach((sg, i) => { if (sg) link(pts[i], pts[(i + 1) % pts.length], sg.f, sg.t0, sg.t1); });
             if (!surf.isPlane && pts.segs) pts = densifyForSurface(pts, pts.segs, surf, defl, link);
             const hint = pts.uvHint || null;
-            if (b.args[2] === false) pts.reverse();
+            if (!curveBounded && b.args[2] === false) pts.reverse();
             if (loopFlip) pts.reverse();
             pts = dedupe3(pts, defl * 1e-3);
             if (pts.length < 2) continue;
             // bound degenerated to a point (pole, e.g. apex of a spline cone surface): not a bound
             if (extent3(pts) < defl * 0.01) { if (extent3(pts) > 0) discarded = true; continue; }
-            loops.push({ p3: pts, outer: b.type === 'FACE_OUTER_BOUND', hint });
+            loops.push({ p3: pts, outer: b.type === (curveBounded ? 'OUTER_BOUNDARY_CURVE' : 'FACE_OUTER_BOUND'), hint });
         }
 
         // --- Projection into parameter space ---
         const uP = surf.uPeriod, vP = surf.vPeriod;
         for (const L of loops) this.projectLoop(surf, L, uP, vP);
         const valid = loops.filter(L => L.uv.length >= 2);
+        if (curveBounded) orientCurveBounds(surf, valid, f.args[3] === true, defl, ang);
 
         let rings; // [{uv: [[u,v]], p3: [[x,y,z]|null], c: [constraint per edge i->i+1]}]
         if (valid.length === 0) {
@@ -579,7 +644,7 @@ export class Tessellator {
         for (let i = 0; i < nv; i++) {
             let p = P3[i];
             if (!p) p = P3[i] = surf.eval(U[i], Vv[i]);
-            positions[i * 3] = p[0]; positions[i * 3 + 1] = p[1]; positions[i * 3 + 2] = p[2];
+            positions[i * 3] = p[0] * scale; positions[i * 3 + 1] = p[1] * scale; positions[i * 3 + 2] = p[2] * scale;
             const n = pn || normals[i] || nrm(U[i], Vv[i]);
             outN[i * 3] = n[0] * s; outN[i * 3 + 1] = n[1] * s; outN[i * 3 + 2] = n[2] * s;
         }
@@ -658,10 +723,8 @@ export class Tessellator {
     // Creates the earcut rings (first = outer bound) incl. seam handling
     buildRings(surf, loops, uP, vP, defl, ang) {
         const wrapU = loops.filter(L => L.kU !== 0), wrapV = loops.filter(L => L.kV !== 0);
-        if (wrapU.length && wrapV.length) {
-            // Bounds wrapping in both directions (e.g. torus) – discard outer bound, rest as usual
-            throw new Error('Face with seams in u and v not supported');
-        }
+        // bounds wrapping in both directions (torus, closed in u and v)
+        if (wrapU.length && wrapV.length) return periodicRings(surf, loops, uP, vP, defl, ang);
         if (!wrapU.length && !wrapV.length) {
             let outer = loops.find(L => L.outer);
             if (!outer || loops.filter(L => L.outer).length !== 1) {
@@ -974,6 +1037,42 @@ const collinear = (a, b, c) => {
 
 // --- Ring helpers ---
 
+// Bounds of a CURVE_BOUNDED_SURFACE after the projection: the standard does not fix the sense of the boundary curves
+// (exports run outer and inner ones the same way) – oriented like face bounds, material on the left: outer bound
+// counter-clockwise in uv, holes clockwise; bounds wrapping around a periodic direction alternately, from the lower one
+// up (the band between two of them). implicit_outer: the basis surface's domain is the outer bound (only a finite,
+// non-periodic one – otherwise the curves alone).
+function orientCurveBounds(surf, loops, implicitOuter, defl, ang) {
+    const reverse = L => { L.uv.reverse(); L.p3.reverse(); L.kU = -L.kU; L.kV = -L.kV; };
+    const dom = implicitOuter && !surf.uPeriod && !surf.vPeriod && surf.domain ? surf.domain() : null;
+    if (dom && dom.every(isFinite)) {
+        const r = rectRing(surf, dom, defl, ang);
+        for (const L of loops) L.outer = false;
+        loops.unshift({ uv: r.uv, p3: r.p3, outer: true, kU: 0, kV: 0 });
+    }
+    const wrapU = loops.filter(L => L.kU), wrapV = loops.filter(L => L.kV);
+    if (wrapU.length && wrapV.length) return;   // doubly periodic: periodicRings takes the sense as it is
+    const holes = loops.filter(L => !L.kU && !L.kV);
+    if (!wrapU.length && !wrapV.length) {
+        if (!holes.length) return;
+        let outer = holes.filter(L => L.outer).length === 1 ? holes.find(L => L.outer) : null;
+        if (!outer) for (const L of holes) if (!outer || Math.abs(area2(L.uv)) > Math.abs(area2(outer.uv))) outer = L;
+        for (const L of holes) if ((area2(L.uv) > 0) !== (L === outer)) reverse(L);
+        return;
+    }
+    for (const L of holes) if (area2(L.uv) > 0) reverse(L);
+    // c = wrapping coordinate; a bound running in +u has its material above (larger v), one running in +v on the side
+    // of smaller u – the lower bound of a band runs in +u resp. −v. A single one (closed over a pole or a surface edge)
+    // keeps its sense: the side is not decidable.
+    const c = wrapU.length ? 0 : 1, o = 1 - c, W = c === 0 ? wrapU : wrapV;
+    if (W.length < 2) return;
+    W.sort((a, b) => avg(a.uv, o) - avg(b.uv, o));
+    W.forEach((L, i) => {
+        const k = c === 0 ? L.kU : -L.kV;
+        if ((k > 0) !== (i % 2 === 0)) reverse(L);
+    });
+}
+
 // Densify a bound for a curved surface: edges are sampled by their 3D shape,
 // but often do not run straight in uv space (near poles, on splines, …). A boundary segment whose
 // uv midpoint on the surface does not lie at the true curve midpoint is subdivided with true
@@ -1263,6 +1362,213 @@ function shiftInto(uv, c, center, P) {
 }
 function mkRing(uv, p3, cons) {
     return { uv, p3, c: new Array(uv.length).fill(cons) };
+}
+
+// --- Faces with seams in u and v ---
+// A surface periodic in both directions (torus, swept closed profile, spline closed in u and v) with bounds that
+// wrap around both periods. Disjoint closed curves on such a surface that do not bound a disc all wrap the same way
+// (same (kU, kV) up to the sign) – then the face is cut to one period cell (periodicCell). The one exception is a
+// face whose bounds are one u- and one v-seam of its own (full torus, each seam listed once, like the two circles of a
+// full cylinder): the whole surface, opened along both seams (seamCell).
+function periodicRings(surf, loops, uP, vP, defl, ang) {
+    const W = loops.filter(L => L.kU || L.kV), holes = loops.filter(L => !L.kU && !L.kV);
+    if (W.every(L => L.kU * W[0].kV === L.kV * W[0].kU)) return periodicCell(surf, loops, uP, vP, defl, ang);
+    const Lu = W.find(L => Math.abs(L.kU) === 1 && !L.kV), Lv = W.find(L => Math.abs(L.kV) === 1 && !L.kU);
+    if (W.length === 2 && Lu && Lv) return seamCell(Lu, Lv, holes, uP, vP);
+    throw new Error('Face with seams in u and v not supported (bounds wrap in different directions)');
+}
+
+// Point i of a wrapping bound on the unwrapped (lifted) curve: index past n = one more round, shifted by the drift
+function liftedAt(L, i, uP, vP) {
+    const n = L.uv.length, k = Math.floor(i / n), q = L.uv[i - k * n];
+    return [q[0] + k * L.kU * uP, q[1] + k * L.kV * vP];
+}
+
+// Full surface between a u-seam Lu and a v-seam Lv: the cell from their common point, Lu along the bottom (and,
+// shifted by one period, reversed along the top), Lv along the right side (reversed along the left one) – both sides
+// of each seam share their points
+function seamCell(Lu, Lv, holes, uP, vP) {
+    const nu = Lu.uv.length, nv = Lv.uv.length;
+    // common point (vertex where the two seams cross)
+    let bi = 0, bj = 0, bd = Infinity;
+    for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
+        const d = dist2(Lu.p3[i], Lv.p3[j]);
+        if (d < bd) { bd = d; bi = i; bj = j; }
+    }
+    // both seams in rising direction (+u resp. +v), from the common point once around
+    const su = Lu.kU > 0 ? 1 : -1, sv = Lv.kV > 0 ? 1 : -1;
+    const U = [], V = [];
+    for (let m = 0; m <= nu; m++) { const i = bi + su * m; U.push({ uv: liftedAt(Lu, i, uP, vP), p3: Lu.p3[((i % nu) + nu) % nu] }); }
+    for (let m = 0; m <= nv; m++) { const j = bj + sv * m; V.push({ uv: liftedAt(Lv, j, uP, vP), p3: Lv.p3[((j % nv) + nv) % nv] }); }
+    // Lv onto the same period cell as Lu's start
+    const du = Math.round((U[0].uv[0] - V[0].uv[0]) / uP) * uP, dv = Math.round((U[0].uv[1] - V[0].uv[1]) / vP) * vP;
+    for (const q of V) { q.uv[0] += du; q.uv[1] += dv; }
+    const uv = [], p3 = [];
+    const push = (q, x, y) => { uv.push([q.uv[0] + x, q.uv[1] + y]); p3.push(q.p3); };
+    for (let m = 0; m < nu; m++) push(U[m], 0, 0);    // bottom
+    for (let m = 0; m < nv; m++) push(V[m], uP, 0);   // right
+    for (let m = nu; m > 0; m--) push(U[m], 0, vP);   // top
+    for (let m = nv; m > 0; m--) push(V[m], 0, 0);    // left
+    const rings = [mkRing(uv, p3, 2)];
+    const cu = U[0].uv[0] + uP / 2, cv = U[0].uv[1] + vP / 2;
+    for (const L of holes) { shiftInto(L.uv, 0, cu, uP); shiftInto(L.uv, 1, cv, vP); rings.push(mkRing(L.uv, L.p3, 2)); }
+    return rings;
+}
+
+// Cut position (mod P) in the middle of the largest gap between the occupied intervals [a, b] (points: a = b)
+function freeCut(iv, P) {
+    const spans = iv.map(([a, b]) => { const s0 = ((a % P) + P) % P; return [s0, s0 + Math.min(b - a, P)]; }).sort((x, y) => x[0] - y[0]);
+    let end = spans[0][1];
+    for (const [, e] of spans) end = Math.max(end, e - P);
+    let best = -1, at = spans[0][0];
+    for (let i = 1; i <= spans.length; i++) {
+        const next = i < spans.length ? spans[i][0] : spans[0][0] + P;
+        if (next - end > best) { best = next - end; at = (end + next) / 2; }
+        if (i < spans.length) end = Math.max(end, spans[i][1]);
+    }
+    return at;
+}
+
+// Bounds wrapping the same way: the face cut to one period cell Q = [cu, cu + uP] × [cv, cv + vP]. Every bound is
+// followed on the unwrapped surface and split where it crosses a cell side (the pieces moved into Q), the pieces are
+// joined along the cell sides (counter-clockwise from an exit to the next entry – material on the left), holes that
+// cross no side stay rings of their own. The cell sides are seams: sampled once (seamPoints), the opposite side gets
+// the same points; an exit and the matching entry on the opposite side share their (interpolated) point.
+function periodicCell(surf, loops, uP, vP, defl, ang) {
+    const P = [uP, vP];
+    // cut lines away from the holes and between the points of the wrapping bounds; v: between the places where the
+    // bounds cross the u cut line – the cell corner lies on no bound (a bound through it ran into both ends of the
+    // perimeter, its two corner copies got different points)
+    const cut = [freeCut(loops.flatMap(L => (L.kU || L.kV) ? L.uv.map(p => [p[0], p[0]]) : [range(L.uv, 0)]), uP)];
+    const atCut = [];
+    for (const L of loops) {
+        if (!L.kU && !L.kV) { atCut.push(range(L.uv, 1)); continue; }
+        for (let i = 0; i < L.uv.length; i++) {
+            const A = liftedAt(L, i, uP, vP), B = liftedAt(L, i + 1, uP, vP);
+            const ka = Math.floor((A[0] - cut[0]) / uP), kb = Math.floor((B[0] - cut[0]) / uP);
+            for (let m = Math.min(ka, kb) + 1; m <= Math.max(ka, kb); m++) {
+                const v = A[1] + (B[1] - A[1]) * (cut[0] + m * uP - A[0]) / (B[0] - A[0]);
+                atCut.push([v, v]);
+            }
+        }
+    }
+    cut.push(freeCut(atCut.length ? atCut : loops.flatMap(L => L.uv.map(p => [p[1], p[1]])), vP));
+    const cellOf = (x, c) => Math.floor((x - cut[c]) / P[c]);
+    const local = (X, cell) => [X[0] - cell[0] * uP, X[1] - cell[1] * vP];
+    const chains = [], closed = [];
+    for (const L of loops) {
+        const n = L.uv.length, wraps = !!(L.kU || L.kV);
+        const at = i => (wraps ? liftedAt(L, i, uP, vP) : L.uv[i % n]);
+        const p3At = i => L.p3[i % n];
+        const A0 = at(0), cell = [cellOf(A0[0], 0), cellOf(A0[1], 1)];
+        const pieces = [];
+        let cur = [{ uv: local(A0, cell), p3: p3At(0) }];
+        const add = (uv, p) => { const l = cur[cur.length - 1]; if (!l || l.uv[0] !== uv[0] || l.uv[1] !== uv[1]) cur.push({ uv, p3: p }); };
+        for (let i = 0; i < n; i++) {
+            const A = at(i), B = at(i + 1), pa = p3At(i), pb = p3At(i + 1);
+            const ev = [];
+            for (let c = 0; c < 2; c++) {
+                const ca = cellOf(A[c], c), cb = cellOf(B[c], c);
+                if (ca === cb) continue;
+                const d = cb > ca ? 1 : -1;
+                for (let m = ca; m !== cb; m += d) {
+                    const x = cut[c] + (d > 0 ? m + 1 : m) * P[c];
+                    ev.push({ t: Math.min(Math.max((x - A[c]) / (B[c] - A[c]), 0), 1), c, d });
+                }
+            }
+            ev.sort((a, b) => a.t - b.t);
+            for (let e = 0; e < ev.length; e++) {
+                // a crossing through a cell corner: both sides at once
+                const group = [ev[e]];
+                while (e + 1 < ev.length && ev[e + 1].t - ev[e].t < 1e-12) group.push(ev[++e]);
+                const t = group[0].t, X = [A[0] + (B[0] - A[0]) * t, A[1] + (B[1] - A[1]) * t];
+                const X3 = t <= 0 ? pa : t >= 1 ? pb : [pa[0] + (pb[0] - pa[0]) * t, pa[1] + (pb[1] - pa[1]) * t, pa[2] + (pb[2] - pa[2]) * t];
+                const out = local(X, cell);
+                for (const g of group) out[g.c] = cut[g.c] + (g.d > 0 ? P[g.c] : 0);
+                add(out, X3);
+                pieces.push(cur);
+                for (const g of group) cell[g.c] += g.d;
+                const inn = local(X, cell);
+                for (const g of group) inn[g.c] = cut[g.c] + (g.d > 0 ? 0 : P[g.c]);
+                cur = [{ uv: inn, p3: X3 }];
+            }
+            if (i < n - 1 || pieces.length) add(local(B, cell), pb);
+        }
+        if (!pieces.length) { closed.push({ uv: cur.map(q => q.uv), p3: cur.map(q => q.p3) }); continue; }
+        // the last piece runs on into the first one (the start point, one round later, in the same cell)
+        pieces[0] = cur.concat(pieces[0].slice(1));
+        for (const q of pieces) if (q.length >= 2) chains.push(q);
+    }
+
+    // perimeter position, counter-clockwise from the corner (cu, cv)
+    const [cu, cv] = cut, per = 2 * (uP + vP);
+    const sOf = q => {
+        if (q[1] === cv && q[0] !== cu) return q[0] - cu;
+        if (q[0] === cu + uP) return uP + (q[1] - cv);
+        if (q[1] === cv + vP) return uP + vP + (cu + uP - q[0]);
+        return 2 * uP + vP + (cv + vP - q[1]);
+    };
+    // nodes on the cell sides: one corner point, the seams sampled once and shared by opposite sides
+    const corner = surf.eval(cu, cv);
+    const nodes = [[0, [cu, cv], corner], [uP, [cu + uP, cv], corner], [uP + vP, [cu + uP, cv + vP], corner], [2 * uP + vP, [cu, cv + vP], corner]];
+    const sideU = seamPoints(surf, [cu, cv], corner, [cu + uP, cv], corner, defl, ang);
+    sideU.uv.forEach((w, i) => { nodes.push([w[0] - cu, [w[0], cv], sideU.p3[i]]); nodes.push([uP + vP + (cu + uP - w[0]), [w[0], cv + vP], sideU.p3[i]]); });
+    const sideV = seamPoints(surf, [cu, cv], corner, [cu, cv + vP], corner, defl, ang);
+    sideV.uv.forEach((w, i) => { nodes.push([uP + (w[1] - cv), [cu + uP, w[1]], sideV.p3[i]]); nodes.push([2 * uP + vP + (cv + vP - w[1]), [cu, w[1]], sideV.p3[i]]); });
+    nodes.sort((a, b) => a[0] - b[0]);
+    // nodes strictly after s0 up to s0 + d, counter-clockwise
+    const ccwNodes = (s0, d, uv, p3) => {
+        const sel = [];
+        for (const nd of nodes) { const x = ((nd[0] - s0) % per + per) % per; if (x > 1e-12 * per && x < d - 1e-12 * per) sel.push([x, nd]); }
+        sel.sort((a, b) => a[0] - b[0]);
+        for (const [, nd] of sel) { uv.push(nd[1]); p3.push(nd[2]); }
+    };
+    const rings = [];
+    const sIn = chains.map(ch => sOf(ch[0].uv)), sOut = chains.map(ch => sOf(ch[ch.length - 1].uv));
+    const used = new Array(chains.length).fill(false);
+    for (let k0 = 0; k0 < chains.length; k0++) {
+        if (used[k0]) continue;
+        const uv = [], p3 = [];
+        let k = k0;
+        for (let guard = 0; guard <= chains.length; guard++) {
+            used[k] = true;
+            for (const q of chains[k]) { uv.push(q.uv); p3.push(q.p3); }
+            let next = -1, bd = Infinity;
+            for (let j = 0; j < chains.length; j++) {
+                if (used[j] && j !== k0) continue;
+                const d = ((sIn[j] - sOut[k]) % per + per) % per;
+                if (d < bd) { bd = d; next = j; }
+            }
+            if (next < 0) break;
+            ccwNodes(sOut[k], bd, uv, p3);
+            if (next === k0) break;
+            k = next;
+        }
+        rings.push({ uv, p3 });
+    }
+    const all = [...rings, ...closed];
+    let outers = all.filter(r => area2(r.uv) > 0);
+    const inner = all.filter(r => !(area2(r.uv) > 0));
+    if (!outers.length) {
+        // only holes: the whole cell is the outer bound
+        const uv = [], p3 = [];
+        ccwNodes(-1e-9 * per, per, uv, p3);
+        outers = [{ uv, p3 }];
+    }
+    const polys = outers.map(o => [mkRing(o.uv, o.p3, 2)]);
+    for (const h of inner) {
+        const X = [], Y = [];
+        const k = outers.findIndex(o => {
+            X.length = Y.length = 0;
+            for (const q of o.uv) { X.push(q[0]); Y.push(q[1]); }
+            return windingAt(X, Y, 0, X.length, h.uv[0][0], h.uv[0][1]) !== 0;
+        });
+        polys[k < 0 ? 0 : k].push(mkRing(h.uv, h.p3, 2));
+    }
+    if (polys.length === 1) return polys[0];
+    const out = polys[0];
+    out.multi = polys;
+    return out;
 }
 
 // Band (opened outer ring between cut and cut+P) minus holes -> polygons [outer, ...holes]

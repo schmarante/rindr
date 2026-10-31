@@ -2,7 +2,7 @@
 // Messages:
 //   {type:'index', bytes, shared}          -> index + product structure (one worker only)
 //   {type:'init', bytes, offsets, angleUnit, edgeLimits} -> initialise worker with the finished index
-//   {type:'faces', job, faces, defl, ang}  -> tessellate faces
+//   {type:'faces', job, faces, defl, ang, scale} -> tessellate faces (scale per face: length unit -> mm, optional)
 //   {type:'bvh', positions, index, shape}  -> build BVH (three-mesh-bvh, SAH) for one geometry;
 //                                             shape: true → also its fingerprint (shape-match.js, instancing)
 //   {type:'trim'}                          -> clear all caches (after the import, saves memory)
@@ -42,14 +42,14 @@ function trimCaches(all = false) {
     if (all || tess.edgeCache.size > EDGE_CACHE_LIMIT) tess.edgeCache.clear();
 }
 
-function tessellateFaces({ job, faces, defl, ang }) {
+function tessellateFaces({ job, faces, defl, ang, scale }) {
     const results = [];
     let nv = 0, ni = 0;
     const errors = [];
     for (let i = 0; i < faces.length; i++) {
         let r = null;
         try {
-            r = tess.face(faces[i], defl[i], ang);
+            r = tess.face(faces[i], defl[i], ang, scale ? scale[i] : 1);
         } catch (err) {
             errors.push(`#${faces[i]}: ${err.message}`);
         }

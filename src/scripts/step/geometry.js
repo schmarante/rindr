@@ -293,6 +293,98 @@ export class BSplineCurve {
     }
 }
 
+// Offset curve (ISO 10303-42): C(t) + d · (V × T) / |V × T| with T the tangent of the basis curve and V the reference
+// direction (offset_curve_3d); in the plane (offset_curve_2d) V = z – the offset lies to the left of the curve for d > 0
+class OffsetCurve {
+    constructor(base, d, V) {
+        this.b = base; this.d = d; this.V = normalize(V || [0, 0, 1]); this.kind = 'offset';
+        this.t0 = base.t0; this.t1 = base.t1; this.period = base.period; this.closed = !!base.closed;
+        this.U = base.U; this.p = base.p;
+        // derivative step: relative to the parameter range (conics: radians, splines: knot range)
+        this.h = 1e-7 * (isFinite(base.t1 - base.t0) ? Math.max(base.t1 - base.t0, 1e-9) : 1);
+    }
+    eval(t) {
+        const q = this.b.eval(t), n = cross(this.V, this.b.d1(t)), l = len(n);
+        return l > 1e-300 ? madd2(q, n, this.d / l, n, 0) : q;
+    }
+    d1(t) {
+        let a = t - this.h, b = t + this.h;
+        if (!this.period && isFinite(this.t0)) { a = Math.max(a, this.t0); b = Math.min(b, this.t1); }
+        return scale(sub(this.eval(b), this.eval(a)), 1 / (b - a));
+    }
+    closest(P, guess) { return newtonCurve(this, P, guess ?? this.b.closest(P)); }
+}
+
+// Curve on a surface given by a 2D curve in its parameter space (PCURVE): S(c(t))
+class PCurve {
+    constructor(surf, c2, fu = 1, fv = 1) {
+        this.s = surf; this.c = c2; this.kind = 'pcurve'; this.fu = fu; this.fv = fv;
+        this.t0 = c2.t0; this.t1 = c2.t1; this.period = c2.period; this.closed = !!c2.closed;
+        this.U = c2.U; this.p = c2.p;
+        this.samples = null;
+    }
+    eval(t) { const q = this.c.eval(t); return this.s.eval(q[0] * this.fu, q[1] * this.fv); }
+    d1(t) {
+        const q = this.c.eval(t), dq = this.c.d1(t), e = this.s.evalD(q[0] * this.fu, q[1] * this.fv);
+        return madd2([0, 0, 0], e.du, dq[0] * this.fu, e.dv, dq[1] * this.fv);
+    }
+    closest(P, guess) {
+        if (guess === undefined || guess === null) {
+            if (!isFinite(this.t0) || !isFinite(this.t1)) return newtonCurve(this, P, 0);
+            if (!this.samples) {
+                this.samples = [];
+                for (let i = 0; i <= 64; i++) { const t = this.t0 + (this.t1 - this.t0) * i / 64; this.samples.push([t, this.eval(t)]); }
+            }
+            let bd = Infinity;
+            for (const [t, q] of this.samples) { const d = dist2(P, q); if (d < bd) { bd = d; guess = t; } }
+        }
+        return newtonCurve(this, P, guess);
+    }
+}
+
+// Composite curve (COMPOSITE_CURVE and its subtypes BOUNDARY_CURVE, OUTER_BOUNDARY_CURVE …): segments { c, a, b } in
+// running direction, each a bounded piece [a → b] of its parent curve. Global parameter: segment k covers [k, k + 1]
+// (linear in the segment's own parameter); a closed composite curve is periodic with the segment count.
+export class CompositeCurve {
+    constructor(segs) {
+        this.segs = segs; this.kind = 'composite';
+        this.t0 = 0; this.t1 = segs.length; this.period = 0;
+        const a = this.eval(0), b = this.eval(segs.length);
+        if (dist(a, b) < 1e-9 * (1 + len(a) + extentOf(segs.map(s => s.c.eval(s.a))))) { this.period = segs.length; this.closed = true; }
+    }
+    // segment index and its own parameter for the global parameter t
+    local(t) {
+        const n = this.segs.length;
+        if (this.period) t = ((t % n) + n) % n;
+        const k = Math.min(Math.max(Math.floor(t), 0), n - 1), s = this.segs[k];
+        return [k, s.a + (s.b - s.a) * (t - k)];
+    }
+    eval(t) { const [k, u] = this.local(t); return this.segs[k].c.eval(u); }
+    d1(t) { const [k, u] = this.local(t), s = this.segs[k]; return scale(s.c.d1(u), s.b - s.a); }
+    closest(P) {
+        let best = 0, bd = Infinity;
+        this.segs.forEach((s, k) => {
+            const lo = Math.min(s.a, s.b), hi = Math.max(s.a, s.b);
+            const cands = [s.a, s.b];
+            let u = s.c.closest(P);
+            if (isFinite(u)) {
+                if (s.c.period) u = wrapNear(u, (lo + hi) / 2, s.c.period);
+                cands.push(Math.min(Math.max(u, lo), hi));
+            }
+            for (const x of cands) {
+                const d = dist2(P, s.c.eval(x));
+                if (d < bd) { bd = d; best = s.b !== s.a ? k + (x - s.a) / (s.b - s.a) : k; }
+            }
+        });
+        return best;
+    }
+}
+function extentOf(pts) {
+    let e = 0;
+    for (const p of pts) e = Math.max(e, dist(p, pts[0]));
+    return e;
+}
+
 // Gauss-Newton: minimizes |C(t) - P|
 function newtonCurve(c, P, t) {
     for (let it = 0; it < 30; it++) {
@@ -651,7 +743,7 @@ class BSplineSurface extends SurfaceBase {
 // loops all collapse onto one side of the curve's parameter range)
 function curvePeriod(curve) {
     if (curve.period) return curve.period;
-    if (curve.kind !== 'spline' || !(curve.t1 > curve.t0)) return 0;
+    if (!(curve.kind === 'spline' || curve.kind === 'offset' || curve.kind === 'pcurve') || !(curve.t1 > curve.t0)) return 0;
     const a = curve.eval(curve.t0), b = curve.eval(curve.t1);
     return dist(a, b) < 1e-9 * (1 + len(a) + dist(a, curve.eval((curve.t0 + curve.t1) / 2))) ? curve.t1 - curve.t0 : 0;
 }
@@ -813,11 +905,75 @@ export class GeometryBuilder {
             case 'SURFACE_CURVE': case 'SEAM_CURVE': case 'BOUNDED_SURFACE_CURVE': case 'INTERSECTION_CURVE':
                 return this.curve(a[1]);
             case 'TRIMMED_CURVE': return this.curve(a[1]);
+            case 'OFFSET_CURVE_3D': return new OffsetCurve(this.curve(a[1]), a[2], this.direction(a[4]));
+            case 'OFFSET_CURVE_2D': return new OffsetCurve(this.curve(a[1]), a[2], [0, 0, 1]);
+            case 'COMPOSITE_CURVE': case 'COMPOSITE_CURVE_ON_SURFACE': case 'BOUNDARY_CURVE': case 'OUTER_BOUNDARY_CURVE':
+                return new CompositeCurve(a[1].map(r => this.segment(r)));
+            case 'PCURVE': {
+                // (name, basis_surface, reference_to_curve: DEFINITIONAL_REPRESENTATION with the 2D curve as its item)
+                const rep = this.step.get(a[2]);
+                const items = rep && (partArgs(rep, 'DEFINITIONAL_REPRESENTATION') || partArgs(rep, 'REPRESENTATION') || rep.args);
+                if (!items || !Array.isArray(items[1]) || !items[1].length) throw new Error('PCURVE without a curve');
+                // angular surface parameters are written in the angle unit (the surfaces here work in radians)
+                const st = this.step.typeOf(a[1]);
+                const au = /^(CYLINDRICAL|CONICAL|SPHERICAL|TOROIDAL|DEGENERATE_TOROIDAL)_SURFACE$|^SURFACE_OF_REVOLUTION$/.test(st) ? this.angleUnit : 1;
+                const av = /^(SPHERICAL|TOROIDAL|DEGENERATE_TOROIDAL)_SURFACE$/.test(st) ? this.angleUnit : 1;
+                return new PCurve(this.surface(a[1]), this.curve(items[1][0]), au, av);
+            }
             case 'B_SPLINE_CURVE_WITH_KNOTS': case 'BEZIER_CURVE': case 'UNIFORM_CURVE': case 'QUASI_UNIFORM_CURVE':
             case 'COMPLEX':
                 return this.buildBSplineCurve(e);
         }
         throw new Error('Curve type not supported: ' + e.type);
+    }
+
+    // Segment of a composite curve: COMPOSITE_CURVE_SEGMENT(transition, same_sense, parent_curve) – also the
+    // reparametrised one (its own parameter length does not matter here) – as { c, a, b } in running direction
+    segment(ref) {
+        const e = this.step.get(ref);
+        if (!e || !e.args) throw new Error('Composite curve segment missing');
+        const s = this.bounded(e.args[2]);
+        return e.args[1] === false ? { c: s.c, a: s.b, b: s.a } : s;
+    }
+
+    // A bounded curve as { c, a, b }: the curve and its parameter range in running direction. TRIMMED_CURVE(name,
+    // basis, trim_1, trim_2, sense_agreement, master_representation): trimming points or parameters (conics in the
+    // angle unit); B-splines, polylines and composite curves over their whole range, closed conics once around.
+    bounded(ref) {
+        const e = this.step.get(ref);
+        if (!e) throw new Error('Curve missing');
+        if (e.type === 'SURFACE_CURVE' || e.type === 'SEAM_CURVE' || e.type === 'BOUNDED_SURFACE_CURVE' || e.type === 'INTERSECTION_CURVE') return this.bounded(e.args[1]);
+        if (e.type === 'TRIMMED_CURVE') {
+            const [, basis, trim1, trim2, sense, master] = e.args;
+            const c = this.curve(basis);
+            const angular = c.kind === 'conic';
+            const prefer = master && master.name;
+            const value = sel => {
+                let pt = null, par = null;
+                for (const x of Array.isArray(sel) ? sel : [sel]) {
+                    if (x instanceof Ref) pt = x;
+                    else if (typeof x === 'number') par = x;
+                    else if (x && x.args && typeof x.args[0] === 'number') par = x.args[0];
+                }
+                if (par !== null && angular) par *= this.angleUnit;
+                if (pt && (par === null || prefer !== 'PARAMETER')) {
+                    try { return c.closest(this.point(pt)); } catch { /* not a point */ }
+                }
+                if (par !== null) return par;
+                throw new Error('Trimmed curve without a usable trim');
+            };
+            let a = value(trim1), b = value(trim2);
+            const P = c.period;
+            if (P) {
+                if (sense !== false) { b = a + (((b - a) % P) + P) % P; if (b - a < 1e-12 * P) b = a + P; }
+                else { b = a - (((a - b) % P) + P) % P; if (a - b < 1e-12 * P) b = a - P; }
+            }
+            return { c, a, b };
+        }
+        const c = this.curve(ref);
+        if (c.period && (c.kind === 'conic' || !isFinite(c.t1))) return { c, a: 0, b: c.period };
+        if (isFinite(c.t0) && isFinite(c.t1)) return { c, a: c.t0, b: c.t1 };
+        throw new Error('Unbounded curve in a composite curve: ' + e.type);
     }
 
     buildBSplineCurve(e) {
@@ -864,6 +1020,8 @@ export class GeometryBuilder {
             }
             case 'OFFSET_SURFACE': return new OffsetSurface(this.surface(a[1]), a[2]);
             case 'RECTANGULAR_TRIMMED_SURFACE': return this.surface(a[1]);
+            // as the geometry of a face (bounds from the face): its basis surface
+            case 'CURVE_BOUNDED_SURFACE': return this.surface(a[1]);
             case 'B_SPLINE_SURFACE_WITH_KNOTS': case 'BEZIER_SURFACE': case 'UNIFORM_SURFACE': case 'QUASI_UNIFORM_SURFACE':
             case 'COMPLEX':
                 return this.buildBSplineSurface(e);

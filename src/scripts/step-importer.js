@@ -177,6 +177,8 @@ async function prepare(source, onStatus) {
         debugLog(`[STEP] Index + structure: ${res.entityCount} entities, ${res.plan.solids.length} solids, ` +
             `${res.plan.instances.length} instances in ${(performance.now() - t0).toFixed(0)} ms ` +
             `(${pool.workers.length} workers, ${shared ? 'SharedArrayBuffer' : 'copy per worker'})`);
+        const lengthUnits = [...new Set(res.plan.solids.map(s => s.unit || 1))];
+        if (lengthUnits.some(u => u !== 1)) debugLog(`[STEP] Length units (mm per file unit): ${lengthUnits.join(', ')} – scaled to mm`);
         // default names of unnamed nodes come from the worker as autoName (no i18n there)
         for (const node of res.plan.nodes) {
             if (node.autoName) node.name = t(`import.step.autoName.${node.autoName[0]}`, { number: node.autoName[1] });
@@ -324,10 +326,12 @@ export async function tessellateStep(content, quality, onStatus = () => {}, { bv
     plan.solids.forEach((s, si) => {
         if (!wanted(si)) return;
         const preset = presetOf(si);
+        // tolerance in the file's length unit (s.size too), positions come back scaled to mm (s.unit)
         const defl = Math.max(preset.rel * s.size, 1e-6);
         for (let i = 0; i < s.faces.length; i += FACES_PER_JOB) {
             const faces = Int32Array.from(s.faces.slice(i, i + FACES_PER_JOB));
-            jobs.push({ si, start: i, faces, defl: new Float64Array(faces.length).fill(defl), ang: preset.ang });
+            const scale = s.unit && s.unit !== 1 ? new Float64Array(faces.length).fill(s.unit) : null;
+            jobs.push({ si, start: i, faces, defl: new Float64Array(faces.length).fill(defl), ang: preset.ang, scale });
         }
         totalFaces += s.faces.length;
     });
@@ -369,7 +373,7 @@ export async function tessellateStep(content, quality, onStatus = () => {}, { bv
         if (instancer) {
             // the same tessellation level is required (a coarse duplicate must not stand in for a fine part)
             const preset = presetOf(si);
-            const defl = Math.max(preset.rel * plan.solids[si].size, 1e-6);
+            const defl = Math.max(preset.rel * plan.solids[si].size, 1e-6) * (plan.solids[si].unit || 1);   // in mm, like the geometry
             for (const g of solidGroups[si]) instancer.add(g, `${preset.rel}/${preset.ang}`, defl);
         }
         emitSolid(si);
@@ -426,7 +430,7 @@ export async function tessellateStep(content, quality, onStatus = () => {}, { bv
             if (bvhQueue.length) return runBVH(w, bvhQueue.shift()).then(status);
             if (next >= jobs.length) return null;
             const job = jobs[next++];
-            return pool.request(w, { type: 'faces', job: 0, faces: job.faces, defl: job.defl, ang: job.ang }).then(r => handleFaces(job, r));
+            return pool.request(w, { type: 'faces', job: 0, faces: job.faces, defl: job.defl, ang: job.ang, scale: job.scale }).then(r => handleFaces(job, r));
         };
         try {
             for (;;) {
