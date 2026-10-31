@@ -42,6 +42,13 @@ const SLOTS = {
     // strength + direction combined in material-graph.js (evaluateGraph: RG direction, B strength)
     anisotropyMap: { map: 'anisotropyMap' },
     coatAnisotropyMap: { map: 'coatAnisotropyMap' },
+    // OpenPBR coat colour / IOR / darkening (RindrMaterial, values set below – setCoat), transmission colour (= the
+    // attenuation colour) and depth (factor on the attenuation distance)
+    coatColor: { map: 'coatColorMap', srgb: true },
+    coatIor: { map: 'coatIorMap' },
+    coatDarkening: { map: 'coatDarkeningMap' },
+    transmissionColor: { prop: 'attenuationColor', map: 'attenuationColorMap', unit: '#ffffff', srgb: true },
+    transmissionDepth: { map: 'attenuationDistanceMap' },
 };
 // relief inputs: baked from a height into a normal map
 const RELIEF = new Set(['height', 'coatHeight']);
@@ -127,6 +134,19 @@ export class GraphApplier {
             const direction = cMap ? (cMap.direction ? 0 : null) : cConst.direction;
             material.setCoatAnisotropy(strength ?? material.coatAnisotropy, direction !== null ? direction * Math.PI : material.coatAnisotropyRotation);
         }
+        // coat colour / IOR / darkening (RindrMaterial.setCoat): a constant straight into the material; a baked map
+        // multiplies a unit value (colour white, darkening 1) or carries the value itself (IOR: 0..1 = 1.0..3.0);
+        // not linked: the material's parameters
+        if (material.setCoat) {
+            const value = (key, unit, param) => { const r = result[key]; return !r ? param : r.kind === 'const' ? r.value : unit; };
+            const ior = result.coatIor?.kind === 'const' ? 1 + 2 * result.coatIor.value : params.clearcoatIor;
+            material.setCoat(value('coatColor', '#ffffff', params.clearcoatColor), ior, value('coatDarkening', 1, params.clearcoatDarkening),
+                material.coatAnisotropy, THREE.MathUtils.radToDeg(material.coatAnisotropyRotation));
+        }
+        // transmission depth: a factor on the material's attenuation distance – a constant here, a map in the shaders
+        // (material-manager.js set the distance before; thin walled = Infinity stays)
+        const depth = result.transmissionDepth;
+        if (depth?.kind === 'const' && !(params.thinWalled > 0)) material.attenuationDistance = params.attenuationDistance * Math.max(depth.value, 1e-3);
         material.alphaTest = result.alpha?.kind === 'tsl' ? 0.5 : def.render?.alphaTest || 0;
         material.userData.graphUvMode = !!result.domain;
         for (const tex of Object.values(maps)) place(tex, entry, result);

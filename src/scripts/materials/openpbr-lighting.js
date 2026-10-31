@@ -7,14 +7,15 @@
 //  - coat_ior: the coat's reflectance from its IOR instead of three's fixed 0.04 (direct, environment, and the
 //    Fresnel share the coat takes from what lies below)
 //  - coat_roughness_anisotropy + geometry_coat_tangent: the coat's direct lobe anisotropic along its own tangent
-//    (OpenPBR's mapping, like the path tracer), also per pixel (coatAnisotropyMap – swirl marks); the coat's
-//    environment stays isotropic (three bends no coat normal)
+//    (OpenPBR's mapping, like the path tracer), also per pixel (coatAnisotropyMap – swirl marks); its environment
+//    along a bent normal (see the EnvironmentNode hook below – before 31.10.2026 isotropic)
 //  - fuzz: OpenPBR's lobe (Zeltner et al. 2022, see fuzzLobe) instead of three's Charlie sheen, on top of everything
 //    (three puts its sheen under the coat): what lies below × (1 − weight × E(view)), E without the fuzz colour
 import * as THREE from 'three/webgpu';
 import { float, vec3, mix, exp, normalView, positionViewDirection, clearcoatNormalView, diffuseColor,
     metalness, clearcoat, clearcoatRoughness, tangentView, bitangentView, materialSpecularColor, F_Schlick, EnvironmentBRDF,
-    D_GGX_Anisotropic, V_GGX_SmithCorrelated_Anisotropic, sheen, sheenRoughness, materialReference, materialClearcoatRoughness } from 'three/tsl';
+    D_GGX_Anisotropic, V_GGX_SmithCorrelated_Anisotropic, sheen, sheenRoughness, materialReference, materialClearcoatRoughness,
+    clearcoatRoughness as coatRoughnessProperty, isolate, materialEnvIntensity, pow4, cameraWorldMatrix } from 'three/tsl';
 
 const COAT_F0_THREE = 0.04;   // three's clearcoatF0
 const F82_MU = 1 / 7;
@@ -61,6 +62,59 @@ function fuzzLobe(l, mu, r) {
     return wz.max(0).mul(1 / Math.PI).mul(k).mul(k);
 }
 
+/**
+ * The coat's tangent frame in view space and its anisotropy strength: the surface tangent turned by the coat's
+ * rotation, per pixel turned and scaled by the coat anisotropy map (RG direction, B strength).
+ * @param {{ aniso: Node, rot: Node, map: Node|null }} coat  the material's values (uniforms) and its map (texture node)
+ */
+export function coatFrame({ aniso, rot, map }) {
+    const n = clearcoatNormalView;
+    let a = aniso.clamp(0, 1);
+    let rc = rot.cos(), rs = rot.sin();
+    if (map) {
+        const md = map.rg.mul(2).sub(1);
+        const d = md.div(md.length().max(1e-5));
+        a = a.mul(map.b);
+        [rc, rs] = [rc.mul(d.x).sub(rs.mul(d.y)), rs.mul(d.x).add(rc.mul(d.y))];
+    }
+    // kept orthogonal to the coat normal (tangentView/bitangentView directly – three's TBNViewMatrix is a shared
+    // variable declared where it is first used)
+    const dir = tangentView.mul(rc).add(bitangentView.mul(rs));
+    const tRaw = dir.sub(n.mul(n.dot(dir)));
+    const t = tRaw.length().greaterThan(1e-5).select(tRaw, n.cross(vec3(0, 0, 1)).add(vec3(0.001, 0, 0))).normalize();
+    return { t, b: n.cross(t), a };
+}
+
+// The coat's environment with anisotropy (raster): three samples the coat's radiance along the coat normal with one
+// roughness – isotropic. A material that returns a normal from coatEnvironmentNormal() (RindrMaterial: coat
+// anisotropy) gets its coat radiance along that bent normal instead – Filament's approximation of an anisotropic lobe,
+// as three does it for the base layer (bentNormalView). three's own coat sample is skipped for it (the lighting
+// model's clearcoatRadiance hidden during the original setup), everything else of the environment stays three's.
+const environmentSetup = THREE.EnvironmentNode.prototype.setup;
+THREE.EnvironmentNode.prototype.setup = function (builder) {
+    const lightingModel = builder.context.lightingModel;
+    const radiance = lightingModel?.clearcoatRadiance;
+    // shielded from the environment's sampling context (its getUV would also reach the coat anisotropy map's texture
+    // inside the normal – endless recursion), like three's clearcoatNormalView
+    const bent = radiance ? builder.material?.coatEnvironmentNormal?.()?.context({ getUV: null, getTextureLevel: null }) : null;
+    if (!bent) return environmentSetup.call(this, builder);
+    lightingModel.clearcoatRadiance = null;
+    try {
+        environmentSetup.call(this, builder);
+    } finally {
+        lightingModel.clearcoatRadiance = radiance;
+    }
+    // the environment after three's setup: its PMREM for a texture, otherwise the node itself
+    const env = this._pmremNode ?? this.envNode;
+    let dir = null;
+    const context = {
+        // the reflected view direction, towards the normal on rough surfaces (as three's radiance context)
+        getUV: () => (dir ??= pow4(coatRoughnessProperty).mix(positionViewDirection.negate().reflect(bent), bent).normalize().transformDirection(cameraWorldMatrix)),
+        getTextureLevel: () => coatRoughnessProperty,
+    };
+    radiance.addAssign(isolate(env.context(context).mul(materialEnvIntensity)));
+};
+
 export class OpenPbrLightingModel extends THREE.PhysicalLightingModel {
     /** material: a RindrMaterial (its flags f82 / coatExtra pick the terms, its uniforms carry the values) */
     constructor(material, ...flags) {
@@ -69,7 +123,7 @@ export class OpenPbrLightingModel extends THREE.PhysicalLightingModel {
         this.fuzz = !!flags[1];
         this.f82 = material.f82;
         this.coatExtra = material.coatExtra && flags[0];   // flags[0]: clearcoat
-        this.coatF0 = vec3(material._coatKs);
+        this.coatF0 = vec3(material.coatReflectance().ks);   // per pixel with a coat IOR map
         this.coatAniso = material._coatAniso;
         this.coatRot = material._coatRot;
         // per pixel: RG = direction in the tangent frame (turns the material's rotation), B = strength (multiplies it)
@@ -112,25 +166,12 @@ export class OpenPbrLightingModel extends THREE.PhysicalLightingModel {
         const n = clearcoatNormalView, v = positionViewDirection, l = lightDirection;
         const h = l.add(v).normalize();
         const nl = n.dot(l).clamp(), nv = n.dot(v).clamp(1e-4, 1), nh = n.dot(h).clamp(), vh = v.dot(h).clamp();
-        let a = this.coatAniso.clamp(0, 1);
-        let rc = this.coatRot.cos(), rs = this.coatRot.sin();
-        if (this.coatMap) {
-            const md = this.coatMap.rg.mul(2).sub(1);
-            const d = md.div(md.length().max(1e-5));
-            a = a.mul(this.coatMap.b);
-            [rc, rs] = [rc.mul(d.x).sub(rs.mul(d.y)), rs.mul(d.x).add(rc.mul(d.y))];
-        }
+        const { t, b, a } = coatFrame({ aniso: this.coatAniso, rot: this.coatRot, map: this.coatMap });
         // with a coat anisotropy map the property holds the roughness along the scratches (RindrMaterial.setupVariants
         // – for the environment); the lobe takes the material's own
         const r2 = (this.coatMap ? materialClearcoatRoughness.clamp(0.0525, 1) : clearcoatRoughness).pow2();
         const at = r2.mul(float(2).div(float(1).sub(a).pow2().add(1)).sqrt()).min(1).max(1e-4);
         const ab = float(1).sub(a).mul(at).max(1e-4);
-        // tangent frame of the coat: the surface tangent turned by the coat's rotation, kept orthogonal to its normal
-        // (tangentView/bitangentView directly – three's TBNViewMatrix is a shared variable declared where it is first used)
-        const dir = tangentView.mul(rc).add(bitangentView.mul(rs));
-        const tRaw = dir.sub(n.mul(n.dot(dir)));
-        const t = tRaw.length().greaterThan(1e-5).select(tRaw, n.cross(vec3(0, 0, 1)).add(vec3(0.001, 0, 0))).normalize();
-        const b = n.cross(t);
         const D = D_GGX_Anisotropic({ alphaT: at, alphaB: ab, dotNH: nh, dotTH: t.dot(h), dotBH: b.dot(h) });
         const V = V_GGX_SmithCorrelated_Anisotropic({ alphaT: at, alphaB: ab, dotTV: t.dot(v), dotBV: b.dot(v), dotTL: t.dot(l), dotBL: b.dot(l), dotNV: nv, dotNL: nl });
         const F = F_Schlick({ f0: this.coatF0, f90: float(1), dotVH: vh });

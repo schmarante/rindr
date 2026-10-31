@@ -600,7 +600,12 @@
                     "coatHeight": "Lack-Relief (Höhe)",
                     "alpha": "Ausschnitt (Alpha)",
                     "coatAnisotropy": "Lack-Anisotropie",
-                    "coatAnisotropyDirection": "Lack-Richtung"
+                    "coatAnisotropyDirection": "Lack-Richtung",
+                    "coatColor": "Lackfarbe",
+                    "coatIor": "Lack-IOR (0–1 = 1,0–3,0)",
+                    "coatDarkening": "Abdunkeln unter dem Lack",
+                    "transmissionColor": "Transmissionsfarbe",
+                    "transmissionDepth": "Transmissionstiefe (Faktor)"
                 },
                 "params": {
                     "reliefStrength": "Relief-Stärke",

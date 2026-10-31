@@ -63,6 +63,14 @@ const EXPORT_MAPS = [
     { input: 'geometry_opacity', prop: 'alphaMap', kind: 'float', channel: 1 },
     { input: 'geometry_normal', prop: 'normalMap', kind: 'normal' },
     { input: 'geometry_coat_normal', prop: 'clearcoatNormalMap', kind: 'normal' },
+    // RINDR's own maps (RindrMaterial, node graph): factors like three's – the coat IOR map carries 0..1 = 1.0..3.0
+    // (remap: offset, scale) instead of a factor
+    { input: 'base_diffuse_roughness', prop: 'diffuseRoughnessMap', kind: 'float', channel: 0 },
+    { input: 'coat_color', prop: 'coatColorMap', kind: 'color' },
+    { input: 'coat_darkening', prop: 'coatDarkeningMap', kind: 'float', channel: 0 },
+    { input: 'coat_ior', prop: 'coatIorMap', kind: 'float', channel: 0, remap: [1, 2] },
+    { input: 'transmission_color', prop: 'attenuationColorMap', kind: 'color' },
+    { input: 'transmission_depth', prop: 'attenuationDistanceMap', kind: 'float', channel: 0 },
 ];
 
 // Anisotropic roughness: RINDR (three.js / glTF, also the path tracer's base) α_b = r², α_t = mix(r², 1, a²);
@@ -212,7 +220,7 @@ export async function exportMaterialPackage({ def, material: m }, { preview = nu
         }
         files.push({ name: file, data: await pngBytes(data, px.w, px.h) });
         maps[slot.prop] = file;
-        textured[slot.input] = { file, kind: slot.kind };
+        textured[slot.input] = { file, kind: slot.kind, remap: slot.remap };
     }
     // anisotropy map of the node graph (RG direction, B strength): roughness and strength converted per pixel to
     // OpenPBR's mapping (both depend on the local strength – roughness from its map, if any, sampled nearest), the
@@ -307,6 +315,19 @@ function writeMtlx({ name, label, values, textured, tileSize, clamp, normalScale
         if (tex) {
             const node = ident(`${input}_image`);
             image(node, type, tex.file, tex.kind === 'color' ? 'srgb_texture' : null);
+            if (tex.remap) {
+                // the map carries the value itself: offset + scale × picture
+                const mul = ident(`${input}_scale`), add = ident(`${input}_offset`);
+                nodes.push(`  <multiply name="${mul}" type="${type}">
+    <input name="in1" type="${type}" nodename="${node}" />
+    <input name="in2" type="${type}" value="${fmt(tex.remap[1])}" />
+  </multiply>`, `  <add name="${add}" type="${type}">
+    <input name="in1" type="${type}" nodename="${mul}" />
+    <input name="in2" type="${type}" value="${fmt(tex.remap[0])}" />
+  </add>`);
+                inputs.push(`    <input name="${input}" type="${type}" nodename="${add}" />`);
+                continue;
+            }
             // three.js multiplies map × value: the factor as a multiply node (not for a neutral factor)
             const neutral = type === 'color3' ? isWhite(v) : Math.abs(v - 1) < 1e-4;
             if (neutral || input === 'emission_color' && v.getHex() === 0) inputs.push(`    <input name="${input}" type="${type}" nodename="${node}" />`);
@@ -562,7 +583,7 @@ async function fromPackage(json, read) {
     for (const [prop, file] of Object.entries(json.maps || {})) {
         if (m.graph && !wanted.has(prop)) continue;
         const blob = await read(file);
-        if (blob) maps[prop] = await loadTexture(blob, { srgb: ['map', 'emissiveMap', 'sheenColorMap', 'specularColorMap'].includes(prop), name: baseName(file) });
+        if (blob) maps[prop] = await loadTexture(blob, { srgb: ['map', 'emissiveMap', 'sheenColorMap', 'specularColorMap', 'coatColorMap', 'attenuationColorMap'].includes(prop), name: baseName(file) });
     }
     const graph = m.graph ?? (Object.keys(maps).length ? createImportGraph(maps) : null);
     // names per language (library packages: { de, en }) – the one of the interface, else the English one
@@ -574,14 +595,14 @@ async function fromPackage(json, read) {
 const FROM_OPENPBR = {
     base_color: { param: 'color', map: 'map', kind: 'color', def: [0.8, 0.8, 0.8] },
     base_metalness: { param: 'metalness', map: 'metalnessMap', def: 0 },
-    base_diffuse_roughness: { param: 'diffuseRoughness', def: 0 },
+    base_diffuse_roughness: { param: 'diffuseRoughness', map: 'diffuseRoughnessMap', def: 0 },
     specular_weight: { param: 'specularIntensity', def: 1, conv: v => Math.min(Math.max(v, 0), 1) },
     specular_color: { param: 'specularColor', map: 'specularColorMap', kind: 'color', def: [1, 1, 1] },
     specular_roughness: { param: 'roughness', map: 'roughnessMap', def: 0.3 },
     specular_roughness_anisotropy: { param: 'anisotropy', def: 0 },
     specular_ior: { param: 'ior', def: 1.5 },
     transmission_weight: { param: 'transmission', map: 'transmissionMap', def: 0 },
-    transmission_color: { param: 'attenuationColor', kind: 'color', def: [1, 1, 1] },
+    transmission_color: { param: 'attenuationColor', map: 'attenuationColorMap', kind: 'color', def: [1, 1, 1] },
     transmission_depth: { param: 'attenuationDistance', def: 0, conv: v => (v > 0 ? v : 100) },
     transmission_scatter: { param: 'transmissionScatter', kind: 'color', def: [0, 0, 0] },
     transmission_scatter_anisotropy: { param: 'transmissionScatterAnisotropy', def: 0 },
@@ -595,11 +616,11 @@ const FROM_OPENPBR = {
     fuzz_color: { param: 'sheenColor', map: 'sheenColorMap', kind: 'color', def: [1, 1, 1] },
     fuzz_roughness: { param: 'sheenRoughness', def: 0.5 },
     coat_weight: { param: 'clearcoat', map: 'clearcoatMap', def: 0 },
-    coat_color: { param: 'clearcoatColor', kind: 'color', def: [1, 1, 1] },
+    coat_color: { param: 'clearcoatColor', map: 'coatColorMap', kind: 'color', def: [1, 1, 1] },
     coat_roughness: { param: 'clearcoatRoughness', map: 'clearcoatRoughnessMap', def: 0 },
     coat_roughness_anisotropy: { param: 'clearcoatAnisotropy', def: 0 },
     coat_ior: { param: 'clearcoatIor', def: 1.6 },
-    coat_darkening: { param: 'clearcoatDarkening', def: 1 },   // OpenPBR's default: the physical darkening
+    coat_darkening: { param: 'clearcoatDarkening', map: 'coatDarkeningMap', def: 1 },   // OpenPBR's default: the physical darkening
     thin_film_weight: { param: 'iridescence', def: 0 },
     thin_film_thickness: { param: 'iridescenceThickness', def: 0.5, conv: v => v * 1000 },   // µm → nm
     thin_film_ior: { param: 'iridescenceIOR', def: 1.4 },

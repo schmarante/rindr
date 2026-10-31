@@ -611,7 +611,8 @@ const GRAPH_MAP_SLOTS = {
     emissive: 'emissiveMap', normal: 'normalMap', ao: 'aoMap', height: 'normalMap',
     coatNormal: 'clearcoatNormalMap', coatHeight: 'clearcoatNormalMap', anisotropyMap: 'anisotropyMap', coatAnisotropyMap: 'coatAnisotropyMap',
     specularIntensity: 'specularIntensityMap', specularColor: 'specularColorMap', sheenRoughness: 'sheenRoughnessMap',
-    iridescence: 'iridescenceMap',
+    iridescence: 'iridescenceMap', coatColor: 'coatColorMap', coatIor: 'coatIorMap', coatDarkening: 'coatDarkeningMap',
+    transmissionColor: 'attenuationColorMap', transmissionDepth: 'attenuationDistanceMap',
 };
 
 const hasGraphMaps = render => [...Object.keys(render?.maps || {}), ...Object.keys(render?.missing || {})].some(k => IMPORT_SLOTS[k]);
