@@ -564,6 +564,7 @@ function motionJitterPatch() {
 // Glass shadows (src/scripts/glass-shadow.js): shadow rays through glass (next event estimation + shadow catcher), the
 // colour fringe, and no caustic paths while that is on (fails loudly if the library changed – check on every update).
 const GLASS_SHADOW_MODULE = fileURLToPath(new URL('./src/scripts/glass-shadow.js', import.meta.url));
+const CAUSTICS_MODULE = fileURLToPath(new URL('./src/scripts/caustics.js', import.meta.url));
 const GLASS_SHADOW_PATCH = fileURLToPath(new URL('./src/scripts/glass-shadow.patch.wgsl', import.meta.url));
 function glassShadowPatch() {
   return {
@@ -622,6 +623,9 @@ function glassShadowPatch() {
       // rays, not used here – false)
       replaceOnce(/\n(\t+)var shadowHit: \$\{ raycastOutput \};\n\t+let occluded = \$\{ raycastShadowFn \}\( shadowRay, &shadowHit \);\n\t+if \( ! occluded \) \{/,
         (_, tab) => `\n${tab}var shadowHit: \${ raycastOutput };\n` + snippet({ origin: 'vertexData.position.xyz', dir: 'lightRec.direction', maxDist: 'shadowRay.maxDist', normal: 'hitResult.normal', primary: 'bounce == 0u' })
+          // caustics (caustics.js): on surfaces (not glass) the light of a directional lamp (type 3) and of the HDRI's sun
+          // (environment, type 5, inside the sun's cone) through glass comes from the photons
+          + gate('caustics', `${tab}if ( gsGlass && surface.transmission <= 0.5 && \${ __CA_COV }( lightRec.lightType == 3, lightRec.lightType == 5, lightRec.direction ) ) {\n\n${tab}\tgsShadow = vec3f( 0.0 );\n\n${tab}}\n`) + '\n'
           + `${tab}if ( any( gsShadow > vec3f( 0.0 ) ) ) {`);
       replaceOnce('let isMISWeighted = ${ isMISWeightLightFn }( lightRec.lightType ) && ! shadowHit.forwardBlocked;',
         () => 'let isMISWeighted = ${ isMISWeightLightFn }( lightRec.lightType ) && ! shadowHit.forwardBlocked && ! gsGlass;');
@@ -631,13 +635,47 @@ function glassShadowPatch() {
       // dropped while glass shadows are transparent
       replaceOnce(/\n(\t+)var transparentBounce = 0u;/, (m, tab) => `${m}\n${tab}var gsRough = false;\n${tab}var gsCaustic = false;`);
       replaceOnce(/\n(\t+)minPdf = min\( minPdf, scatterRec\.pdf \);/, (m, tab) => `${m}\n\n${tab}if ( ! scatterRec.isTransmissive && scatterRec.pdf < 4.0 ) {\n\n${tab}\tgsRough = true;\n${tab}\tgsCaustic = false;\n\n${tab}} else if ( scatterRec.isTransmissive && gsRough ) {\n\n${tab}\tgsCaustic = true;\n\n${tab}}`);
-      const drop = '( gsCaustic && ${ __GS.mode } == 1u )';
+      const drop = '( gsCaustic && ${ __GS.mode } != 0u )';   // transparent (1) and caustics (2)
       replaceOnce('let contribution = ${ clampPathContributionFunc }( environment, bounce, clampDirect, clampIndirect );',
         () => `let contribution = select( \${ clampPathContributionFunc }( environment, bounce, clampDirect, clampIndirect ), vec3f( 0.0 ), ${drop} );`);
       replaceOnce('lightHits += ${ clampPathContributionFunc }( lightRec.emission * throughputColor * misWeight, bounce, clampDirect, clampIndirect );',
         () => `lightHits += select( \${ clampPathContributionFunc }( lightRec.emission * throughputColor * misWeight, bounce, clampDirect, clampIndirect ), vec3f( 0.0 ), ${drop} );`);
       // __GX (traced Gaussians) is imported by rindr-gaussians, which runs before
-      return { code: `import { GLASS_SHADOW as __GS } from ${JSON.stringify(GLASS_SHADOW_MODULE)};\n` + code, map: null };
+      return { code: `import { GLASS_SHADOW as __GS } from ${JSON.stringify(GLASS_SHADOW_MODULE)};\nimport { CAUSTICS_IRRADIANCE as __CA_IRR, CAUSTICS_COVERS as __CA_COV } from ${JSON.stringify(CAUSTICS_MODULE)};\n` + code, map: null };
+    },
+  };
+}
+
+// Caustics (src/scripts/caustics.js, photons: caustics-kernel.js – fails loudly if the library changed): where a path
+// hits a surface (not glass, not the shadow catcher – that one in shadow-catcher.patch.wgsl) the irradiance of the
+// photons there, through the surface's BSDF towards its normal. The light of the lamps and the HDRI's sun through glass
+// is not counted there by next event estimation (rindr-glass-shadow). Kernel feature 'caustics' (glass + caustics
+// mode). Runs after rindr-glass-shadow (its import brings __CA_IRR).
+function causticsPatch() {
+  return {
+    name: 'rindr-caustics',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.replace(/\\/g, '/').split('?')[0];
+      if (!file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) return null;
+      const from = /\n(\t+)resultColor \+= vec4f\( emission, 0\.0 \);\n/;
+      if ((code.match(new RegExp(from.source, 'g')) || []).length !== 1) this.error('rindr-caustics: emission line not found exactly once in PathTracerMegaKernel.js (three-gpu-pathtracer changed?)');
+      code = code.replace(from, (m, tab) => m + gate('caustics', `
+${tab}// RINDR caustics (caustics.js): the photons' irradiance here (cell by the geometric normal – the photons' side),
+${tab}// through the BSDF towards the shading normal
+${tab}if ( materialInfo.matte == 0 && surface.transmission <= 0.5 ) {
+
+${tab}\tlet caE = \${ __CA_IRR }( vertexData.position.xyz, hitResult.normal, \${ rand2 }( 233u ) );
+${tab}\tif ( any( caE > vec3f( 0.0 ) ) ) {
+
+${tab}\t\tlet caEval = \${ bsdfEvalPdfFn }( view, surface.normal, surface );
+${tab}\t\tresultColor += vec4f( \${ clampPathContributionFunc }( throughputColor * caEval.color * caE, bounce + 1u, clampDirect, clampIndirect ), 0.0 );
+
+${tab}\t}
+
+${tab}}
+`));
+      return { code, map: null };
     },
   };
 }
@@ -1701,7 +1739,7 @@ export default defineConfig({
     headers: isolationHeaders,
   },
   vite: {
-    plugins: [tailwindcss(), threeCompileStatePatch(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), bucketPatch(), ptStandInPatch(), openPbrPatch(), mediumPatch(), glassBouncesPatch(), motionJitterPatch(), cloudPatch(), gaussianPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch(), glassSplitPatch(), nanGuardPatch(), adaptivePatch(), lightPassesPatch()],
+    plugins: [tailwindcss(), threeCompileStatePatch(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), bucketPatch(), ptStandInPatch(), openPbrPatch(), mediumPatch(), glassBouncesPatch(), motionJitterPatch(), cloudPatch(), gaussianPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch(), causticsPatch(), glassSplitPatch(), nanGuardPatch(), adaptivePatch(), lightPassesPatch()],
     server: { headers: isolationHeaders },
     preview: { headers: isolationHeaders },
     worker: { format: 'es' },

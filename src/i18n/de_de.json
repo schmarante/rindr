@@ -1948,6 +1948,7 @@
         },
         "samples": "{samples} / {maxSamples} Samples",
         "samplesAdaptive": "Ø {samples} / {maxSamples} Samples",
+        "photons": "{value} Mio. Photonen",
         "percent": "{value} %",
         "seconds": "{value} s",
         "minutes": "{minutes}:{seconds} min",
@@ -1971,7 +1972,8 @@
             "kernelPassesSize": "Pathtracing-Kernel mit Licht-Passes ({size} KB)",
             "denoiseGuides": "Entrauscher-Hilfsdaten",
             "motionDenoiser": "Bewegungs-Entrauscher",
-            "helperPasses": "Hilfs-Passes"
+            "helperPasses": "Hilfs-Passes",
+            "caustics": "Kaustik-Photonen"
         }
     },
     "toolbar": {
@@ -2057,8 +2059,10 @@
         "glassShadow": "Glas-Schatten",
         "glassShadowTransparent": "Transparent",
         "glassShadowOpaque": "Undurchsichtig",
+        "glassShadowCaustics": "Kaustik",
         "glassFringe": "Farbsaum",
         "glassFringeRange": "Reichweite Farbsaum",
+        "causticPhotons": "Kaustik-Photonen (Mio.)",
         "glassSplit": "Glas: Spiegelung + Brechung",
         "denoise": "Denoise (OIDN)",
         "upscale": "Upscaling (FSR)",

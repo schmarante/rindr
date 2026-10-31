@@ -4881,16 +4881,24 @@ function setupGUI() {
         thresholdControl.enable(pathTracing.adaptiveSupported && pathTracing.adaptive.enabled);
         noiseMapControl.enable(pathTracing.adaptiveSupported && pathTracing.adaptive.enabled);
         pt.range(t('setup.glossyFilter'), () => pathTracing.filterGlossyFactor, v => { pathTracing.filterGlossyFactor = v; }, 0, 1, 0.01);
-        // shadows of glass (glass-shadow.js): transparent with an optional colour fringe, or opaque
+        // shadows of glass (glass-shadow.js): transparent with an optional colour fringe, opaque, or caustics (caustics.js)
+        // with their photons per picture (millions)
         const fringeControls = [];
+        let photonControl = null;
+        const glassShadowMode = mode => {
+            fringeControls.forEach(c => c.enable(mode === 'transparent'));
+            photonControl.enable(mode === 'caustics');
+        };
         pt.select(t('setup.glassShadow'), [
             { label: t('setup.glassShadowTransparent'), value: 'transparent' },
             { label: t('setup.glassShadowOpaque'), value: 'opaque' },
-        ], () => pathTracing.glassShadow.mode, v => { pathTracing.setGlassShadow({ mode: v }); fringeControls.forEach(c => c.enable(v === 'transparent')); });
+            { label: t('setup.glassShadowCaustics'), value: 'caustics' },
+        ], () => pathTracing.glassShadow.mode, v => { pathTracing.setGlassShadow({ mode: v }); glassShadowMode(v); });
         fringeControls.push(
             pt.range(t('setup.glassFringe'), () => pathTracing.glassShadow.fringe, v => pathTracing.setGlassShadow({ fringe: v }), 0, 1, 0.01),
             pt.range(t('setup.glassFringeRange'), () => pathTracing.glassShadow.range, v => pathTracing.setGlassShadow({ range: v }), 0.05, 2, 0.05));
-        fringeControls.forEach(c => c.enable(pathTracing.glassShadow.mode === 'transparent'));
+        photonControl = pt.range(t('setup.causticPhotons'), () => pathTracing.glassShadow.photons, v => pathTracing.setGlassShadow({ photons: v }), 10, 1000, 10);
+        glassShadowMode(pathTracing.glassShadow.mode);
         pt.toggle(t('setup.glassSplit'), () => pathTracing.glassSplit, v => pathTracing.setGlassSplit(v));
         pt.toggle(t('setup.denoise'), () => pathTracing.denoiseEnabled, v => pathTracing.setDenoise(v));
         pt.toggle(t('setup.upscale'), () => pathTracing.upscaleEnabled, v => pathTracing.setUpscale(v));
@@ -5930,7 +5938,9 @@ function updatePathTracingStatus() {
     if (!saving) trackRenderTime(s);
     const phase = PT_PHASES[s.phase];
     const pct = Math.floor(s.progress * 100);
-    const samples = t(s.adaptive ? 'pathtracing.samplesAdaptive' : 'pathtracing.samples', { samples: Math.floor(s.samples), maxSamples: s.maxSamples });
+    let samples = t(s.adaptive ? 'pathtracing.samplesAdaptive' : 'pathtracing.samples', { samples: Math.floor(s.samples), maxSamples: s.maxSamples });
+    // caustics: their photons so far (millions)
+    if (s.photons > 0) samples += ' · ' + t('pathtracing.photons', { value: (s.photons / 1e6).toLocaleString(getLocale(), { maximumFractionDigits: 0 }) });
     let value = '';
     let detail = '';
     switch (s.phase) {

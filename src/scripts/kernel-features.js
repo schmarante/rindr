@@ -18,6 +18,7 @@ export const KERNEL_FEATURES = [
     'marble',   // glowing marble (ptVolume 2)
     'edges',    // rounded edges (edge radius in anisotropyRotation, anisotropy 0)
     'ground',   // shadow catcher (matte ground)
+    'caustics', // glass with the glass shadows set to caustics (caustics.js): photon grid lookup on the floor
 ];
 
 // ?kernel=all: every feature, whatever the scene (comparison, debugging)
@@ -25,6 +26,7 @@ const ALL = typeof location !== 'undefined' && new URLSearchParams(location.sear
 
 export const kernelFeatures = {
     current: new Set(KERNEL_FEATURES),   // until the first material data: everything
+    caustics: false,                     // glass shadows set to caustics (pathtracer.js setGlassShadow)
     shown: new Set(),                    // materials of visible objects (the library packs every object's material –
                                          // the hidden proxies of the cloud slots would always count as volumes)
     /** the library collects the scene's materials: an object of the scene */
@@ -49,6 +51,7 @@ export const kernelFeatures = {
         else if (volume === 5) add('soap');
         else if (volume === 2) add('marble');
         if ((m.transmission ?? 0) > 0) add('glass');
+        if ((m.transmission ?? 0) > 0.5 && this.caustics) add('caustics');
         const scatter = m.mediumScatter;
         if ((m.transmission ?? 0) > 0 && scatter && scatter.r + scatter.g + scatter.b > 0) add('medium');
         if (m.anisotropyRotation && !m.anisotropy) add('edges');

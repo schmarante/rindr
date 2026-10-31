@@ -31,7 +31,15 @@ export const PATHTRACING = {
         mode: 'transparent',
         fringe: 0.3,            // colour fringe 0–1: spectrum spread (IOR ±15 % red ↔ blue at 1, pathtracer.js; 0 = off)
         range: 0.5,             // the fringe fades over this share of the scene size (behind the glass)
+        photons: 100,           // caustics: photons per picture in millions (≈ 8 s GPU time on a fast desktop GPU)
     },
+    // caustics (glass shadow mode 'caustics', caustics.js): photons from the directional lights and the HDRI's sun
+    // through the glass onto the surfaces behind – hash table of 2^hashBits slots (key + rgb u32: 2^21 = 32 MB GPU
+    // memory, only while the mode is on), filled to about `occupancy` (sets the cell size from the glass bounds), photons
+    // per dispatch to start with / at least / at most (one dispatch: 65535 workgroups of 64; in between by the measured
+    // GPU time: frameShare of frameTargetMs), at most 1/lead of the samples until all photons are traced
+    // (_causticsLead); how many photons in all: glassShadow.photons
+    caustics: { hashBits: 21, occupancy: 0.3, batch: 262144, minBatch: 65536, maxBatch: 4e6, frameShare: 0.5, lead: 4 },
     // first glass hit of the camera ray: reflection and refraction both traced (glass-split.js) – clean glass and
     // reflections on it after few samples, one more path where glass is seen; false = picked by chance (library,
     // cheaper per sample – the default, user Oct. 2026)

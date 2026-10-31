@@ -22,6 +22,7 @@
 								var scDir = vec3f( 0.0, 1.0, 0.0 );
 								var scDist = ${ LIGHT_FAR_DISTANCE };
 								var scWeight = 0.0;
+								var scDirectional = false;   // a directional lamp (caustics)
 								if ( scRand.x < scParams.x ) {
 
 									// environment: direction ∝ luminance (importance sampling of the HDRI), accepted with
@@ -68,6 +69,7 @@
 
 									let scLight = ${ randomLightSampleFn }( scIndex, scPos, scRand.yz );
 									scDir = scLight.direction;
+									scDirectional = scLight.lightType == 3;
 									scDist = scLight.dist - ${ LIGHT_EPSILON };
 									scWeight = select( 0.0, 1.0, scLight.pdf > 0.0 );
 
@@ -79,11 +81,24 @@
 									// shadow ray – through glass when glass shadows are transparent (glass-shadow.js)
 									//@glass-shadow scPos | scDir | scDist | scUp | bounce == 0u
 									scLit = gsShadow * scWeight;
+									/*@if:caustics*/
+									// caustics (caustics.js): the light of a directional lamp / the HDRI's sun through glass comes from
+									// the photons here
+									if ( gsGlass && ${ __CA_COV }( scDirectional, scRand.x < scParams.x, scDir ) ) {
+
+										scLit = vec3f( 0.0 );
+
+									}
+									/*@endif*/
 
 								}
 
 								// strength 0…1
-								let scShadow = mix( vec3f( 1.0 ), scLit, scParams.z );
+								var scShadow = mix( vec3f( 1.0 ), scLit, scParams.z );
+								/*@if:caustics*/
+								// caustics (caustics.js): their irradiance relative to the unshadowed one (π / E_total in bounce.y)
+								scShadow += ${ __CA_IRR }( scPos, scUp, ${ rand2 }( 234u ) ) * ( ${ __SC.bounce }.y / 3.14159265 ) * scParams.z;
+								/*@endif*/
 								let scLookup = ${ __DOME }( ray.origin, ray.direction, ${ rand1 }( 130u ) );
 								// ground reflection / bad weather (ground-reflection.js): reflection share r, roughness,
 								// darkening d – background × shadow × (1 − r) × d, the rest continues as reflection ray

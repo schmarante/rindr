@@ -21,6 +21,7 @@ import { ImageFade } from './image-fade.js';
 import { fisheyeParams } from './fisheye.js';
 import { PT_MOTION } from './pt-motion.js';
 import { GLASS_SHADOW } from './glass-shadow.js';
+import { CAUSTICS } from './caustics.js';
 import { GLASS_SPLIT } from './glass-split.js';
 import { t } from './i18n.js';
 import { debugLog } from './log.js';
@@ -112,6 +113,8 @@ export class PathTracingView {
                                         // takes over a change a few frames later, e.g. a new HDRI after its table)
         // soft transition between the images (_fade): rest = share of the non-final image still shown once done
         this.glassShadow = { ...PATHTRACING.glassShadow };   // shadows of glass (setGlassShadow, glass-shadow.js)
+        this._caustics = null;          // photon pass of the caustics (caustics-kernel.js, loaded with the mode)
+        this._causticsVersion = 0;      // scene data / materials / transforms / lights changed: the photons start over
         this.sceneSize = 1;             // size of the scene (viewer) – the fringe fades relative to it
         this._applyGlassShadow();
         GLASS_SPLIT.enabled.value = this.glassSplit ? 1 : 0;
@@ -403,10 +406,16 @@ export class PathTracingView {
         this.pathTracer?.setDenoiser(enabled ? this.denoiser : null);
     }
 
-    /** Shadows of glass: { mode: 'transparent' | 'opaque', fringe 0–1, range (share of the scene size) } */
+    /** Shadows of glass: { mode: 'transparent' | 'opaque' | 'caustics', fringe 0–1, range (share of the scene size),
+     *  photons (caustics, millions per picture) } */
     setGlassShadow(options) {
+        const caustics = this.glassShadow.mode === 'caustics';
+        // another photon count: the grid starts over (the picture shows what is set, also with fewer)
+        if (options.photons != null && options.photons !== this.glassShadow.photons && this._caustics) this._caustics.signature = '';
         Object.assign(this.glassShadow, options);
         this._applyGlassShadow();
+        // caustics: a kernel feature (photon grid lookup) – the materials collect it again
+        if ((this.glassShadow.mode === 'caustics') !== caustics) this.updateMaterials();
         this.reset();
     }
 
@@ -424,7 +433,8 @@ export class PathTracingView {
 
     _applyGlassShadow() {
         const g = this.glassShadow;
-        GLASS_SHADOW.mode.value = g.mode === 'opaque' ? 0 : 1;
+        GLASS_SHADOW.mode.value = g.mode === 'opaque' ? 0 : g.mode === 'caustics' ? 2 : 1;
+        kernelFeatures.caustics = g.mode === 'caustics';
         GLASS_SHADOW.fringe.value = Math.max(g.fringe, 0) * GLASS_FRINGE_SPREAD;
         GLASS_SHADOW.falloff.value = Math.max(g.range, 1e-3) * this.sceneSize;
     }
@@ -447,6 +457,7 @@ export class PathTracingView {
             if (!document.hidden) await new Promise(resolve => requestAnimationFrame(resolve));
             const t0 = performance.now();
             this.pathTracer.setScene(scene, camera);
+            this._causticsVersion++;
             this._atlasCapacity = this._atlasInfoLength();   // texture slots the pipeline was built with (atlasCapacityPatch)
             this._motionReady = false;   // new scene data: Kuwahara until the denoiser's shaders are compiled for it
             // switch only now: useMegakernel() needs the camera and BVH data of the scene
@@ -555,6 +566,7 @@ export class PathTracingView {
     // Visibility (object.visible incl. parents) or transforms changed
     updateTransforms() {
         if (!this.ready) return;
+        this._causticsVersion++;
         this.pathTracer.updateTransforms();
     }
 
@@ -575,6 +587,7 @@ export class PathTracingView {
     // Light toggled or changed
     updateLights() {
         if (!this.ready) return;
+        this._causticsVersion++;
         this.pathTracer.updateLights();
     }
 
@@ -607,6 +620,7 @@ export class PathTracingView {
 
     updateMaterials() {
         if (!this.ready) return;
+        this._causticsVersion++;
         this.pathTracer.updateMaterials();
         this._updateFeatures();
         // more textures than the pipeline has slots for (atlasCapacityPatch, astro.config.mjs): the placements of the
@@ -960,8 +974,14 @@ export class PathTracingView {
             this._tsPending = false;
             const pool = this.renderer.backend.timestampQueryPool?.compute;
             const id = String(this.pathTracer?._pathTracer?.kernel?.kernel?.id ?? '');
-            let ms = 0;
-            for (const [uid, d] of pool?.timestamps ?? []) if (uid.split(':')[2] === id) ms = Math.max(ms, d);
+            const photonId = String(this._caustics?._kernel?.id ?? '-');
+            let ms = 0, photonMs = 0;
+            for (const [uid, d] of pool?.timestamps ?? []) {
+                const kernel = uid.split(':')[2];
+                if (kernel === id) ms = Math.max(ms, d);
+                else if (kernel === photonId) photonMs = Math.max(photonMs, d);
+            }
+            if (photonMs > 0) this._caustics.adapt(photonMs, PATHTRACING.frameTargetMs * (this.gpuCautious ? 0.5 : 1) * PATHTRACING.caustics.frameShare);
             if (ms > 0) this._adapt(ms, motion);
         }, () => { this._tsPending = false; });
     }
@@ -1271,14 +1291,20 @@ export class PathTracingView {
             }
             this._renderFirstSample();
         }
+        // caustics behind the samples: a frame with photons only (the picture is shown, no sample)
+        const photonsOnly = this._traceCaustics(pt);
+        if (photonsOnly) pt.pause = true;
         pt.renderSample();
+        pt.pause = false;
         // cheap samples (adaptive sampling with most pixels finished, small images): several per frame up to the GPU time
         // target – with one per frame the GPU idled most of the frame (60 samples/s at most, a finished-looking image
         // at 2 ms per sample still took as long as before). The last measured dispatch sets the count; a restart
         // forgets it (the new picture may cost far more per sample – one frame must stay below the GPU watchdog)
-        if (!this._motion && !this._compiling && this._frameMs > 0 && !this._isDone()) {
+        if (!photonsOnly && !this._motion && !this._compiling && this._frameMs > 0 && !this._isDone()) {
             const target = PATHTRACING.frameTargetMs * (this.gpuCautious ? 0.5 : 1);
-            const extra = Math.min(Math.floor(target / Math.max(this._frameMs, 0.5)) - 1, PATHTRACING.maxDispatchesPerFrame - 1);
+            // (not ahead of the caustics' photons, _traceCaustics)
+            const extra = Math.min(Math.floor(target / Math.max(this._frameMs, 0.5)) - 1, PATHTRACING.maxDispatchesPerFrame - 1,
+                this._causticsLead());
             for (let i = 0; i < extra; i++) pt._pathTracer.update();
         }
         if (this._fullFirst) {   // first full-quality image is on screen: normal gate again
@@ -1294,6 +1320,80 @@ export class PathTracingView {
             this.renderer.backend?.device?.queue.onSubmittedWorkDone()
                 .then(() => debugLog(`[Pathtracer] first sample finished on the GPU after ${(performance.now() - start).toFixed(0)} ms (incl. shader compilation)`));
         }
+    }
+
+    // Caustics (caustics.js): photons of this frame into the grid before the samples that read it. The photon kernel is
+    // loaded and compiled (asynchronously) with the mode; until then, and without glass or light from above, the glass
+    // shadow stays transparent (CAUSTICS.on 0). Switching the lookup on restarts the picture. The grid survives camera
+    // moves; a finished picture or the photons set (glassShadow.photons) stop the pass.
+    // A photon costs about as much as a camera path: batches sized by their measured GPU time (caustics.frameShare of
+    // the frame target), and the samples never ahead of the photons: until all of them are traced at most 1/caustics.lead
+    // of the samples, in step with the photons – adaptive sampling may finish early, and its last samples are cheap
+    // (with the photons in step over all samples it ended at 43 % of them); the GPU time in all is the same either way.
+    // Behind: frames with photons only (two batches, true = no sample this frame).
+    _traceCaustics(pt) {
+        const on = this.glassShadow.mode === 'caustics' && kernelFeatures.current.has('caustics');
+        const k = on ? this._causticsKernel() : null;
+        const ready = !!k?.ready && k.prepare({ bvhData: pt._bvhData, scene: pt.scene, env: pt._pathTracer?.envInfo, version: this._causticsVersion });
+        if ((CAUSTICS.on.value === 1) !== ready) {
+            CAUSTICS.on.value = ready ? 1 : 0;
+            pt.reset();
+        }
+        const target = this._causticsTarget();
+        if (!ready || k.photons >= target || this._isDone() || this._motion) return false;   // (orbiting: frame rate first)
+        k.trace(this.renderer, Math.min(k.batch, target - k.photons));
+        const behind = this._causticsLead() < 0;
+        if (behind && k.photons < target) k.trace(this.renderer, Math.min(k.batch, target - k.photons));
+        return behind;
+    }
+
+    // photons of the caustics per picture (glassShadow.photons in millions), 0 = off
+    _causticsTarget() {
+        return CAUSTICS.on.value === 1 && this._caustics ? Math.max(this.glassShadow.photons, 1) * 1e6 : 0;
+    }
+
+    // samples that may still run now without getting ahead of the photons (-1: wait; large without caustics)
+    _causticsLead() {
+        const target = this._causticsTarget(), max = this.pathTracer?.maxSamples ?? 0;
+        if (!target || max <= 0 || this._caustics.photons >= target) return 1e9;
+        const done = this.pathTracer._pathTracer?._completedSamples ?? this.samples;
+        return Math.floor(this._caustics.photons / target * max / PATHTRACING.caustics.lead - done) - 1;
+    }
+
+    /** photons of the caustics so far (0 while they are off) */
+    get causticPhotons() {
+        return CAUSTICS.on.value === 1 && this._caustics ? this._caustics.photons : 0;
+    }
+
+    // the photon pass: module loaded, kernels compiled asynchronously for the current scene data – null until ready
+    _causticsKernel() {
+        if (!this._causticsLib) {
+            this._causticsLoad ??= import('./caustics-kernel.js').then(m => { this._causticsLib = m; });
+            return null;
+        }
+        const k = this._caustics ??= new this._causticsLib.CausticsKernel(PATHTRACING.caustics);
+        const bvhData = this.pathTracer._bvhData;
+        if (k.compiledFor === bvhData && bvhData.fns.raycastFirstHit === k.compiledRay) return k;
+        if (k.compiling) return null;
+        k.ready = false;
+        k.compiling = true;
+        k.prepare({ bvhData, scene: this.pathTracer.scene, env: null, version: -1 });
+        const own = this._ownCompile = [];
+        try {
+            k.params.count.value = 0;
+            for (const kernel of k.kernels) this.renderer.compute(kernel, [1, 1, 1]);
+        } finally {
+            this._ownCompile = null;
+        }
+        this._trackCompile('caustics', Promise.all(own));
+        Promise.all(own).then(() => {
+            k.compiling = false;
+            k.compiledFor = bvhData;
+            k.compiledRay = bvhData.fns.raycastFirstHit;
+            k.ready = true;
+            k.signature = '';   // clear again (the compile dispatch did nothing)
+        });
+        return null;
     }
 
     // a camera change pending (restartCamera) taken over – true if there was one
@@ -1485,6 +1585,7 @@ export class PathTracingView {
             maxSamples: this.maxSamples,
             progress: 0,
             denoise: this.denoiseEnabled,
+            photons: this.causticPhotons,
         };
         if (!this.supported) return { ...status, phase: 'unsupported' };
         if (!this.enabled) return status;
