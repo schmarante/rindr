@@ -657,7 +657,7 @@ const environment = {
     puddleSize: 0.5,     // puddle pattern size (× model size)
     dome: true,          // "flatten ground": HDRI background as a dome with flat floor instead of infinitely far away
     intensity: 0.5,      // brightness of the HDRI (visible background and base of the light; calibrated with the lights)
-    lightBoost: 1,       // extra light energy on the model – the visible background stays as it is
+    lightBoost: 1,       // factor on the intensity: light and visible background (like the panel preview)
     domeShift: 0,        // "HDRI height": HDRI pushed up (share of 90°) – sphere and projected floor
     groundHeight: 1,     // "floor height": projection point above the ground (× model size) – floor distortion
     domeRadius: 10,      // "sphere size": radius of the background sphere (× model size) – parallax when zooming
@@ -754,9 +754,9 @@ const environment = {
         clouds.setEnvironment(this.on ? this.texture : studioTexture, this.on ? this.intensity * this.lightBoost : 0.8, this.on ? scene.environmentRotation.y : 0);
         const showHdri = this.on && this.background && !this.matte;
         scene.background = this.matte || (showHdri ? this.texture : vignette.texture);
-        // light = intensity × boost, the visible HDRI only intensity
+        // light and visible HDRI = intensity × boost (user: the background should look like the panel preview)
         scene.environmentIntensity = this.intensity * this.lightBoost;
-        scene.backgroundIntensity = showHdri ? this.intensity : 1;
+        scene.backgroundIntensity = showHdri ? this.intensity * this.lightBoost : 1;
         if (showHdri) scene.backgroundRotation.copy(scene.environmentRotation);
         else if (!this.matte) vignette.update(camera, scene);
         pathTracing.backgroundFollowsCamera = !showHdri && !this.matte;
@@ -775,7 +775,8 @@ const environment = {
         // one surface (flat floor → rounded edge → sphere) seen from the projection point above the ground centre
         const floorHeight = this.groundHeight * this.modelSize;
         dome.set(scene, {
-            enabled: showHdri && this.dome && !this.matte, texture: this.texture, center: new THREE.Vector3(this.centerX, this.groundY + floorHeight, this.centerZ),
+            // no model yet: the plain panorama (the dome is sized by the models)
+            enabled: showHdri && this.dome && !this.matte && sceneHasModels(), texture: this.texture, center: new THREE.Vector3(this.centerX, this.groundY + floorHeight, this.centerZ),
             radius: this.domeRadius * this.modelSize, floor: floorHeight,
             blend: this.domeBlend, shift: this.domeShift,
         });
@@ -5600,6 +5601,7 @@ const HDRI_EXTENSIONS = ['hdr', 'exr'];
  *  the same name is linked by it. */
 async function openHdriFile(file) {
     const before = environment.hdri, wasOn = environment.on;
+    const bgBefore = environment.background;
     environment.on = true;
     let ok;
     try {
@@ -5613,13 +5615,38 @@ async function openHdriFile(file) {
     }
     if (!ok) return;   // another HDRI was chosen meanwhile
     if (missingHdri?.toLowerCase() === file.name.toLowerCase()) missingHdri = null;
-    const load = (name, on) => { environment.on = on; return environment.select(name).catch(err => properties.ctx.onHdriError(name, err)); };
-    history.record({ label: t('properties.environment.undo.hdri'), undo: () => load(before, wasOn), redo: () => load(file.name, true) });
+    // no model yet: shown as the background, the view turnable around the camera's spot (user: "then the HDRI should be
+    // shown right away") – it stays as it is when a model follows
+    const preview = !sceneHasModels();
+    if (preview) showHdriPreview();
+    const bgAfter = environment.background;
+    const load = (name, on, bg) => {
+        environment.on = on;
+        environment.background = bg;
+        return environment.select(name).catch(err => properties.ctx.onHdriError(name, err));
+    };
+    history.record({ label: t('properties.environment.undo.hdri'), undo: () => load(before, wasOn, bgBefore), redo: () => load(file.name, true, bgAfter) });
     sceneGraph.render();
     if (selection?.kind === 'environment') properties.show(selection);
     assetsWindow.render();
     updateAssetsTool();
     flashStatus(t('status.hdriDropped', { name: file.name }), 4000);
+}
+
+// models in the scene (main, added, splat scene)?
+function sceneHasModels() {
+    return !!rootGroup || extraModels.length > 0 || !!splatMesh;
+}
+
+// an HDRI in the empty scene: as the background (plain panorama), the camera a step away from its target – it sat on it
+// (nothing to frame yet), so dragging turned nothing
+function showHdriPreview() {
+    environment.background = true;
+    if (camera.position.distanceTo(controls.target) < 1e-6) {
+        camera.position.copy(controls.target).add(new THREE.Vector3(0, 0, 1));
+        controls.update();
+    }
+    environment.apply();
 }
 
 /** The sample scene (public/samplescene: samplescene.json naming samplescene.usda – coarse meshes the USD import
@@ -6082,9 +6109,11 @@ function syncViewDependents() {
     const orbitDist = camera.position.distanceTo(controls.target);
     if (clipNear) {
         if (camera.near !== clipNear || camera.far < clipNear * 20) { camera.near = clipNear; camera.far = Math.max(camera.far, clipNear * 100, orbitDist * 100); camera.updateProjectionMatrix(); }
-    } else if (camera.far < orbitDist * 20 || camera.near > orbitDist * 0.01) {
+    } else if (camera.far < orbitDist * 20 || camera.near > orbitDist * 0.01 || !(camera.near > 0)) {
         camera.far = Math.max(camera.far, orbitDist * 100);
-        camera.near = Math.min(camera.near, orbitDist * 0.001);
+        // never 0: with the camera on its target (empty scene: both at the origin) near became 0 – a broken projection,
+        // not even the background was drawn (an HDRI dropped into the empty scene stayed invisible)
+        camera.near = Math.max(Math.min(camera.near, orbitDist * 0.001), 1e-4);
         camera.updateProjectionMatrix();
     }
     // vignette follows the camera (the path tracer takes over the rotation at the next camera restart)
@@ -6314,7 +6343,7 @@ function renderFrame() {
         if (sig !== splatEnv.signature) { splatEnv.signature = sig; splatEnv.markDirty(); }
         const drew = splatEnv.update({ scene, splat: splatMesh, layer: SPLAT_LAYER, keep: slicer.group, hide: extraModels.map(x => x.holder),
             probe: () => splatModelsBox().getCenter(new THREE.Vector3()), radius: Math.max(environment.modelSize || 0, splatModelsBox().getSize(new THREE.Vector3()).length(), 1),
-            rotation: scene.environmentRotation, background: environment.texture, backgroundIntensity: environment.intensity });
+            rotation: scene.environmentRotation, background: environment.texture, backgroundIntensity: environment.intensity * environment.lightBoost });
         if (drew || splatEnv.busy || splatEnv.dirty) loadRender.force = true;
     } else if (splatEnv.ready || splatEnv.phase >= 0) splatEnv.reset();
     // toon/outline lines (screen-space pass): fisheye – into each cube face with its camera, then laid over the
