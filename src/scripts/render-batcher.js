@@ -39,10 +39,16 @@
 // after – picking (BVH), path tracer, bounds always see the source. (Putting them into batches of their own cost a
 // node build per mesh – three.js builds every InstancedMesh anew – and delayed the first grouping by ~30 s.)
 // Shadow maps reuse the camera's choice.
+//
+// Occlusion culling (occlusion-culling.js, large models): parts hidden behind others or outside the view are left out
+// of the instances (and individually drawn ones out of the camera's layer during the main render) – per frame, from
+// the culler's last result; a new depth image + test from inside the main render every few frames. Only when nothing
+// changed this frame (every change drops the result) and no other view draws the batches (shadow maps due, fisheye,
+// section plane – `occlusionAllowed`): those see the whole model.
 import * as THREE from 'three/webgpu';
 import { uniform } from 'three/tsl';
 import { compileAsync } from './shader-compile.js';
-import { LOD } from './config.js';
+import { LOD, OCCLUSION } from './config.js';
 
 const TINT_STEPS = 8;   // debug colours: share of triangles kept, one colour per halving (lod-debug.js)
 
@@ -56,7 +62,8 @@ export class RenderBatcher {
      *   lods = cluster LOD store (null: no LOD), lodCamera = the camera the LOD follows (default: the syncing render's),
      *   lodAllVisible = the image shows more than the camera frustum (fisheye) → no coarser LOD outside it
      */
-    constructor({ renderer, scene, parent, roots, minInstances = 2, delay = 500, lods = null, lodCamera = null, lodAllVisible = null }) {
+    constructor({ renderer, scene, parent, roots, minInstances = 2, delay = 500, lods = null, lodCamera = null, lodAllVisible = null,
+        occlusion = null, occlusionAllowed = null }) {
         this.renderer = renderer;
         this.scene = scene;
         this.parent = parent;
@@ -93,6 +100,12 @@ export class RenderBatcher {
         this.singles = [];               // individually drawn meshes with an LOD-eligible geometry: { mesh, source, bucket, cut, viewKey }
         this._lodNew = true;             // the store has new entries – batches without one look again
         if (lods) lods.onReady = () => { this._lodNew = true; };
+        // occlusion culling: the culler, whether this frame may cull (no shadow map due …), model large enough
+        this.occlusion = occlusion;
+        this.occlusionAllowed = occlusionAllowed;
+        this.occModel = false;
+        this._occOn = false;
+        this._shown = [];                // shown meshes of the models in this sync
 
         const render = renderer.render.bind(renderer);
         // timing (debug display): CPU time of all renders of `scene` per frame, nested ones = shadow maps
@@ -105,7 +118,8 @@ export class RenderBatcher {
             const t0 = performance.now();
             const outer = this._depth++ === 0;
             const auto = s.matrixWorldAutoUpdate;
-            let swapped = null, tinted = null;
+            let swapped = null, tinted = null, culled = null;
+            const main = outer && this.enabled && camera === (this.lodCamera?.() ?? camera);
             if (outer && this.enabled) {
                 // world matrices once per frame (sync does it), all renders of this frame use them
                 if (this._matrixFrame !== this.frame) { this._matrixFrame = this.frame; s.updateMatrixWorld(); }
@@ -113,13 +127,18 @@ export class RenderBatcher {
                 s.matrixWorldAutoUpdate = false;
                 swapped = this._swapSingles();
                 if (this.lod.tint) tinted = this._tint();
+                if (main && this._occOn) culled = this._cullSingles();
             }
             try {
                 // pass that must see exactly what this render draws (ambient-occlusion.js pre-pass): batches attached,
                 // LOD cuts swapped in; its renders of `scene` count as nested
                 if (outer && this.beforeDraw) this.beforeDraw(camera);
+                // occlusion culling: a new depth image of what is drawn + test, when due (main view only)
+                const occ = this.occlusion;
+                if (main && occ?.valid && occ.due(camera, this.frame)) occ.capture({ scene: s, camera, keep: this.parent, frame: this.frame });
                 return render(s, camera);
             } finally {
+                if (culled) for (const m of culled) m.layers.enable(0);
                 if (tinted) for (const [o, m] of tinted) o.material = m;
                 if (swapped) this._restoreSingles(swapped);
                 if (outer) s.matrixWorldAutoUpdate = auto;
@@ -218,12 +237,15 @@ export class RenderBatcher {
         else if (!this.lod.enabled) this._view = null;
         this.lod.selectMs = 0;
         let sum = 0, xor = 0;
+        const shown = this._shown;
+        shown.length = 0;
 
         // 1. visible meshes of the models (three's rule: invisible parent = whole subtree not drawn)
         const visit = o => {
             if (!o.visible) return;
             if (o.isMesh) {
                 this._check(o, frame, now);
+                shown.push(o);
                 sum += o.id;
                 xor ^= Math.imul(o.id, 0x9E3779B1);
             }
@@ -247,6 +269,19 @@ export class RenderBatcher {
             else if (!staged) this._stage(camera);
             else if (staged.ready && staged.at >= this._changedAt) this.rebuild();
             else if (staged.ready) { this._dropStaged(); this._stage(camera); }
+        }
+
+        // occlusion culling this frame? Any change (matrices, shown/hidden, materials, new meshes) drops the result –
+        // everything is drawn until a test of the new state is back; parts collected on the first quiet frame
+        this._occOn = false;
+        const occ = this.occlusion;
+        if (occ) {
+            const allowed = occ.usable && this.occModel && !this.lodAllVisible?.() && (this.occlusionAllowed?.() ?? true);
+            if (!allowed || this._changed) occ.invalidate();
+            else {
+                if (!occ.valid) occ.build(shown.filter(occludable));
+                this._occOn = !!occ.result;
+            }
         }
 
         // 3. instance data
@@ -324,6 +359,7 @@ export class RenderBatcher {
                 if (!inScene(m, this.scene)) { this._leave(m, st); this._changedAt = now; this._changed = true; }
                 continue;
             }
+            if (this._occOn && this.occlusion.hidden(m)) continue;   // behind others / outside the view
             if (slots[n] !== m || st.moved) {
                 slots[n] = m;
                 array.set(st.matrix, n * 16);
@@ -368,6 +404,13 @@ export class RenderBatcher {
         };
         for (const root of this.roots()) if (root) visit(root);
         this._lodPlan(byKey, true);
+        // occlusion culling only for large models (triangles counted per instance, like the LOD)
+        let total = 0;
+        for (const members of byKey.values()) {
+            const g = members[0].geometry;
+            total += members.length * (g.index ? g.index.count : g.getAttribute('position')?.count || 0) / 3;
+        }
+        this.occModel = total >= OCCLUSION.minTriangles;
 
         const old = new Map(this.batches.map(b => [b.key, b]));
         const batches = [];
@@ -582,6 +625,19 @@ export class RenderBatcher {
         }
     }
 
+    // occlusion culling of the individually drawn meshes: out of the camera's layer during the main render (restored
+    // after it – picking, path tracer and the scene graph never see it)
+    _cullSingles() {
+        const occ = this.occlusion;
+        let out = null;
+        for (const m of occ.list) {
+            if (m[STATE]?.batch || !occ.hidden(m) || !m.layers.isEnabled(0)) continue;
+            m.layers.disable(0);
+            (out ??= []).push(m);
+        }
+        return out;
+    }
+
     // cut of an individually drawn mesh (camera or its matrix changed)
     _updateSingle(single, frame) {
         const st = this._state(single.mesh);
@@ -759,6 +815,12 @@ const STATE = Symbol('renderBatch');
 
 // special materials keep their full geometry: wool shells and grass blades are made from it, clouds are volumes
 // around it (glowing marble and toon contours are never batched – noBatch – and never get here as batches)
+// occlusion culling: parts whose look ends at their surface (special materials grow beyond it, splats are no meshes
+// here; several materials on one mesh are drawn individually anyway)
+function occludable(mesh) {
+    return !mesh.isSplat && !Array.isArray(mesh.material) && lodAllowed(mesh.material);
+}
+
 function lodAllowed(material) {
     const u = material?.userData;
     return !!u && !u.wool && !u.grass && !u.cloud && !u.noBatch;

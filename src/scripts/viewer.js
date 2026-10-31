@@ -80,6 +80,7 @@ import { debugLog } from './log.js';
 import { isRemoteTexture } from './remote-textures.js';
 import { textureMaxSide } from './memory-budget.js';
 import { RasterAO } from './ambient-occlusion.js';
+import { OcclusionCuller } from './occlusion-culling.js';
 import { icon } from './icons.js';
 
 // static page texts (data-i18n in index.astro) in the current language
@@ -339,6 +340,12 @@ const batcher = new RenderBatcher({
     lods: lodParam === '0' || (lodParam === null && !LOD.enabled) ? null : new ClusterLods(),
     lodCamera: () => camera,
     lodAllVisible: () => fisheyeEnabled(),   // the fisheye shows more than the camera frustum
+    // occlusion culling (occlusion-culling.js) – not while another view draws the batches: shadow maps due (they see
+    // the whole model), section plane (opens what was inside), splat scenes (their passes draw the models from other
+    // views)
+    occlusion: new OcclusionCuller(renderer),
+    occlusionAllowed: () => !slicer.enabled && !splatMesh
+        && ![dirLight1, dirLight2].some(l => l.castShadow && (l.shadow.needsUpdate || l.shadow.autoUpdate)),
 });
 if (Number(lodParam) > 0) batcher.lod.threshold = Number(lodParam);
 const batchingParam = new URLSearchParams(location.search).get('batching');
