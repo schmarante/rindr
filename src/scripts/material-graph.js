@@ -61,7 +61,14 @@ export const NODE_TYPES = {
             // (swirl marks: micro scratches in the clear coat)
             { key: 'coatAnisotropy', type: 'float' },
             { key: 'coatAnisotropyDirection', type: 'float' },
+            // OpenPBR coat_color, coat_ior (0..1 = 1.0..3.0), coat_darkening – per pixel in raster and path tracer
+            { key: 'coatColor', type: 'color' },
+            { key: 'coatIor', type: 'float' },
+            { key: 'coatDarkening', type: 'float' },
             { key: 'transmission', type: 'float' },
+            // OpenPBR transmission_color (the tint by depth) and transmission_depth (× the material's depth)
+            { key: 'transmissionColor', type: 'color' },
+            { key: 'transmissionDepth', type: 'float' },
             { key: 'sheen', type: 'float' },
             { key: 'sheenRoughness', type: 'float' },
             { key: 'iridescence', type: 'float' },
@@ -263,6 +270,11 @@ export const IMPORT_SLOTS = {
     clearcoatNormalMap: ['coatNormal', 'color'],
     specularColorMap: ['specularColor', 'color'],
     iridescenceMap: ['iridescence', 'r'],
+    // RINDR's own maps (MaterialX import: base_diffuse_roughness, coat_color, coat_darkening, transmission_color)
+    diffuseRoughnessMap: ['diffuseRoughness', 'r'],
+    coatColorMap: ['coatColor', 'color'],
+    coatDarkeningMap: ['coatDarkening', 'r'],
+    attenuationColorMap: ['transmissionColor', 'color'],
 };
 // input -> channel that can be passed through
 const PASS_PORT = Object.fromEntries(Object.values(IMPORT_SLOTS));

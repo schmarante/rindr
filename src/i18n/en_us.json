@@ -600,7 +600,12 @@
                     "coatHeight": "Coat bump (height)",
                     "alpha": "Cutout (alpha)",
                     "coatAnisotropy": "Coat anisotropy",
-                    "coatAnisotropyDirection": "Coat direction"
+                    "coatAnisotropyDirection": "Coat direction",
+                    "coatColor": "Coat colour",
+                    "coatIor": "Coat IOR (0–1 = 1.0–3.0)",
+                    "coatDarkening": "Coat darkening",
+                    "transmissionColor": "Transmission colour",
+                    "transmissionDepth": "Transmission depth (factor)"
                 },
                 "params": {
                     "reliefStrength": "Bump strength",

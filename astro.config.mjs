@@ -305,6 +305,13 @@ ${tab}}
 `;
 // OpenPBR fuzz (Zeltner et al. 2022) in place of the Charlie sheen – src/scripts/fuzz.patch.js
 const FUZZ_PATCH = fileURLToPath(new URL('./src/scripts/fuzz.patch.js', import.meta.url));
+// OpenPBR inputs as maps where the library has no slot (node graph → RindrMaterial, raster: toon.js): base diffuse
+// roughness, coat colour / IOR / darkening, transmission colour / depth – struct fields (rindr-medium), packing and
+// sampling below
+const OPENPBR_MAPS = ['diffuseRoughnessMap', 'coatColorMap', 'coatIorMap', 'coatDarkeningMap', 'attenuationColorMap', 'attenuationDistanceMap'];
+const openPbrMapSample = (tab, key, apply) => `${tab}if ( material.${key} != -1 ) {\n\n`
+  + `${tab}\tlet texel = sampleTexel( ( material.${key}Transform * vec3f( getUvFromChannel( vertexData, material.${key} ), 1.0 ) ).xy, material.${key}, 0 );\n`
+  + `${tab}\t${apply}\n\n${tab}}\n`;
 function openPbrPatch() {
   return {
     name: 'rindr-openpbr',
@@ -338,16 +345,28 @@ function openPbrPatch() {
             + `${tab}floatArray[ index ++ ] = m.coatColor ? m.coatColor.g : 1.0;\n${tab}floatArray[ index ++ ] = m.coatColor ? m.coatColor.b : 1.0;`);
         return { code, map: null };
       }
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) {
+        // the absorption on leaving a volume from the surface record (per pixel transmission colour / depth maps)
+        // instead of the material's constants
+        replaceOnce('${ transmissionAttenuationFunc }( hitResult.dist, materialInfo.attenuationColor, materialInfo.attenuationDistance )',
+          () => '${ transmissionAttenuationFunc }( hitResult.dist, surface.attenuationColor, surface.attenuationDistance )');
+        return { code, map: null };
+      }
       if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/material.wgsl.js')) {
         // base_diffuse_roughness per pixel: × the map's red channel (three.js r187 raster: the same)
-        replaceOnce(/\n(\t+)surf\.diffuseRoughness = material\.diffuseRoughness;\n/, (m, tab) => `\n${tab}surf.diffuseRoughness = material.diffuseRoughness;\n`
-          + `${tab}if ( material.diffuseRoughnessMap != -1 ) {\n\n`
-          + `${tab}\tlet diffuseUv = material.diffuseRoughnessMapTransform * vec3f( getUvFromChannel( vertexData, material.diffuseRoughnessMap ), 1.0 );\n`
-          + `${tab}\tsurf.diffuseRoughness *= sampleTexel( diffuseUv.xy, material.diffuseRoughnessMap, 0 ).r;\n\n`
-          + `${tab}}\n`);
+        replaceOnce(/\n(\t+)surf\.diffuseRoughness = material\.diffuseRoughness;\n/, (m, tab) => m
+          + openPbrMapSample(tab, 'diffuseRoughnessMap', 'surf.diffuseRoughness *= texel.r;'));
         replaceOnce(/\n(\t+)surf\.clearcoat = clearcoat;\n/, (m, tab) => `${m}${tab}surf.coatIor = max( material.coatIor, 1.0 );\n`
           + `${tab}surf.coatColor = vec3f( material.coatColorR, material.coatColorG, material.coatColorB );\n`
-          + `${tab}surf.coatDarkening = material.coatDarkening;\n`);
+          + `${tab}surf.coatDarkening = material.coatDarkening;\n`
+          // per pixel (node graph maps, RindrMaterial): colour and darkening multiply, the IOR map carries 0..1 = 1.0..3.0
+          + openPbrMapSample(tab, 'coatColorMap', 'surf.coatColor *= texel.rgb;')
+          + openPbrMapSample(tab, 'coatIorMap', 'surf.coatIor = 1.0 + 2.0 * texel.r;')
+          + openPbrMapSample(tab, 'coatDarkeningMap', 'surf.coatDarkening *= texel.r;'));
+        // OpenPBR transmission_color / transmission_depth per pixel: × the attenuation colour / distance
+        replaceOnce(/\n(\t+)surf\.attenuationDistance = material\.attenuationDistance;\n/, (m, tab) => m
+          + openPbrMapSample(tab, 'attenuationColorMap', 'surf.attenuationColor *= texel.rgb;')
+          + openPbrMapSample(tab, 'attenuationDistanceMap', 'surf.attenuationDistance *= max( texel.r, 1e-3 );'));
 
         // OpenPBR coat_roughness_anisotropy: alpha_t = r² sqrt( 2 / ( 1 + ( 1 - a )² ) ), alpha_b = ( 1 - a ) alpha_t
         replaceOnce(/\n(\t+)surf\.clearcoatRoughness = clamp\( clearcoatRoughness, minRoughness, 1\.0 \);\n/, (m, tab) => `${m}`
@@ -451,7 +470,8 @@ function mediumPatch() {
         replaceOnce(/\n(\t)anisotropyMapTransform: 'mat3',\n/, (m, tab) => `${m}${tab}// rindr-medium\n${tab}mediumScatter: 'vec3',\n${tab}mediumAnisotropy: 'float',\n${tab}mediumTint: 'float',\n`
           + `${tab}// rindr-openpbr (in the medium's padding): coat darkening, anisotropy, rotation (radians)\n${tab}coatDarkening: 'float',\n${tab}coatAnisotropy: 'float',\n${tab}coatAnisotropyRotation: 'float',\n`
           + `${tab}// rindr-openpbr: the coat's anisotropy map (RG direction, B strength – swirl marks) + its transform\n${tab}coatAnisotropyMap: 'int',\n${tab}coatPad0: 'float',\n${tab}coatPad1: 'float',\n${tab}coatPad2: 'float',\n${tab}coatAnisotropyMapTransform: 'mat3',\n`
-          + `${tab}// rindr-openpbr: base_diffuse_roughness per pixel (red channel × diffuseRoughness, like three.js r187) + its transform\n${tab}diffuseRoughnessMap: 'int',\n${tab}diffusePad0: 'float',\n${tab}diffusePad1: 'float',\n${tab}diffusePad2: 'float',\n${tab}diffuseRoughnessMapTransform: 'mat3',\n`);
+          + `${tab}// rindr-openpbr: OpenPBR maps without a slot in the library (OPENPBR_MAPS) – index + padding + transform each\n`
+          + OPENPBR_MAPS.map(k => `${tab}${k}: 'int',\n${tab}${k}Pad0: 'float',\n${tab}${k}Pad1: 'float',\n${tab}${k}Pad2: 'float',\n${tab}${k}Transform: 'mat3',\n`).join(''));
         replaceOnce(/\n(\t)clearcoatRoughness: 'f32',\n/, (m, tab) => `${m}${tab}transmissionTint: 'vec3f',\n`);
         return { code, map: null };
       }
@@ -472,11 +492,8 @@ ${tab}// rindr-openpbr: the coat's anisotropy map + its transform
 ${tab}intArray[ index ++ ] = getTexture( m, 'coatAnisotropyMap' );
 ${tab}index += 3;
 ${tab}index += writeTextureMatrixToArray( m, 'coatAnisotropyMap', floatArray, index );
-${tab}// rindr-openpbr: the diffuse roughness map + its transform
-${tab}intArray[ index ++ ] = getTexture( m, 'diffuseRoughnessMap' );
-${tab}index += 3;
-${tab}index += writeTextureMatrixToArray( m, 'diffuseRoughnessMap', floatArray, index );
-`);
+${tab}// rindr-openpbr: OpenPBR maps without a slot in the library (OPENPBR_MAPS) + their transforms
+${OPENPBR_MAPS.map(k => `${tab}intArray[ index ++ ] = getTexture( m, '${k}' );\n${tab}index += 3;\n${tab}index += writeTextureMatrixToArray( m, '${k}', floatArray, index );\n`).join('')}`);
         return { code, map: null };
       }
       if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/material.wgsl.js')) {
