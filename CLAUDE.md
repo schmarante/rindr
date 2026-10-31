@@ -73,7 +73,7 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 | `docs/export-ki.md` | Bild-Export und KI-Rendering – `image-export.js`, `png-encode.js`, `ki-render.js`, `ki-gemini.js`. |
 | `docs/memory.md` | Speicher und Gerätegrenzen – `memory-budget.js` (Budget aus den Gerätedaten, Worker-Zahl, Speicher-Schranke), `load-guard.js` (Absturz erkennen, sparsamer Modus), Dialoge/Hinweise bei zu großen Modellen (`notice.js`, `choiceDialog`). |
 | `docs/distributed.md` | Distributed Rendering – `src/scripts/distributed/`: Master/Render-Clients, Buckets (`pathTracing.renderRegion`), Verteilung, Ausfall, beschriftete Anzeige, Rechner im Netz (WebRTC, Kopplung per Code – `rtc.js`); Stand und nächste Stufen. |
-| `docs/vision.md` | Zukunftsvisionen (Distributed Rendering – Umsetzung siehe `docs/distributed.md`; Licht-Passes / Light Mix, EXR- und PSD-Export – umgesetzt, siehe `docs/pathtracer.md`) |
+| `docs/vision.md` | Zukunftsvisionen (Distributed Rendering – Umsetzung siehe `docs/distributed.md`; Licht-Passes / Light Mix, EXR- und PSD-Export – umgesetzt, siehe `docs/pathtracer.md`; Modellieren auf SDF-Basis – geparkt) |
 
 ## Stand (2026-10-14)
 

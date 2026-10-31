@@ -43,3 +43,14 @@ Heute liefert der Pathtracer nur das fertige Farbbild (Beauty); transparentes PN
 
 **Reihenfolge (Vorschlag, vom Nutzer so besprochen):** Licht-Passes je Quelle im Kernel + Live-Regler → EXR → PSD (32 Bit) → Stufe 2.
 
+
+## Modellieren auf SDF-Basis (geparkt 31.10.2026)
+Anlass: Demo eines browserbasierten SDF-Modellierers mit sehr schnellem Pathtracer (Glas, Brechung, Kuwahara-artige Glättung und reduzierte Auflösung beim Bewegen). Der Nutzer fragte, warum die Beispielszene aus Dreiecken besteht, und dann: „aktuell haben wir noch gar keinen Modelling-Teil … wenn man das andenken würde, könnte man das ja gleich auf SDF-Basis machen“ → „park das mal unter den Zukunftsideen“.
+
+**Überlegungen**
+- RINDR importiert nur; alles Geladene ist am Ende ein Dreiecksnetz (auch STEP nach der Tessellierung). Eine SDF-Beispielszene allein bringt wenig (schon schnell, kein Glas, Netz fein genug) und bräuchte den ganzen Viewer doppelt – deshalb nur zusammen mit einem Modellier-Teil sinnvoll.
+- **SDF als Modellierkern:** Abrunden, weiches Verschmelzen und boolesche Operationen trivial (bei Netzen das Schwierigste), auflösungsunabhängig, exakte Normalen (sauberes Glas), Szene = kleine Beschreibung (passt zum Szenen-JSON), Parameter jederzeit änderbar; keine natürlichen UVs – passt zu den prozeduralen Materialien mit Box-/Triplanar-Mapping.
+- **Rendering hybrid (Empfehlung):** SDF-Baum ist die Wahrheit, ein Worker vernetzt ihn fein (Dual Contouring – scharfe Kanten bleiben) → Raster, Pathtracer, Schatten, Auswahl, Materialien, Explosion, glTF-Export funktionieren sofort. Später optional direktes Raymarching der SDF im Pathtracer, wo es sich lohnt (Glas). Nur Raymarching hieße: jeden Strahltyp (Kamera, Licht, Schatten, Schattenfänger, Glas-Schatten, Kaustik-Photonen, Hilfsdaten), das Raster (Tiefe, Schatten, AO, Hervorhebung, Schnittebene), UVs, Scene Graph, Auswahl und Export neu – und kein Export ohne Vernetzung.
+- SDF ist nicht automatisch schneller: Raymarching braucht viele Schritte je Strahl; schnell bei wenigen weichen Formen, bei Baugruppen mit Tausenden Teilen ist ein Dreiecks-BVH im Vorteil.
+
+**Möglicher Einstieg:** Bausteine für die Inszenierung importierter Modelle (RINDRs Anwendungsfall): Hohlkehle/Studio-Hintergrund, Podest/Sockel (rund/eckig, abgerundet), Grundformen (Kugel, Box, Zylinder, Torus, Kapsel mit Rundung), Verschmelzen mit Übergang und Abziehen; später die Beispielszene daraus neu bauen. Offene Frage an den Nutzer: Inszenierungs-Bausteine oder allgemeines Modellieren.
