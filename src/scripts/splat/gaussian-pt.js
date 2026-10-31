@@ -535,6 +535,77 @@ const COSINE = wgslTagFn/* wgsl */`
     }
 `;
 
+// Surface look (relit 'surface'): diffuse + GGX like the raster's relit splats (splat-mesh.js _lighting – same
+// D, visibility and Schlick Fresnel; without material roughness 0.8, no metal; with one its roughness / metalness).
+// Sampled as a mix: the GGX lobe (half vector by D) with the probability of its share of the reflectance (10–90 %),
+// otherwise cosine-weighted; the pdf of the mix also weighs the light sample (MIS). Before: diffuse only.
+const SPEC_SHARE = wgslTagFn/* wgsl */`
+    fn rindrGxSpecShare( albedo: vec3f ) -> f32 {
+
+        let lum = vec3f( 0.2126, 0.7152, 0.0722 );
+        let spec = dot( mix( vec3f( 0.04 ), albedo, ${ S.metalness } ), lum );
+        let diffuse = dot( albedo * ( 1.0 - ${ S.metalness } ), lum );
+        return clamp( spec / max( spec + diffuse, 1e-4 ), 0.1, 0.9 );
+
+    }
+`;
+
+/** surface look: f · cos (rgb) and the pdf of the sampling mix (a) for the light direction wi; n and wo on one side */
+const SURFACE_EVAL = wgslTagFn/* wgsl */`
+    fn rindrGxSurfaceEval( n: vec3f, wo: vec3f, wi: vec3f, albedo: vec3f ) -> vec4f {
+
+        let ndl = dot( n, wi );
+        if ( ndl <= 0.0 ) {
+
+            return vec4f( 0.0 );
+
+        }
+        let ndv = max( dot( n, wo ), 1e-4 );
+        let metal = ${ S.metalness };
+        let diffuse = albedo * ( 1.0 - metal );
+        let f0 = mix( vec3f( 0.04 ), albedo, metal );
+        let h = normalize( wi + wo );
+        let ndh = max( dot( n, h ), 0.0 );
+        let vdh = max( dot( wo, h ), 1e-4 );
+        let alpha = ${ S.roughness } * ${ S.roughness };
+        let a2 = alpha * alpha;
+        let dd = ndh * ndh * ( a2 - 1.0 ) + 1.0;
+        let D = a2 / ( 3.14159265 * dd * dd );
+        let gv = ndl * ( ndv * ( 1.0 - alpha ) + alpha );
+        let gl = ndv * ( ndl * ( 1.0 - alpha ) + alpha );
+        let visibility = 0.5 / max( gv + gl, 1e-5 );
+        let F = f0 + ( vec3f( 1.0 ) - f0 ) * pow( 1.0 - vdh, 5.0 );
+        let f = diffuse * 0.318309886 + F * ( D * visibility );
+        let share = ${ SPEC_SHARE }( albedo );
+        let pdf = share * D * ndh / ( 4.0 * vdh ) + ( 1.0 - share ) * ndl * 0.318309886;
+        return vec4f( f * ndl, pdf );
+
+    }
+`;
+
+/** surface look: a direction from the sampling mix (u.z picks the lobe) */
+const SURFACE_SAMPLE = wgslTagFn/* wgsl */`
+    fn rindrGxSurfaceSample( n: vec3f, wo: vec3f, albedo: vec3f, u: vec3f ) -> vec3f {
+
+        if ( u.z >= ${ SPEC_SHARE }( albedo ) ) {
+
+            return ${ COSINE }( n, u.xy );
+
+        }
+        let alpha = ${ S.roughness } * ${ S.roughness };
+        let a2 = alpha * alpha;
+        let cosT = sqrt( ( 1.0 - u.x ) / max( 1.0 + ( a2 - 1.0 ) * u.x, 1e-6 ) );
+        let sinT = sqrt( max( 1.0 - cosT * cosT, 0.0 ) );
+        let phi = 6.2831853 * u.y;
+        let helper = select( vec3f( 1.0, 0.0, 0.0 ), vec3f( 0.0, 1.0, 0.0 ), abs( n.x ) > 0.9 );
+        let tx = normalize( cross( helper, n ) );
+        let ty = cross( n, tx );
+        let h = normalize( tx * ( sinT * cos( phi ) ) + ty * ( sinT * sin( phi ) ) + n * cosT );
+        return reflect( - wo, h );
+
+    }
+`;
+
 /** linear light of Gaussian j (bits from rindrGxMarch) seen along worldD – baked splats, with the view-dependent bands */
 const LIGHT = wgslTagFn/* wgsl */`
     fn rindrGxLight( jBits: f32, worldD: vec3f ) -> vec3f {
@@ -546,4 +617,4 @@ const LIGHT = wgslTagFn/* wgsl */`
 `;
 
 export const GAUSS_PT = { march: MARCH, light: LIGHT, transmittance: TRANSMITTANCE, normal: NORMAL, color: COLOR_OF, albedo: ALBEDO, sphere: SPHERE,
-    cosine: COSINE, on: GAUSS.on, mode: GAUSS.mode, primary: GAUSS.primary, glow: S.glow };
+    cosine: COSINE, surfaceEval: SURFACE_EVAL, surfaceSample: SURFACE_SAMPLE, on: GAUSS.on, mode: GAUSS.mode, primary: GAUSS.primary, glow: S.glow };

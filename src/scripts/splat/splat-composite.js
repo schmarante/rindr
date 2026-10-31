@@ -7,6 +7,11 @@
 //   2. drawSplats: the splats into their own target – first the models' depth (depth material: also their view depth
 //      into the second attachment), so models cover them, then the splats (display values, blended in display space
 //      like the reference; second attachment: view depth × alpha, blended alike → the expected depth of the layer)
+//   2b. relit splats ('surface'): before that, the splats' depth alone at half resolution (view depth × alpha, the
+//      models' depth covering) → view normals from its gradient (per side the neighbour with the smaller step – no
+//      normals across edges) → smoothed (5 × 5, depth-aware); the composite pass shades each splat with the normal of
+//      the visible surface at its centre (splat-mesh.js _lighting) – the shortest axes of neighbouring splats scatter,
+//      the surface looked faceted (idea from real-time GI work on Gaussians: normals from the rasterised depth)
 //   3. ambient occlusion (with models): from the combined depth (models + splats) at half resolution – models are
 //      darkened by everything in their hemisphere (the scan's floor and walls, themselves; normal from the depth), the
 //      scan only by models near it (its own occlusion is baked into it; normals from grass/leaf depth are noise) →
@@ -34,7 +39,7 @@
 import * as THREE from 'three/webgpu';
 import {
     Fn, texture, texture3D, uniform, vec2, vec3, vec4, float, select, exp2, clamp, max, min, abs, sqrt, cos, sin, fract, dot, cross,
-    normalize, length, mrt, positionView, sRGBTransferOETF, sRGBTransferEOTF, uv, Loop, If, smoothstep, mix,
+    normalize, length, mrt, positionView, exp, sRGBTransferOETF, sRGBTransferEOTF, uv, Loop, If, smoothstep, mix,
     acesFilmicToneMapping, agxToneMapping, neutralToneMapping, cineonToneMapping, reinhardToneMapping, linearToneMapping,
 } from 'three/tsl';
 import { inverseToneTable, needsTable, LUT_SIZE } from './tone-inverse.js';
@@ -88,6 +93,13 @@ export class SplatComposite {
         // ambient occlusion: projection of the camera (P00, P11), radius in view units, strength, on/off
         this.ao = { projection: uniform(new THREE.Vector2(1, 1)), radius: uniform(100), strength: uniform(SPLATS.ao?.strength ?? 1),
             enabled: uniform(0), texel: uniform(new THREE.Vector2(1, 1)), direction: uniform(new THREE.Vector2(1, 0)) };
+        // screen normals of relit splats (2b): depth of the splats, normal map, smoothed normal map – half resolution
+        this.normalDepth = new THREE.RenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 0 });
+        this.normalTargets = [0, 1].map(() => new THREE.RenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false }));
+        this.normalParams = { projection: uniform(new THREE.Vector3(1, 1, 0)), texel: uniform(new THREE.Vector2(1, 1)) };
+        this.normalQuad = new THREE.QuadMesh(new THREE.NodeMaterial());
+        this.normalBlurQuad = new THREE.QuadMesh(new THREE.NodeMaterial());
+        this._buildNormals();
         this.aoQuad = new THREE.QuadMesh(new THREE.NodeMaterial());
         this.blurQuad = new THREE.QuadMesh(new THREE.NodeMaterial());
         this.blurInput = texture(this.aoTargets[0].texture);
@@ -101,7 +113,7 @@ export class SplatComposite {
         const r = this.fixedSize ? this._size.setScalar(this.fixedSize) : this.renderer.getDrawingBufferSize(this._size);
         for (const t of [this.frame, this.splats, this.result, this.cloudColor, this.cloudDepth]) if (t.width !== r.x || t.height !== r.y) t.setSize(r.x, r.y);
         const hx = Math.max(1, Math.ceil(r.x / 2)), hy = Math.max(1, Math.ceil(r.y / 2));
-        for (const t of this.aoTargets) if (t.width !== hx || t.height !== hy) t.setSize(hx, hy);
+        for (const t of [...this.aoTargets, this.normalDepth, ...this.normalTargets]) if (t.width !== hx || t.height !== hy) t.setSize(hx, hy);
     }
 
     /**
@@ -136,6 +148,8 @@ export class SplatComposite {
         for (const o of hide) if (o?.visible) { o.visible = false; hidden.push(o); }
         const restore = splat.useVariant(material, instances);
         try {
+            if (material === splat.compositeMaterial && splat.look.mode === 'surface') this._drawNormals(scene, camera, layer, splat, saved.mask);
+            else splat.setScreenNormals(null);
             r.setRenderTarget(this.splats);
             r.setClearColor(0x000000, 0);
             r.clear();
@@ -278,6 +292,87 @@ export class SplatComposite {
     }
 
     // AO from the second attachment of the splat target (x = Σ depth·α, y = model share, w = coverage)
+    // 2b: the splats' depth (models covering) → normal map → smoothed; hands it to the splat's composite pass
+    _drawNormals(scene, camera, layer, splat, mask) {
+        const r = this.renderer;
+        const np = this.normalParams;
+        np.projection.value.set(camera.projectionMatrix.elements[0], camera.projectionMatrix.elements[5], camera.isPerspectiveCamera ? 0 : 1);
+        np.texel.value.set(1 / this.normalDepth.width, 1 / this.normalDepth.height);
+        r.setRenderTarget(this.normalDepth);
+        r.setClearColor(0x000000, 0);
+        r.clear();
+        r.autoClear = false;
+        scene.background = null;
+        scene.backgroundNode = null;
+        scene.overrideMaterial = this.depthOnly;
+        r.render(scene, camera);
+        scene.overrideMaterial = null;
+        const back = splat.useVariant(splat.depthMaterial);
+        camera.layers.set(layer);
+        r.render(scene, camera);
+        camera.layers.mask = mask;
+        back();
+        r.setRenderTarget(this.normalTargets[0]);
+        this.normalQuad.render(r);
+        r.setRenderTarget(this.normalTargets[1]);
+        this.normalBlurQuad.render(r);
+        splat.setScreenNormals(this.normalTargets[1]);
+    }
+
+    _buildNormals() {
+        const np = this.normalParams;
+        const depthTex = texture(this.normalDepth.texture);
+        // expected view depth of the splat layer where it covers (0 = none)
+        const depthAt = p => { const c = depthTex.sample(p); return select(c.a.greaterThan(0.3), c.r.div(max(c.a, 1e-4)), float(0)); };
+        // view position of a pixel from its depth (uv y down; orthographic: no division by depth)
+        const viewPos = (p, d) => {
+            const s = mix(d, float(1), np.projection.z);
+            return vec3(p.x.mul(2).sub(1).div(np.projection.x).mul(s), float(1).sub(p.y.mul(2)).div(np.projection.y).mul(s), d.negate());
+        };
+        this.normalQuad.material.fragmentNode = Fn(() => {
+            const p = uv().toVar();
+            const zc = depthAt(p).toVar();
+            const result = vec4(0).toVar();
+            If(zc.greaterThan(0), () => {
+                const tx = vec2(np.texel.x, 0), ty = vec2(0, np.texel.y);
+                const zl = depthAt(p.sub(tx)).toVar(), zr = depthAt(p.add(tx)).toVar();
+                const zu = depthAt(p.sub(ty)).toVar(), zd = depthAt(p.add(ty)).toVar();
+                const c = viewPos(p, zc).toVar();
+                // per axis the neighbour with the smaller depth step (missing one = infinitely far)
+                const stepOf = z => select(z.greaterThan(0), abs(z.sub(zc)), float(1e30));
+                const dx = select(stepOf(zr).lessThan(stepOf(zl)), viewPos(p.add(tx), zr).sub(c), c.sub(viewPos(p.sub(tx), zl))).toVar();
+                const dy = select(stepOf(zd).lessThan(stepOf(zu)), viewPos(p.add(ty), zd).sub(c), c.sub(viewPos(p.sub(ty), zu))).toVar();
+                const valid = min(stepOf(zl), stepOf(zr)).lessThan(1e29).and(min(stepOf(zu), stepOf(zd)).lessThan(1e29));
+                const cr = cross(dx, dy).toVar();
+                If(valid.and(length(cr).greaterThan(1e-12)), () => {
+                    const n = normalize(cr).toVar();
+                    result.assign(vec4(select(dot(n, c).greaterThan(0), n.negate(), n), zc));   // towards the camera
+                });
+            });
+            return result;
+        })();
+        const normalTex = texture(this.normalTargets[0].texture);
+        this.normalBlurQuad.material.fragmentNode = Fn(() => {
+            const p = uv().toVar();
+            const c = normalTex.sample(p).toVar();
+            const result = vec4(0).toVar();
+            If(c.w.greaterThan(0), () => {
+                const sum = vec3(0).toVar();
+                const tolerance = c.w.mul(0.01);
+                for (let y = -2; y <= 2; y++) {
+                    for (let x = -2; x <= 2; x++) {
+                        const t = normalTex.sample(p.add(vec2(x, y).mul(np.texel)));
+                        const near = abs(t.w.sub(c.w)).div(tolerance);
+                        const w = select(t.w.greaterThan(0), exp(near.mul(near).negate()), float(0)).mul(Math.exp(-(x * x + y * y) / 4.5));
+                        sum.addAssign(t.xyz.mul(w));
+                    }
+                }
+                result.assign(vec4(select(length(sum).greaterThan(1e-6), normalize(sum), c.xyz), c.w));
+            });
+            return result;
+        })();
+    }
+
     _buildAo() {
         const ao = this.ao;
         const depthTex = this.splats.textures[1];
@@ -417,9 +512,9 @@ export class SplatComposite {
     }
 
     dispose() {
-        for (const t of [this.frame, this.splats, this.result, this.cloudColor, this.cloudDepth, ...this.aoTargets]) t.dispose();
+        for (const t of [this.frame, this.splats, this.result, this.cloudColor, this.cloudDepth, ...this.aoTargets, this.normalDepth, ...this.normalTargets]) t.dispose();
         this.depthOnly.dispose();
-        for (const q of [this.quad, this.out, this.aoQuad, this.blurQuad, this.zero]) q.material.dispose();
+        for (const q of [this.quad, this.out, this.aoQuad, this.blurQuad, this.zero, this.normalQuad, this.normalBlurQuad]) q.material.dispose();
         this.depthMaterial.dispose();
     }
 }

@@ -54,6 +54,7 @@ export const SPLAT_UNIFORMS = {
     active: uniform(0), inverse: uniform(new THREE.Matrix4()), sigma: uniform(0), relit: uniform(0), override: uniform(0),
     tint: uniform(new THREE.Color(1, 1, 1)), glow: uniform(new THREE.Color(0, 0, 0)), mean: uniform(0.2), detail: uniform(1),
     primary: uniform(1),
+    roughness: uniform(0.8), metalness: uniform(0),   // relit 'surface' with traced Gaussians: GGX like the raster's relit splats
     grid: uniform(0),   // the grid is baked and the splats are shown (helper passes, pt-guides.js)
 };
 const GAUSSIANS = typeof location === 'undefined' || new URLSearchParams(location.search).get('gaussians') !== '0';
@@ -226,6 +227,8 @@ export class SplatVolume {
         u.glow.value.setRGB(pt.sheenColor.r, pt.sheenColor.g, pt.sheenColor.b);
         u.mean.value = pt.clearcoat;
         u.detail.value = pt.ior;
+        u.roughness.value = look.material ? Math.max(look.material.roughness ?? 0.5, 0.04) : 0.8;
+        u.metalness.value = look.material?.metalness ?? 0;
         u.primary.value = this.primary ? 1 : 0;
         this.updateUniforms();
     }

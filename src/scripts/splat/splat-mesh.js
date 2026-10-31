@@ -29,7 +29,7 @@ import {
     Fn, If, Discard, storage, instanceIndex, uniform, vec2, vec3, vec4, float, uint, uintBitsToFloat, unpackHalf2x16,
     unpackUnorm4x8, unpackSnorm4x8, mix, abs, modelViewMatrix, modelWorldMatrixInverse, cameraProjectionMatrix, cameraPosition,
     positionGeometry, screenSize, varyingProperty, exp, sqrt, max, min, normalize, length, dot, select, sRGBTransferEOTF, smoothstep,
-    modelWorldMatrix, textureLoad, ivec2, clamp, step, pow, mrt, log, reflect, pmremTexture, sRGBTransferOETF, texture, uv, atan, acos,
+    modelWorldMatrix, cameraWorldMatrix, textureLoad, ivec2, clamp, step, pow, mrt, log, reflect, pmremTexture, sRGBTransferOETF, texture, uv, atan, acos,
     floor, fract, screenUV,
     acesFilmicToneMapping, agxToneMapping, neutralToneMapping, cineonToneMapping, reinhardToneMapping, linearToneMapping,
 } from 'three/tsl';
@@ -39,6 +39,9 @@ import { SPLATS } from '../config.js';
 // placeholder until a depth map exists (same texture kind → the shader keeps its binding)
 const NO_SHADOW_MAP = new THREE.DataTexture(new Float32Array([1]), 1, 1, THREE.RedFormat, THREE.FloatType);
 NO_SHADOW_MAP.needsUpdate = true;
+// placeholder of the screen normals (splat-composite.js: view normal + depth; depth 0 = none)
+const NO_NORMALS = new THREE.DataTexture(new Uint16Array(4), 1, 1, THREE.RGBAFormat, THREE.HalfFloatType);
+NO_NORMALS.needsUpdate = true;
 // stand-in environment of relit splats until the viewer passes the HDRI (grey, equirectangular)
 const NO_ENVIRONMENT = new THREE.DataTexture(new Uint16Array([0x3800, 0x3800, 0x3800, 0x3c00]), 1, 1, THREE.RGBAFormat, THREE.HalfFloatType);
 NO_ENVIRONMENT.mapping = THREE.EquirectangularReflectionMapping;
@@ -120,6 +123,9 @@ export class SplatMesh extends THREE.Mesh {
         // display = 1: display values out (own pass onto the finished image, setDisplayOutput); shadow of models (setShadow)
         this.display = uniform(0);
         this.shadow = { enabled: uniform(0), strength: uniform(SPLATS.shadowStrength), matrix: uniform(new THREE.Matrix4()), size: uniform(1), nodes: [] };
+        // normals of the visible surface from the splats' depth (splat-composite.js, relit 'surface' in its own pass):
+        // on, size of the normal map, its taps (setScreenNormals)
+        this.screenNormals = { on: uniform(0), size: uniform(new THREE.Vector2(1, 1)), nodes: [] };
         // relighting / override material (setLook, setRenderState); opacity map for the own shadow (setOpacity)
         this.look = {
             mode: 'baked', material: null, structure: 'baked|false', toneMapping: THREE.NoToneMapping,
@@ -271,7 +277,7 @@ export class SplatMesh extends THREE.Mesh {
 
     // position + vertex node of a material variant. order: storage buffer of the drawing order (null = every splat
     // once in buffer order: light pass); light: orthographic light camera, opacity out
-    _setVertex(material, order, light = false) {
+    _setVertex(material, order, light = false, { screen = false, depth = false } = {}) {
         const { A } = this._src;
         // local position = splat centre: positionView/world of the material are then those of the centre –
         // the section plane (ClippingGroup) cuts whole splats at their centre
@@ -279,7 +285,7 @@ export class SplatMesh extends THREE.Mesh {
             const a = A.element(order ? order.element(instanceIndex) : instanceIndex);
             return vec3(uintBitsToFloat(a.x), uintBitsToFloat(a.y), uintBitsToFloat(a.z));
         })();
-        material.vertexNode = this._vertexNode(order, light);
+        material.vertexNode = this._vertexNode(order, light, { screen, depth });
         material.needsUpdate = true;
     }
 
@@ -288,7 +294,8 @@ export class SplatMesh extends THREE.Mesh {
     //  composite – own pass of splat-composite.js: colour (premultiplied in the shader) + depth × alpha (MRT, for AO)
     //  env       – environment capture (splat-environment.js): like composite, in the order of sortEnv
     //  light     – opacity map of splat-opacity.js: every splat once, optical depth per depth slice, added up
-    _variant(kind, order, light = false, map = null) {
+    //  depth     – normal pre-pass of splat-composite.js (relit 'surface'): view depth × alpha only
+    _variant(kind, order, light = false, map = null, vertex = {}) {
         const m = createMaterial();
         m.premultipliedAlpha = false;   // MRT output: done in the shader
         m.blending = THREE.CustomBlending;
@@ -302,13 +309,27 @@ export class SplatMesh extends THREE.Mesh {
         }
         m.name = `Gaussian Splats (${kind})`;
         m.fragmentNode = this._fragmentNode(kind, map);
-        this._setVertex(m, order, light);
+        this._setVertex(m, order, light, vertex);
         return m;
     }
 
     /** material for the own pass of splat-composite.js (colour + depth) */
     get compositeMaterial() {
-        return this._variants.composite ??= this._variant('mrt', this._src.order);
+        return this._variants.composite ??= this._variant('mrt', this._src.order, false, null, { screen: true });
+    }
+
+    /** material of the normal pre-pass (splat-composite.js): view depth × alpha, coverage – no colour or light */
+    get depthMaterial() {
+        return this._variants.depth ??= this._variant('depth', this._src.order, false, null, { depth: true });
+    }
+
+    /** the screen normal map of this frame (texture + size; null = axes) for the composite pass's relighting */
+    setScreenNormals(map) {
+        const sn = this.screenNormals;
+        sn.on.value = map ? 1 : 0;
+        if (!map) return;
+        sn.size.value.set(map.width, map.height);
+        for (const n of sn.nodes) if (n.value !== map.texture) n.value = map.texture;   // rebuilt variants add new taps
     }
 
     /** material for the environment capture: in the order of the last sortEnv (distance from the probe) */
@@ -368,6 +389,7 @@ export class SplatMesh extends THREE.Mesh {
             return vec4(vColor.r, 0, 0, 1);
         }
         if (kind === 'mrt') return mrt({ output: vec4(vColor.rgb.mul(alpha), alpha), splatDepth: vec4(vDepth.mul(alpha), 0, 0, alpha) });
+        if (kind === 'depth') return vec4(vDepth.mul(alpha), 0, 0, alpha);
         // light: optical depth −ln(1 − α) into every slice that ends behind the splat – its light depth relative to the
         // front of this texel (deep opacity map: the slices follow the first surface, so a surface lies at the start of
         // a slice instead of anywhere in it – with fixed slices a relit skull showed bands across the light)
@@ -376,12 +398,13 @@ export class SplatMesh extends THREE.Mesh {
         return mrt({ output: step(t, map.b0).mul(od), slices: step(t, map.b1).mul(od) });
     }
 
-    _vertexNode(order, light) {
+    // screen: relit normals from the screen normal map (composite pass); depth: only shape and depth (normal pre-pass)
+    _vertexNode(order, light, { screen = false, depth: depthOnly = false } = {}) {
         const { A, B, SH, W, K, antialias } = this._src;
         const { shRange } = this.uniforms;
         const { color: vColor, coord: vCoord, depth: vDepth } = this._vary;
         const look = this.look;
-        const lit = !light && look.mode !== 'baked';
+        const lit = !light && !depthOnly && look.mode !== 'baked';
         return Fn(() => {
             const index = order ? order.element(instanceIndex) : instanceIndex;
             const a = A.element(index).toVar();
@@ -506,7 +529,8 @@ export class SplatMesh extends THREE.Mesh {
                 if (lit) {
                     // relit (setLook): radiance from the scene's lights and environment; display value through the
                     // renderer's tone curve (the composite turns it back – the splat then looks like the models)
-                    const radiance = this._lighting(center, sRGBTransferEOTF(max(color, 0)), [r0, r1, r2], [sx, sy, sz], shade).toVar();
+                    const screenNormal = screen && look.mode === 'surface' ? { clip, depth, sigma: max(length(m0), max(length(m1), length(m2))) } : null;
+                    const radiance = this._lighting(center, sRGBTransferEOTF(max(color, 0)), [r0, r1, r2], [sx, sy, sz], shade, screenNormal).toVar();
                     const curve = TONE_CURVES[look.toneMapping];
                     const shown = curve ? clamp(curve(radiance, look.exposure), 0, 1) : clamp(radiance, 0, 1);
                     vColor.assign(vec4(select(this.display.greaterThan(0.5), sRGBTransferOETF(shown), max(radiance, 0)), alpha));
@@ -521,11 +545,14 @@ export class SplatMesh extends THREE.Mesh {
     }
 
     // Relighting (setLook) at the splat centre: normal = shortest axis of the Gaussian (flat splats lie on the
-    // surface), turned towards the camera; albedo = the splat's colour (its baked light stays in it) or the override
+    // surface), turned towards the camera – in the composite pass the normal of the visible surface from the splats'
+    // depth instead (screen normal map at the centre, smooth – the axes of neighbouring splats scatter, the surface
+    // looked faceted), where the splat lies on that surface (within 3 σ + 3 % of the depth; floaters in front and
+    // splats outside the map keep their axis); albedo = the splat's colour (its baked light stays in it) or the override
     // material's colour × the splat's relative brightness (structure). Direct light of the two directional lights
     // (main light: × shadow of models × own shadow from the opacity map), GGX highlight, environment from the HDRI
     // (PMREM: roughness 1 = irradiance). 'volume': no normal (smoke) – half the light from every side, no highlight.
-    _lighting(center, base, [r0, r1, r2], [sx, sy, sz], shade) {
+    _lighting(center, base, [r0, r1, r2], [sx, sy, sz], shade, screenNormal = null) {
         const look = this.look;
         const surface = look.mode === 'surface';
         const world = modelWorldMatrix.mul(vec4(center, 1)).xyz.toVar();
@@ -533,6 +560,19 @@ export class SplatMesh extends THREE.Mesh {
         const axis = select(sx.lessThan(sy).and(sx.lessThan(sz)), r0, select(sy.lessThan(sz), r1, r2));
         const nWorld = normalize(modelWorldMatrix.mul(vec4(axis, 0)).xyz).toVar();
         const n = select(dot(nWorld, V).lessThan(0), nWorld.negate(), nWorld).toVar();
+        if (screenNormal) {
+            const sn = this.screenNormals;
+            const { clip, depth, sigma } = screenNormal;
+            const ndc = clip.xy.div(clip.w);
+            const size = ivec2(sn.size);
+            const px = clamp(ivec2(vec2(ndc.x.mul(0.5).add(0.5), ndc.y.mul(-0.5).add(0.5)).mul(sn.size)), ivec2(0, 0), size.sub(1));
+            const map = textureLoad(NO_NORMALS, px);
+            sn.nodes.push(map);   // the texture node itself (setScreenNormals swaps its value)
+            const tap = map.toVar();
+            const onSurface = sn.on.greaterThan(0.5).and(tap.w.greaterThan(0)).and(abs(depth.sub(tap.w)).lessThan(sigma.mul(3).add(depth.mul(0.03))));
+            const fromScreen = normalize(cameraWorldMatrix.mul(vec4(tap.xyz, 0)).xyz);
+            n.assign(select(onSurface, select(dot(fromScreen, V).lessThan(0), fromScreen.negate(), fromScreen), n));
+        }
         let albedo = base, metal = float(0), rough = float(0.8);
         if (look.material) {
             const luma = dot(base, vec3(0.2126, 0.7152, 0.0722));
@@ -602,7 +642,7 @@ export class SplatMesh extends THREE.Mesh {
     _rebuild() {
         const { main, composite, env } = this._variants;
         this._setVertex(main, this._src.order);
-        if (composite) this._setVertex(composite, this._src.order);
+        if (composite) this._setVertex(composite, this._src.order, false, { screen: true });
         if (env) this._setVertex(env, this._src.orderEnv);
     }
 

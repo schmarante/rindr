@@ -1387,8 +1387,9 @@ ${tab}\t\t}
 
 ${tab}\t} else {
 
-${tab}\t\t// relit: scattered at the Gaussian that catches the ray (probability = its response) – surface: diffuse around
-${tab}\t\t// its shortest axis, volume: in every direction; a light sample like the volume walk's
+${tab}\t\t// relit: scattered at the Gaussian that catches the ray (probability = its response) – surface: diffuse + GGX
+${tab}\t\t// around its shortest axis (gaussian-pt.js, like the raster), volume: in every direction; a light sample like the
+${tab}\t\t// volume walk's
 ${tab}\t\tlet gxE = \${ __GX.march }( ray.origin, ray.direction, surfaceDist, 2u, 1.0, u32( \${ rand1 }( 211u ) * 4294967040.0 ) );
 ${tab}\t\tif ( gxE.x >= 0.0 ) {
 
@@ -1396,7 +1397,13 @@ ${tab}\t\t\tlet gxPos = ray.origin + ray.direction * gxE.x;
 ${tab}\t\t\tlet gxSurface = \${ __GX.mode } == 1u;
 ${tab}\t\t\tlet gxN = \${ __GX.normal }( gxE.y, ray.direction );
 ${tab}\t\t\tresultColor += vec4f( \${ clampPathContributionFunc }( throughputColor * \${ __GX.glow }, bounce, clampDirect, clampIndirect ), 0.0 );
-${tab}\t\t\tthroughputColor *= min( \${ __GX.albedo }( gxE.y, ray.direction ), vec3f( 0.98 ) );
+${tab}\t\t\tlet gxAlbedo = min( \${ __GX.albedo }( gxE.y, ray.direction ), vec3f( 0.98 ) );
+${tab}\t\t\tlet gxWo = - ray.direction;
+${tab}\t\t\tif ( ! gxSurface ) {
+
+${tab}\t\t\t\tthroughputColor *= gxAlbedo;   // surface: the albedo is in its BSDF
+
+${tab}\t\t\t}
 ${tab}\t\t\tlet gxScatter = true;
 ${tab}\t\t\tisFullyTransmissive = false;
 ${tab}\t\t\tgsRough = true;
@@ -1422,8 +1429,16 @@ ${tab}\t\t\t\t} else {
 ${tab}\t\t\t\t\tgxLight = \${ randomLightSampleFn }( gxLightIndex, gxPos, gxL.yz );
 
 ${tab}\t\t\t\t}
-${tab}\t\t\t\tlet gxCos = dot( gxN, gxLight.direction );
-${tab}\t\t\t\tlet gxPhase = select( 0.0795774715, max( gxCos, 0.0 ) * 0.318309886, gxSurface );
+${tab}\t\t\t\t// f · cos and the sampling pdf: isotropic phase (volume) or the surface BSDF
+${tab}\t\t\t\tvar gxF = vec3f( 0.0795774715 );
+${tab}\t\t\t\tvar gxPhase = 0.0795774715;
+${tab}\t\t\t\tif ( gxSurface ) {
+
+${tab}\t\t\t\t\tlet gxEv = \${ __GX.surfaceEval }( gxN, gxWo, gxLight.direction, gxAlbedo );
+${tab}\t\t\t\t\tgxF = gxEv.rgb;
+${tab}\t\t\t\t\tgxPhase = gxEv.a;
+
+${tab}\t\t\t\t}
 ${tab}\t\t\t\tif ( gxSel > 0.0 && gxLight.pdf > 0.0 && gxPhase > 0.0 ) {
 
 ${tab}\t\t\t\t\tlet gxShadowMax = gxLight.dist * ( 1.0 - \${ LIGHT_EPSILON } );
@@ -1432,7 +1447,7 @@ ${tab}\t\t\t\t\tif ( any( gsShadow > vec3f( 0.0 ) ) ) {
 
 ${tab}\t\t\t\t\t\tlet gxLightPdf = gxLight.pdf * gxSel;
 ${tab}\t\t\t\t\t\tlet gxMis = select( 1.0, \${ misHeuristicFn }( gxLightPdf, gxPhase ), \${ isMISWeightLightFn }( gxLight.lightType ) && ! gsGlass );
-${tab}\t\t\t\t\t\tlet gxDirect = throughputColor * gxLight.emission * gxPhase * gxMis * gsShadow / gxLightPdf;
+${tab}\t\t\t\t\t\tlet gxDirect = throughputColor * gxLight.emission * gxF * gxMis * gsShadow / gxLightPdf;
 ${tab}\t\t\t\t\t\tresultColor += vec4f( \${ clampPathContributionFunc }( gxDirect, bounce + 1u, clampDirect, clampIndirect ), 0.0 );
 
 ${tab}\t\t\t\t\t}
@@ -1440,13 +1455,20 @@ ${tab}\t\t\t\t\t}
 ${tab}\t\t\t\t}
 
 ${tab}\t\t\t}
-${tab}\t\t\tlet gxU = \${ rand2 }( 213u );
-${tab}\t\t\tvar gxDir = \${ __GX.sphere }( gxU );
+${tab}\t\t\tlet gxU = \${ rand3 }( 213u );
+${tab}\t\t\tvar gxDir = \${ __GX.sphere }( gxU.xy );
 ${tab}\t\t\tvar gxPdf = 0.0795774715;
 ${tab}\t\t\tif ( gxSurface ) {
 
-${tab}\t\t\t\tgxDir = \${ __GX.cosine }( gxN, gxU );
-${tab}\t\t\t\tgxPdf = max( dot( gxN, gxDir ), 1e-6 ) * 0.318309886;
+${tab}\t\t\t\tgxDir = \${ __GX.surfaceSample }( gxN, gxWo, gxAlbedo, gxU );
+${tab}\t\t\t\tlet gxEv = \${ __GX.surfaceEval }( gxN, gxWo, gxDir, gxAlbedo );
+${tab}\t\t\t\tif ( gxEv.a <= 0.0 ) {
+
+${tab}\t\t\t\t\tbreak;   // below the surface (GGX reflection at a grazing angle)
+
+${tab}\t\t\t\t}
+${tab}\t\t\t\tgxPdf = gxEv.a;
+${tab}\t\t\t\tthroughputColor *= gxEv.rgb / gxPdf;
 
 ${tab}\t\t\t}
 ${tab}\t\t\tbsdfPdf = gxPdf;
