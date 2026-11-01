@@ -23,7 +23,7 @@
 								var scDir = vec3f( 0.0, 1.0, 0.0 );
 								var scDist = ${ LIGHT_FAR_DISTANCE };
 								var scWeight = 0.0;
-								var scDirectional = false;   // a directional lamp (caustics)
+								var scDirectional = false;   // a lamp that sends caustic photons: directional, spot/IES, point
 								if ( scRand.x < scParams.x ) {
 
 									// environment: direction ∝ luminance (importance sampling of the HDRI), accepted with
@@ -71,7 +71,7 @@
 									scIndex = min( scIndex, max( lightsCount, 1u ) - 1u );   // rounding past the last share
 									let scLight = ${ randomLightSampleFn }( scIndex, scPos, scRand.yz );
 									scDir = scLight.direction;
-									scDirectional = scLight.lightType == 3;
+									scDirectional = scLight.lightType == 3 || scLight.lightType == 2 || scLight.lightType == 4;
 									scDist = scLight.dist - ${ LIGHT_EPSILON };
 									scWeight = select( 0.0, 1.0, scLight.pdf > 0.0 );
 

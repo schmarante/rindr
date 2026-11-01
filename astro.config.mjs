@@ -649,7 +649,7 @@ function glassShadowPatch() {
         (_, tab) => `\n${tab}var shadowHit: \${ raycastOutput };\n` + snippet({ origin: 'vertexData.position.xyz', dir: 'lightRec.direction', maxDist: 'shadowRay.maxDist', normal: 'hitResult.normal', primary: 'bounce == 0u' })
           // caustics (caustics.js): on surfaces (not glass) the light of a directional lamp (type 3) and of the HDRI's sun
           // (environment, type 5, inside the sun's cone) through glass comes from the photons
-          + gate('caustics', `${tab}if ( gsGlass && surface.transmission <= 0.5 && \${ __CA_COV }( lightRec.lightType == 3, lightRec.lightType == 5, lightRec.direction ) ) {\n\n${tab}\tgsShadow = vec3f( 0.0 );\n\n${tab}}\n`) + '\n'
+          + gate('caustics', `${tab}if ( gsGlass && surface.transmission <= 0.5 && \${ __CA_COV }( lightRec.lightType == 3 || lightRec.lightType == 2 || lightRec.lightType == 4, lightRec.lightType == 5, lightRec.direction ) ) {\n\n${tab}\tgsShadow = vec3f( 0.0 );\n\n${tab}}\n`) + '\n'
           + `${tab}if ( any( gsShadow > vec3f( 0.0 ) ) ) {`);
       replaceOnce('let isMISWeighted = ${ isMISWeightLightFn }( lightRec.lightType ) && ! shadowHit.forwardBlocked;',
         () => 'let isMISWeighted = ${ isMISWeightLightFn }( lightRec.lightType ) && ! shadowHit.forwardBlocked && ! gsGlass;');

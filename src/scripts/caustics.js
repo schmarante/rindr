@@ -2,15 +2,15 @@
 // onto the surfaces behind it: bright lines and spots inside the shadow, rainbow edges with dispersion.
 //
 // Path tracing alone cannot find them: a path from a surface would have to pass the glass and hit the light exactly –
-// the viewer's directional lights are points in direction space (never hit), the sun of an HDRI rarely (noise).
-// Instead photons from the lights and the HDRI's sun (caustics-kernel.js, own compute pass before the path tracer's
+// directional, point, spot and IES lamps are points (never hit), the sun of an HDRI rarely (noise).
+// Instead photons from the lamps and the HDRI's sun (caustics-kernel.js, own compute pass before the path tracer's
 // frames): parallel rays aimed only at the glass objects, refracted / reflected through them (Fresnel, IOR per
 // wavelength with dispersion, tint, absorption), deposited on the first other surface they hit – a hash grid of small
 // cubes in space (cell side `cell.w`, 6 bins by the side the surface faces, u32 atomics in fixed point). The megakernel
 // looks it up wherever a path hits a surface (and the shadow catcher) and adds that irradiance; the light of these
-// sources through glass is then not counted by the glass shadow (next event estimation through glass → 0: directional
-// lamps entirely, the environment inside the sun's cone), no light twice. The rest of the HDRI keeps the transparent
-// glass shadow (soft light, no sharp caustics anyway).
+// sources through glass is then not counted by the glass shadow (next event estimation through glass → 0: directional,
+// point, spot and IES lamps entirely, the environment inside the sun's cone), no light twice. The rest of the HDRI and
+// area lamps keep the transparent glass shadow (soft light, no sharp caustics anyway).
 //
 // The grid is kept across camera moves (it depends on the scene only) and cleared when glass, lights, HDRI or materials
 // change. Lookup with a random offset of ± half a cell along the surface per sample → smooth (tent filter) over the
@@ -103,13 +103,13 @@ export const CAUSTICS_IRRADIANCE = wgslTagFn/* wgsl */`
     }
 `;
 
-/** this light sample's light through glass comes from the photons: a directional lamp, or the environment inside the
- *  sun's cone */
+/** this light sample's light through glass comes from the photons: a lamp that sends photons (directional, point, spot,
+ *  IES – the path tracer's light types 3, 4, 2), or the environment inside the sun's cone */
 export const CAUSTICS_COVERS = wgslTagFn/* wgsl */`
-    fn causticCovers( directional: bool, environment: bool, direction: vec3f ) -> bool {
+    fn causticCovers( lamp: bool, environment: bool, direction: vec3f ) -> bool {
 
         let sun = ${ CAUSTICS.sun };
-        return ${ CAUSTICS.on } != 0u && ( directional || ( environment && dot( direction, sun.xyz ) > sun.w ) );
+        return ${ CAUSTICS.on } != 0u && ( lamp || ( environment && dot( direction, sun.xyz ) > sun.w ) );
 
     }
 `;

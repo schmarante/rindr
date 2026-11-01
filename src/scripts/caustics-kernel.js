@@ -1,6 +1,8 @@
-// Photon pass of the caustics (caustics.js): one photon per invocation from a light source – the directional lamps and
-// the HDRI's sun (findSun) – aimed at the glass objects' bounding sphere (parallel rays from a disc across it, the sun's
-// spread over its disc – no photon wasted on the open floor), traced through the glass with the path tracer's scene
+// Photon pass of the caustics (caustics.js): one photon per invocation from a light source – the directional lamps, the
+// HDRI's sun (findSun) and the local lamps (point, spot, IES) – aimed at the glass objects' bounding sphere (directional:
+// parallel rays from a disc across it, the sun's spread over its disc; local: from the lamp's position into the cone
+// around the sphere, weighted by the spot's cone or the IES profile – no photon wasted on the open floor), traced
+// through the glass with the path tracer's scene
 // data (BVH, transforms, material records incl. textures – like pt-guides.js) and deposited into the hash grid where it
 // lands on another surface after passing glass.
 //
@@ -10,7 +12,7 @@
 // absorption over the distance inside (attenuation colour/distance) on exit; thin walls pass straight (× colour).
 // Anything else ends the photon: after at least one glass face it is deposited – flux as fixed point (× FIXED) into the
 // cell's slot (key claimed by compare-exchange, linear probing, CAUSTICS_PROBES slots; a full table drops the photon).
-import { Vector3, Vector4, Matrix3, StorageBufferAttribute, Box3, Sphere, DataUtils } from 'three/webgpu';
+import { Vector3, Vector4, Matrix3, Matrix4, Quaternion, StorageBufferAttribute, Box3, Sphere, DataUtils, HalfFloatType } from 'three/webgpu';
 import { uniform, globalId, storage } from 'three/tsl';
 import { proxy, proxyFn, wgslTagFn, rayStruct } from 'three-mesh-bvh/webgpu';
 import { offsetRayOriginFunc } from 'three-gpu-pathtracer/src/webgpu/nodes/utils.wgsl.js';
@@ -19,7 +21,12 @@ import { CAUSTICS, CAUSTICS_HASH, CAUSTICS_PROBES } from './caustics.js';
 
 const FIXED = 32;          // grid units per photon of weight 1 (stochastic rounding – a cell overflows after ~1e8 photons)
 const WORKGROUP = 64;
-const MAX_SOURCES = 16;    // directional lamps + the sun (more lamps: the dimmest ones get no photons)
+const MAX_SOURCES = 16;    // lamps + the sun (more lamps: the dimmest ones get no photons)
+const SOURCE_VEC4 = 5;     // vec4 per source (see prepare)
+// IES profiles of the sources as tables: 180 angles from the axis (0…180°, like the profile textures' columns) × 72
+// directions around it (5° steps, −180…180° like their rows; one row repeated for symmetric profiles)
+const PROFILE_THETA = 180, PROFILE_PHI = 72;
+const SOURCE_KIND = { directional: 0, point: 1, spot: 2, ies: 3 };
 const luminance = c => 0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z;
 
 // pcg hash → uniform [0, 1)
@@ -37,6 +44,28 @@ const random = wgslTagFn/* wgsl */`
 // half float → float (table: the HDRI is scanned once per map)
 let halfTable = null;
 const halfToFloat = () => halfTable ??= Float32Array.from({ length: 65536 }, (_, i) => DataUtils.fromHalfFloat(i));
+const UP = new Vector3(0, 1, 0);
+
+/**
+ * An IES lamp's profile texture (x: angle from the axis over its width, y: around it over its rows, red channel – half
+ * or full float) → the photon kernel's table at `offset`: PROFILE_PHI rows of PROFILE_THETA values, sampled bilinearly
+ * where the path tracer samples the texture (column x ↔ x / (width − 1) · 180°, row y ↔ y / height · 360° − 180°).
+ */
+function profileTable(texture, out, offset) {
+    const { data, width, height } = texture.image;
+    const half = texture.type === HalfFloatType || data instanceof Uint16Array;
+    const table = half ? halfToFloat() : null;
+    const channels = Math.max(1, Math.round(data.length / (width * height)));
+    const at = (x, y) => { const v = data[(y * width + x) * channels]; return half ? table[v] : v; };
+    for (let p = 0; p < PROFILE_PHI; p++) {
+        const y = p / PROFILE_PHI * height, y0 = Math.floor(y) % height, y1 = (y0 + 1) % height, fy = y - Math.floor(y);
+        for (let t = 0; t < PROFILE_THETA; t++) {
+            const x = t / (PROFILE_THETA - 1) * (width - 1), x0 = Math.floor(x), x1 = Math.min(x0 + 1, width - 1), fx = x - x0;
+            const top = at(x0, y0) * (1 - fx) + at(x1, y0) * fx, bottom = at(x0, y1) * (1 - fx) + at(x1, y1) * fx;
+            out[offset + p * PROFILE_THETA + t] = Math.max(0, top * (1 - fy) + bottom * fy);
+        }
+    }
+}
 
 /**
  * The sun of an HDRI (the path tracer's preprocessed map: half float RGBA, rows bottom-up) – a small, very bright spot:
@@ -122,8 +151,9 @@ export class CausticsKernel {
         this._sun = null;
         this.ready = false;    // pipelines compiled
 
-        // light sources: per source two vec4 – direction to the light + tan of the disc's angular radius, weight + cdf
-        this._sources = new StorageBufferAttribute(new Float32Array(MAX_SOURCES * 8), 4);
+        // light sources: SOURCE_VEC4 vec4 per source (see prepare); IES tables per source
+        this._sources = new StorageBufferAttribute(new Float32Array(MAX_SOURCES * SOURCE_VEC4 * 4), 4);
+        this._profiles = new StorageBufferAttribute(new Float32Array(MAX_SOURCES * PROFILE_THETA * PROFILE_PHI), 1);
         const p = this.params = {
             bvhData: { value: null },
             globalId,
@@ -132,7 +162,45 @@ export class CausticsKernel {
             sourceCount: uniform(0, 'uint'),
             sphere: uniform(new Vector4()),    // glass bounds: centre, radius
         };
-        const sources = storage(this._sources, 'vec4', MAX_SOURCES * 2).toReadOnly();
+        const sources = storage(this._sources, 'vec4', MAX_SOURCES * SOURCE_VEC4).toReadOnly();
+        const profiles = storage(this._profiles, 'float', MAX_SOURCES * PROFILE_THETA * PROFILE_PHI).toReadOnly();
+        const V = SOURCE_VEC4;
+        // emission of a local lamp towards `d` (unit, away from the lamp) relative to its intensity: 1 (point), the
+        // spot's cone (smoothstep like the path tracer), the IES table (angles in the path tracer's frame: tilt from the
+        // axis, twist from atan2 of the direction to the lamp along v and u)
+        const emission = wgslTagFn/* wgsl */`
+            fn causticEmission( source: u32, d: vec3f ) -> f32 {
+
+                let axis = ${ sources }[ source * ${ V }u + 2u ];
+                let su = ${ sources }[ source * ${ V }u + 3u ];
+                let sv = ${ sources }[ source * ${ V }u + 4u ];
+                let kind = u32( axis.w );
+                let cosT = dot( d, axis.xyz );
+                if ( kind == ${ SOURCE_KIND.spot }u ) {
+
+                    return smoothstep( su.w, sv.w, cosT );
+
+                }
+                if ( kind != ${ SOURCE_KIND.ies }u ) {
+
+                    return 1.0;
+
+                }
+                let x = acos( clamp( cosT, - 1.0, 1.0 ) ) / 3.14159265 * ${ PROFILE_THETA - 1 }.0;
+                let y = ( atan2( dot( - d, sv.xyz ), dot( - d, su.xyz ) ) + 3.14159265 ) / 6.28318531 * ${ PROFILE_PHI }.0;
+                let x0 = u32( floor( x ) );
+                let x1 = min( x0 + 1u, ${ PROFILE_THETA - 1 }u );
+                let y0 = u32( floor( y ) ) % ${ PROFILE_PHI }u;
+                let y1 = ( y0 + 1u ) % ${ PROFILE_PHI }u;
+                let fx = fract( x );
+                let fy = fract( y );
+                let base = source * ${ PROFILE_THETA * PROFILE_PHI }u;
+                let a = mix( ${ profiles }[ base + y0 * ${ PROFILE_THETA }u + x0 ], ${ profiles }[ base + y0 * ${ PROFILE_THETA }u + x1 ], fx );
+                let b = mix( ${ profiles }[ base + y1 * ${ PROFILE_THETA }u + x0 ], ${ profiles }[ base + y1 * ${ PROFILE_THETA }u + x1 ], fx );
+                return mix( a, b, fy );
+
+            }
+        `;
         const grid = storage(this.buffer, 'uint', this.slots * 4).toAtomic();
         const raycastOutput = proxy('bvhData.value.fns.raycastFirstHit.outputType', p);
         const raycastFirstHit = proxyFn('bvhData.value.fns.raycastFirstHit', p);
@@ -157,7 +225,7 @@ export class CausticsKernel {
                 var source = 0u;
                 for ( var i = 0u; i + 1u < sourceCount; i ++ ) {
 
-                    if ( pick < ${ sources }[ i * 2u + 1u ].w ) {
+                    if ( pick < ${ sources }[ i * ${ V }u + 1u ].w ) {
 
                         break;
 
@@ -165,28 +233,56 @@ export class CausticsKernel {
                     source = i + 1u;
 
                 }
-                let lightDir = ${ sources }[ source * 2u ];
-                var throughput = ${ sources }[ source * 2u + 1u ].xyz;
-                let helper = select( vec3f( 0.0, 1.0, 0.0 ), vec3f( 1.0, 0.0, 0.0 ), abs( lightDir.y ) > 0.9 );
-                var toLight = lightDir.xyz;
-                if ( lightDir.w > 0.0 ) {
+                let lightDir = ${ sources }[ source * ${ V }u ];
+                var throughput = ${ sources }[ source * ${ V }u + 1u ].xyz;
+                let kind = u32( ${ sources }[ source * ${ V }u + 2u ].w );
+                let sphere = ${ p.sphere };
+                var ray: ${ rayStruct };
+                ray.maxDist = 0.0;
+                if ( kind == ${ SOURCE_KIND.directional }u ) {
 
-                    let sx = normalize( cross( helper, toLight ) );
-                    let sy = cross( toLight, sx );
-                    let sr = sqrt( ${ random }( &rng ) ) * lightDir.w;
-                    let sa = 6.283185307 * ${ random }( &rng );
-                    toLight = normalize( toLight + ( sx * cos( sa ) + sy * sin( sa ) ) * sr );
+                    let helper = select( vec3f( 0.0, 1.0, 0.0 ), vec3f( 1.0, 0.0, 0.0 ), abs( lightDir.y ) > 0.9 );
+                    var toLight = lightDir.xyz;
+                    if ( lightDir.w > 0.0 ) {
+
+                        let sx = normalize( cross( helper, toLight ) );
+                        let sy = cross( toLight, sx );
+                        let sr = sqrt( ${ random }( &rng ) ) * lightDir.w;
+                        let sa = 6.283185307 * ${ random }( &rng );
+                        toLight = normalize( toLight + ( sx * cos( sa ) + sy * sin( sa ) ) * sr );
+
+                    }
+                    let tx = normalize( cross( helper, toLight ) );
+                    let ty = cross( toLight, tx );
+                    let r = sqrt( ${ random }( &rng ) ) * sphere.w;
+                    let phi = 6.283185307 * ${ random }( &rng );
+                    ray.origin = sphere.xyz + toLight * ( 2.0 * sphere.w ) + ( tx * cos( phi ) + ty * sin( phi ) ) * r;
+                    ray.direction = - toLight;
+
+                } else {
+
+                    // local lamp: uniform over the cone around the glass bounds (cos of its half angle in w; −1 = the
+                    // lamp is inside them: the whole sphere of directions) – the weight carries the cone's solid angle
+                    let toSphere = sphere.xyz - lightDir.xyz;
+                    let dist = length( toSphere );
+                    let axis = select( vec3f( 0.0, - 1.0, 0.0 ), toSphere / dist, dist > 0.0 );
+                    let helper = select( vec3f( 0.0, 1.0, 0.0 ), vec3f( 1.0, 0.0, 0.0 ), abs( axis.y ) > 0.9 );
+                    let tx = normalize( cross( helper, axis ) );
+                    let ty = cross( axis, tx );
+                    let cosT = 1.0 - ${ random }( &rng ) * ( 1.0 - lightDir.w );
+                    let sinT = sqrt( max( 0.0, 1.0 - cosT * cosT ) );
+                    let phi = 6.283185307 * ${ random }( &rng );
+                    let d = normalize( axis * cosT + ( tx * cos( phi ) + ty * sin( phi ) ) * sinT );
+                    throughput *= ${ emission }( source, d );
+                    if ( max( max( throughput.r, throughput.g ), throughput.b ) <= 0.0 ) {
+
+                        return;
+
+                    }
+                    ray.origin = lightDir.xyz;
+                    ray.direction = d;
 
                 }
-                let sphere = ${ p.sphere };
-                let tx = normalize( cross( helper, toLight ) );
-                let ty = cross( toLight, tx );
-                let r = sqrt( ${ random }( &rng ) ) * sphere.w;
-                let phi = 6.283185307 * ${ random }( &rng );
-                var ray: ${ rayStruct };
-                ray.origin = sphere.xyz + toLight * ( 2.0 * sphere.w ) + ( tx * cos( phi ) + ty * sin( phi ) ) * r;
-                ray.direction = - toLight;
-                ray.maxDist = 0.0;
 
                 let wavelength = mix( ${ DISPERSION_MIN_WAVELENGTH }.0, ${ DISPERSION_MAX_WAVELENGTH }.0, ${ random }( &rng ) );
                 var dispersed = false;
@@ -393,23 +489,28 @@ export class CausticsKernel {
     }
 
     /**
-     * Set up for this frame: glass bounds, sources (directional lamps, the HDRI's sun), cell size; a change clears the
-     * grid. Returns false when there is nothing to trace (no glass, no light).
+     * Set up for this frame: glass bounds, sources (directional lamps, the HDRI's sun, point / spot / IES lamps), cell
+     * size; a change clears the grid. Returns false when there is nothing to trace (no glass, no light).
+     * Per source SOURCE_VEC4 vec4:
+     *   0: directional: direction to the light, tan of the disc's angular radius – local: position, cos of the half angle
+     *      of the cone around the glass bounds (−1: all directions)
+     *   1: photon weight (rgb), cdf of the pick
+     *   2: axis of a spot / IES lamp (towards its target), kind (SOURCE_KIND)
+     *   3: u of the lamp's frame (like the path tracer's light record), cos of the spot's cone
+     *   4: v of the lamp's frame, cos of the spot's inner cone (penumbra)
+     * Flux of a source (what its photons carry together): directional E × the disc across the glass bounds; local the
+     * intensity × the cone's solid angle (the spot's cone / IES profile per photon on top – at most 1).
      * @param {object} o { bvhData, scene (the path tracer's), env (the library's EquirectHdrInfoNode or null), version
      *   (scene data / materials) }
      */
     prepare({ bvhData, scene, env, version }) {
         if (bvhData !== this._bvhData || bvhData.fns.raycastFirstHit !== this._raycast) this._build(bvhData);
-        // glass objects (visible, transmissive) and the directional lights
+        // glass objects (visible, transmissive) and the lamps
         const box = new Box3(), part = new Box3();
-        const sources = [];
+        const sources = [], lamps = [];
         scene.updateMatrixWorld();
         scene.traverseVisible(o => {
-            if (o.isDirectionalLight && o.intensity > 0) {
-                o.target.updateMatrixWorld();
-                const dir = new Vector3().setFromMatrixPosition(o.matrixWorld).sub(new Vector3().setFromMatrixPosition(o.target.matrixWorld)).normalize();
-                sources.push({ dir, e: new Vector3(o.color.r, o.color.g, o.color.b).multiplyScalar(o.intensity), radius: 0 });
-            }
+            if (o.isLight && o.intensity > 0 && (o.isDirectionalLight || o.isPointLight || o.isSpotLight)) lamps.push(o);
             if (!o.isMesh) return;
             const mats = Array.isArray(o.material) ? o.material : [o.material];
             if (!mats.some(m => (m?.transmission ?? 0) > 0.5)) return;
@@ -417,46 +518,81 @@ export class CausticsKernel {
             box.union(part.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld));
         });
         if (box.isEmpty()) return false;
+        const sphere = box.getBoundingSphere(new Sphere());
+        const area = Math.PI * sphere.radius * sphere.radius;
+        for (const o of lamps) {
+            const color = new Vector3(o.color.r, o.color.g, o.color.b).multiplyScalar(o.intensity);
+            const position = new Vector3().setFromMatrixPosition(o.matrixWorld);
+            if (o.isDirectionalLight) {
+                o.target.updateMatrixWorld();
+                const dir = position.sub(new Vector3().setFromMatrixPosition(o.target.matrixWorld)).normalize();
+                sources.push({ kind: SOURCE_KIND.directional, dir, flux: color.multiplyScalar(area), w: 0, radius: 0 });
+                continue;
+            }
+            // cone from the lamp around the glass bounds
+            const dist = position.distanceTo(sphere.center);
+            const cosHalf = dist > sphere.radius * 1.0001 ? Math.sqrt(1 - (sphere.radius / dist) ** 2) : -1;
+            const source = { kind: SOURCE_KIND.point, dir: position, flux: color.multiplyScalar(2 * Math.PI * (1 - cosHalf)), w: cosHalf,
+                axis: new Vector3(0, -1, 0), u: new Vector3(1, 0, 0), v: new Vector3(0, 1, 0), cone: 0, penumbra: 0, ies: null };
+            if (o.isSpotLight) {
+                // the lamp's frame like the path tracer's light record (lookAt from the lamp to its target, world up)
+                o.target.updateMatrixWorld();
+                const target = new Vector3().setFromMatrixPosition(o.target.matrixWorld);
+                const q = new Quaternion().setFromRotationMatrix(new Matrix4().lookAt(position, target, UP));
+                source.u.set(1, 0, 0).applyQuaternion(q);
+                source.v.set(0, 1, 0).applyQuaternion(q);
+                source.axis.copy(target).sub(position).normalize();
+                if (o.iesMap?.image?.data) { source.kind = SOURCE_KIND.ies; source.ies = o.iesMap; }
+                else { source.kind = SOURCE_KIND.spot; source.cone = Math.cos(o.angle); source.penumbra = Math.cos(o.angle * (1 - o.penumbra)); }
+            }
+            sources.push(source);
+        }
         // the HDRI's sun (searched once per map), turned and scaled like the environment
         let sun = null;
         if (env?.map && env.totalSum > 0 && env.intensityNode.value > 0) {
             if (this._sunMap !== env.map.image.data) { this._sunMap = env.map.image.data; this._sun = findSun(env.map); }
             if (this._sun) {
                 const toWorld = new Matrix3().copy(env.rotationNode.value).transpose();
-                sun = { dir: this._sun.dir.clone().applyMatrix3(toWorld).normalize(), e: this._sun.e.clone().multiplyScalar(env.intensityNode.value),
-                    radius: this._sun.radius, cos: this._sun.cos };
+                sun = { kind: SOURCE_KIND.directional, dir: this._sun.dir.clone().applyMatrix3(toWorld).normalize(),
+                    flux: this._sun.e.clone().multiplyScalar(env.intensityNode.value * area), radius: this._sun.radius, cos: this._sun.cos, w: 0 };
                 sources.push(sun);
             }
         }
         CAUSTICS.sun.value.set(sun?.dir.x ?? 0, sun?.dir.y ?? 1, sun?.dir.z ?? 0, sun ? sun.cos : 2);
-        sources.sort((a, b) => luminance(b.e) - luminance(a.e));
+        sources.sort((a, b) => luminance(b.flux) - luminance(a.flux));
         sources.length = Math.min(sources.length, MAX_SOURCES);
-        // pick ∝ luminance; weight = E / (p · Σ luminance) – every photon carries about 1 (FIXED units)
-        const sum = sources.reduce((s, l) => s + luminance(l.e), 0);
+        // pick ∝ luminance of the flux; weight = flux / (p · Σ luminance) – every photon carries about 1 (FIXED units)
+        const sum = sources.reduce((s, l) => s + luminance(l.flux), 0);
         if (!(sum > 0)) return false;
-        const a = this._sources.array;
+        const a = this._sources.array, V = SOURCE_VEC4 * 4;
         let cdf = 0;
         sources.forEach((l, i) => {
-            const pick = luminance(l.e) / sum;
+            const pick = luminance(l.flux) / sum;
             cdf += pick;
-            a.set([l.dir.x, l.dir.y, l.dir.z, Math.tan(l.radius)], i * 8);
-            a.set([l.e.x / (pick * sum), l.e.y / (pick * sum), l.e.z / (pick * sum), i === sources.length - 1 ? 2 : cdf], i * 8 + 4);
+            const local = l.kind !== SOURCE_KIND.directional;
+            a.set([l.dir.x, l.dir.y, l.dir.z, local ? l.w : Math.tan(l.radius)], i * V);
+            a.set([l.flux.x / (pick * sum), l.flux.y / (pick * sum), l.flux.z / (pick * sum), i === sources.length - 1 ? 2 : cdf], i * V + 4);
+            const axis = l.axis ?? UP, u = l.u ?? UP, v = l.v ?? UP;
+            a.set([axis.x, axis.y, axis.z, l.kind], i * V + 8);
+            a.set([u.x, u.y, u.z, l.cone ?? 0], i * V + 12);
+            a.set([v.x, v.y, v.z, l.penumbra ?? 0], i * V + 16);
         });
-        const sphere = box.getBoundingSphere(new Sphere());
         const p = this.params;
         p.sourceCount.value = sources.length;
         p.sphere.value.set(sphere.center.x, sphere.center.y, sphere.center.z, sphere.radius);
         // cell side: the lit area behind the glass (~3 × its cross-section) at the table's occupancy
         const side = Math.sqrt(3 * Math.PI * sphere.radius ** 2 / (this.slots * this.occupancy));
-        const sig = [version, box.min.toArray(), box.max.toArray(), sources.map(l => [l.dir.toArray(), l.e.toArray(), l.radius])].flat(3).join(',');
+        const sig = [version, box.min.toArray(), box.max.toArray(), sources.map(l => [l.kind, l.dir.toArray(), l.flux.toArray(), l.radius ?? 0,
+            l.axis?.toArray() ?? 0, l.u?.toArray() ?? 0, l.cone ?? 0, l.penumbra ?? 0, l.ies ? `${l.ies.uuid}:${l.ies.version}` : 0])].flat(3).join(',');
         if (sig !== this.signature) {
             this.signature = sig;
             this.photons = 0;
             this._needsClear = true;
             this._sources.needsUpdate = true;
+            sources.forEach((l, i) => { if (l.ies) profileTable(l.ies, this._profiles.array, i * PROFILE_THETA * PROFILE_PHI); });
+            if (sources.some(l => l.ies)) this._profiles.needsUpdate = true;
         }
         this._sum = sum;
-        this._area = Math.PI * sphere.radius * sphere.radius;
         this._cellArea = side * side;
         CAUSTICS.cell.value.set(sphere.center.x, sphere.center.y, sphere.center.z, side);
         CAUSTICS.mask.value = this.slots - 1;
@@ -481,8 +617,8 @@ export class CausticsKernel {
         p.seed.value = (p.seed.value + 1) >>> 0;
         renderer.compute(this._kernel, [Math.ceil(count / WORKGROUP), 1, 1]);
         this.photons += count;
-        // irradiance per grid unit: flux per photon (Σ luminance × disc area / photons) / FIXED / cell face
-        CAUSTICS.table.value.x = this._sum * this._area / (this.photons * FIXED * this._cellArea);
+        // irradiance per grid unit: flux per photon (Σ luminance of the sources' flux / photons) / FIXED / cell face
+        CAUSTICS.table.value.x = this._sum / (this.photons * FIXED * this._cellArea);
     }
 
     /** the two compute nodes – for compiling them asynchronously before the first trace */
@@ -493,6 +629,7 @@ export class CausticsKernel {
     dispose() {
         this.buffer.dispose?.();
         this._sources.dispose?.();
+        this._profiles.dispose?.();
         CAUSTICS.on.value = 0;
     }
 }
