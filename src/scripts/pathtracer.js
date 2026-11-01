@@ -738,6 +738,9 @@ export class PathTracingView {
     /** float RGBA of a storage texture (rows top to bottom; the copy pads rows to 256 bytes) */
     async _readOutput(texture, w, h) {
         const raw = await this.renderer.backend.copyTextureToBuffer(texture, 0, 0, w, h, 0);
+        // three r187 already drops the row padding (copyTextureToBuffer); r186 returned the padded rows – removing it
+        // again shifted every row for widths that are no multiple of 16 (buckets at the image edge, snapshots)
+        if (raw.length === w * h * 4) return raw;
         const row = Math.ceil(w * 16 / 256) * 64;   // floats per padded row
         if (row === w * 4) return raw.slice(0, w * h * 4);
         const out = new Float32Array(w * h * 4);

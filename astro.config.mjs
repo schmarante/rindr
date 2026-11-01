@@ -42,6 +42,30 @@ const FISHEYE_DOF = `
 				return true;
 
 			}`;
+// Camera rays from far away (Nov. 2026, user: "zoomed far out the picture looks extremely low-res"): the library builds
+// each camera ray from one matrix (world × inverse projection) – zoomed out the camera stood ~40 000 units from the
+// origin with far / near ≈ 10⁶ (the far plane grows with the orbit distance, near does not), and in 32 bit the far
+// point carried the camera position times the error of its tiny w: directions off by several pixels – jagged edges,
+// lumpy shapes, the same at any sample count. Here the matrix has no translation (rays relative to the camera, the w
+// error then only scales the point along its own ray) and the camera position is added afterwards. Fails loudly if the
+// library changed – check on every update. pt-guides.js does the same for its rays.
+function cameraRayPatch() {
+  return {
+    name: 'rindr-camera-ray',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.replace(/\\/g, '/').split('?')[0];
+      if (!file.endsWith('three-gpu-pathtracer/src/webgpu/shims/PhysicalCameraShim.js')) return null;
+      const matrix = 'invViewProjectionMatrix.value.multiplyMatrices( this.matrixWorld, this.projectionMatrixInverse );';
+      const base = '*ray = ${ ndcToCameraRay }( ndc, ${ invViewProjectionMatrix } );';
+      if (code.split(matrix).length !== 2 || code.split(base).length !== 2) this.error('rindr-camera-ray: camera matrix / base ray not found exactly once in PhysicalCameraShim.js (three-gpu-pathtracer changed?)');
+      code = code.replace(matrix, () => 'invViewProjectionMatrix.value.multiplyMatrices( __rindrRotation.copy( this.matrixWorld ).setPosition( 0, 0, 0 ), this.projectionMatrixInverse );');
+      code = code.replace(base, () => base + '\n\t\t\tray.origin += ( ${ cameraWorldMatrix } * vec4f( 0.0, 0.0, 0.0, 1.0 ) ).xyz;');
+      return { code: code + '\nconst __rindrRotation = new Matrix4();\n', map: null };
+    },
+  };
+}
+
 function shadowCatcherPatch() {
   const anchor = /if \( materialInfo\.matte != 0 && bounce == 0u \) \{\s*resultColor = vec4f\( 0\.0 \);\s*break;\s*\}/;
   return {
@@ -1762,7 +1786,7 @@ export default defineConfig({
     headers: isolationHeaders,
   },
   vite: {
-    plugins: [tailwindcss(), threeCompileStatePatch(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), bucketPatch(), ptStandInPatch(), openPbrPatch(), mediumPatch(), glassBouncesPatch(), motionJitterPatch(), cloudPatch(), gaussianPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch(), causticsPatch(), glassSplitPatch(), nanGuardPatch(), adaptivePatch(), lightPassesPatch()],
+    plugins: [tailwindcss(), threeCompileStatePatch(), cameraRayPatch(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), bucketPatch(), ptStandInPatch(), openPbrPatch(), mediumPatch(), glassBouncesPatch(), motionJitterPatch(), cloudPatch(), gaussianPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch(), causticsPatch(), glassSplitPatch(), nanGuardPatch(), adaptivePatch(), lightPassesPatch()],
     server: { headers: isolationHeaders },
     preview: { headers: isolationHeaders },
     worker: { format: 'es' },

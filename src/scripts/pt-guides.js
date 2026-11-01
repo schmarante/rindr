@@ -50,6 +50,7 @@ import { SPLAT_PT } from './splat/splat-pt.js';
 import { GAUSS_PT } from './splat/gaussian-pt.js';
 
 const S = SPLAT_PT;
+const _rotation = new Matrix4();   // camera rotation without its position (camera rays, see the guide kernel)
 
 // splat volume along a stretch of the ray (o + d·t, t < segment), optical depth `tau` so far: x = distance where it
 // reaches ln 2 (−1: not on this stretch), y = optical depth at the end of the stretch. Steps of 1/256 of the box.
@@ -241,7 +242,9 @@ export class GuideKernel {
                     let isFisheye = ${ FISHEYE_RAY }( ndc, ${ p.cameraWorld }, &ray );
                     if ( ! isFisheye ) {
 
+                        // relative to the camera, its position added afterwards (precision far away – rindr-camera-ray)
                         ray = ${ ndcToCameraRay }( ndc, ${ p.invViewProj } );
+                        ray.origin += ( ${ p.cameraWorld } * vec4f( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
 
                     }
                     ray.direction = normalize( ray.direction );
@@ -565,7 +568,7 @@ export class GuideKernel {
         }
         p.size.value.set(width, height);
         camera.updateMatrixWorld();
-        p.invViewProj.value.multiplyMatrices(camera.matrixWorld, camera.projectionMatrixInverse);
+        p.invViewProj.value.multiplyMatrices(_rotation.copy(camera.matrixWorld).setPosition(0, 0, 0), camera.projectionMatrixInverse);
         p.cameraWorld.value.copy(camera.matrixWorld);
         // depth of field (PhysicalCamera: aperture radius bokehSize · 0.5e-3, as in the library's camera shim)
         const radius = (camera.bokehSize ?? 0) * 0.5e-3;
