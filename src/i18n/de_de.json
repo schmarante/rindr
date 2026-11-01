@@ -1360,7 +1360,10 @@
                 "batwing": "Batwing (breit, Spitze schräg)",
                 "wallwash": "Wandfluter (asymmetrisch)",
                 "globe": "Pendelleuchte (auch nach oben)"
-            }
+            },
+            "iesEdit": "Lichtverteilung bearbeiten…",
+            "iesEditTitle": "IES-Editor: Lichtverteilungskurve ansehen und mit Kontrollpunkten formen",
+            "iesEdited": "Bearbeitet"
         },
         "environment": {
             "intensity": "Intensität",
@@ -2772,5 +2775,26 @@
             "timeout": "Keine Verbindung zum Master – sind beide Rechner im selben Netz?",
             "badCode": "Der Link ist ungültig oder unvollständig."
         }
+    },
+    "iesEditor": {
+        "title": "IES-Editor",
+        "template": "Vorlage",
+        "choose": "Wählen…",
+        "export": "Als .ies exportieren",
+        "exportTitle": "Profil als IES-Datei (LM-63) herunterladen",
+        "close": "Schließen",
+        "floor": "Boden (Draufsicht, Leuchte eine Höhe darüber)",
+        "wall": "Wand (eine Höhe entfernt – unten Boden, Linie = Höhe der Leuchte)",
+        "falseColour": "Falschfarben (10-%-Stufen)",
+        "hint": "Punkte ziehen ändert Winkel und Stärke. Doppelklick fügt einen Punkt hinzu, Entf löscht den ausgewählten. 0° zeigt nach unten.",
+        "values": "Ebene {plane}: Halbwertswinkel {beam}° · Feldwinkel (10 %) {field}° · Maximum bei {peak}° · nach oben {up} %",
+        "symmetry": "Symmetrie",
+        "symmetryTitle": "Rotationssymmetrisch: eine Kurve rundherum · Zwei Achsen: links wie rechts gespiegelt · Frei: vier Ebenen C0, C90, C180, C270, dazwischen weich übergeblendet",
+        "modes": {
+            "rot": "Rotationssymmetrisch",
+            "axes": "Zwei Achsen",
+            "free": "Frei (4 Ebenen)"
+        },
+        "viewTitle": "Angezeigte Ebenen: rechts C0 bzw. C90, links C180 bzw. C270"
     }
 }

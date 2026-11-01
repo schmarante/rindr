@@ -1360,7 +1360,10 @@
                 "batwing": "Batwing (wide, angled peak)",
                 "wallwash": "Wall washer (asymmetric)",
                 "globe": "Pendant (also upwards)"
-            }
+            },
+            "iesEdit": "Edit light distribution…",
+            "iesEditTitle": "IES editor: view the light distribution curve and shape it with control points",
+            "iesEdited": "Edited"
         },
         "environment": {
             "intensity": "Intensity",
@@ -2772,5 +2775,26 @@
             "timeout": "No connection to the master – are both computers in the same network?",
             "badCode": "The link is invalid or incomplete."
         }
+    },
+    "iesEditor": {
+        "title": "IES editor",
+        "template": "Template",
+        "choose": "Choose…",
+        "export": "Export as .ies",
+        "exportTitle": "Download the profile as an IES file (LM-63)",
+        "close": "Close",
+        "floor": "Floor (top view, luminaire one height above)",
+        "wall": "Wall (one height away – floor at the bottom, line = luminaire height)",
+        "falseColour": "False colours (10 % steps)",
+        "hint": "Dragging points changes angle and intensity. Double click adds a point, Del removes the selected one. 0° points down.",
+        "values": "Plane {plane}: beam angle {beam}° · field angle (10 %) {field}° · peak at {peak}° · upwards {up} %",
+        "symmetry": "Symmetry",
+        "symmetryTitle": "Rotationally symmetric: one curve all round · Two axes: left mirrors right · Free: four planes C0, C90, C180, C270, blended smoothly in between",
+        "modes": {
+            "rot": "Rotationally symmetric",
+            "axes": "Two axes",
+            "free": "Free (4 planes)"
+        },
+        "viewTitle": "Shown planes: right C0 or C90, left C180 or C270"
     }
 }

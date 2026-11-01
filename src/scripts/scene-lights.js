@@ -47,27 +47,158 @@ function profileTexture(fn, symmetric) {
     return toTexture(values, rows);
 }
 function toTexture(values, rows) {
+    const texture = new THREE.DataTexture(new Uint16Array(values.length), 180, rows, THREE.RedFormat, THREE.HalfFloatType);
+    texture.minFilter = texture.magFilter = THREE.LinearFilter;
+    texture.wrapT = THREE.RepeatWrapping;
+    return { texture, extent: fillTexture(texture, values) };
+}
+// normalised values (peak = 1) into the texture's half floats; returns the extent (degrees, above 2 % of the peak)
+function fillTexture(texture, values) {
     let max = 0;
     for (const v of values) max = Math.max(max, v);
-    const data = new Uint16Array(values.length);
+    const data = texture.image.data;
     let extent = 0;
     for (let i = 0; i < values.length; i++) {
-        const v = max > 0 ? values[i] / max : 0;
+        const v = max > 0 ? Math.max(values[i], 0) / max : 0;
         data[i] = THREE.DataUtils.toHalfFloat(v);
         if (v > 0.02) extent = Math.max(extent, (i % 180) * 180 / 179);
     }
-    const texture = new THREE.DataTexture(data, 180, rows, THREE.RedFormat, THREE.HalfFloatType);
-    texture.minFilter = texture.magFilter = THREE.LinearFilter;
-    texture.wrapT = THREE.RepeatWrapping;
     texture.needsUpdate = true;
-    return { texture, extent };
+    return extent;
+}
+
+// --- Editable curves (IES editor, ies-editor.js): a rotationally symmetric profile as control points
+// [[angle° from the axis, value 0…1], …] from 0° to 180°, a monotone cubic through them (Fritsch–Carlson: no overshoot
+// between points – a profile never dips below 0 or bulges past its points)
+
+/** the curve sampled like a profile row: 180 values at x · 180/179 degrees */
+export function curveValues(curve) {
+    const pts = [...curve].sort((a, b) => a[0] - b[0]);
+    const n = pts.length, out = new Float32Array(180);
+    if (n === 1) return out.fill(pts[0][1]);
+    const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+    const d = xs.slice(1).map((x, i) => (ys[i + 1] - ys[i]) / Math.max(x - xs[i], 1e-6));
+    const m = ys.map((_, i) => (i === 0 ? d[0] : i === n - 1 ? d[n - 2] : d[i - 1] * d[i] <= 0 ? 0 : (d[i - 1] + d[i]) / 2));
+    for (let i = 0; i < n - 1; i++) {
+        if (d[i] === 0) { m[i] = m[i + 1] = 0; continue; }
+        const a = m[i] / d[i], b = m[i + 1] / d[i], h = a * a + b * b;
+        if (h > 9) { const t = 3 / Math.sqrt(h); m[i] = t * a * d[i]; m[i + 1] = t * b * d[i]; }
+    }
+    for (let x = 0, k = 0; x < 180; x++) {
+        const a = x * 180 / 179;
+        while (k < n - 2 && a > xs[k + 1]) k++;
+        const h = Math.max(xs[k + 1] - xs[k], 1e-6), t = Math.min(Math.max((a - xs[k]) / h, 0), 1);
+        const t2 = t * t, t3 = t2 * t;
+        out[x] = Math.max((2 * t3 - 3 * t2 + 1) * ys[k] + (t3 - 2 * t2 + t) * h * m[k] + (-2 * t3 + 3 * t2) * ys[k + 1] + (t3 - t2) * h * m[k + 1], 0);
+    }
+    return out;
+}
+
+/** the current profile of an IES light: { rows (1 or 360), values (normalised, 180 per row) } */
+export function profileValues(light) {
+    const tex = light.iesMap;
+    if (!tex?.image?.data) return { rows: 1, values: new Float32Array(180) };
+    return { rows: tex.image.height, values: Float32Array.from(tex.image.data, v => THREE.DataUtils.fromHalfFloat(v)) };
+}
+
+/** a profile as editable points: averaged around the axis, simplified (Douglas–Peucker, 1.5 % of the peak, ≤ 24) */
+export function curveFromValues(values, rows) {
+    const row = new Float32Array(180);
+    for (let y = 0; y < rows; y++) for (let x = 0; x < 180; x++) row[x] += values[y * 180 + x] / rows;
+    let max = 0;
+    for (const v of row) max = Math.max(max, v);
+    const pts = Array.from(row, (v, x) => [x * 180 / 179, max > 0 ? v / max : 0]);
+    // where the profile reaches zero (or leaves it): kept – a flat tail just above zero across a large solid angle was
+    // several per cent of the light in a direction that had none
+    const edges = [0, 179];
+    for (let x = 1; x < 180; x++) if ((pts[x][1] > 0.002) !== (pts[x - 1][1] > 0.002)) edges.push(pts[x][1] > 0.002 ? x - 1 : x);
+    let eps = 0.015, keep;
+    do {
+        keep = new Set(edges);
+        const split = (a, b) => {
+            let best = -1, dist = eps;
+            for (let i = a + 1; i < b; i++) {
+                const t = (pts[i][0] - pts[a][0]) / (pts[b][0] - pts[a][0]);
+                const dv = Math.abs(pts[i][1] - (pts[a][1] + t * (pts[b][1] - pts[a][1])));
+                if (dv > dist) { dist = dv; best = i; }
+            }
+            if (best < 0) return;
+            keep.add(best);
+            split(a, best);
+            split(best, b);
+        };
+        const sorted = [...keep].sort((a, b) => a - b);
+        for (let i = 1; i < sorted.length; i++) split(sorted[i - 1], sorted[i]);
+        eps *= 1.5;
+    } while (keep.size > 24);
+    return [...keep].sort((a, b) => a - b).map(i => [+pts[i][0].toFixed(2), +pts[i][1].toFixed(4)]);
 }
 
 /**
- * Profile of an IES light: { id } (own profile) or { name, text } (.ies file). Sets the map and the angle of the raster
- * shadow camera; throws on an unreadable file.
+ * Asymmetric profile from four planes (C0, C90, C180, C270 – one curve each): around the axis blended between the two
+ * neighbouring planes with sin² of the position in the quarter (smooth, exactly the plane's curve on it). 360 rows.
+ */
+export function planesValues(planes) {
+    const rows = planes.map(curveValues), out = new Float32Array(180 * 360);
+    for (let phi = 0; phi < 360; phi++) {
+        const q = Math.floor(phi / 90), w = Math.sin((phi % 90) / 90 * Math.PI / 2) ** 2;
+        const a = rows[q], b = rows[(q + 1) % 4];
+        for (let x = 0; x < 180; x++) out[phi * 180 + x] = a[x] + (b[x] - a[x]) * w;
+    }
+    return out;
+}
+
+/** a profile as four editable planes (C0, C90, C180, C270); a symmetric one: the same curve four times */
+export function planesFromValues(values, rows) {
+    if (rows === 1) { const c = curveFromValues(values, 1); return [c, c, c, c].map(k => k.map(p => [...p])); }
+    let max = 0;
+    for (const v of values) max = Math.max(max, v);
+    return [0, 90, 180, 270].map(phi => {
+        const row = values.slice((phi % rows) * 180, (phi % rows) * 180 + 180);
+        // each plane relative to the profile's peak (not its own) – planes keep their proportions
+        const c = curveFromValues(row, 1), own = Math.max(...row) || 1;
+        return c.map(([a, v]) => [a, +(v * own / (max || 1)).toFixed(4)]);
+    });
+}
+
+// own textures per light for its edited shape – updated in place while editing (three.js and the path tracer pick them
+// up); one for symmetric (1 row) and one for asymmetric shapes (360 rows)
+const shapeTextures = new WeakMap();
+/**
+ * An edited shape onto an IES light (live while editing: no new texture each time): { curve } rotationally symmetric,
+ * or { planes: [C0, C90, C180, C270], mode: 'axes' | 'free' }.
+ */
+export function setIesShape(light, shape) {
+    const symmetric = !shape.planes;
+    const values = symmetric ? curveValues(shape.curve) : planesValues(shape.planes);
+    const own = shapeTextures.get(light) ?? {};
+    shapeTextures.set(light, own);
+    const key = symmetric ? 'sym' : 'asym';
+    let extent;
+    if (own[key]) {
+        extent = fillTexture(own[key], values);
+    } else {
+        const made = toTexture(values, symmetric ? 1 : 360);
+        own[key] = made.texture;
+        extent = made.extent;
+    }
+    light.iesMap = own[key];
+    light.angle = Math.min(Math.max(extent + 5, 15), 85) * deg;
+    const round = c => c.map(([a, v]) => [+a.toFixed(2), +v.toFixed(4)]);
+    const name = light.userData.rindr.ies?.name;
+    light.userData.rindr.ies = symmetric ? { curve: round(shape.curve) } : { planes: shape.planes.map(round), mode: shape.mode ?? 'free' };
+    if (name) light.userData.rindr.ies.name = name;
+}
+/** a rotationally symmetric curve onto an IES light */
+export const setIesCurve = (light, curve) => setIesShape(light, { curve });
+
+/**
+ * Profile of an IES light: { id } (own profile), { name, text } (.ies file), { curve } or { planes, mode } (edited in the
+ * IES editor). Sets
+ * the map and the angle of the raster shadow camera; throws on an unreadable file.
  */
 export async function setIesProfile(light, ies) {
+    if (ies.curve || ies.planes) { setIesShape(light, ies); return; }
     const key = ies.text ?? ies.id;
     let entry = profileCache.get(key);
     if (!entry) {

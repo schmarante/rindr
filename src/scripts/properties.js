@@ -410,13 +410,18 @@ export class PropertiesPanel {
             const profile = el('select', SELECT);
             for (const id of api.iesProfiles) profile.append(new Option(t(`properties.light.iesProfiles.${id}`), id));
             if (ies.text) profile.append(new Option(ies.name || t('properties.light.iesFile'), '__file'));
-            profile.value = ies.text ? '__file' : ies.id;
+            const edited = !!(ies.curve || ies.planes);
+            if (edited) profile.append(new Option(t('properties.light.iesEdited'), '__curve'));
+            profile.value = edited ? '__curve' : ies.text ? '__file' : ies.id;
             profile.title = t('properties.light.iesTitle');
-            profile.onchange = () => { if (profile.value !== '__file') api.setIes(light, { id: profile.value }); };
+            profile.onchange = () => { if (!profile.value.startsWith('__')) api.setIes(light, { id: profile.value }); };
             const load = el('button', BUTTON + ' shrink-0', t('properties.light.iesLoad'));
             load.title = t('properties.light.iesLoadTitle');
             load.onclick = () => api.pickIes(light);
-            rows.push(this._row(t('properties.light.iesProfile'), profile, load));
+            const edit = el('button', BUTTON + ' mb-1', t('properties.light.iesEdit'));
+            edit.title = t('properties.light.iesEditTitle');
+            edit.onclick = () => api.editIes(light);
+            rows.push(this._row(t('properties.light.iesProfile'), profile, load), this._row('', edit));
         }
         if (kind === 'spot') {
             const deg = 180 / Math.PI;

@@ -50,7 +50,7 @@ import { PhysicalCamera } from 'three-gpu-pathtracer/src/objects/PhysicalCamera.
 import { captureState, applyState, matchesModel, sceneModels, SCENE_FORMAT } from './scene-state.js';
 import { encodePng } from './png-encode.js';
 import { LightHelper, CameraMarkers } from './light-helper.js';
-import { LIGHT_KINDS, LOCAL_KINDS, IES_PROFILES, lightKind, createLight, placeLight, aimLight, refitLight, setStrength, strengthOf, prepareAreaLights, lightState, applyLightState, setIesProfile } from './scene-lights.js';
+import { LIGHT_KINDS, LOCAL_KINDS, IES_PROFILES, lightKind, createLight, placeLight, aimLight, refitLight, setStrength, strengthOf, prepareAreaLights, lightState, applyLightState, setIesProfile, setIesShape, profileValues, planesFromValues } from './scene-lights.js';
 import { setFisheye, RasterFisheye, patchRaycaster, viewAngle, setViewAngle, fisheyeEnabled, fisheyeProject, PERSPECTIVE_LIMIT, MIN_VIEW_ANGLE } from './fisheye.js';
 import { PropertiesPanel } from './properties.js';
 import { Slicer, isClosedGeometry } from './slicer.js';
@@ -1984,6 +1984,7 @@ function setSceneLights(list) {
     // order as in the list (the path tracer's light order: light passes, shadow catcher)
     lightsGroup.children.sort((a, b) => (list.indexOf(a) + 1 || 1e9) - (list.indexOf(b) + 1 || 1e9));
     if (selection?.kind === 'light' && !list.includes(selection.object)) sceneGraph.select(null);
+    if (iesEditor.now?.isOpen && !list.includes(iesEditor.now.light)) iesEditor.now.close();   // its light was deleted
     lightsChanged();
 }
 const lightNameOf = kind => {
@@ -2049,6 +2050,7 @@ const lightApi = {
             fitLocalShadow(light, lightSize);
             lightsChanged();
             if (selection?.kind === 'light' && selection.object === light) properties.show(selection);
+            if (iesEditor.now?.isOpen && iesEditor.now.light === light) iesEditor.now.load(light);
         };
         try { await apply(ies); } catch (err) {
             showError(err, { title: t('status.iesFailed', { name: ies.name ?? '' }) });
@@ -2061,6 +2063,10 @@ const lightApi = {
         const ies = { name: file.name, text };
         if (light) return this.setIes(light, ies);
         try { await this.add('ies', ies); } catch (err) { showError(err, { title: t('status.iesFailed', { name: file.name }) }); }
+    },
+    // IES editor (ies-editor.js): light distribution of this light – edited live, one undo step per change
+    async editIes(light) {
+        (await iesEditor.get()).open(light);
     },
     // file picker for an .ies file
     pickIes(light = null) {
@@ -2102,6 +2108,50 @@ async function restoreLights(items, warnings) {
     setSceneLights([...keep.filter(l => l.isAmbientLight), ...list, ...keep.filter(l => !l.isAmbientLight)]);
     fitShadows(lightSize, lightCenter.clone());   // targets + shadow cameras of directional lights created here
 }
+
+// IES editor window (loaded on first use)
+const iesEditor = lazy(async () => new (await import('./ies-editor.js')).IesEditor(document.getElementById('ies-editor'), {
+    profile: light => profileValues(light),
+    // the light's edited shape, or its profile as editable planes (own profile, file: symmetric → one curve, asymmetric
+    // → four planes)
+    shape: light => {
+        const ies = light.userData.rindr?.ies;
+        if (ies?.curve) return { mode: 'rot', planes: [ies.curve, ies.curve, ies.curve, ies.curve] };
+        if (ies?.planes) return { mode: ies.mode ?? 'free', planes: ies.planes };
+        const { rows, values } = profileValues(light);
+        return { mode: rows === 1 ? 'rot' : 'free', planes: planesFromValues(values, rows) };
+    },
+    presets: Object.keys(IES_PROFILES),
+    onPreview: (light, shape) => {
+        setIesShape(light, shape);
+        markShadowsDirty();
+        loadRender.force = true;
+    },
+    // dragging a point: reduced path tracing like a slider, the lights anew on release
+    onDrag: active => {
+        if (active) pathTracing.beginInteraction();
+        else { pathTracing.endInteraction(); pathTracing.updateLights(); }
+    },
+    onCommit: (light, before, after) => {
+        const apply = shape => {
+            setIesShape(light, shape);
+            fitLocalShadow(light, lightSize);
+            lightsChanged();
+            if (iesEditor.now?.isOpen && iesEditor.now.light === light) iesEditor.now.load(light);
+            if (selection?.kind === 'light' && selection.object === light) properties.show(selection);
+        };
+        apply(after);
+        history.record({ label: t('viewer.undo.iesProfile'), undo: () => apply(before), redo: () => apply(after) });
+    },
+    onPreset: (light, id) => lightApi.setIes(light, { id }),
+    onExport: (light, text) => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+        a.download = `${light.name.replace(/[\\/:*?"<>|]+/g, '_') || 'rindr'}.ies`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    },
+}));
 
 function viewEntry(view) {
     return (view.entry ??= { key: 'view-' + view.id, kind: 'view', view, children: [], get name() { return view.name; },
@@ -5980,10 +6030,11 @@ async function openFiles(files, { side = 'add', relink = false } = {}) {
         if (await openBcfFile(bcfFile.file, files) || !files.length) return;
     }
     if (relink) { relinkFiles(files); return; }
-    // IES profiles (.ies): onto the selected IES light, otherwise a new IES light each
+    // IES profiles (.ies): a new IES light each (user: "dropped IES files become lights right away"; another profile
+    // for an existing light: "File…" in its panel)
     const iesFiles = files.filter(f => extOf(f.path) === 'ies');
     if (iesFiles.length) {
-        for (const f of iesFiles) await lightApi.openIes(f.file, iesFiles.length === 1 && selection?.kind === 'light' && lightKind(selection.object) === 'ies' ? selection.object : null);
+        for (const f of iesFiles) await lightApi.openIes(f.file);
         files = files.filter(f => !iesFiles.includes(f));
         if (!files.length) return;
     }
