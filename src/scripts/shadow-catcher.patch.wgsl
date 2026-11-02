@@ -23,7 +23,7 @@
 								var scDir = vec3f( 0.0, 1.0, 0.0 );
 								var scDist = ${ LIGHT_FAR_DISTANCE };
 								var scWeight = 0.0;
-								var scDirectional = false;   // a lamp that sends caustic photons: directional, spot/IES, point
+								var scDirectional = false;   // a lamp (they all send caustic photons)
 								if ( scRand.x < scParams.x ) {
 
 									// environment: direction ∝ luminance (importance sampling of the HDRI), accepted with
@@ -71,7 +71,7 @@
 									scIndex = min( scIndex, max( lightsCount, 1u ) - 1u );   // rounding past the last share
 									let scLight = ${ randomLightSampleFn }( scIndex, scPos, scRand.yz );
 									scDir = scLight.direction;
-									scDirectional = scLight.lightType == 3 || scLight.lightType == 2 || scLight.lightType == 4;
+									scDirectional = scLight.lightType != 5;
 									scDist = scLight.dist - ${ LIGHT_EPSILON };
 									scWeight = select( 0.0, 1.0, scLight.pdf > 0.0 );
 
@@ -84,9 +84,8 @@
 									//@glass-shadow scPos | scDir | scDist | scUp | bounce == 0u
 									scLit = gsShadow * scWeight;
 									/*@if:caustics*/
-									// caustics (caustics.js): the light of a directional lamp / the HDRI's sun through glass comes from
-									// the photons here
-									if ( gsGlass && ${ __CA_COV }( scDirectional, scRand.x < scParams.x, scDir ) ) {
+									// caustics (caustics.js): the light of the lamps / the HDRI through glass comes from the photons here
+									if ( gsGlass && ${ __CA_COV }( scDirectional, scRand.x < scParams.x ) ) {
 
 										scLit = vec3f( 0.0 );
 

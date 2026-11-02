@@ -1348,7 +1348,7 @@
             "add": "+ Add light…",
             "addTitle": "Create a new light in the scene",
             "addLabel": "New",
-            "folderHint": "Point, spot and area lights relate their strength to the model size. Splats (“Surface”) and caustics use directional lights only.",
+            "folderHint": "Point, spot and area lights relate their strength to the model size. Splats (“Surface”) use directional lights only.",
             "iesProfile": "Profile",
             "iesTitle": "Light distribution of the luminaire – own profiles or a loaded IES file",
             "iesLoad": "File…",

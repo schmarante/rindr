@@ -1,32 +1,41 @@
-// Photon pass of the caustics (caustics.js): one photon per invocation from a light source – the directional lamps, the
-// HDRI's sun (findSun) and the local lamps (point, spot, IES) – aimed at the glass objects' bounding sphere (directional:
-// parallel rays from a disc across it, the sun's spread over its disc; local: from the lamp's position into the cone
-// around the sphere, weighted by the spot's cone or the IES profile – no photon wasted on the open floor), traced
-// through the glass with the path tracer's scene
-// data (BVH, transforms, material records incl. textures – like pt-guides.js) and deposited into the hash grid where it
-// lands on another surface after passing glass.
+// Photon pass of the caustics (caustics.js): one photon per invocation from a light source – every lamp (directional,
+// point, spot, IES, rectangle, disc) and the HDRI (importance-sampled by its luminance: an inverse CDF over a copy of
+// at most ENV_W × ENV_H cells, colour as rgb / luminance per cell) – aimed at the casters: the bounding spheres of the
+// glass and mirror objects, each its own (more than MAX_CASTERS: merged in a grid). Directional light and the HDRI:
+// parallel rays from the disc across a caster picked by its area, started outside the scene; local lamps: from the lamp
+// (rectangle / disc: a point on it) into the cone around a caster picked by its solid angle. The density is the
+// mixture of all casters whose disc / cone contains the ray (overlaps counted – photon weight × Σ area / k resp.
+// Σ solid angle / k), so no photon is wasted on the open floor and casters far apart keep fine cells. Traced through the
+// casters with the path tracer's scene data (BVH, transforms, material records incl. textures – like pt-guides.js) and
+// deposited into the hash grid where it lands on another surface after passing a caster.
 //
 // At glass (transmission > ½): smooth dielectric with the surface record's IOR (per wavelength with dispersion: a
 // uniformly sampled wavelength per photon, colour weight of the library – rainbow edges), Fresnel picks reflection or
 // refraction, total internal reflection reflects; rough glass tilts the normal by roughness²; colour on entry,
 // absorption over the distance inside (attenuation colour/distance) on exit; thin walls pass straight (× colour).
-// Anything else ends the photon: after at least one glass face it is deposited – flux as fixed point (× FIXED) into the
+// At a mirror (causticMirror – metal, smooth; the material's values like the megakernel): reflected, × Schlick's
+// Fresnel with the metal's colour, rough ones tilted like glass.
+// Anything else ends the photon: after at least one caster face it is deposited – flux as fixed point (× FIXED) into the
 // cell's slot (key claimed by compare-exchange, linear probing, CAUSTICS_PROBES slots; a full table drops the photon).
-import { Vector3, Vector4, Matrix3, Matrix4, Quaternion, StorageBufferAttribute, Box3, Sphere, DataUtils, HalfFloatType } from 'three/webgpu';
+import { Vector3, Vector4, Matrix3, Matrix4, Quaternion, StorageBufferAttribute, Box3, Sphere, DataUtils, HalfFloatType, SRGBColorSpace, DoubleSide, BackSide } from 'three/webgpu';
 import { uniform, globalId, storage } from 'three/tsl';
 import { proxy, proxyFn, wgslTagFn, rayStruct } from 'three-mesh-bvh/webgpu';
 import { offsetRayOriginFunc } from 'three-gpu-pathtracer/src/webgpu/nodes/utils.wgsl.js';
 import { applyDispersionFunc, dispersionColorWeightFunc, transmissionAttenuationFunc, DISPERSION_MIN_WAVELENGTH, DISPERSION_MAX_WAVELENGTH } from 'three-gpu-pathtracer/src/webgpu/nodes/material.wgsl.js';
-import { CAUSTICS, CAUSTICS_HASH, CAUSTICS_PROBES } from './caustics.js';
+import { CAUSTICS, CAUSTICS_HASH, CAUSTICS_PROBES, CAUSTICS_MIRROR } from './caustics.js';
+import { isMirror } from './kernel-features.js';
 
 const FIXED = 32;          // grid units per photon of weight 1 (stochastic rounding – a cell overflows after ~1e8 photons)
 const WORKGROUP = 64;
-const MAX_SOURCES = 16;    // lamps + the sun (more lamps: the dimmest ones get no photons)
+const MAX_SOURCES = 16;    // lamps + the HDRI (more lamps: the dimmest ones get no photons)
 const SOURCE_VEC4 = 5;     // vec4 per source (see prepare)
+const MAX_CASTERS = 64;    // bounding spheres the photons aim at (more objects: merged)
+const ENV_W = 1024, ENV_H = 512;   // the HDRI's copy for sampling (at most; a sun of 0.5° stays about one cell)
+const MAX_EMITTERS = 65536;        // triangles of glowing meshes (more: drawn by their power – see collectEmitters)
 // IES profiles of the sources as tables: 180 angles from the axis (0…180°, like the profile textures' columns) × 72
 // directions around it (5° steps, −180…180° like their rows; one row repeated for symmetric profiles)
 const PROFILE_THETA = 180, PROFILE_PHI = 72;
-const SOURCE_KIND = { directional: 0, point: 1, spot: 2, ies: 3 };
+const SOURCE_KIND = { directional: 0, point: 1, spot: 2, ies: 3, environment: 4, rect: 5, disc: 6, mesh: 7 };
 const luminance = c => 0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z;
 
 // pcg hash → uniform [0, 1)
@@ -68,71 +77,184 @@ function profileTable(texture, out, offset) {
 }
 
 /**
- * The sun of an HDRI (the path tracer's preprocessed map: half float RGBA, rows bottom-up) – a small, very bright spot:
- * peak ≥ 50 × the mean radiance, all pixels above the threshold (2 % of the peak, ≥ 20 × the mean) within 9° of the
- * peak, and ≥ 2 % of the environment's light. Softboxes / studio pins are larger → no sun (they keep the transparent
- * glass shadow). Returns the direction in map space (unrotated), its irradiance (Σ radiance × solid angle over the
- * cone, rgb, intensity 1), the cone (cos; it decides which environment samples the photons replace) and the angular
- * radius of the disc (photons spread over it – soft caustics like a real sun), or null.
+ * The HDRI (the path tracer's preprocessed map: half float RGBA, rows bottom-up – row y at uv.y = (y + ½) / h, polar
+ * angle π (1 − uv.y), equirectUvToDirection of the library) → a sampling table of W × H cells (box-filtered): cdf of
+ * the rows (∝ Σ luminance × sin of the polar angle), cdf within each row (∝ luminance), colour / luminance per cell as
+ * two packed half pairs. Returns { W, H, total } (Σ luminance × solid angle – the HDRI's luminance integral) or null
+ * (dark map). Picking cells so has the solid angle density luminance / total – a photon carries colour / luminance ×
+ * total.
  */
-export function findSun(map) {
+function envTable(map, cdf, colour) {
     const { width: w, height: h, data } = map?.image ?? {};
     if (!(data instanceof Uint16Array) || w < 8 || h < 4) return null;
     const half = halfToFloat();
-    const lum = i => 0.2126 * half[data[i]] + 0.7152 * half[data[i + 1]] + 0.0722 * half[data[i + 2]];
-    // row y: uv.y = (y + ½) / h, polar angle π (1 − uv.y) (equirectUvToDirection of the library)
-    const polar = y => Math.PI * (1 - (y + 0.5) / h);
-    const direction = (x, y, out) => {
-        const theta = ((x + 0.5) / w - 0.5) * 2 * Math.PI, phi = polar(y), sp = Math.sin(phi);
-        return out.set(sp * Math.cos(theta), Math.cos(phi), sp * Math.sin(theta));
-    };
-    let peak = 0, peakIndex = 0, sum = 0, area = 0;
-    for (let y = 0; y < h; y++) {
+    const W = Math.min(ENV_W, w), H = Math.max(2, Math.min(ENV_H, Math.round(W * h / w)));
+    const rows = new Float64Array(H);
+    let total = 0;
+    for (let y = 0; y < H; y++) {
+        const sy0 = Math.floor(y * h / H), sy1 = Math.max(sy0 + 1, Math.floor((y + 1) * h / H));
+        const sin = Math.sin(Math.PI * (1 - (y + 0.5) / H));
         let row = 0;
-        for (let x = 0, i = y * w * 4; x < w; x++, i += 4) {
-            const l = lum(i);
-            row += l;
-            if (l > peak) { peak = l; peakIndex = y * w + x; }
+        for (let x = 0; x < W; x++) {
+            const sx0 = Math.floor(x * w / W), sx1 = Math.max(sx0 + 1, Math.floor((x + 1) * w / W));
+            let r = 0, g = 0, b = 0;
+            for (let sy = sy0; sy < sy1; sy++) {
+                for (let sx = sx0, i = (sy * w + sx0) * 4; sx < sx1; sx++, i += 4) { r += half[data[i]]; g += half[data[i + 1]]; b += half[data[i + 2]]; }
+            }
+            const n = (sy1 - sy0) * (sx1 - sx0);
+            r /= n; g /= n; b /= n;
+            const lum = Math.max(0, 0.2126 * r + 0.7152 * g + 0.0722 * b);
+            const k = y * W + x;
+            colour[k * 2] = packHalf2(lum > 0 ? r / lum : 0, lum > 0 ? g / lum : 0);
+            colour[k * 2 + 1] = packHalf2(lum > 0 ? b / lum : 0, 0);
+            row += lum;
+            cdf[H + k] = row;
         }
-        const sp = Math.sin(polar(y));
-        sum += row * sp;
-        area += w * sp;
+        for (let x = 0; x < W; x++) cdf[H + y * W + x] = row > 0 ? cdf[H + y * W + x] / row : (x + 1) / W;
+        rows[y] = row * sin;
+        total += rows[y];
     }
-    const mean = sum / area;
-    if (!(peak > 50 * mean)) return null;
-    const p = direction(peakIndex % w, Math.floor(peakIndex / w), new Vector3());
-    const threshold = Math.max(peak * 0.02, mean * 20);
-    const band = 10 * Math.PI / 180, cosBand = Math.cos(band), phiP = polar(Math.floor(peakIndex / w));
-    const y0 = Math.max(0, Math.floor(h * (1 - (phiP + band) / Math.PI) - 1)), y1 = Math.min(h - 1, Math.ceil(h * (1 - (phiP - band) / Math.PI)));
-    const dOmega = (2 * Math.PI / w) * (Math.PI / h);
-    const d = new Vector3();
-    const each = fn => {
-        for (let y = y0; y <= y1; y++) {
-            const solid = dOmega * Math.sin(polar(y));
-            for (let x = 0; x < w; x++) {
-                const c = direction(x, y, d).dot(p);
-                if (c >= cosBand) fn((y * w + x) * 4, Math.acos(Math.min(c, 1)), solid);
+    if (!(total > 0)) return null;
+    let acc = 0;
+    for (let y = 0; y < H; y++) { acc += rows[y]; cdf[y] = acc / total; }
+    cdf[H - 1] = 1;
+    return { W, H, total: total * (2 * Math.PI / W) * (Math.PI / H) };
+}
+const packHalf2 = (a, b) => DataUtils.toHalfFloat(Math.min(a, 65504)) | (DataUtils.toHalfFloat(Math.min(b, 65504)) << 16);
+
+// mean colour of a texture (linear) – the emission of a glowing mesh with an emissive map: the photons carry the map's
+// mean (per texture version); unreadable → 1
+const textureMeans = new Map();
+function textureMean(tex) {
+    const key = `${tex.uuid}:${tex.version}`;
+    if (textureMeans.has(key)) return textureMeans.get(key);
+    let mean = [1, 1, 1];
+    const lin = v => tex.colorSpace === SRGBColorSpace ? (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4) : v;
+    try {
+        const img = tex.image;
+        if (img?.data && img.width && img.height) {
+            const { data, width, height } = img, ch = Math.max(1, Math.round(data.length / (width * height)));
+            const half = data instanceof Uint16Array ? halfToFloat() : null, scale = data instanceof Uint8Array || data instanceof Uint8ClampedArray ? 1 / 255 : 1;
+            const sum = [0, 0, 0], step = Math.max(1, Math.floor(Math.sqrt(width * height / 4096)));
+            let n = 0;
+            for (let y = 0; y < height; y += step) for (let x = 0; x < width; x += step) {
+                const i = (y * width + x) * ch;
+                for (let c = 0; c < 3; c++) { const v = data[i + Math.min(c, ch - 1)]; sum[c] += lin(half ? half[v] : v * scale); }
+                n++;
+            }
+            if (n) mean = sum.map(v => v / n);
+        } else if (img && typeof OffscreenCanvas !== 'undefined' && (img.width || img.videoWidth)) {
+            const ctx = new OffscreenCanvas(32, 32).getContext('2d');
+            ctx.drawImage(img, 0, 0, 32, 32);
+            const d = ctx.getImageData(0, 0, 32, 32).data, sum = [0, 0, 0];
+            for (let i = 0; i < d.length; i += 4) for (let c = 0; c < 3; c++) sum[c] += lin(d[i + c] / 255);
+            mean = sum.map(v => v / 1024);
+        }
+    } catch { /* tainted / unreadable: 1 */ }
+    textureMeans.set(key, mean);
+    return mean;
+}
+
+/** emission of a material like the path tracer (emissive × intensity × emissive map – here its mean), linear rgb, or
+ *  null when it does not glow */
+function emissionOf(m) {
+    if (!m?.emissive || m.matte) return null;
+    const k = m.emissiveIntensity ?? 1;
+    const e = [m.emissive.r * k, m.emissive.g * k, m.emissive.b * k];
+    if (m.emissiveMap) { const t = textureMean(m.emissiveMap); for (let c = 0; c < 3; c++) e[c] *= t[c]; }
+    return e[0] + e[1] + e[2] > 1e-6 ? e : null;
+}
+
+/**
+ * Triangles of the glowing meshes (world space) → the photon kernel's emitter table (4 vec4 each: corner + sides that
+ * glow (0 front, 1 back, 2 both – the material's side), edge 1, edge 2, weight rgb + cdf). Picked ∝ power (luminance × area); weight = colour / luminance × total power (what a
+ * triangle sends ÷ its pick probability). More than `max`: `max` triangles drawn ∝ power (with repetition), picked
+ * uniformly – the same distribution, fixed for the scene version. Returns { count, power, meshes: [{ center, power }] }
+ * (meshes: for the source's flux estimate) or null.
+ */
+function collectEmitters(scene, out, max) {
+    const tris = [], power = [], colour = [], sides = [], meshes = [];
+    const a = new Vector3(), b = new Vector3(), c = new Vector3(), m4 = new Matrix4(), inst = new Matrix4();
+    scene.traverseVisible(o => {
+        if (!o.isMesh || !o.geometry?.attributes?.position) return;
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        const glow = mats.map(emissionOf);
+        if (!glow.some(Boolean)) return;
+        const pos = o.geometry.attributes.position, index = o.geometry.index;
+        const triCount = (index ? index.count : pos.count) / 3;
+        const groups = Array.isArray(o.material) && o.geometry.groups.length ? o.geometry.groups : [{ start: 0, count: triCount * 3, materialIndex: 0 }];
+        const copies = o.isInstancedMesh ? o.count : 1;
+        let meshPower = 0;
+        const box = new Box3();
+        for (let k = 0; k < copies; k++) {
+            m4.copy(o.matrixWorld);
+            if (o.isInstancedMesh) { o.getMatrixAt(k, inst); m4.multiply(inst); }
+            for (const g of groups) {
+                const e = glow[g.materialIndex ?? 0];
+                if (!e) continue;
+                // sides that glow: 0 front, 1 back, 2 both; a mirrored placement turns the winding around
+                const mat = mats[g.materialIndex ?? 0];
+                let side = mat.side === DoubleSide ? 2 : mat.side === BackSide ? 1 : 0;
+                if (side < 2 && m4.determinant() < 0) side = 1 - side;
+                const lum = luminance({ x: e[0], y: e[1], z: e[2] });
+                if (!(lum > 0)) continue;
+                const end = Math.min(g.start + g.count, triCount * 3);
+                for (let i = g.start; i + 2 < end; i += 3) {
+                    const ia = index ? index.getX(i) : i, ib = index ? index.getX(i + 1) : i + 1, ic = index ? index.getX(i + 2) : i + 2;
+                    a.fromBufferAttribute(pos, ia).applyMatrix4(m4);
+                    b.fromBufferAttribute(pos, ib).applyMatrix4(m4).sub(a);
+                    c.fromBufferAttribute(pos, ic).applyMatrix4(m4).sub(a);
+                    const area = 0.5 * b.clone().cross(c).length();
+                    if (!(area > 0)) continue;
+                    tris.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+                    power.push(lum * area);
+                    sides.push(side);
+                    colour.push(e[0] / lum, e[1] / lum, e[2] / lum);
+                    meshPower += lum * area;
+                    box.expandByPoint(a);
+                }
             }
         }
-    };
-    let extent = 0;
-    each((i, angle) => { if (lum(i) > threshold) extent = Math.max(extent, angle); });
-    if (extent > 9 * Math.PI / 180) return null;
-    const pixel = Math.PI / h;
-    const cone = Math.max(extent + 1.5 * pixel, 0.25 * Math.PI / 180);
-    const e = new Vector3(), centre = new Vector3();
-    let flux = 0, moment = 0;
-    each((i, angle, solid) => {
-        if (angle > cone) return;
-        const l = lum(i) * solid;
-        e.x += half[data[i]] * solid; e.y += half[data[i + 1]] * solid; e.z += half[data[i + 2]] * solid;
-        centre.addScaledVector(d, l);
-        flux += l;
-        moment += l * angle * angle;
+        if (meshPower > 0) meshes.push({ center: box.getCenter(new Vector3()), power: meshPower });
     });
-    if (!(flux > 0.02 * sum * dOmega)) return null;
-    // uniform disc of radius ρ: mean squared angle ρ² / 2
-    return { dir: centre.normalize(), e, cos: Math.cos(cone), radius: Math.min(Math.sqrt(2 * moment / flux), cone) };
+    const n = power.length;
+    if (!n) return null;
+    const cum = new Float64Array(n);
+    let total = 0;
+    for (let i = 0; i < n; i++) { total += power[i]; cum[i] = total; }
+    const write = (j, i, cdf) => {
+        out.set([tris[i * 9], tris[i * 9 + 1], tris[i * 9 + 2], sides[i], tris[i * 9 + 3], tris[i * 9 + 4], tris[i * 9 + 5], 0,
+            tris[i * 9 + 6], tris[i * 9 + 7], tris[i * 9 + 8], 0, colour[i * 3] * total, colour[i * 3 + 1] * total, colour[i * 3 + 2] * total, cdf], j * 16);
+    };
+    if (n <= max) {
+        for (let i = 0; i < n; i++) write(i, i, i === n - 1 ? 2 : cum[i] / total);
+        return { count: n, power: total, meshes };
+    }
+    for (let j = 0; j < max; j++) {
+        const r = Math.random() * total;
+        let lo = 0, hi = n - 1;
+        while (lo < hi) { const mid = (lo + hi) >> 1; if (cum[mid] < r) lo = mid + 1; else hi = mid; }
+        write(j, lo, j === max - 1 ? 2 : (j + 1) / max);
+    }
+    return { count: max, power: total, meshes };
+}
+
+/** caster spheres → at most `max`: merged by a grid over their centres, coarser until few enough cells are taken */
+function clusterSpheres(spheres, max) {
+    if (spheres.length <= max) return spheres;
+    const box = new Box3();
+    for (const s of spheres) box.expandByPoint(s.center);
+    let cell = Math.max(box.getSize(new Vector3()).length() / max, 1e-6);
+    for (;;) {
+        const groups = new Map();
+        for (const s of spheres) {
+            const key = ['x', 'y', 'z'].map(a => Math.floor((s.center[a] - box.min[a]) / cell)).join(',');
+            const g = groups.get(key);
+            if (g) g.union(s); else groups.set(key, s.clone());
+        }
+        if (groups.size <= max) return [...groups.values()];
+        cell *= 1.1;
+    }
 }
 
 export class CausticsKernel {
@@ -147,23 +269,62 @@ export class CausticsKernel {
         this._bvhData = null;
         this._kernel = null;
         this._clearKernel = null;
-        this._sunMap = null;   // HDRI data the sun was searched in (findSun once per map – the library works on clones)
-        this._sun = null;
+        this._envMap = null;   // HDRI data the sampling table was built from (once per map – the library works on clones)
+        this._env = null;      // { W, H, total } of that table, or null
+        this._envId = 0;
+        this._casterKey = null;   // scene version the casters were collected for
         this.ready = false;    // pipelines compiled
 
-        // light sources: SOURCE_VEC4 vec4 per source (see prepare); IES tables per source
+        // light sources: SOURCE_VEC4 vec4 per source (see prepare); IES tables per source; casters (centre, radius) and
+        // the cdf of their areas; the HDRI's sampling table (cdf: rows, then each row; colour: 2 u32 per cell)
         this._sources = new StorageBufferAttribute(new Float32Array(MAX_SOURCES * SOURCE_VEC4 * 4), 4);
         this._profiles = new StorageBufferAttribute(new Float32Array(MAX_SOURCES * PROFILE_THETA * PROFILE_PHI), 1);
+        this._casters = new StorageBufferAttribute(new Float32Array(MAX_CASTERS * 4), 4);
+        this._casterCdf = new StorageBufferAttribute(new Float32Array(MAX_CASTERS), 1);
+        this._envCdf = new StorageBufferAttribute(new Float32Array(ENV_H + ENV_W * ENV_H), 1);
+        this._envColour = new StorageBufferAttribute(new Uint32Array(ENV_W * ENV_H * 2), 1);
+        // glowing triangles: 4 vec4 each – corner, edge 1, edge 2 (xyz), weight rgb + cdf of the pick (see collectEmitters)
+        this._emitters = new StorageBufferAttribute(new Float32Array(MAX_EMITTERS * 16), 4);
         const p = this.params = {
             bvhData: { value: null },
             globalId,
             count: uniform(0, 'uint'),
             seed: uniform(0, 'uint'),
             sourceCount: uniform(0, 'uint'),
-            sphere: uniform(new Vector4()),    // glass bounds: centre, radius
+            casterCount: uniform(0, 'uint'),
+            casterArea: uniform(0),                // Σ π r² of the casters
+            bounds: uniform(new Vector4()),        // the scene's bounding sphere (parallel photons start outside it)
         };
         const sources = storage(this._sources, 'vec4', MAX_SOURCES * SOURCE_VEC4).toReadOnly();
         const profiles = storage(this._profiles, 'float', MAX_SOURCES * PROFILE_THETA * PROFILE_PHI).toReadOnly();
+        const casters = storage(this._casters, 'vec4', MAX_CASTERS).toReadOnly();
+        const casterCdf = storage(this._casterCdf, 'float', MAX_CASTERS).toReadOnly();
+        const envCdf = storage(this._envCdf, 'float', ENV_H + ENV_W * ENV_H).toReadOnly();
+        const envColour = storage(this._envColour, 'uint', ENV_W * ENV_H * 2).toReadOnly();
+        const emitters = storage(this._emitters, 'vec4', MAX_EMITTERS * 4).toReadOnly();
+        // cone from x around caster j: cos of its half angle (−1: x inside), 0 solid angle when it lies behind the
+        // emitting side `side` (area lights; zero vector: all around)
+        const cone = wgslTagFn/* wgsl */`
+            fn causticCone( j: u32, x: vec3f, side: vec3f ) -> vec4f {
+
+                let c = ${ casters }[ j ];
+                let dv = c.xyz - x;
+                let d2 = dot( dv, dv );
+                let r2 = c.w * c.w;
+                if ( dot( dv, side ) < - c.w ) {
+
+                    return vec4f( 0.0, 0.0, 1.0, 1.0 );
+
+                }
+                if ( d2 <= r2 * 1.0001 ) {
+
+                    return vec4f( 0.0, 0.0, 1.0, - 1.0 );
+
+                }
+                return vec4f( dv / sqrt( d2 ), sqrt( max( 0.0, 1.0 - r2 / d2 ) ) );
+
+            }
+        `;
         const V = SOURCE_VEC4;
         // emission of a local lamp towards `d` (unit, away from the lamp) relative to its intensity: 1 (point), the
         // spot's cone (smoothstep like the path tracer), the IES table (angles in the path tracer's frame: tilt from the
@@ -220,7 +381,7 @@ export class CausticsKernel {
                 var rng = ( globalId.x * 1973u ) ^ ( seed * 9277u + 26699u );
                 _ = ${ random }( &rng );
 
-                // source by its share (cdf), direction spread over its disc, point on the disc across the glass bounds
+                // source by its share (cdf)
                 let pick = ${ random }( &rng );
                 var source = 0u;
                 for ( var i = 0u; i + 1u < sourceCount; i ++ ) {
@@ -233,60 +394,237 @@ export class CausticsKernel {
                     source = i + 1u;
 
                 }
-                let lightDir = ${ sources }[ source * ${ V }u ];
+                let s0 = ${ sources }[ source * ${ V }u ];
                 var throughput = ${ sources }[ source * ${ V }u + 1u ].xyz;
-                let kind = u32( ${ sources }[ source * ${ V }u + 2u ].w );
-                let sphere = ${ p.sphere };
+                let s2 = ${ sources }[ source * ${ V }u + 2u ];
+                let s3 = ${ sources }[ source * ${ V }u + 3u ];
+                let s4 = ${ sources }[ source * ${ V }u + 4u ];
+                let kind = u32( s2.w );
+                let casterCount = ${ p.casterCount };
                 var ray: ${ rayStruct };
                 ray.maxDist = 0.0;
-                if ( kind == ${ SOURCE_KIND.directional }u ) {
+                if ( kind == ${ SOURCE_KIND.directional }u || kind == ${ SOURCE_KIND.environment }u ) {
 
-                    let helper = select( vec3f( 0.0, 1.0, 0.0 ), vec3f( 1.0, 0.0, 0.0 ), abs( lightDir.y ) > 0.9 );
-                    var toLight = lightDir.xyz;
-                    if ( lightDir.w > 0.0 ) {
+                    // parallel light: direction to it (a lamp's, spread over its disc; the HDRI: a cell by its luminance)
+                    var toLight = s0.xyz;
+                    if ( kind == ${ SOURCE_KIND.environment }u ) {
 
+                        let W = u32( s3.w );
+                        let H = u32( s4.w );
+                        let r1 = ${ random }( &rng );
+                        var lo = 0u;
+                        var hi = H - 1u;
+                        while ( lo < hi ) {
+
+                            let mid = ( lo + hi ) / 2u;
+                            if ( ${ envCdf }[ mid ] < r1 ) { lo = mid + 1u; } else { hi = mid; }
+
+                        }
+                        let row = lo;
+                        let r2 = ${ random }( &rng );
+                        lo = 0u;
+                        hi = W - 1u;
+                        while ( lo < hi ) {
+
+                            let mid = ( lo + hi ) / 2u;
+                            if ( ${ envCdf }[ H + row * W + mid ] < r2 ) { lo = mid + 1u; } else { hi = mid; }
+
+                        }
+                        let cell = row * W + lo;
+                        let theta = ( ( f32( lo ) + ${ random }( &rng ) ) / f32( W ) - 0.5 ) * 6.283185307;
+                        let polar = 3.14159265 * ( 1.0 - ( f32( row ) + ${ random }( &rng ) ) / f32( H ) );
+                        let local = vec3f( sin( polar ) * cos( theta ), cos( polar ), sin( polar ) * sin( theta ) );
+                        toLight = normalize( mat3x3f( s2.xyz, s3.xyz, s4.xyz ) * local );
+                        let rg = unpack2x16float( ${ envColour }[ cell * 2u ] );
+                        let b = unpack2x16float( ${ envColour }[ cell * 2u + 1u ] ).x;
+                        throughput *= vec3f( rg, b );
+
+                    } else if ( s0.w > 0.0 ) {
+
+                        let helper = select( vec3f( 0.0, 1.0, 0.0 ), vec3f( 1.0, 0.0, 0.0 ), abs( toLight.y ) > 0.9 );
                         let sx = normalize( cross( helper, toLight ) );
                         let sy = cross( toLight, sx );
-                        let sr = sqrt( ${ random }( &rng ) ) * lightDir.w;
+                        let sr = sqrt( ${ random }( &rng ) ) * s0.w;
                         let sa = 6.283185307 * ${ random }( &rng );
                         toLight = normalize( toLight + ( sx * cos( sa ) + sy * sin( sa ) ) * sr );
 
                     }
+                    // a caster by its area, a point on its disc across the light
+                    let ra = ${ random }( &rng );
+                    var ci = 0u;
+                    for ( var j = 0u; j + 1u < casterCount; j ++ ) {
+
+                        if ( ra < ${ casterCdf }[ j ] ) {
+
+                            break;
+
+                        }
+                        ci = j + 1u;
+
+                    }
+                    let cs = ${ casters }[ ci ];
+                    let helper = select( vec3f( 0.0, 1.0, 0.0 ), vec3f( 1.0, 0.0, 0.0 ), abs( toLight.y ) > 0.9 );
                     let tx = normalize( cross( helper, toLight ) );
                     let ty = cross( toLight, tx );
-                    let r = sqrt( ${ random }( &rng ) ) * sphere.w;
+                    let r = sqrt( ${ random }( &rng ) ) * cs.w;
                     let phi = 6.283185307 * ${ random }( &rng );
-                    ray.origin = sphere.xyz + toLight * ( 2.0 * sphere.w ) + ( tx * cos( phi ) + ty * sin( phi ) ) * r;
+                    let start = cs.xyz + ( tx * cos( phi ) + ty * sin( phi ) ) * r;
+                    // density: every caster whose disc the ray crosses
+                    var k = 0.0;
+                    for ( var j = 0u; j < casterCount; j ++ ) {
+
+                        let o = ${ casters }[ j ];
+                        let dv = o.xyz - start;
+                        let along = dot( dv, toLight );
+                        if ( dot( dv, dv ) - along * along <= o.w * o.w * 1.0001 ) {
+
+                            k += 1.0;
+
+                        }
+
+                    }
+                    throughput *= ${ p.casterArea } / max( k, 1.0 );
+                    let bounds = ${ p.bounds };
+                    ray.origin = start + toLight * ( dot( bounds.xyz - start, toLight ) + bounds.w * 1.01 );
                     ray.direction = - toLight;
 
                 } else {
 
-                    // local lamp: uniform over the cone around the glass bounds (cos of its half angle in w; −1 = the
-                    // lamp is inside them: the whole sphere of directions) – the weight carries the cone's solid angle
-                    let toSphere = sphere.xyz - lightDir.xyz;
-                    let dist = length( toSphere );
-                    let axis = select( vec3f( 0.0, - 1.0, 0.0 ), toSphere / dist, dist > 0.0 );
+                    // local lamp: from its position (rectangle / disc: a point on it, emitting along − its normal;
+                    // glowing meshes: a triangle by its power, a point on it, emitting to the sides its material has)
+                    var x = s0.xyz;
+                    var side = vec3f( 0.0 );
+                    var meshNormal = vec3f( 0.0 );
+                    var meshSide = 0.0;
+                    let area = kind == ${ SOURCE_KIND.rect }u || kind == ${ SOURCE_KIND.disc }u;
+                    if ( kind == ${ SOURCE_KIND.mesh }u ) {
+
+                        let re = ${ random }( &rng );
+                        var lo = 0u;
+                        var hi = u32( s3.w ) - 1u;
+                        while ( lo < hi ) {
+
+                            let mid = ( lo + hi ) / 2u;
+                            if ( ${ emitters }[ mid * 4u + 3u ].w < re ) { lo = mid + 1u; } else { hi = mid; }
+
+                        }
+                        let e1 = ${ emitters }[ lo * 4u + 1u ].xyz;
+                        let e2 = ${ emitters }[ lo * 4u + 2u ].xyz;
+                        var bu = ${ random }( &rng );
+                        var bv = ${ random }( &rng );
+                        if ( bu + bv > 1.0 ) {
+
+                            bu = 1.0 - bu;
+                            bv = 1.0 - bv;
+
+                        }
+                        x = ${ emitters }[ lo * 4u ].xyz + e1 * bu + e2 * bv;
+                        meshNormal = normalize( cross( e1, e2 ) );
+                        meshSide = ${ emitters }[ lo * 4u ].w;
+                        throughput *= ${ emitters }[ lo * 4u + 3u ].xyz;
+
+                    }
+                    if ( area ) {
+
+                        let ru = ${ random }( &rng );
+                        let rv = ${ random }( &rng );
+                        if ( kind == ${ SOURCE_KIND.rect }u ) {
+
+                            x += s2.xyz * ( ru - 0.5 ) + s3.xyz * ( rv - 0.5 );
+
+                        } else {
+
+                            let rr = 0.5 * sqrt( ru );
+                            let ra = 6.283185307 * rv;
+                            x += s2.xyz * ( rr * cos( ra ) ) + s3.xyz * ( rr * sin( ra ) );
+
+                        }
+                        side = - normalize( cross( s2.xyz, s3.xyz ) );
+
+                    }
+                    // into the cone around a caster picked by its solid angle from x
+                    var total = 0.0;
+                    for ( var j = 0u; j < casterCount; j ++ ) {
+
+                        let cj = ${ cone }( j, x, side );
+                        total += 1.0 - cj.w;
+
+                    }
+                    if ( total <= 0.0 ) {
+
+                        return;
+
+                    }
+                    let rc = ${ random }( &rng ) * total;
+                    var acc = 0.0;
+                    var c = vec4f( 0.0, 0.0, 1.0, 1.0 );
+                    for ( var j = 0u; j < casterCount; j ++ ) {
+
+                        c = ${ cone }( j, x, side );
+                        acc += 1.0 - c.w;
+                        if ( rc < acc ) {
+
+                            break;
+
+                        }
+
+                    }
+                    let axis = c.xyz;
                     let helper = select( vec3f( 0.0, 1.0, 0.0 ), vec3f( 1.0, 0.0, 0.0 ), abs( axis.y ) > 0.9 );
                     let tx = normalize( cross( helper, axis ) );
                     let ty = cross( axis, tx );
-                    let cosT = 1.0 - ${ random }( &rng ) * ( 1.0 - lightDir.w );
+                    let cosT = 1.0 - ${ random }( &rng ) * ( 1.0 - c.w );
                     let sinT = sqrt( max( 0.0, 1.0 - cosT * cosT ) );
                     let phi = 6.283185307 * ${ random }( &rng );
                     let d = normalize( axis * cosT + ( tx * cos( phi ) + ty * sin( phi ) ) * sinT );
-                    throughput *= ${ emission }( source, d );
+                    // density: every cone that contains d (solid angle 2π (1 − cos) each – the 2π is in the weight)
+                    var k = 0.0;
+                    for ( var j = 0u; j < casterCount; j ++ ) {
+
+                        let cj = ${ cone }( j, x, side );
+                        if ( cj.w < 1.0 && dot( d, cj.xyz ) >= cj.w ) {
+
+                            k += 1.0;
+
+                        }
+
+                    }
+                    throughput *= 6.283185307 * total / max( k, 1.0 );
+                    if ( area ) {
+
+                        throughput *= max( 0.0, dot( d, side ) );
+
+                    } else if ( kind == ${ SOURCE_KIND.mesh }u ) {
+
+                        // the sides the material has (like the path tracer: a one-sided face is not hit from behind –
+                        // its back neither glows nor stops the photon)
+                        let mc = dot( d, meshNormal );
+                        throughput *= select( select( max( 0.0, mc ), max( 0.0, - mc ), meshSide == 1.0 ), abs( mc ), meshSide == 2.0 );
+
+                    } else {
+
+                        throughput *= ${ emission }( source, d );
+
+                    }
                     if ( max( max( throughput.r, throughput.g ), throughput.b ) <= 0.0 ) {
 
                         return;
 
                     }
-                    ray.origin = lightDir.xyz;
+                    ray.origin = x;
+                    if ( kind == ${ SOURCE_KIND.mesh }u ) {
+
+                        // off its own triangle
+                        ray.origin = ${ offsetRayOriginFunc }( x, d, select( - meshNormal, meshNormal, dot( d, meshNormal ) > 0.0 ) );
+
+                    }
                     ray.direction = d;
 
                 }
 
                 let wavelength = mix( ${ DISPERSION_MIN_WAVELENGTH }.0, ${ DISPERSION_MAX_WAVELENGTH }.0, ${ random }( &rng ) );
                 var dispersed = false;
-                var glassFaces = 0u;
+                var casterFaces = 0u;
 
                 for ( var bounce = 0u; bounce < 16u; bounce ++ ) {
 
@@ -321,10 +659,43 @@ export class CausticsKernel {
 
                     }
 
+                    // mirror: reflected (Schlick with the metal's colour; rough ones tilted like glass)
+                    if ( ${ CAUSTICS_MIRROR }( materialInfo.metalness, materialInfo.roughness, materialInfo.transmission, materialInfo.matte != 0 ) ) {
+
+                        casterFaces ++;
+                        var mn = surface.normal;
+                        if ( dot( mn, ray.direction ) > 0.0 ) {
+
+                            mn = - mn;
+
+                        }
+                        let mr = surface.roughness * surface.roughness;
+                        if ( mr > 1e-4 ) {
+
+                            let z = 1.0 - 2.0 * ${ random }( &rng );
+                            let rr = sqrt( max( 0.0, 1.0 - z * z ) );
+                            let a = 6.283185307 * ${ random }( &rng );
+                            let tilted = normalize( mn + vec3f( rr * cos( a ), rr * sin( a ), z ) * mr );
+                            mn = select( mn, tilted, dot( tilted, ray.direction ) < 0.0 );
+
+                        }
+                        let cosI = clamp( - dot( ray.direction, mn ), 0.0, 1.0 );
+                        throughput *= surface.color + ( vec3f( 1.0 ) - surface.color ) * pow( 1.0 - cosI, 5.0 );
+                        let reflected = reflect( ray.direction, mn );
+                        if ( max( max( throughput.r, throughput.g ), throughput.b ) < 1e-3 || dot( reflected, hit.normal ) <= 0.0 ) {
+
+                            break;
+
+                        }
+                        ray.origin = ${ offsetRayOriginFunc }( position, reflected, hit.normal );
+                        ray.direction = reflected;
+                        continue;
+
+                    }
                     if ( materialInfo.matte != 0 || surface.transmission <= 0.5 ) {
 
-                        // landed after glass → into the cell of this point and side (hit.normal faces the photon)
-                        if ( glassFaces > 0u ) {
+                        // landed after a caster → into the cell of this point and side (hit.normal faces the photon)
+                        if ( casterFaces > 0u ) {
 
                             let hk = ${ CAUSTICS_HASH }( position, hit.normal );
                             let fx = throughput * ${ FIXED }.0 + vec3f( ${ random }( &rng ), ${ random }( &rng ), ${ random }( &rng ) );
@@ -359,7 +730,7 @@ export class CausticsKernel {
                     }
 
                     // glass
-                    glassFaces ++;
+                    casterFaces ++;
                     if ( materialInfo.dispersion > 0.0 && surface.ior > 1.0 && ! surface.thinWall ) {
 
                         ${ applyDispersionFunc }( &surface, materialInfo.dispersion, wavelength );
@@ -489,50 +860,94 @@ export class CausticsKernel {
     }
 
     /**
-     * Set up for this frame: glass bounds, sources (directional lamps, the HDRI's sun, point / spot / IES lamps), cell
-     * size; a change clears the grid. Returns false when there is nothing to trace (no glass, no light).
+     * Set up for this frame: casters (bounding spheres of the glass / mirror objects, per scene version), sources (all
+     * lamps, the HDRI), cell size; a change clears the grid. Returns false when there is nothing to trace (no caster,
+     * no light).
      * Per source SOURCE_VEC4 vec4:
-     *   0: directional: direction to the light, tan of the disc's angular radius – local: position, cos of the half angle
-     *      of the cone around the glass bounds (−1: all directions)
+     *   0: directional: direction to the light, tan of the disc's angular radius – point / spot / IES / rectangle / disc:
+     *      position (centre)
      *   1: photon weight (rgb), cdf of the pick
-     *   2: axis of a spot / IES lamp (towards its target), kind (SOURCE_KIND)
-     *   3: u of the lamp's frame (like the path tracer's light record), cos of the spot's cone
-     *   4: v of the lamp's frame, cos of the spot's inner cone (penumbra)
-     * Flux of a source (what its photons carry together): directional E × the disc across the glass bounds; local the
-     * intensity × the cone's solid angle (the spot's cone / IES profile per photon on top – at most 1).
+     *   2: spot / IES: axis (towards its target) – rectangle / disc: u (full width) – HDRI: 1st column of map → world;
+     *      kind (SOURCE_KIND)
+     *   3: spot / IES: u of the lamp's frame (like the path tracer's light record), cos of the spot's cone – rectangle /
+     *      disc: v (full height) – HDRI: 2nd column, table width
+     *   4: spot / IES: v of the lamp's frame, cos of the inner cone (penumbra) – HDRI: 3rd column, table height
+     * Photon weight = what the source sends per unit of the kernel's geometry, ÷ (pick · Σ estimated flux): directional
+     * E, HDRI intensity × its luminance integral (× colour / luminance of the cell in the kernel) – both × Σ caster area
+     * / k there; point / spot / IES the intensity, rectangle / disc radiance × area – × 2π Σ (1 − cos) / k and the
+     * emission towards the photon (cone, profile, cos at the light) there. The estimated flux only steers the picking.
      * @param {object} o { bvhData, scene (the path tracer's), env (the library's EquirectHdrInfoNode or null), version
-     *   (scene data / materials) }
+     *   (scene data / materials / transforms) }
      */
     prepare({ bvhData, scene, env, version }) {
         if (bvhData !== this._bvhData || bvhData.fns.raycastFirstHit !== this._raycast) this._build(bvhData);
-        // glass objects (visible, transmissive) and the lamps
-        const box = new Box3(), part = new Box3();
-        const sources = [], lamps = [];
         scene.updateMatrixWorld();
+        // casters and the scene's bounds: once per scene version
+        if (this._casterKey !== version || version < 0) {
+            this._casterKey = version;
+            const all = new Box3(), part = new Box3(), spheres = [];
+            scene.traverseVisible(o => {
+                if (!o.isMesh || !o.geometry) return;
+                if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+                const bounds = (o.isInstancedMesh || o.isBatchedMesh) ? (o.boundingBox ?? (o.computeBoundingBox(), o.boundingBox)) : o.geometry.boundingBox;
+                part.copy(bounds).applyMatrix4(o.matrixWorld);
+                all.union(part);
+                const mats = Array.isArray(o.material) ? o.material : [o.material];
+                if (mats.some(m => m && ((m.transmission ?? 0) > 0.5 || isMirror(m)))) spheres.push(part.getBoundingSphere(new Sphere()));
+            });
+            this._spheres = clusterSpheres(spheres.filter(s => s.radius > 0), MAX_CASTERS);
+            this._bounds = all.isEmpty() ? null : all.getBoundingSphere(new Sphere());
+            const a = this._casters.array, cdf = this._casterCdf.array;
+            const areaSum = this._spheres.reduce((t, s) => t + Math.PI * s.radius ** 2, 0);
+            let acc = 0;
+            this._spheres.forEach((s, i) => {
+                a.set([s.center.x, s.center.y, s.center.z, s.radius], i * 4);
+                acc += Math.PI * s.radius ** 2;
+                cdf[i] = i === this._spheres.length - 1 ? 2 : acc / areaSum;
+            });
+            this._areaSum = areaSum;
+            this._casters.needsUpdate = this._casterCdf.needsUpdate = true;
+            this._glow = this._spheres.length ? collectEmitters(scene, this._emitters.array, MAX_EMITTERS) : null;
+            if (this._glow) this._emitters.needsUpdate = true;
+            this._glowId = (this._glowId ?? 0) + 1;
+        }
+        const spheres = this._spheres;
+        if (!spheres.length || !this._bounds) return false;
+        const areaSum = this._areaSum;
+        // solid angle 2π Σ (1 − cos) of the cones from x around the casters; facing: only the side a surface emits to
+        const coneSum = (x, facing = null) => spheres.reduce((t, s) => {
+            const dv = s.center.clone().sub(x), d = dv.length();
+            if (d <= s.radius * 1.0001) return t + 4 * Math.PI;
+            const omega = 2 * Math.PI * (1 - Math.sqrt(1 - (s.radius / d) ** 2));
+            return t + omega * (facing ? Math.min(1, Math.max(0, dv.dot(facing) / d + s.radius / d)) : 1);
+        }, 0);
+
+        const sources = [];
+        const lamps = [];
         scene.traverseVisible(o => {
-            if (o.isLight && o.intensity > 0 && (o.isDirectionalLight || o.isPointLight || o.isSpotLight)) lamps.push(o);
-            if (!o.isMesh) return;
-            const mats = Array.isArray(o.material) ? o.material : [o.material];
-            if (!mats.some(m => (m?.transmission ?? 0) > 0.5)) return;
-            if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
-            box.union(part.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld));
+            if (o.isLight && o.intensity > 0 && (o.isDirectionalLight || o.isPointLight || o.isSpotLight || o.isRectAreaLight)) lamps.push(o);
         });
-        if (box.isEmpty()) return false;
-        const sphere = box.getBoundingSphere(new Sphere());
-        const area = Math.PI * sphere.radius * sphere.radius;
         for (const o of lamps) {
             const color = new Vector3(o.color.r, o.color.g, o.color.b).multiplyScalar(o.intensity);
             const position = new Vector3().setFromMatrixPosition(o.matrixWorld);
             if (o.isDirectionalLight) {
                 o.target.updateMatrixWorld();
                 const dir = position.sub(new Vector3().setFromMatrixPosition(o.target.matrixWorld)).normalize();
-                sources.push({ kind: SOURCE_KIND.directional, dir, flux: color.multiplyScalar(area), w: 0, radius: 0 });
+                sources.push({ kind: SOURCE_KIND.directional, dir, weight: color, flux: luminance(color) * areaSum, radius: 0 });
                 continue;
             }
-            // cone from the lamp around the glass bounds
-            const dist = position.distanceTo(sphere.center);
-            const cosHalf = dist > sphere.radius * 1.0001 ? Math.sqrt(1 - (sphere.radius / dist) ** 2) : -1;
-            const source = { kind: SOURCE_KIND.point, dir: position, flux: color.multiplyScalar(2 * Math.PI * (1 - cosHalf)), w: cosHalf,
+            if (o.isRectAreaLight) {
+                // like the path tracer's light record: u, v = width, height along the lamp's x, y; emits along − (u × v)
+                const q = o.getWorldQuaternion(new Quaternion());
+                const u = new Vector3(o.width, 0, 0).applyQuaternion(q), v = new Vector3(0, o.height, 0).applyQuaternion(q);
+                const area = u.clone().cross(v).length() * (o.isCircular ? Math.PI / 4 : 1);
+                if (!(area > 0)) continue;
+                const facing = u.clone().cross(v).normalize().negate();
+                sources.push({ kind: o.isCircular ? SOURCE_KIND.disc : SOURCE_KIND.rect, dir: position, weight: color.clone().multiplyScalar(area),
+                    flux: luminance(color) * area * coneSum(position, facing), axis: u, u: v, cone: 0, penumbra: 0 });
+                continue;
+            }
+            const source = { kind: SOURCE_KIND.point, dir: position, weight: color, flux: luminance(color) * coneSum(position),
                 axis: new Vector3(0, -1, 0), u: new Vector3(1, 0, 0), v: new Vector3(0, 1, 0), cone: 0, penumbra: 0, ies: null };
             if (o.isSpotLight) {
                 // the lamp's frame like the path tracer's light record (lookAt from the lamp to its target, world up)
@@ -547,31 +962,47 @@ export class CausticsKernel {
             }
             sources.push(source);
         }
-        // the HDRI's sun (searched once per map), turned and scaled like the environment
-        let sun = null;
+        // the glowing meshes: one source over all their triangles (flux estimate per mesh: power × the casters' solid
+        // angle from its centre × ½ – the mean |cos| towards them)
+        let glowing = null;
+        if (this._glow) {
+            const flux = this._glow.meshes.reduce((t, m) => t + m.power * coneSum(m.center), 0) * 0.5;
+            glowing = { kind: SOURCE_KIND.mesh, dir: new Vector3(), weight: new Vector3(1, 1, 1), flux, u: new Vector3(), penumbra: 0,
+                cone: this._glow.count, glowId: this._glowId };
+            if (flux > 0) sources.push(glowing);
+        }
+        // the HDRI (sampling table once per map), turned and scaled like the environment
+        let environment = null;
         if (env?.map && env.totalSum > 0 && env.intensityNode.value > 0) {
-            if (this._sunMap !== env.map.image.data) { this._sunMap = env.map.image.data; this._sun = findSun(env.map); }
-            if (this._sun) {
-                const toWorld = new Matrix3().copy(env.rotationNode.value).transpose();
-                sun = { kind: SOURCE_KIND.directional, dir: this._sun.dir.clone().applyMatrix3(toWorld).normalize(),
-                    flux: this._sun.e.clone().multiplyScalar(env.intensityNode.value * area), radius: this._sun.radius, cos: this._sun.cos, w: 0 };
-                sources.push(sun);
+            if (this._envMap !== env.map.image.data) {
+                this._envMap = env.map.image.data;
+                this._env = envTable(env.map, this._envCdf.array, this._envColour.array);
+                this._envId++;
+                this._envCdf.needsUpdate = this._envColour.needsUpdate = true;
+            }
+            if (this._env) {
+                const toWorld = new Matrix3().copy(env.rotationNode.value).transpose().elements;
+                const k = env.intensityNode.value * this._env.total;
+                environment = { kind: SOURCE_KIND.environment, dir: new Vector3(), weight: new Vector3(k, k, k), flux: k * areaSum,
+                    axis: new Vector3().fromArray(toWorld, 0), u: new Vector3().fromArray(toWorld, 3), v: new Vector3().fromArray(toWorld, 6),
+                    cone: this._env.W, penumbra: this._env.H, envId: this._envId };
+                sources.push(environment);
             }
         }
-        CAUSTICS.sun.value.set(sun?.dir.x ?? 0, sun?.dir.y ?? 1, sun?.dir.z ?? 0, sun ? sun.cos : 2);
-        sources.sort((a, b) => luminance(b.flux) - luminance(a.flux));
+        sources.sort((a, b) => b.flux - a.flux);
         sources.length = Math.min(sources.length, MAX_SOURCES);
-        // pick ∝ luminance of the flux; weight = flux / (p · Σ luminance) – every photon carries about 1 (FIXED units)
-        const sum = sources.reduce((s, l) => s + luminance(l.flux), 0);
+        CAUSTICS.env.value = environment && sources.includes(environment) ? 1 : 0;
+        CAUSTICS.emitters.value = glowing && sources.includes(glowing) ? 1 : 0;
+        // pick ∝ estimated flux; weight ÷ (pick · Σ) – every photon carries about 1 (FIXED units)
+        const sum = sources.reduce((t, l) => t + l.flux, 0);
         if (!(sum > 0)) return false;
         const a = this._sources.array, V = SOURCE_VEC4 * 4;
         let cdf = 0;
         sources.forEach((l, i) => {
-            const pick = luminance(l.flux) / sum;
+            const pick = l.flux / sum, w = l.weight.clone().divideScalar(pick * sum);
             cdf += pick;
-            const local = l.kind !== SOURCE_KIND.directional;
-            a.set([l.dir.x, l.dir.y, l.dir.z, local ? l.w : Math.tan(l.radius)], i * V);
-            a.set([l.flux.x / (pick * sum), l.flux.y / (pick * sum), l.flux.z / (pick * sum), i === sources.length - 1 ? 2 : cdf], i * V + 4);
+            a.set([l.dir.x, l.dir.y, l.dir.z, l.kind === SOURCE_KIND.directional ? Math.tan(l.radius) : 0], i * V);
+            a.set([w.x, w.y, w.z, i === sources.length - 1 ? 2 : cdf], i * V + 4);
             const axis = l.axis ?? UP, u = l.u ?? UP, v = l.v ?? UP;
             a.set([axis.x, axis.y, axis.z, l.kind], i * V + 8);
             a.set([u.x, u.y, u.z, l.cone ?? 0], i * V + 12);
@@ -579,11 +1010,14 @@ export class CausticsKernel {
         });
         const p = this.params;
         p.sourceCount.value = sources.length;
-        p.sphere.value.set(sphere.center.x, sphere.center.y, sphere.center.z, sphere.radius);
-        // cell side: the lit area behind the glass (~3 × its cross-section) at the table's occupancy
-        const side = Math.sqrt(3 * Math.PI * sphere.radius ** 2 / (this.slots * this.occupancy));
-        const sig = [version, box.min.toArray(), box.max.toArray(), sources.map(l => [l.kind, l.dir.toArray(), l.flux.toArray(), l.radius ?? 0,
-            l.axis?.toArray() ?? 0, l.u?.toArray() ?? 0, l.cone ?? 0, l.penumbra ?? 0, l.ies ? `${l.ies.uuid}:${l.ies.version}` : 0])].flat(3).join(',');
+        p.casterCount.value = spheres.length;
+        p.casterArea.value = areaSum;
+        p.bounds.value.set(this._bounds.center.x, this._bounds.center.y, this._bounds.center.z, this._bounds.radius);
+        // cell side: the lit area behind the casters (~3 × their cross-sections) at the table's occupancy
+        const side = Math.sqrt(3 * areaSum / (this.slots * this.occupancy));
+        const sig = [version, spheres.map(s => [s.center.toArray(), s.radius]), sources.map(l => [l.kind, l.dir.toArray(), l.weight.toArray(), l.flux,
+            l.radius ?? 0, l.axis?.toArray() ?? 0, l.u?.toArray() ?? 0, l.v?.toArray() ?? 0, l.cone ?? 0, l.penumbra ?? 0,
+            l.ies ? `${l.ies.uuid}:${l.ies.version}` : 0, l.envId ?? 0, l.glowId ?? 0])].flat(4).join(',');
         if (sig !== this.signature) {
             this.signature = sig;
             this.photons = 0;
@@ -594,7 +1028,8 @@ export class CausticsKernel {
         }
         this._sum = sum;
         this._cellArea = side * side;
-        CAUSTICS.cell.value.set(sphere.center.x, sphere.center.y, sphere.center.z, side);
+        const c = spheres[0].center;
+        CAUSTICS.cell.value.set(c.x, c.y, c.z, side);
         CAUSTICS.mask.value = this.slots - 1;
         CAUSTICS.grid.value = this.buffer;
         return true;
@@ -627,9 +1062,7 @@ export class CausticsKernel {
     }
 
     dispose() {
-        this.buffer.dispose?.();
-        this._sources.dispose?.();
-        this._profiles.dispose?.();
+        for (const b of [this.buffer, this._sources, this._profiles, this._casters, this._casterCdf, this._envCdf, this._envColour, this._emitters]) b.dispose?.();
         CAUSTICS.on.value = 0;
     }
 }

@@ -647,33 +647,38 @@ function glassShadowPatch() {
       // rays, not used here – false)
       replaceOnce(/\n(\t+)var shadowHit: \$\{ raycastOutput \};\n\t+let occluded = \$\{ raycastShadowFn \}\( shadowRay, &shadowHit \);\n\t+if \( ! occluded \) \{/,
         (_, tab) => `\n${tab}var shadowHit: \${ raycastOutput };\n` + snippet({ origin: 'vertexData.position.xyz', dir: 'lightRec.direction', maxDist: 'shadowRay.maxDist', normal: 'hitResult.normal', primary: 'bounce == 0u' })
-          // caustics (caustics.js): on surfaces (not glass) the light of a directional lamp (type 3) and of the HDRI's sun
-          // (environment, type 5, inside the sun's cone) through glass comes from the photons
-          + gate('caustics', `${tab}if ( gsGlass && surface.transmission <= 0.5 && \${ __CA_COV }( lightRec.lightType == 3 || lightRec.lightType == 2 || lightRec.lightType == 4, lightRec.lightType == 5, lightRec.direction ) ) {\n\n${tab}\tgsShadow = vec3f( 0.0 );\n\n${tab}}\n`) + '\n'
+          // caustics (caustics.js): the light of the lamps (types 0–4) and of the environment (type 5, while it sends
+          // photons) through glass – on surfaces (not glass) – and off a mirror reached after a rough bounce comes from
+          // the photons
+          + gate('caustics', `${tab}if ( ( ( gsGlass && surface.transmission <= 0.5 ) || ( gsRough && \${ __CA_MIR }( materialInfo.metalness, materialInfo.roughness, materialInfo.transmission, materialInfo.matte != 0 ) ) ) && \${ __CA_COV }( lightRec.lightType != 5, lightRec.lightType == 5 ) ) {\n\n${tab}\tgsShadow = vec3f( 0.0 );\n\n${tab}}\n`) + '\n'
           + `${tab}if ( any( gsShadow > vec3f( 0.0 ) ) ) {`);
       replaceOnce('let isMISWeighted = ${ isMISWeightLightFn }( lightRec.lightType ) && ! shadowHit.forwardBlocked;',
         () => 'let isMISWeighted = ${ isMISWeightLightFn }( lightRec.lightType ) && ! shadowHit.forwardBlocked && ! gsGlass;');
       replaceOnce('let directLight = throughputColor * lightRec.emission * evalRec.color * misWeight / lightPdf;',
         () => 'let directLight = throughputColor * lightRec.emission * evalRec.color * misWeight * gsShadow / lightPdf;');
       // caustic paths: a refraction after a rough bounce (low pdf, not transmissive) – their light/environment hit is
-      // dropped while glass shadows are transparent
+      // dropped while glass shadows are transparent; with caustics also a reflection off a mirror (caustics.js
+      // causticMirror – the photons reflect there; checked first: a slightly rough mirror's own sample is no rough bounce)
       replaceOnce(/\n(\t+)var transparentBounce = 0u;/, (m, tab) => `${m}\n${tab}var gsRough = false;\n${tab}var gsCaustic = false;`);
-      replaceOnce(/\n(\t+)minPdf = min\( minPdf, scatterRec\.pdf \);/, (m, tab) => `${m}\n\n${tab}if ( ! scatterRec.isTransmissive && scatterRec.pdf < 4.0 ) {\n\n${tab}\tgsRough = true;\n${tab}\tgsCaustic = false;\n\n${tab}} else if ( scatterRec.isTransmissive && gsRough ) {\n\n${tab}\tgsCaustic = true;\n\n${tab}}`);
+      replaceOnce(/\n(\t+)minPdf = min\( minPdf, scatterRec\.pdf \);/, (m, tab) => `${m}\n\n`
+        // (and a smooth reflection off glass – the photons reflect there by Fresnel)
+        + gate('caustics', `${tab}if ( \${ __CA_MIR }( materialInfo.metalness, materialInfo.roughness, materialInfo.transmission, materialInfo.matte != 0 ) ) {\n\n${tab}\tgsCaustic = gsCaustic || gsRough;\n\n${tab}} else if ( \${ __CA_ON }() && gsRough && materialInfo.transmission > 0.5 && ! scatterRec.isTransmissive && scatterRec.pdf >= 4.0 ) {\n\n${tab}\tgsCaustic = true;\n\n${tab}} else `, `${tab}`)
+        + `if ( ! scatterRec.isTransmissive && scatterRec.pdf < 4.0 ) {\n\n${tab}\tgsRough = true;\n${tab}\tgsCaustic = false;\n\n${tab}} else if ( scatterRec.isTransmissive && gsRough ) {\n\n${tab}\tgsCaustic = true;\n\n${tab}}`);
       const drop = '( gsCaustic && ${ __GS.mode } != 0u )';   // transparent (1) and caustics (2)
       replaceOnce('let contribution = ${ clampPathContributionFunc }( environment, bounce, clampDirect, clampIndirect );',
         () => `let contribution = select( \${ clampPathContributionFunc }( environment, bounce, clampDirect, clampIndirect ), vec3f( 0.0 ), ${drop} );`);
       replaceOnce('lightHits += ${ clampPathContributionFunc }( lightRec.emission * throughputColor * misWeight, bounce, clampDirect, clampIndirect );',
         () => `lightHits += select( \${ clampPathContributionFunc }( lightRec.emission * throughputColor * misWeight, bounce, clampDirect, clampIndirect ), vec3f( 0.0 ), ${drop} );`);
       // __GX (traced Gaussians) is imported by rindr-gaussians, which runs before
-      return { code: `import { GLASS_SHADOW as __GS } from ${JSON.stringify(GLASS_SHADOW_MODULE)};\nimport { CAUSTICS_IRRADIANCE as __CA_IRR, CAUSTICS_COVERS as __CA_COV } from ${JSON.stringify(CAUSTICS_MODULE)};\n` + code, map: null };
+      return { code: `import { GLASS_SHADOW as __GS } from ${JSON.stringify(GLASS_SHADOW_MODULE)};\nimport { CAUSTICS_IRRADIANCE as __CA_IRR, CAUSTICS_COVERS as __CA_COV, CAUSTICS_MIRROR as __CA_MIR, CAUSTICS_EMITTER as __CA_EMI, CAUSTICS_ACTIVE as __CA_ON } from ${JSON.stringify(CAUSTICS_MODULE)};\n` + code, map: null };
     },
   };
 }
 
 // Caustics (src/scripts/caustics.js, photons: caustics-kernel.js – fails loudly if the library changed): where a path
-// hits a surface (not glass, not the shadow catcher – that one in shadow-catcher.patch.wgsl) the irradiance of the
-// photons there, through the surface's BSDF towards its normal. The light of the lamps and the HDRI's sun through glass
-// is not counted there by next event estimation (rindr-glass-shadow). Kernel feature 'caustics' (glass + caustics
+// hits a surface (not glass, not a mirror, not the shadow catcher – that one in shadow-catcher.patch.wgsl) the
+// irradiance of the photons there, through the surface's BSDF towards its normal. The light of the lamps and the HDRI
+// through glass / off mirrors is not counted by the path tracer (rindr-glass-shadow). Kernel feature 'caustics' (glass + caustics
 // mode). Runs after rindr-glass-shadow (its import brings __CA_IRR).
 function causticsPatch() {
   return {
@@ -684,10 +689,14 @@ function causticsPatch() {
       if (!file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) return null;
       const from = /\n(\t+)resultColor \+= vec4f\( emission, 0\.0 \);\n/;
       if ((code.match(new RegExp(from.source, 'g')) || []).length !== 1) this.error('rindr-caustics: emission line not found exactly once in PathTracerMegaKernel.js (three-gpu-pathtracer changed?)');
+      // the emission of a glowing mesh reached over a caustic path: from the photons (caustics-kernel.js) – 0 here
+      const emissionLine = 'let emission = ${ clampPathContributionFunc }( throughputColor * surface.emission, bounce, clampDirect, clampIndirect );';
+      if (code.split(emissionLine).length !== 2) this.error('rindr-caustics: emission value not found exactly once in PathTracerMegaKernel.js (three-gpu-pathtracer changed?)');
+      code = code.replace(emissionLine, () => gate('caustics', 'let emission = select( ${ clampPathContributionFunc }( throughputColor * surface.emission, bounce, clampDirect, clampIndirect ), vec3f( 0.0 ), gsCaustic && ${ __CA_EMI }() );', emissionLine));
       code = code.replace(from, (m, tab) => m + gate('caustics', `
 ${tab}// RINDR caustics (caustics.js): the photons' irradiance here (cell by the geometric normal – the photons' side),
 ${tab}// through the BSDF towards the shading normal
-${tab}if ( materialInfo.matte == 0 && surface.transmission <= 0.5 ) {
+${tab}if ( materialInfo.matte == 0 && surface.transmission <= 0.5 && ! \${ __CA_MIR }( materialInfo.metalness, materialInfo.roughness, materialInfo.transmission, false ) ) {
 
 ${tab}\tlet caE = \${ __CA_IRR }( vertexData.position.xyz, hitResult.normal, \${ rand2 }( 233u ) );
 ${tab}\tif ( any( caE > vec3f( 0.0 ) ) ) {

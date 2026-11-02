@@ -8,6 +8,10 @@
 // stand-in of each material) – right before the ray test and the kernel are built from it. The tag itself is in
 // kernel-feature-tag.js (with the WGSL helpers – only the path tracer's modules import it).
 
+// mirroring metal that sends caustics (caustics.js): the material's values – before maps and the glossy filter
+export const MIRROR = { metalness: 0.9, roughness: 0.2 };
+export const isMirror = m => !m.matte && (m.transmission ?? 0) <= 0.5 && (m.metalness ?? 0) >= MIRROR.metalness && (m.roughness ?? 1) <= MIRROR.roughness;
+
 export const KERNEL_FEATURES = [
     'volume',   // cloud volumes and the splat volume (ptVolume 3, 6): volume walk, media in shadow rays
     'gaussians',   // traced Gaussian splats (ptVolume 6 with ptGaussians – baked look; gaussian-pt.js)
@@ -18,7 +22,7 @@ export const KERNEL_FEATURES = [
     'marble',   // glowing marble (ptVolume 2)
     'edges',    // rounded edges (edge radius in anisotropyRotation, anisotropy 0)
     'ground',   // shadow catcher (matte ground)
-    'caustics', // glass with the glass shadows set to caustics (caustics.js): photon grid lookup on the floor
+    'caustics', // glass or mirroring metal with the glass shadows set to caustics (caustics.js): photon grid lookup
 ];
 
 // ?kernel=all: every feature, whatever the scene (comparison, debugging)
@@ -51,7 +55,7 @@ export const kernelFeatures = {
         else if (volume === 5) add('soap');
         else if (volume === 2) add('marble');
         if ((m.transmission ?? 0) > 0) add('glass');
-        if ((m.transmission ?? 0) > 0.5 && this.caustics) add('caustics');
+        if (this.caustics && ((m.transmission ?? 0) > 0.5 || isMirror(m))) add('caustics');
         const scatter = m.mediumScatter;
         if ((m.transmission ?? 0) > 0 && scatter && scatter.r + scatter.g + scatter.b > 0) add('medium');
         if (m.anisotropyRotation && !m.anisotropy) add('edges');

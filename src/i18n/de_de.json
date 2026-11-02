@@ -1348,7 +1348,7 @@
             "add": "+ Licht hinzufügen…",
             "addTitle": "Neues Licht in der Szene anlegen",
             "addLabel": "Neu",
-            "folderHint": "Punkt-, Spot- und Flächenlichter beziehen ihre Stärke auf die Modellgröße. Splats („Oberfläche“) und Kaustik nutzen nur Richtungslichter.",
+            "folderHint": "Punkt-, Spot- und Flächenlichter beziehen ihre Stärke auf die Modellgröße. Splats („Oberfläche“) nutzen nur Richtungslichter.",
             "iesProfile": "Profil",
             "iesTitle": "Lichtverteilung der Leuchte – eigene Profile oder eine geladene IES-Datei",
             "iesLoad": "Datei…",
