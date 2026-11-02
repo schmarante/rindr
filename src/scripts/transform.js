@@ -39,6 +39,7 @@ export class ObjectTransformer extends EventTarget {
         this.overlayScene.add(this.handle);
         this.controls = new TransformControls(camera, domElement);
         this.controls.size = 0.8;
+        widenDragPlane(this.controls);
         this.overlayScene.add(this.controls.getHelper());
         this.object = null;
         this.kind = null;
@@ -326,4 +327,18 @@ function worldBox(objects) {
     const box = meshBox(objects, new THREE.Box3());
     if (box.isEmpty()) box.setFromCenterAndSize(new THREE.Vector3(), new THREE.Vector3());
     return box;
+}
+
+/**
+ * three.js' TransformControls drag on an invisible plane of 100 000 units (100 m in RINDR's mm). The gizmo keeps its
+ * size on screen, so in the world it grows with the camera distance: with a model of several hundred metres (an OBJ
+ * read as metres although written in another unit) the camera stood ~3 km away, the arrows lay hundreds of metres from
+ * the centre and the pointer's ray missed the plane – no drag started, the axis line jumped (user: "springt die weiße
+ * Linie der ausgewählten Achse kurz … kann das Objekt nicht verschieben"; scaled to 0.1 it worked). 1000 km instead.
+ */
+export function widenDragPlane(controls) {
+    const plane = controls._plane;
+    if (!plane?.geometry) { console.warn('[Transform] TransformControls has no drag plane any more (three.js changed?)'); return; }
+    plane.geometry.dispose();
+    plane.geometry = new THREE.PlaneGeometry(1e9, 1e9, 2, 2);
 }

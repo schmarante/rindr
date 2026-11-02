@@ -9,6 +9,7 @@
 // (parent's scene matrix⁻¹ · new pose), the bone keeps its scale.
 import * as THREE from 'three/webgpu';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { widenDragPlane } from './transform.js';
 
 const JOINT_PX = 4;          // joint radius on screen (px), the selected one larger
 const PICK_PX = 10;          // a click this close to a joint selects it
@@ -35,6 +36,7 @@ export class SkeletonView extends EventTarget {
         this.handle = new THREE.Object3D();
         overlayScene.add(this.handle);
         this.controls = new TransformControls(camera, domElement);
+        widenDragPlane(this.controls);   // huge models: the pointer must not miss the drag plane (transform.js)
         this.controls.size = 0.7;
         this.controls.setMode('rotate');
         this.controls.setSpace('local');
