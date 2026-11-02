@@ -2,7 +2,8 @@
 // baked into tileable maps; `size` = mm per tile from real-world dimensions.
 import { graph } from './graph.js';
 
-const P = (libraryId, params, g) => ({ libraryId, category: 'outdoor', params: { metalness: 0, ...params }, graph: g.done() });
+// extra: { displacement } – cm, the relief moves the surface (docs/material-library.md "Displacement der Presets")
+const P = (libraryId, params, g, extra = {}) => ({ libraryId, category: 'outdoor', params: { metalness: 0, ...params }, graph: g.done(), ...extra });
 
 /** a · k (scale a height before adding it) */
 function scaled(g, from, port, k) {
@@ -272,27 +273,27 @@ const water = graph({ size: 1000, relief: 0.6 });
 export default [
     P('outdoor-asphalt-fine', { color: '#333230', roughness: 0.9 }, asphaltFine),
     P('outdoor-asphalt-coarse', { color: '#4a4844', roughness: 0.9 }, asphaltCoarse),
-    P('outdoor-gravel-round', { color: '#8a8274', roughness: 0.85 }, gravelRound),
-    P('outdoor-gravel-crushed', { color: '#7a7974', roughness: 0.9 }, gravelCrushed),
-    P('outdoor-gravel-path', { color: '#ad9a7a', roughness: 0.95 }, gravelPath),
+    P('outdoor-gravel-round', { color: '#8a8274', roughness: 0.85 }, gravelRound, { displacement: 2.0 }),
+    P('outdoor-gravel-crushed', { color: '#7a7974', roughness: 0.9 }, gravelCrushed, { displacement: 1.57 }),
+    P('outdoor-gravel-path', { color: '#ad9a7a', roughness: 0.95 }, gravelPath, { displacement: 0.91 }),
     P('outdoor-sand', { color: '#cdb995', roughness: 0.95 }, sand),
-    P('outdoor-soil', { color: '#4e3d2e', roughness: 0.95 }, soil),
+    P('outdoor-soil', { color: '#4e3d2e', roughness: 0.95 }, soil, { displacement: 2.04 }),
     P('outdoor-mud', { color: '#3a2c20', roughness: 0.5, clearcoatRoughness: 0.05 }, mud),
     P('outdoor-leaves', { color: '#7a5030', roughness: 0.85 }, leaves),
     P('outdoor-lawn-texture', { color: '#4a6e2a', roughness: 0.85, sheen: 0.4, sheenColor: '#9ac060', sheenRoughness: 0.6 }, lawn),
-    P('outdoor-pavers-square', { color: '#8f8c86', roughness: 0.9 }, paversSquare),
-    P('outdoor-pavers-running', { color: '#4a4a4a', roughness: 0.9 }, paversRunning),
-    P('outdoor-pavers-herringbone', { color: '#8a4a32', roughness: 0.9 }, paversHerringbone),
-    P('outdoor-setts-granite', { color: '#7f7b76', roughness: 0.85 }, setts),
-    P('outdoor-riverstone-mortared', { color: '#a49a8a', roughness: 0.8 }, riverstone),
-    P('outdoor-flagstone', { color: '#93887a', roughness: 0.85 }, flagstone),
-    P('outdoor-terracotta-pavers', { color: '#b0603c', roughness: 0.85 }, terracotta),
-    P('outdoor-roof-barrel', { color: '#a4532f', roughness: 0.75 }, roofBarrel),
-    P('outdoor-roof-flat-tiles', { color: '#9c4a30', roughness: 0.75 }, roofFlat),
-    P('outdoor-shingles-asphalt', { color: '#38393b', roughness: 0.95 }, shingles),
-    P('outdoor-shakes-wood', { color: '#7a6d60', roughness: 0.9 }, shakes),
-    P('outdoor-siding-lap', { color: '#a87a52', roughness: 0.75 }, sidingLap),
-    P('outdoor-siding-board-batten', { color: '#7a231b', roughness: 0.7 }, sidingBatten),
-    P('outdoor-decking', { color: '#8a5e3c', roughness: 0.7 }, decking),
+    P('outdoor-pavers-square', { color: '#8f8c86', roughness: 0.9 }, paversSquare, { displacement: 1.09 }),
+    P('outdoor-pavers-running', { color: '#4a4a4a', roughness: 0.9 }, paversRunning, { displacement: 1.09 }),
+    P('outdoor-pavers-herringbone', { color: '#8a4a32', roughness: 0.9 }, paversHerringbone, { displacement: 1.09 }),
+    P('outdoor-setts-granite', { color: '#7f7b76', roughness: 0.85 }, setts, { displacement: 1.65 }),
+    P('outdoor-riverstone-mortared', { color: '#a49a8a', roughness: 0.8 }, riverstone, { displacement: 2.01 }),
+    P('outdoor-flagstone', { color: '#93887a', roughness: 0.85 }, flagstone, { displacement: 1.6 }),
+    P('outdoor-terracotta-pavers', { color: '#b0603c', roughness: 0.85 }, terracotta, { displacement: 0.66 }),
+    P('outdoor-roof-barrel', { color: '#a4532f', roughness: 0.75 }, roofBarrel, { displacement: 4.75 }),
+    P('outdoor-roof-flat-tiles', { color: '#9c4a30', roughness: 0.75 }, roofFlat, { displacement: 1.47 }),
+    P('outdoor-shingles-asphalt', { color: '#38393b', roughness: 0.95 }, shingles, { displacement: 0.63 }),
+    P('outdoor-shakes-wood', { color: '#7a6d60', roughness: 0.9 }, shakes, { displacement: 1.28 }),
+    P('outdoor-siding-lap', { color: '#a87a52', roughness: 0.75 }, sidingLap, { displacement: 2.05 }),
+    P('outdoor-siding-board-batten', { color: '#7a231b', roughness: 0.7 }, sidingBatten, { displacement: 2.04 }),
+    P('outdoor-decking', { color: '#8a5e3c', roughness: 0.7 }, decking, { displacement: 1.08 }),
     P('outdoor-water', { color: '#1d3a4a', roughness: 0.04, ior: 1.33, clearcoat: 0 }, water),
 ];

@@ -212,7 +212,10 @@ export class GraphApplier {
     async _bakeMaps(entry) {
         const { material, def } = entry;
         const graph = def.graph;
-        if (!graph) return;
+        if (!graph) {
+            if (material.userData.displacement && !entry.preview) { material.userData.displacement = null; this.onDisplacement?.(entry); }
+            return;
+        }
         const images = await this._imageTextures(graph);
         const result = evaluateGraph(graph, images, def.render?.maps, { domain: this._domain(entry) });
         const maps = material.userData.graphMaps ||= {};
@@ -238,6 +241,30 @@ export class GraphApplier {
             material[slot.map] = tex;
             if (key === 'sheen') material.sheenColor.set('#ffffff');
             changed = true;
+        }
+        // displacement (displacement.js): the height's values on the CPU – the meshes are moved there
+        if (!entry.preview) {
+            const h = result.height;
+            const want = result.displacement > 0 && h?.kind === 'tsl';
+            const size = want ? Math.min(h.size, 2048) : 0;
+            const dsig = want ? `${h.sig}|${size}|${result.size}|${result.domain ? JSON.stringify(result.domain) : ''}` : '';
+            const old = material.userData.displacement;
+            if (!want) {
+                if (old) { material.userData.displacement = null; this.onDisplacement?.(entry); }
+            } else if (old?.sig === dsig) {
+                if (old.amount !== result.displacement || old.mid !== result.displacementMid) {
+                    material.userData.displacement = { ...old, amount: result.displacement, mid: result.displacementMid };
+                    this.onDisplacement?.(entry);
+                }
+            } else {
+                const data = await this.baker.bakeHeight(h.node, size);
+                if (entry.def.graph !== graph) return;   // changed in the meantime
+                const d = result.domain;
+                const repeat = d ? [1 / (d.max[0] - d.min[0]), 1 / (d.max[1] - d.min[1])] : [UV_TILE / result.size, UV_TILE / result.size];
+                const offset = d ? [-d.min[0] * repeat[0], -d.min[1] * repeat[1]] : [0, 0];
+                material.userData.displacement = { sig: dsig, data, n: size, repeat, offset, clamp: !!d, amount: result.displacement, mid: result.displacementMid, tile: result.size };
+                this.onDisplacement?.(entry);
+            }
         }
         if (!changed) return;
         material.needsUpdate = true;

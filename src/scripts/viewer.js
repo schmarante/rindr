@@ -10,6 +10,7 @@ import { studioPreset, cloneHdri } from './hdri/hdri-model.js';
 import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
 import { TESS_PRESETS, normalizeQuality, abortStepImport, buildBVHIsolated, buildGeometryBVHs, fetchStepFile, readStepFile, releaseStepFile, tessellateStep, ImportLimitError } from './step-importer.js';
 import { UvMapper } from './uv-mapping.js';
+import { Displacer } from './displacement.js';
 import { floatWindow } from './float-window.js';
 import { duplicateNode, removeDuplicate, linkedMembers, familyOf, isLinked, makeUnique } from './duplicate.js';
 import { RenderMaster, LOCAL_ID } from './distributed/master.js';
@@ -1770,7 +1771,9 @@ const uvMapper = new UvMapper({
     tileOf: material => materialManager.get(material?.userData?.materialId)?.def.graph?.nodes?.find(n => n.type === 'output')?.params?.size ?? 100,
     build: geometries => buildGeometryBVHs(geometries),
     makeGeometry,
+    release: mesh => displacer.release(mesh),
     onApplied: () => {
+        displacer.refresh();   // displaced meshes: moved again on their new geometry
         invalidatePathTracing();
         edges.invalidate();
         markShadowsDirty();
@@ -1784,6 +1787,28 @@ const uvMapper = new UvMapper({
     },
 });
 let sliderDragging = false, ptAfterDrag = false;
+// displacement (displacement.js): meshes whose material's relief has a displacement height get moved geometry
+const displacer = new Displacer({
+    meshes: () => {
+        const out = [];
+        scene.traverse(o => { if (o.isMesh && o.material?.userData?.materialId) out.push(o); });
+        return out;
+    },
+    build: geometries => buildGeometryBVHs(geometries),
+    makeGeometry,
+    onApplied: () => {
+        invalidatePathTracing();
+        edges.invalidate();
+        markShadowsDirty();
+        contactShadow.markDirty();
+        updateHighlight();
+        loadRender.force = true;
+        if (sliderDragging) ptAfterDrag = true;
+        else updatePathTracingScene();
+    },
+});
+graphApplier.onDisplacement = () => displacer.refresh();
+materialManager.addEventListener('change', () => displacer.refresh());
 // cylinder/sphere: the repeats around follow the material's tile size
 materialManager.addEventListener('change', () => uvMapper.refreshMaterials());
 materialManager.addEventListener('update', () => uvMapper.refreshMaterials());
@@ -4616,6 +4641,7 @@ function disposeRoot(root) {
     root.traverse(c => {
         if (!c.isMesh) return;
         if (c.isSplat) c.sorter.dispose();   // Gaussian splats: sort workers
+        if (c.userData.dispBase) displacer.release(c);   // displaced: its moved geometry is freed with the last user
         c.geometry.boundsTree = null;
         c.geometry.dispose();
         const base = c.userData.uvBase;   // import geometry of a mesh with its own UV mapping (uv-mapping.js)

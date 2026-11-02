@@ -451,6 +451,7 @@ export class NodeEditor {
     _param(n, p, value) {
         const wrap = div('flex min-w-0 flex-1 items-center gap-1');
         const label = span('w-16 shrink-0 truncate text-white/60', paramLabel(n.type, p.key));
+        label.title = paramLabel(n.type, p.key);   // the narrow column cuts long names off – the whole one on hover
         const set = v => { n.params = { ...n.params, [p.key]: v }; this.commit(n.id + ':' + p.key); };
         if (p.kind === 'color') {
             wrap.append(label, colorField(value, { onInput: set, className: 'flex-1' }));

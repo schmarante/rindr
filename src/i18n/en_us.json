@@ -611,7 +611,9 @@
                 "params": {
                     "reliefStrength": "Bump strength",
                     "size": "Tile (mm)",
-                    "resolution": "Resolution"
+                    "resolution": "Resolution",
+                    "displacement": "Displ. (cm)",
+                    "displacementMid": "Displ. mid"
                 },
                 "options": {
                     "resolution": {

@@ -611,7 +611,9 @@
                 "params": {
                     "reliefStrength": "Relief-Stärke",
                     "size": "Kachel (mm)",
-                    "resolution": "Auflösung"
+                    "resolution": "Auflösung",
+                    "displacement": "Displ. (cm)",
+                    "displacementMid": "Displ. Mitte"
                 },
                 "options": {
                     "resolution": {

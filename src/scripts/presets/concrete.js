@@ -315,17 +315,18 @@ const perforated = graph({ size: 1200, relief: 0.5 });
 
 const m = (color, roughness, extra = {}) => ({ color, metalness: 0, roughness, ...extra });
 
+// displacement: cm – the relief moves the surface (docs/material-library.md "Displacement der Presets")
 export default [
     // --- concrete & plaster ---
     { libraryId: 'concrete-smooth', category: 'concrete', params: m('#99958d', 0.85), graph: smooth.done() },
-    { libraryId: 'concrete-tie-holes', category: 'concrete', params: m('#949189', 0.85), graph: holes.done() },
+    { libraryId: 'concrete-tie-holes', displacement: 1.5, category: 'concrete', params: m('#949189', 0.85), graph: holes.done() },
     { libraryId: 'concrete-board-formed', category: 'concrete', params: m('#928e87', 0.88), graph: boards.done() },
     { libraryId: 'concrete-broom', category: 'concrete', params: m('#9e9b94', 0.9), graph: broom.done() },
     { libraryId: 'concrete-polished', category: 'concrete', params: m('#a19e98', 0.25, { clearcoat: 0.5, clearcoatRoughness: 0.12 }), graph: polished.done() },
-    { libraryId: 'concrete-exposed-aggregate', category: 'concrete', params: m('#8c8478', 0.85), graph: washed.done() },
+    { libraryId: 'concrete-exposed-aggregate', displacement: 0.6, category: 'concrete', params: m('#8c8478', 0.85), graph: washed.done() },
     { libraryId: 'concrete-sandblasted', category: 'concrete', params: m('#9a9389', 0.95), graph: blasted.done() },
-    { libraryId: 'concrete-ribbed', category: 'concrete', params: m('#99948d', 0.85), graph: ribbed.done() },
-    { libraryId: 'concrete-precast-panels', category: 'concrete', params: m('#b6b2a4', 0.85), graph: precast.done() },
+    { libraryId: 'concrete-ribbed', displacement: 2.16, category: 'concrete', params: m('#99948d', 0.85), graph: ribbed.done() },
+    { libraryId: 'concrete-precast-panels', displacement: 1.55, category: 'concrete', params: m('#b6b2a4', 0.85), graph: precast.done() },
     { libraryId: 'plaster-fine', category: 'concrete', params: m('#e6e3db', 0.9), graph: plasterFine.done() },
     { libraryId: 'plaster-coarse', category: 'concrete', params: m('#d4cfc4', 0.95), graph: plasterCoarse.done() },
     { libraryId: 'plaster-troweled', category: 'concrete', params: m('#d4d1cb', 0.8), graph: troweled.done() },

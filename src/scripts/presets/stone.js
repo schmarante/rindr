@@ -230,6 +230,7 @@ const riverStone = (() => {
     return g.done();
 })();
 
+// displacement: cm – the relief moves the surface (docs/material-library.md "Displacement der Presets")
 export default [
     // --- stone ---
     { libraryId: 'stone-marble-white', category: 'stone', params: { color: '#e8e6e1', ...POLISHED, roughness: 0.15 }, graph: marbleWhite },
@@ -247,19 +248,19 @@ export default [
     { libraryId: 'stone-soapstone', category: 'stone', params: { color: '#59625f', metalness: 0, roughness: 0.45 }, graph: soapstone },
 
     // --- masonry ---
-    { libraryId: 'brick-running-red', category: 'masonry', params: { color: '#8e3f2a', metalness: 0, roughness: 0.85 }, graph: brickRed },
-    { libraryId: 'brick-clinker-dark', category: 'masonry', params: { color: '#4a2820', metalness: 0, roughness: 0.6 }, graph: brickClinker },
-    { libraryId: 'brick-english-red', category: 'masonry', params: { color: '#a24e30', metalness: 0, roughness: 0.85 }, graph: brickEnglish },
-    { libraryId: 'brick-flemish-yellow', category: 'masonry', params: { color: '#d0ad6e', metalness: 0, roughness: 0.85 }, graph: brickYellow },
-    { libraryId: 'brick-glazed-white', category: 'masonry', params: { color: '#eeede8', metalness: 0, roughness: 0.15, clearcoatRoughness: 0.05 }, graph: brickGlazed },
-    { libraryId: 'brick-herringbone', category: 'masonry', params: { color: '#8f4530', metalness: 0, roughness: 0.85 }, graph: brickHerringbone },
-    { libraryId: 'brick-basket-weave', category: 'masonry', params: { color: '#9b6a4a', metalness: 0, roughness: 0.85 }, graph: brickBasket },
-    { libraryId: 'masonry-block-grey', category: 'masonry', params: { color: '#8b8a84', metalness: 0, roughness: 0.9 }, graph: blockStretcher },
-    { libraryId: 'masonry-block-split-face', category: 'masonry', params: { color: '#b2a58a', metalness: 0, roughness: 0.92 }, graph: blockSplitFace },
-    { libraryId: 'masonry-block-ribbed', category: 'masonry', params: { color: '#8f8a7c', metalness: 0, roughness: 0.9 }, graph: blockRibbed },
-    { libraryId: 'masonry-ashlar', category: 'masonry', params: { color: '#c9b693', metalness: 0, roughness: 0.85 }, graph: ashlar },
-    { libraryId: 'masonry-rustication', category: 'masonry', params: { color: '#d6cdb9', metalness: 0, roughness: 0.8 }, graph: rustication },
-    { libraryId: 'masonry-dry-stone', category: 'masonry', params: { color: '#a89e85', metalness: 0, roughness: 0.9 }, graph: dryStone },
-    { libraryId: 'masonry-rubble', category: 'masonry', params: { color: '#8f877b', metalness: 0, roughness: 0.9 }, graph: rubble },
-    { libraryId: 'masonry-river-stone', category: 'masonry', params: { color: '#9a958c', metalness: 0, roughness: 0.85 }, graph: riverStone },
+    { libraryId: 'brick-running-red', displacement: 0.85, category: 'masonry', params: { color: '#8e3f2a', metalness: 0, roughness: 0.85 }, graph: brickRed },
+    { libraryId: 'brick-clinker-dark', displacement: 0.83, category: 'masonry', params: { color: '#4a2820', metalness: 0, roughness: 0.6 }, graph: brickClinker },
+    { libraryId: 'brick-english-red', displacement: 0.85, category: 'masonry', params: { color: '#a24e30', metalness: 0, roughness: 0.85 }, graph: brickEnglish },
+    { libraryId: 'brick-flemish-yellow', displacement: 0.86, category: 'masonry', params: { color: '#d0ad6e', metalness: 0, roughness: 0.85 }, graph: brickYellow },
+    { libraryId: 'brick-glazed-white', displacement: 0.5, category: 'masonry', params: { color: '#eeede8', metalness: 0, roughness: 0.15, clearcoatRoughness: 0.05 }, graph: brickGlazed },
+    { libraryId: 'brick-herringbone', displacement: 0.86, category: 'masonry', params: { color: '#8f4530', metalness: 0, roughness: 0.85 }, graph: brickHerringbone },
+    { libraryId: 'brick-basket-weave', displacement: 0.86, category: 'masonry', params: { color: '#9b6a4a', metalness: 0, roughness: 0.85 }, graph: brickBasket },
+    { libraryId: 'masonry-block-grey', displacement: 1.13, category: 'masonry', params: { color: '#8b8a84', metalness: 0, roughness: 0.9 }, graph: blockStretcher },
+    { libraryId: 'masonry-block-split-face', displacement: 1.49, category: 'masonry', params: { color: '#b2a58a', metalness: 0, roughness: 0.92 }, graph: blockSplitFace },
+    { libraryId: 'masonry-block-ribbed', displacement: 1.55, category: 'masonry', params: { color: '#8f8a7c', metalness: 0, roughness: 0.9 }, graph: blockRibbed },
+    { libraryId: 'masonry-ashlar', displacement: 1.67, category: 'masonry', params: { color: '#c9b693', metalness: 0, roughness: 0.85 }, graph: ashlar },
+    { libraryId: 'masonry-rustication', displacement: 3.31, category: 'masonry', params: { color: '#d6cdb9', metalness: 0, roughness: 0.8 }, graph: rustication },
+    { libraryId: 'masonry-dry-stone', displacement: 4.48, category: 'masonry', params: { color: '#a89e85', metalness: 0, roughness: 0.9 }, graph: dryStone },
+    { libraryId: 'masonry-rubble', displacement: 3.0, category: 'masonry', params: { color: '#8f877b', metalness: 0, roughness: 0.9 }, graph: rubble },
+    { libraryId: 'masonry-river-stone', displacement: 3.01, category: 'masonry', params: { color: '#9a958c', metalness: 0, roughness: 0.85 }, graph: riverStone },
 ];

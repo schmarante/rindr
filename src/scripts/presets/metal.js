@@ -188,7 +188,8 @@ const riveted = (() => {
     return g.done();
 })();
 
-const m = (libraryId, params, g) => ({ libraryId, category: 'metal', params: { metalness: 1, ...params }, graph: g });
+// extra: { displacement } – cm, the relief moves the surface (docs/material-library.md "Displacement der Presets")
+const m = (libraryId, params, g, extra = {}) => ({ libraryId, category: 'metal', params: { metalness: 1, ...params }, graph: g, ...extra });
 
 export default [
     m('metal-stainless-brushed', { color: '#b8babc', roughness: 0.28 }, stainlessBrushed),
@@ -210,8 +211,8 @@ export default [
     m('metal-expanded-mesh', { color: '#9a9c9e', roughness: 0.4 }, expanded),
     m('metal-tread-bars', { color: '#c0c4c8', roughness: 0.36 }, treadBars),
     m('metal-tread-diamond', { color: '#86898c', roughness: 0.45 }, treadDiamond),
-    m('metal-corrugated-galvanized', { color: '#a9adb0', roughness: 0.36 }, corrugated),
-    m('metal-trapezoidal-anthracite', { color: '#3d4145', metalness: 0, roughness: 0.45, clearcoat: 0.2, clearcoatRoughness: 0.35 }, trapezoidal),
-    m('metal-standing-seam-copper', { color: '#c07a55', roughness: 0.32 }, standingSeamCopper),
+    m('metal-corrugated-galvanized', { color: '#a9adb0', roughness: 0.36 }, corrugated, { displacement: 1.8 }),
+    m('metal-trapezoidal-anthracite', { color: '#3d4145', metalness: 0, roughness: 0.45, clearcoat: 0.2, clearcoatRoughness: 0.35 }, trapezoidal, { displacement: 3.5 }),
+    m('metal-standing-seam-copper', { color: '#c07a55', roughness: 0.32 }, standingSeamCopper, { displacement: 3.03 }),
     m('metal-riveted-plate', { color: '#94979a', roughness: 0.4 }, riveted),
 ];

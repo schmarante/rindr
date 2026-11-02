@@ -304,6 +304,9 @@ export class UvMapper {
 
     async _apply(meshes) {
         if (!meshes.length) return;
+        // displaced meshes (displacement.js): back to their geometry first – the mapping works on it, the displacement
+        // follows on the new one (onApplied)
+        for (const mesh of meshes) this.hooks.release?.(mesh);
         // group by the owner of the mapping that applies – the frame (centre, radius) comes from all of its meshes
         const groups = new Map();
         const restore = [];

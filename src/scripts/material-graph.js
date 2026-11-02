@@ -89,6 +89,10 @@ export const NODE_TYPES = {
             // resolution of the baked maps of this material (wish of the user: per material); auto = BAKE_SIZE, imported
             // textures at their own size
             { key: 'resolution', kind: 'select', options: BAKE_RESOLUTIONS, default: 'auto' },
+            // displacement (displacement.js): the relief (height input) moves the surface – height 0…1 → (h − mid) ×
+            // displacement along the normal, in cm (user: 0–5, "5 is already a lot"); 0 = off (relief only shades)
+            { key: 'displacement', kind: 'number', min: 0, max: 5, step: 0.01, default: 0 },
+            { key: 'displacementMid', kind: 'number', min: 0, max: 1, step: 0.01, default: 0.5 },
         ],
     },
     value: {
@@ -383,6 +387,8 @@ export function evaluateGraph(graph, textures, importMaps = {}, { domain = null 
     anisotropy(result.anisotropy, result.anisotropyDirection, 'anisotropy');
     anisotropy(result.coatAnisotropy, result.coatAnisotropyDirection, 'coatAnisotropy');
     result.reliefStrength = out.params?.reliefStrength ?? 1;
+    result.displacement = Math.max(0, Number(out.params?.displacement) || 0) * 10;   // cm → mm
+    result.displacementMid = out.params?.displacementMid ?? 0.5;
     result.size = out.params?.size ?? 100;
     result.domain = domain;
     return result;
@@ -602,6 +608,25 @@ export class GraphBaker {
         const stride = src.length / size, packed = new Uint8Array(row * size);
         for (let y = 0; y < size; y++) packed.set(src.subarray(y * stride, y * stride + row), (bottomUp ? size - 1 - y : y) * row);
         return packed;
+    }
+
+    /** Height (TSL) -> its values (float, red channel; rows like the baked textures: row r ↔ v = (r + ½) / size) – for
+     *  displacement (displacement.js) */
+    async bakeHeight(heightNode, size = BAKE_SIZE) {
+        const { renderer } = this;
+        const target = this.heightTarget ??= new THREE.RenderTarget(size, size, { depthBuffer: false, type: THREE.FloatType });
+        if (target.width !== size) target.setSize(size, size);
+        this.material.fragmentNode = uniformConstants(vec4(vec3(heightNode), 1));
+        this.material.needsUpdate = true;
+        const prev = renderer.getRenderTarget();
+        renderer.setRenderTarget(target);
+        this.quad.render(renderer);
+        renderer.setRenderTarget(prev);
+        let src = await renderer.readRenderTargetPixelsAsync(target, 0, 0, size, size);
+        if (renderer.backend.isWebGLBackend) src = flipRows(src, size, 4);
+        const out = new Float32Array(size * size);
+        for (let i = 0; i < out.length; i++) out[i] = src[i * 4];
+        return out;
     }
 
     /** Height (TSL) -> normal map (tangent space). The height is baked as float – in 8 bit gentle slopes showed

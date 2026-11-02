@@ -111,7 +111,16 @@ export const libraryComplete = () => complete;
 /** load the category presets once; resolves when MATERIAL_PRESETS holds all of them */
 export function loadLibraryPresets() {
     loading ??= Promise.all(Object.values(CATEGORY_MODULES).map(load => load())).then(mods => {
-        for (const mod of mods) if (Array.isArray(mod.default)) MATERIAL_PRESETS.push(...mod.default);
+        for (const mod of mods) {
+            if (!Array.isArray(mod.default)) continue;
+            // displacement (cm) of the presets that look better with real relief (bricks, stone, roofs … – written at the
+            // preset, docs/material-library.md): onto the output node of its graph
+            for (const p of mod.default) {
+                const out = p.displacement > 0 && p.graph?.nodes?.find(n => n.type === 'output');
+                if (out) out.params = { ...out.params, displacement: p.displacement };
+            }
+            MATERIAL_PRESETS.push(...mod.default);
+        }
         complete = true;
     });
     return loading;
