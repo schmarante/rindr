@@ -9,7 +9,8 @@
 //   - system unit: the Scene object (class 2222:0) > 0x8520 (u32 unit, f32 scale); "FileAssetMetaData3": external
 //     files (GUID → path)
 // Read here: nodes (name, parent, transform from Position/Rotation/Scale or Look At controllers, object offset, wire colour),
-// cameras (free, target, physical: field of view and its axis, target distance; render output aspect),
+// cameras (free, target, physical, a render plugin's physical camera: field of view and its axis, target distance;
+// render output aspect),
 // lights (standard, photometric, a render plugin's area light: type, on, colour, intensity, cone, size),
 // Editable Mesh / Editable Poly (vertices, faces, smoothing groups, material IDs, UV channel 1), materials
 // (Physical Material parameters, Multi/Sub-Object, the 24×24 preview swatch of any other material as colour) and
@@ -182,6 +183,7 @@ const CLASS = {
     extrude: cid(0x810, 0xa0), shell: cid(0x810, 0x3b9b1a16, 0x6d84e8d0), bend: cid(0x810, 0x10), ffd4: cid(0x810, 0x21325596, 0x2cd10bd8),
     turboSmooth: cid(0x810, 0xd727b3e, 0x491d29a7), meshSmooth: cid(0x810, 0x32, 0x7f9e), noise: cid(0x810, 0xf997b124), editPoly: cid(0x810, 0x79aa6e1d, 0x71a075b7), optimize: cid(0x810, 0xc4d31),
     freeCamera: cid(0x20, 0x1001), targetCamera: cid(0x20, 0x1002), physicalCamera: cid(0x20, 0x46697218, 0x28e8008d),
+    pluginCamera: cid(0x20, 0x405e3fee, 0x4f6513be),
     renderSettings: cid(0x1010, 0xee448b23), scene: cid(0x100, 0x2222),
     pluginLight: cid(0x30, 0x3c5575a1, 0x5fd602df),   // a render plugin's area light (plane, sphere, disc …)
 };
@@ -701,7 +703,10 @@ export async function describeMax(buffer, gunzip) {
     // free / target camera: parameter block 1 in slot 0 (0 field of view in radians, 1 target distance, 8 its axis:
     // 0 horizontal, 1 vertical, 2 diagonal); physical camera: parameter block 2 (0x14 field of view in degrees –
     // horizontal, with lens breathing at the focus as MAX shows it; 0x04 film width mm, 0x05 focal length mm, 0x08 target
-    // distance). Others (render plugin cameras): 45° horizontal.
+    // distance); a render plugin's physical camera: parameter block 2 (0 film width mm, 1 focal length mm, 3 zoom factor,
+    // 5 target distance, 6 focus distance, 7 "specify focus") – horizontal field of view over the image distance at the
+    // focus (lens breathing; checked against a render of the plugin: picture congruent, without breathing 12 % off).
+    // Others: 45° horizontal.
     const cameraOf = obj => {
         const id = idOf(obj);
         if (id === CLASS.freeCamera || id === CLASS.targetCamera) {
@@ -712,6 +717,13 @@ export async function describeMax(buffer, gunzip) {
             const P = paramBlock(ref(obj, 0));
             const film = pFloat(P, 0x04, 36), focal = pFloat(P, 0x05, 40), fov = pFloat(P, 0x14, 0);
             return { fov: fov > 0 ? fov * Math.PI / 180 : 2 * Math.atan(film / 2 / focal), fovAxis: 'h', distance: pFloat(P, 0x08, 0) };
+        }
+        if (id === CLASS.pluginCamera) {
+            const P = paramBlock(ref(obj, 0));
+            const film = pFloat(P, 0x00, 36), focal = pFloat(P, 0x01, 40), zoom = pFloat(P, 0x03, 1), target = pFloat(P, 0x05, 0);
+            const focus = (pInt(P, 0x07, 0) ? pFloat(P, 0x06, 0) : target) * unitMm;
+            const image = focus > focal ? focal * focus / (focus - focal) : focal;   // lens breathing: image distance
+            return { fov: 2 * Math.atan(film / 2 / (image * (zoom > 0 ? zoom : 1))), fovAxis: 'h', distance: target };
         }
         return { fov: Math.PI / 4, fovAxis: 'h', distance: 0 };
     };
