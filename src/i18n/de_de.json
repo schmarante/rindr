@@ -79,6 +79,7 @@
             "gltfNoScene": "glTF ohne Szene",
             "unnamedMaterial": "Material {number}",
             "defaultMaterial": "Standard",
+            "vertexColorMaterial": "Vertex-Farben",
             "unnamedMesh": "Mesh"
         }
     },

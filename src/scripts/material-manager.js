@@ -603,6 +603,9 @@ function applyRender(material, r, hasGraph) {
     if (r.normalScale && !baked.height) material.normalScale.fromArray(r.normalScale);
     material.bumpScale = r.bumpScale ?? 1;
     material.aoMapIntensity = r.aoMapIntensity ?? 1;
+    // colours per vertex of the imported geometry (× the colour; a mesh without them stays as it is – three.js and the
+    // path tracer take white where the attribute is missing)
+    material.vertexColors = !!r.vertexColors;
 }
 // Graph slot -> map property (like SLOTS in graph-apply.js)
 const GRAPH_MAP_SLOTS = {

@@ -1,5 +1,6 @@
 // OBJ reader (.obj, Wavefront text format): read straight from the bytes – a 440 MB file as one string (three.js'
-// OBJLoader) is beyond what a tab can hold. Lines: v (x y z), vt (u v), vn (x y z), f (v, v/vt, v//vn, v/vt/vn – also
+// OBJLoader) is beyond what a tab can hold. Lines: v (x y z, optionally r g b – colours per vertex of scanners /
+// sculpting programs: 0…1 sRGB, 0…255 taken as bytes), vt (u v), vn (x y z), f (v, v/vt, v//vn, v/vt/vn – also
 // negative = relative; polygons as a fan), o / g (a new part), usemtl (material), mtllib (material files); s and
 // everything else ignored. Per (group, material) the corners are welded by their (v, vt, vn) triple (hash table) – one
 // vertex each, an index into them. A group that is a closed mesh wound inwards is turned outwards (orient-outward.js).
@@ -12,12 +13,13 @@ const NL = 10, CR = 13, SP = 32, TAB = 9, SLASH = 47, MINUS = 45, PLUS = 43, DOT
  * @param {Uint8Array} bytes
  * @param {(done: number) => void} [onProgress]  share of the file read
  * @returns {{ mtllibs: string[], groups: { name: string, parts: { material: string, positions: Float32Array,
- *   normals: Float32Array|null, uvs: Float32Array|null, index: Uint32Array }[] }[] }}
+ *   normals: Float32Array|null, uvs: Float32Array|null, colors: Float32Array|null (linear rgb), index: Uint32Array }[] }[] }}
  */
 export function parseObj(bytes, onProgress = () => {}) {
     const n = bytes.length;
     let p = 0;
     const v = new Grow(Float32Array), vt = new Grow(Float32Array), vn = new Grow(Float32Array);
+    let vc = null;   // colours per vertex (once the first one appears; earlier vertices white)
     const groups = [];
     const mtllibs = [];
     const head = new TextDecoder().decode(bytes.subarray(0, 200));
@@ -78,7 +80,20 @@ export function parseObj(bytes, onProgress = () => {}) {
         const c0 = bytes[p], c1 = bytes[p + 1];
         if (c0 === NL || c0 === CR || c0 === HASH) { endLine(); continue; }
         if (c0 === 118 /* v */) {
-            if (c1 === SP || c1 === TAB) { p += 2; v.push3(number(), number(), number()); endLine(); continue; }
+            if (c1 === SP || c1 === TAB) {
+                p += 2;
+                v.push3(number(), number(), number());
+                skipSpaces();
+                const b = bytes[p];
+                if ((b >= 48 && b <= 57) || b === MINUS || b === PLUS || b === DOT) {
+                    let r = number(), g = number(), bl = number();
+                    if (r > 1 || g > 1 || bl > 1) { r /= 255; g /= 255; bl /= 255; }
+                    if (!vc) { vc = new Grow(Float32Array); vc.ensure(v.length - 3); vc.a.fill(1, 0, v.length - 3); vc.length = v.length - 3; }
+                    vc.push3(srgbToLinear(r), srgbToLinear(g), srgbToLinear(bl));
+                } else if (vc) vc.push3(1, 1, 1);
+                endLine();
+                continue;
+            }
             if (c1 === 116 /* t */) { p += 2; vt.push2(number(), number()); endLine(); continue; }
             if (c1 === 110 /* n */) { p += 2; vn.push3(number(), number(), number()); endLine(); continue; }
         }
@@ -121,16 +136,18 @@ export function parseObj(bytes, onProgress = () => {}) {
         endLine();
     }
     onProgress(1);
-    const V = v.view(), T = vt.view(), N = vn.view();
+    const V = v.view(), T = vt.view(), N = vn.view(), C = vc ? vc.view() : null;
     const out = [];
     for (const g of groups) {
         const parts = [];
-        for (const pt of g.parts.values()) if (pt.size) parts.push(pt.build(V, T, N));
+        for (const pt of g.parts.values()) if (pt.size) parts.push(pt.build(V, T, N, C));
         orientOutward(parts);
         if (parts.length) out.push({ name: g.name, parts });
     }
     return { mtllibs, groups: out, writer };
 }
+
+const srgbToLinear = c => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 
 function keyword(bytes, p) {
     let s = '';
@@ -197,22 +214,24 @@ class Part {
         this.table = table;
         this.mask = mask;
     }
-    build(V, T, N) {
+    build(V, T, N, C = null) {
         const n = this.size, K = this.keys.a;
         const positions = new Float32Array(n * 3);
+        const colors = C ? new Float32Array(n * 3) : null;
         let hasUv = false, hasNormal = false;
         for (let i = 0; i < n; i++) { if (K[i * 3 + 1] > 0) hasUv = true; if (K[i * 3 + 2] > 0) hasNormal = true; }
         const uvs = hasUv ? new Float32Array(n * 2) : null, normals = hasNormal ? new Float32Array(n * 3) : null;
         for (let i = 0; i < n; i++) {
             const a = (K[i * 3] - 1) * 3, t = (K[i * 3 + 1] - 1) * 2, m = (K[i * 3 + 2] - 1) * 3;
             if (a >= 0 && a + 2 < V.length) { positions[i * 3] = V[a]; positions[i * 3 + 1] = V[a + 1]; positions[i * 3 + 2] = V[a + 2]; }
+            if (colors) { if (a >= 0 && a + 2 < C.length) { colors[i * 3] = C[a]; colors[i * 3 + 1] = C[a + 1]; colors[i * 3 + 2] = C[a + 2]; } else colors.fill(1, i * 3, i * 3 + 3); }
             if (uvs && t >= 0 && t + 1 < T.length) { uvs[i * 2] = T[t]; uvs[i * 2 + 1] = T[t + 1]; }
             if (normals && m >= 0 && m + 2 < N.length) { normals[i * 3] = N[m]; normals[i * 3 + 1] = N[m + 1]; normals[i * 3 + 2] = N[m + 2]; }
         }
         // free the hash data early (large files)
         const index = this.index.view().slice();
         this.keys = this.index = this.table = null;
-        return { material: this.material, positions, normals, uvs, index };
+        return { material: this.material, positions, normals, uvs, colors, index };
     }
 }
 

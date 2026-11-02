@@ -4659,6 +4659,7 @@ function makeGeometry(g) {
     geometry.setAttribute('normal', new THREE.BufferAttribute(g.normals, 3));
     geometry.setAttribute('uv', new THREE.BufferAttribute(g.uvs, 2));
     if (g.tangents) geometry.setAttribute('tangent', new THREE.BufferAttribute(g.tangents, 4));
+    if (g.colors) geometry.setAttribute('color', new THREE.BufferAttribute(g.colors, 3));   // colours per vertex (linear rgb)
     geometry.setIndex(new THREE.BufferAttribute(g.index, 1));
     // take over the BVH built in the worker (index is already reordered accordingly)
     if (g.bvh) {

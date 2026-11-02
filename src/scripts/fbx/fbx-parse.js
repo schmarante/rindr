@@ -325,7 +325,8 @@ function rotationZYX([x, y, z]) {   // FBX default order eXYZ = intrinsic Z·Y·
 
 /**
  * Welded, triangulated geometry of one Geometry node, split by material index:
- * [{ material, positions: Float32Array, normals: Float32Array|null, uvs: Float32Array|null, index: Uint32Array }]
+ * [{ material, positions: Float32Array, normals: Float32Array|null, uvs: Float32Array|null, colors: Float32Array|null
+ * (first colour layer, rgb linear – sRGB in the file like FBXLoader reads it), index: Uint32Array }]
  * geometric: { translation, rotation, scale } of the model (baked in) or null.
  */
 export async function buildGeometry(buffer, node, inflate, geometric = null) {
@@ -346,6 +347,7 @@ export async function buildGeometry(buffer, node, inflate, geometric = null) {
     };
     const normalLayer = await layer('LayerElementNormal', 'Normals', 'NormalsIndex');
     const uvLayer = await layer('LayerElementUV', 'UV', 'UVIndex');
+    const colorLayer = await layer('LayerElementColor', 'Colors', 'ColorIndex');   // rgba
     const materialLayer = await layer('LayerElementMaterial', 'Materials', null);
 
     // per corner: control point, polygon number
@@ -375,15 +377,17 @@ export async function buildGeometry(buffer, node, inflate, geometric = null) {
     // 1. weld: per control point a chain of output vertices (same UV value index and same normal → reuse)
     let cap = Math.max(16, Math.ceil(nv * 1.25));
     let P = new Float32Array(cap * 3), N = normalLayer ? new Float32Array(cap * 3) : null, U = uvLayer ? new Float32Array(cap * 2) : null;
+    let C = colorLayer ? new Float32Array(cap * 3) : null, CI = colorLayer ? new Int32Array(cap) : null;
     let UVI = new Int32Array(cap), next = new Int32Array(cap);
     const head = new Int32Array(nv).fill(-1);
     let count = 0;
     const grow = () => {
         cap *= 2;
         const g = (a, k) => { const b = new a.constructor(cap * k); b.set(a); return b; };
-        P = g(P, 3); if (N) N = g(N, 3); if (U) U = g(U, 2); UVI = g(UVI, 1); next = g(next, 1);
+        P = g(P, 3); if (N) N = g(N, 3); if (U) U = g(U, 2); if (C) { C = g(C, 3); CI = g(CI, 1); } UVI = g(UVI, 1); next = g(next, 1);
     };
-    const nvals = normalLayer?.values, uvals = uvLayer?.values;
+    const nvals = normalLayer?.values, uvals = uvLayer?.values, cvals = colorLayer?.values;
+    const linear = c => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
     const cornerVertex = new Uint32Array(nc);   // output vertex per corner (for the triangulation)
     let p = 0;
     for (let c = 0; c < nc; c++) {
@@ -391,12 +395,13 @@ export async function buildGeometry(buffer, node, inflate, geometric = null) {
         const last = v < 0;
         if (last) v = ~v;
         if (v < 0 || v >= nv) throw new Error('FBX: invalid polygon index');
-        const ni = element(normalLayer, c, p, v), ui = element(uvLayer, c, p, v);
+        const ni = element(normalLayer, c, p, v), ui = element(uvLayer, c, p, v), ci = element(colorLayer, c, p, v);
         let nx = 0, ny = 0, nz = 0;
         if (nvals && ni >= 0) { nx = nvals[ni * 3]; ny = nvals[ni * 3 + 1]; nz = nvals[ni * 3 + 2]; }
         let found = -1;
         for (let k = head[v]; k >= 0; k = next[k]) {
             if (UVI[k] !== ui) continue;
+            if (CI && CI[k] !== ci) continue;
             if (N && (Math.abs(N[k * 3] - nx) > 1e-4 || Math.abs(N[k * 3 + 1] - ny) > 1e-4 || Math.abs(N[k * 3 + 2] - nz) > 1e-4)) continue;
             found = k;
             break;
@@ -409,6 +414,11 @@ export async function buildGeometry(buffer, node, inflate, geometric = null) {
             if (U) {
                 if (ui >= 0) { U[found * 2] = uvals[ui * 2]; U[found * 2 + 1] = uvals[ui * 2 + 1]; }
                 else { U[found * 2] = 0; U[found * 2 + 1] = 0; }
+            }
+            if (C) {
+                if (ci >= 0 && ci * 4 + 2 < cvals.length) for (let k = 0; k < 3; k++) C[found * 3 + k] = linear(cvals[ci * 4 + k]);
+                else C.fill(1, found * 3, found * 3 + 3);
+                CI[found] = ci;
             }
             UVI[found] = ui;
             next[found] = head[v];
@@ -464,6 +474,7 @@ export async function buildGeometry(buffer, node, inflate, geometric = null) {
             b.index[i] = local[v];
         }
         const positions = new Float32Array(n * 3), normals = N ? new Float32Array(n * 3) : null, uvs = U ? new Float32Array(n * 2) : null;
+        const colors = C ? new Float32Array(n * 3) : null;
         for (let v = 0; v < count; v++) {
             const l = local[v];
             if (l < 0) continue;
@@ -477,12 +488,13 @@ export async function buildGeometry(buffer, node, inflate, geometric = null) {
                 normals[l * 3] = a / len; normals[l * 3 + 1] = bb / len; normals[l * 3 + 2] = cc / len;
             }
             if (uvs) { uvs[l * 2] = U[v * 2]; uvs[l * 2 + 1] = U[v * 2 + 1]; }
+            if (colors) { colors[l * 3] = C[v * 3]; colors[l * 3 + 1] = C[v * 3 + 1]; colors[l * 3 + 2] = C[v * 3 + 2]; }
         }
         // a negative determinant of the geometric scale flips the winding
         if (transformed && S[0] * S[1] * S[2] < 0) {
             for (let i = 0; i < b.index.length; i += 3) { const t = b.index[i + 1]; b.index[i + 1] = b.index[i + 2]; b.index[i + 2] = t; }
         }
-        out.push({ material, positions, normals, uvs, index: b.index });
+        out.push({ material, positions, normals, uvs, colors, index: b.index });
     }
     return out;
 }

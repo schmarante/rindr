@@ -239,6 +239,9 @@ async function load(source, ext, renderer, onStatus = () => {}, preloaded = null
             // shared positions with a 30° crease angle (like FBX/glTF without normals)
             const geometry = new STLLoader().parse(normalizeStl(buffer));
             geometry.deleteAttribute('normal');
+            // colour per facet (binary STL of some programs – STLLoader: linear, the same at the 3 corners)
+            const stlColors = geometry.hasColors && geometry.getAttribute('color') ? true : false;
+            if (!stlColors && geometry.getAttribute('color')) geometry.deleteAttribute('color');
             if (dropBrokenTriangles(geometry) === 0) throw new Error(t('import.mesh.noFaces'));
             // panels facing inwards (open sheets with the wrong side, inside-out bodies): mesh-orient.js
             const pos = geometry.getAttribute('position');
@@ -248,7 +251,7 @@ async function load(source, ext, renderer, onStatus = () => {}, preloaded = null
                 geometry.setAttribute('position', new THREE.BufferAttribute(r.positions, 3));
                 debugLog('[STL] orientation:', r.stats);
             }
-            const mesh = new THREE.Mesh(geometry, DEFAULT_MATERIAL);
+            const mesh = new THREE.Mesh(geometry, stlColors ? VERTEX_COLOR_MATERIAL : DEFAULT_MATERIAL);
             mesh.name = source.name.replace(/\.[^.]+$/, '');
             if (meshUpAxis(geometry, new TextDecoder().decode(new Uint8Array(buffer, 0, Math.min(80, buffer.byteLength)))) === 'z') mesh.rotation.x = -Math.PI / 2;
             object = new THREE.Group();
@@ -256,10 +259,11 @@ async function load(source, ext, renderer, onStatus = () => {}, preloaded = null
             scale = 1;
         } else if (ext === 'ply') {
             // PLY mesh (scanner/photogrammetry; Gaussian splat PLYs go to splat/ instead): like STL – mm, no
-            // materials (vertex colours ignored), Z up → Y up; normals from the file if present
+            // materials (colours per vertex → a white material that shows them), Z up → Y up; normals from the file if
+            // present
             const geometry = new PLYLoader().parse(buffer);
             if (!geometry.index) throw new Error(t('import.mesh.noFaces'));   // point cloud without faces
-            const mesh = new THREE.Mesh(geometry, DEFAULT_MATERIAL);
+            const mesh = new THREE.Mesh(geometry, geometry.getAttribute('color') ? VERTEX_COLOR_MATERIAL : DEFAULT_MATERIAL);
             mesh.name = source.name.replace(/\.[^.]+$/, '');
             if (meshUpAxis(geometry, '') === 'z') mesh.rotation.x = -Math.PI / 2;
             object = new THREE.Group();
@@ -400,16 +404,22 @@ export function normalizeStl(buffer) {
 /** Removes triangles with non-finite coordinates (NaN/Infinity from damaged files would break the bounds). Returns the triangle count. */
 function dropBrokenTriangles(geometry) {
     const src = geometry.getAttribute('position').array;
+    const col = geometry.getAttribute('color')?.array ?? null;   // colours per facet go along
     let n = 0;
-    const out = new Float32Array(src.length);
+    const out = new Float32Array(src.length), outCol = col ? new Float32Array(col.length) : null;
     for (let i = 0; i + 9 <= src.length; i += 9) {
         let ok = true;
         for (let k = 0; k < 9; k++) if (!Number.isFinite(src[i + k])) { ok = false; break; }
-        if (ok) out.set(src.subarray(i, i + 9), n++ * 9);
+        if (ok) {
+            out.set(src.subarray(i, i + 9), n * 9);
+            if (outCol) outCol.set(col.subarray(i, i + 9), n * 9);
+            n++;
+        }
     }
     if (n * 9 !== src.length) {
         console.warn(`[STL] dropped ${src.length / 9 - n} triangles with invalid coordinates`);
         geometry.setAttribute('position', new THREE.BufferAttribute(out.slice(0, n * 9), 3));
+        if (outCol) geometry.setAttribute('color', new THREE.BufferAttribute(outCol.slice(0, n * 9), 3));
     }
     return n;
 }
@@ -556,6 +566,7 @@ function materialIdFactory(materialManager, scale, fileName) {
         if (!id) {
             const def = convertMaterial(src, scale);
             if (src === DEFAULT_MATERIAL) def.name = t('import.mesh.defaultMaterial');
+            if (src === VERTEX_COLOR_MATERIAL) def.name = t('import.mesh.vertexColorMaterial');
             if (!def.name) def.name = t('import.mesh.unnamedMaterial', { number: ++unnamed });
             // origin: file + order in the file – stable, so scene states find the material again; with the file
             // name, materials of different models no longer collide (previously all were import:0, import:1 …)
@@ -734,9 +745,9 @@ async function convertLeanFbx({ scene, geometries: parts }, source, materialMana
                     gis = (parts[lg] || []).map(part => {
                         let normals = part.normals;
                         if (!normals) computeNormals(part.positions, part.index, normals = new Float32Array(part.positions.length));
-                        const g = part.uvs ? { positions: part.positions, normals, index: part.index, uvs: part.uvs }
-                            : boxProject({ positions: part.positions, normals, index: part.index }, UV_TILE / Math.max(worldScale, 1e-12));
-                        geometries.push({ positions: g.positions, normals: g.normals, index: g.index, uvs: g.uvs, name: m.name });
+                        const g = part.uvs ? { positions: part.positions, normals, index: part.index, uvs: part.uvs, colors: part.colors }
+                            : boxProject({ positions: part.positions, normals, index: part.index, colors: part.colors }, UV_TILE / Math.max(worldScale, 1e-12));
+                        geometries.push({ positions: g.positions, normals: g.normals, index: g.index, uvs: g.uvs, colors: g.colors, name: m.name });
                         return { gi: geometries.length - 1, material: part.material };
                     });
                     cache.set(lg, gis);
@@ -744,11 +755,17 @@ async function convertLeanFbx({ scene, geometries: parts }, source, materialMana
                 const matrix = new THREE.Matrix4().multiplyMatrices(toMm, world[i]).toArray();
                 for (const { gi, material } of gis) {
                     const src = m.materials.length ? materials[m.materials[material] ?? m.materials[0]] : null;
-                    meshes.push({ geometry: gi, matrix, materialId: materialId(src), name: m.name, node, instance, key: `${instance}/${material}` });
+                    meshes.push({ geometry: gi, matrix, materialId: null, src, name: m.name, node, instance, key: `${instance}/${material}` });
                 }
                 instance++;
             }
         });
+        // materials once every geometry is known: one used with colours per vertex shows them (before it is converted)
+        for (const mm of meshes) if (geometries[mm.geometry].colors && mm.src) mm.src.vertexColors = true;
+        for (const mm of meshes) {
+            mm.materialId = materialId(mm.src ?? (geometries[mm.geometry].colors ? VERTEX_COLOR_MATERIAL : null));
+            delete mm.src;
+        }
         return { result: { nodes, geometries, meshes, cameras: fbxCameras(scene, scale, world), lights: fbxLights(scene, scale, world), animation: null }, missing };
     } finally {
         release();
@@ -1168,7 +1185,7 @@ async function convertMax({ scene, geometries: parts }, source, materialManager)
                 const worldScale = objectMatrix.getMaxScaleOnAxis() * scale;
                 gis = parts[m.geometry].map(part => {
                     const g = part.uvs ? part : boxProject(part, UV_TILE / Math.max(worldScale, 1e-12));
-                    geometries.push({ positions: g.positions, normals: g.normals, index: g.index, uvs: g.uvs, name: m.name });
+                    geometries.push({ positions: g.positions, normals: g.normals, index: g.index, uvs: g.uvs, colors: g.colors, name: m.name });
                     return { gi: geometries.length - 1, material: part.material };
                 });
                 cache.set(m.geometry, gis);
@@ -1293,7 +1310,7 @@ async function convert3mf(scene, source, materialManager) {
                 const worldScale = matrix.getMaxScaleOnAxis() * scale;
                 gis = parts.map(part => {
                     const g = part.uvs ? part : boxProject(part, UV_TILE / Math.max(worldScale, 1e-12));
-                    return { gi: geometries.push({ positions: g.positions, normals: g.normals, index: g.index, uvs: g.uvs, name: o.name }) - 1, material: part.material };
+                    return { gi: geometries.push({ positions: g.positions, normals: g.normals, index: g.index, uvs: g.uvs, colors: g.colors, name: o.name }) - 1, material: part.material };
                 });
                 cache.set(o.geometry, gis);
             }
@@ -1313,6 +1330,8 @@ async function convert3mf(scene, source, materialManager) {
 const hasMorphs = mesh => !!mesh.geometry?.morphAttributes?.position?.length && !!mesh.morphTargetDictionary;
 
 const DEFAULT_MATERIAL = new THREE.MeshStandardMaterial({ name: 'Standard', color: 0xb0b0b0, roughness: 0.5 });
+// files without materials but with colours per vertex (PLY, STL): white × the vertex colours
+const VERTEX_COLOR_MATERIAL = new THREE.MeshStandardMaterial({ name: 'Vertex colours', color: 0xffffff, roughness: 0.6, vertexColors: true });
 
 // Own compact buffers per material bucket of a mesh (its groups with that material): only used vertices,
 // index always Uint32. One pass over the index for all buckets, every source vertex computed once (posed:
@@ -1322,6 +1341,9 @@ function extractGeometries(mesh, buckets, posed, worldScale) {
     const pos = geometry.getAttribute('position');
     const nor = geometry.getAttribute('normal');
     const uv = geometry.getAttribute('uv');
+    // colours per vertex only where the material shows them (rgb, linear – three.js / the loaders convert)
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    const col = materials.some(m => m?.vertexColors) ? geometry.getAttribute('color') : null;
     const src = geometry.index ? geometry.index.array : null;
     const total = src ? src.length : pos.count;
     const nb = buckets.length;
@@ -1393,6 +1415,7 @@ function extractGeometries(mesh, buckets, posed, worldScale) {
         if (!o.index.length) return null;
         const nv = o.nv;
         const positions = new Float32Array(nv * 3), normals = new Float32Array(nv * 3), uvs = uv ? new Float32Array(nv * 2) : null;
+        const colors = col ? new Float32Array(nv * 3) : null;
         for (let l = 0; l < nv; l++) {
             const v = o.order[l];
             if (P) { positions[l * 3] = P[v * 3]; positions[l * 3 + 1] = P[v * 3 + 1]; positions[l * 3 + 2] = P[v * 3 + 2]; }
@@ -1402,13 +1425,14 @@ function extractGeometries(mesh, buckets, posed, worldScale) {
                 else { normals[l * 3] = nor.getX(v); normals[l * 3 + 1] = nor.getY(v); normals[l * 3 + 2] = nor.getZ(v); }
             }
             if (uvs) { uvs[l * 2] = uv.getX(v); uvs[l * 2 + 1] = uv.getY(v); }
+            if (colors) { colors[l * 3] = col.getX(v); colors[l * 3 + 1] = col.getY(v); colors[l * 3 + 2] = col.getZ(v); }
         }
         if (!nor) computeNormals(positions, o.index, normals);
         // our vertex → source vertex (animation/morphs re-deform from the source)
         const sourceVertex = posed ? Int32Array.from(o.order) : null;
         // without UVs: box projection like STEP (UV_TILE in mm, geometry in source units)
-        if (uvs) return { positions, normals, index: o.index, uvs, sourceVertex };
-        return boxProject({ positions, normals, index: o.index, sourceVertex }, UV_TILE / Math.max(worldScale, 1e-12));
+        if (uvs) return { positions, normals, index: o.index, uvs, sourceVertex, colors };
+        return boxProject({ positions, normals, index: o.index, sourceVertex, colors }, UV_TILE / Math.max(worldScale, 1e-12));
     });
 }
 
@@ -1540,6 +1564,8 @@ function convertMaterial(m, scale) {
         normalScale: m.normalScale ? m.normalScale.toArray() : null,
         bumpScale: m.bumpScale ?? 1,
         aoMapIntensity: m.aoMapIntensity ?? 1,
+        // colours per vertex (glTF COLOR_0, PLY, OBJ, FBX …): × the material's colour, raster and path tracer
+        vertexColors: !!m.vertexColors,
         // slots whose image is missing – { slot: { url, srgb, flipY?, repeat?, offset?, rotation?, color? } };
         // the viewer links a file handed in later into them without reopening the scene
         missing: Object.keys(missingMaps).length ? structuredClone(missingMaps) : null,

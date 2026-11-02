@@ -1123,7 +1123,7 @@ function assembleSolid(s, results, geometries, onFlipped) {
 // Vertices shared by triangles of different planes are duplicated instead → a clean, straight seam. Duplicates keep
 // position and normal (sharp-edge and slicer passes weld by position) and their source vertex (animation).
 export const UV_TILE = 100;
-export function boxProject({ positions, normals, index, sourceVertex = null }, tile = UV_TILE) {
+export function boxProject({ positions, normals, index, sourceVertex = null, colors = null }, tile = UV_TILE) {
     const nv = positions.length / 3;
     const nt = index ? index.length / 3 : nv / 3;
     const corner = index ? i => index[i] : i => i;
@@ -1165,24 +1165,27 @@ export function boxProject({ positions, normals, index, sourceVertex = null }, t
     const total = nv + extra;
     const uvs = new Float32Array(total * 2);
     for (let v = 0; v < nv; v++) project(uvs, v, v, own[v] < 0 ? 0 : own[v]);
-    if (!extra) return { positions, normals, index, uvs, sourceVertex };
+    if (!extra) return { positions, normals, index, uvs, sourceVertex, colors };
     // non-indexed geometry never shares vertices – copies only come with an index
     const P = new Float32Array(total * 3), N = new Float32Array(total * 3);
     P.set(positions);
     N.set(normals);
     const S = sourceVertex ? new Int32Array(total) : null;
     S?.set(sourceVertex);
+    const C = colors ? new Float32Array(total * 3) : null;   // colours per vertex go with the copies
+    C?.set(colors);
     for (let key = 0; key < copies.length; key++) {
         const o = copies[key];
         if (o < 0) continue;
         const v = (key / 3) | 0;
         for (let c = 0; c < 3; c++) { P[o * 3 + c] = positions[v * 3 + c]; N[o * 3 + c] = normals[v * 3 + c]; }
         if (S) S[o] = sourceVertex[v];
+        if (C) for (let c = 0; c < 3; c++) C[o * 3 + c] = colors[v * 3 + c];
         project(uvs, o, v, key % 3);
     }
     const I = total > 65535 && !(index instanceof Uint32Array) ? new Uint32Array(slot.length) : new index.constructor(slot.length);
     I.set(slot);
-    return { positions: P, normals: N, index: I, uvs, sourceVertex: S };
+    return { positions: P, normals: N, index: I, uvs, sourceVertex: S, colors: C };
 }
 
 // Build BVH (+ tangents) of one geometry in a worker; buffers are transferred there and back.

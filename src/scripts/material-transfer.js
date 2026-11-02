@@ -16,7 +16,7 @@ const received = new Map();   // `${tab}/${id}` → local material id: a second 
 const pending = new Map();    // request id → local material id (textures on their way)
 const REQUEST_TIMEOUT = 20000;
 // render values of an imported material besides its textures (material-manager.js applyRender)
-const RENDER_KEYS = ['side', 'alphaTest', 'transparent', 'normalScale', 'bumpScale', 'aoMapIntensity'];
+const RENDER_KEYS = ['side', 'alphaTest', 'transparent', 'normalScale', 'bumpScale', 'aoMapIntensity', 'vertexColors'];
 // texture settings that travel with a picture
 const TEXTURE_KEYS = ['colorSpace', 'flipY', 'wrapS', 'wrapT', 'channel', 'rotation', 'anisotropy', 'name'];
 let manager = null;

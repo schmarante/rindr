@@ -64,6 +64,7 @@ export function buildObj(scene, mtl, manager, name = '', { linear = false } = {}
         materials.set(matName, mat);
         return mat;
     };
+    let vertexColorMaterial = null;
     for (const g of scene.groups) {
         const group = new THREE.Group();
         group.name = g.name;
@@ -73,7 +74,14 @@ export function buildObj(scene, mtl, manager, name = '', { linear = false } = {}
             if (p.normals) geometry.setAttribute('normal', new THREE.BufferAttribute(p.normals, 3));
             if (p.uvs) geometry.setAttribute('uv', new THREE.BufferAttribute(p.uvs, 2));
             geometry.setIndex(new THREE.BufferAttribute(p.index, 1));
-            const mesh = new THREE.Mesh(geometry, materialOf(p.material));
+            let material = materialOf(p.material);
+            if (p.colors) {
+                // colours per vertex: × the material colour (without a material: white, the colours as they are)
+                geometry.setAttribute('color', new THREE.BufferAttribute(p.colors, 3));
+                if (!p.material) material = vertexColorMaterial ??= new THREE.MeshPhysicalMaterial({ name: 'Vertex colours', color: 0xffffff, roughness: 0.6, vertexColors: true });
+                else material.vertexColors = true;
+            }
+            const mesh = new THREE.Mesh(geometry, material);
             mesh.name = g.parts.length > 1 ? `${g.name} ${p.material}` : g.name;
             group.add(mesh);
         }

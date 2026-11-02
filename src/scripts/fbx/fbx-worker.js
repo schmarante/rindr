@@ -32,7 +32,7 @@ self.onmessage = async ({ data }) => {
         for (let g = 0; g < total; g++) {
             const model = scene.models.find(m => m.geometries.includes(g));
             const parts = await buildGeometry(buffer, scene.geometryNodes[g], inflate, model?.geometric);
-            for (const p of parts) for (const a of [p.positions, p.normals, p.uvs, p.index]) if (a) transfer.push(a.buffer);
+            for (const p of parts) for (const a of [p.positions, p.normals, p.uvs, p.colors, p.index]) if (a) transfer.push(a.buffer);
             geometries.push(parts);
             self.postMessage({ type: 'progress', done: g + 1, total });
         }
