@@ -10,6 +10,7 @@
 //     files (GUID → path)
 // Read here: nodes (name, parent, transform from Position/Rotation/Scale or Look At controllers, object offset, wire colour),
 // cameras (free, target, physical: field of view and its axis, target distance; render output aspect),
+// lights (standard, photometric, a render plugin's area light: type, on, colour, intensity, cone, size),
 // Editable Mesh / Editable Poly (vertices, faces, smoothing groups, material IDs, UV channel 1), materials
 // (Physical Material parameters, Multi/Sub-Object, the 24×24 preview swatch of any other material as colour) and
 // bitmap file names. Modifiers are not evaluated: objects whose stack changes the geometry (Shell, Extrude,
@@ -182,7 +183,22 @@ const CLASS = {
     turboSmooth: cid(0x810, 0xd727b3e, 0x491d29a7), meshSmooth: cid(0x810, 0x32, 0x7f9e), noise: cid(0x810, 0xf997b124), editPoly: cid(0x810, 0x79aa6e1d, 0x71a075b7), optimize: cid(0x810, 0xc4d31),
     freeCamera: cid(0x20, 0x1001), targetCamera: cid(0x20, 0x1002), physicalCamera: cid(0x20, 0x46697218, 0x28e8008d),
     renderSettings: cid(0x1010, 0xee448b23), scene: cid(0x100, 0x2222),
+    pluginLight: cid(0x30, 0x3c5575a1, 0x5fd602df),   // a render plugin's area light (plane, sphere, disc …)
 };
+// standard lights (old parameter block in slot 0)
+const STANDARD_LIGHTS = new Map([
+    [cid(0x30, 0x1011), 'omni'], [cid(0x30, 0x1012), 'spot'], [cid(0x30, 0x1014), 'spot'],   // Omni, Target Spot, Free Spot
+    [cid(0x30, 0x1013), 'directional'], [cid(0x30, 0x1015), 'directional'],                  // Free Direct, Target Direct
+]);
+// photometric lights: one class per emitter shape, free and target (Target Light / Free Light = point)
+const PHOTOMETRIC_LIGHTS = new Map([
+    [cid(0x30, 0x32375fcc, 0x0b025cf0), 'point'], [cid(0x30, 0x658d4f97, 0x72cd4259), 'point'],
+    [cid(0x30, 0x78207401, 0x357f1d58), 'line'], [cid(0x30, 0x45076885, 0x40791449), 'line'],
+    [cid(0x30, 0x36507d92, 0x105a1a47), 'rect'], [cid(0x30, 0x71794f9d, 0x70ae52f2), 'rect'],
+    [cid(0x30, 0x5bcc6d42, 0x0c4f430e), 'disc'], [cid(0x30, 0x38732348, 0x201758b3), 'disc'],
+    [cid(0x30, 0x7ca93582, 0x1abb6b32), 'sphere'], [cid(0x30, 0x33fc7ae9, 0x54433dc5), 'sphere'],
+    [cid(0x30, 0x46f634e3, 0x0a327aaf), 'cylinder'], [cid(0x30, 0x7c8b5b10, 0x4bd33e86), 'cylinder'],
+]);
 // primitives rebuilt from their parameters (max-modifiers.js)
 const PRIMITIVES = new Map([
     [cid(0x10, 0x10), 'box'], [cid(0x10, 0x11), 'sphere'], [cid(0x10, 0x12), 'cylinder'], [cid(0x10, 0x20), 'torus'],
@@ -374,18 +390,20 @@ export async function describeMax(buffer, gunzip) {
         }
         return params;
     };
-    // parameter block (version 1, older modifiers such as Extrude): index → number (0x0002 { 0x0003 index, 0x0100 float | 0x0101 int })
+    // parameter block (version 1, older modifiers such as Extrude, standard lights): index → number or [x, y, z]
+    // (0x0002 { 0x0003 index, 0x0100 float | 0x0101 int | 0x0102 colour | 0x0103 point3 })
     const paramBlock1 = i => {
         const out = new Map();
         const c = objects[i];
         if (!c) return out;
         for (const k of sc.children(c)) {
             if (k.id !== 0x0002 || !k.container) continue;
-            const idx = sc.child(k, 0x0003), f = sc.child(k, 0x0100), n = sc.child(k, 0x0101), v = sc.child(k, 0x0103);
+            const idx = sc.child(k, 0x0003), f = sc.child(k, 0x0100), n = sc.child(k, 0x0101), v = sc.child(k, 0x0103), c3 = sc.child(k, 0x0102);
             if (!idx) continue;
             if (f && sc.size(f) >= 4) out.set(sc.u32(idx), sc.f32(f));
             else if (n && sc.size(n) >= 4) out.set(sc.u32(idx), sc.i32(n));
             else if (v && sc.size(v) >= 12) out.set(sc.u32(idx), sc.floats(v, 3));   // point3
+            else if (c3 && sc.size(c3) >= 12) out.set(sc.u32(idx), sc.floats(c3, 3));   // colour (0–1)
         }
         return out;
     };
@@ -697,6 +715,74 @@ export async function describeMax(buffer, gunzip) {
         }
         return { fov: Math.PI / 4, fovAxis: 'h', distance: 0 };
     };
+
+    // --- lights (checked against MAX 2026's own values, docs/mesh-import.md "Lichter") ---
+    // all shine along local −Z; target lights aim with a Look At controller like target cameras. Colours as stored (0–1).
+    // Skylight, sun / daylight systems, the plugin's dome and mesh lights and unknown classes → null (left out silently).
+    const leafU16 = (c, id, d) => { const k = sc.child(c, id); return k && sc.size(k) >= 2 ? sc.dv.getUint16(k.start, true) : d; };
+    // old parameter block value, or the value of its controller when animated (slot = parameter index)
+    const p1 = (pb, P, k, d) => {
+        if (P.has(k)) return P.get(k);
+        const x = ref(pb, k);
+        if (x < 0) return d;
+        const v = valueChunk(x, 0x2501) || valueChunk(x, 0x2503);
+        return !v ? d : sc.size(v) >= 12 ? sc.floats(v, 3) : sc.size(v) >= 4 ? sc.f32(v) : d;
+    };
+    const lightOf = obj => {
+        const id = idOf(obj), c = objects[obj];
+        // standard lights: object chunks 0x2580 on (u16), 0x25d0 decay (absent/0 none, 1 inverse, 2 inverse square),
+        // 0x2573 cone (1 circle, 0 rectangle; spots and directionals); parameter block 1 in slot 0 – Omni: 0 colour,
+        // 1 multiplier, 8 decay start; spot / directional: 0 colour, 1 multiplier, 4 hotspot, 5 falloff (full cone in
+        // degrees; directionals: beam diameters), 6 aspect, 11 decay start
+        const standard = STANDARD_LIGHTS.get(id);
+        if (standard) {
+            const pb = ref(obj, 0), P = paramBlock1(pb);
+            const omni = standard === 'omni';
+            const num = (k, d) => { const v = p1(pb, P, k, d); return typeof v === 'number' ? v : d; };
+            const color = p1(pb, P, 0, null);
+            return {
+                type: standard, on: leafU16(c, 0x2580, 1) !== 0, color: Array.isArray(color) ? color : [1, 1, 1], multiplier: num(1, 1),
+                decay: leafU16(c, 0x25d0, 0), decayStart: num(omni ? 8 : 11, 0),
+                hotspot: omni ? null : num(4, 43), falloff: omni ? null : num(5, 45), rectangle: !omni && leafU16(c, 0x2573, 1) === 0, aspect: omni ? null : num(6, 1),
+            };
+        }
+        // photometric: parameter block 2 in slot 0 – 1 distribution (0 uniform spherical, 1 spotlight, 2 uniform diffuse,
+        // 3 photometric web), 2 on, 5 filter colour, 6 intensity in candela (whatever unit the panel shows: 0x0e 0 lm,
+        // 1 cd, 2 lux at distance 0x0d – both renderers light by the candela value), 8 kelvin, 0x0a use kelvin,
+        // 0x12 use dimmer, 0x13 dimmer %; slot 2: 0 hotspot (beam), 1 falloff (field) – full angles in degrees; slot 5:
+        // 0x0b length, 0x0c width, 0x0d radius (system units); slot 3: web file (0x000f > 0x0002 asset GUID → FileAssetMetaData3)
+        const shape = PHOTOMETRIC_LIGHTS.get(id);
+        if (shape) {
+            const P = paramBlock(ref(obj, 0)), S = paramBlock(ref(obj, 2)), G = paramBlock(ref(obj, 5));
+            const distribution = pInt(P, 0x01, 0);
+            let web = '';
+            const w = ref(obj, 3) >= 0 ? sc.child(sc.child(objects[ref(obj, 3)], 0x000f), 0x0002) : null;
+            if (distribution === 3 && w && sc.size(w) === 16) web = assets.get(hex(sc.b.subarray(w.start, w.end))) || '';
+            return {
+                type: 'photometric', shape, on: pInt(P, 0x02, 1) !== 0, color: pColor(P, 0x05) || [1, 1, 1], distribution,
+                candela: pFloat(P, 0x06, 1500) * (pInt(P, 0x12, 0) ? pFloat(P, 0x13, 100) / 100 : 1),
+                kelvin: pInt(P, 0x0a, 0) ? pFloat(P, 0x08, 6500) : null,
+                hotspot: pFloat(S, 0x00, 30), falloff: pFloat(S, 0x01, 60),
+                length: pFloat(G, 0x0b, 0), width: pFloat(G, 0x0c, 0), radius: pFloat(G, 0x0d, 0), web,
+            };
+        }
+        // render plugin area light: parameter block 2 in slot 0 – 0 on, 1 type (0 plane, 1 dome, 2 sphere, 3 mesh,
+        // 4 disc), 2 / 3 half length / width (plane, along local X / Y – the rectangle the plugin keeps for the viewport
+        // in slot 2 has these corners), 7 colour, 8 multiplier; assumed from the files (no plugin to check against):
+        // 2 radius (sphere, disc), 0x0c units (0 default "image", 1 lm, 2 lm/m²/sr, 3 W, 4 W/m²/sr), 0x27 colour mode
+        // (1 temperature) with 0x26 kelvin
+        if (id === CLASS.pluginLight) {
+            const P = paramBlock(ref(obj, 0));
+            const type = ['plane', null, 'sphere', null, 'disc'][pInt(P, 0x01, 0)];
+            if (!type) return null;   // dome (environment), mesh
+            return {
+                type: 'area', shape: type, on: pInt(P, 0x00, 1) !== 0, color: pColor(P, 0x07) || [1, 1, 1], multiplier: pFloat(P, 0x08, 1),
+                units: pInt(P, 0x0c, 0), kelvin: pInt(P, 0x27, 0) === 1 ? pFloat(P, 0x26, 6500) : null,
+                halfLength: pFloat(P, 0x02, 0), halfWidth: pFloat(P, 0x03, 0),
+            };
+        }
+        return null;
+    };
     // render output size (render settings: 0x0110 > 0x2000 > 0x0190 width, 0x0200 height, 0x0210 pixel aspect) → aspect
     let renderAspect = null;
     objects.forEach((c, i) => {
@@ -727,6 +813,7 @@ export async function describeMax(buffer, gunzip) {
             },
             geometry: g,
             camera: kind === SUPER.camera ? cameraOf(obj) : null,
+            light: kind === SUPER.light ? lightOf(obj) : null,
             material: material(ref(i, 3)),
             wireColor: wire && sc.size(wire) >= 3 ? [sc.b[wire.start], sc.b[wire.start + 1], sc.b[wire.start + 2]].map(v => v / 255) : null,
         };

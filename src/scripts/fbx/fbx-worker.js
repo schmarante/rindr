@@ -18,9 +18,9 @@ self.onmessage = async ({ data }) => {
         const tree = readTree(buffer);
         const scene = describeScene(tree);
         if (fallback && (scene.hasAnimation || scene.hasDeformers)) {
-            // FBXLoader reads the models; the cameras come from here (their parents' and targets' transforms along)
-            const { models, cameras, upAxis, unitScaleFactor } = scene;
-            const cameraScene = cameras.length ? { models: models.map(({ parent, transform }) => ({ parent, transform })), cameras, upAxis, unitScaleFactor } : null;
+            // FBXLoader reads the models; the cameras and lights come from here (their parents' and targets' transforms along)
+            const { models, cameras, lights, upAxis, unitScaleFactor, creator } = scene;
+            const cameraScene = cameras.length || lights.length ? { models: models.map(({ parent, transform }) => ({ parent, transform })), cameras, lights, upAxis, unitScaleFactor, creator } : null;
             self.postMessage({ type: 'fallback', buffer, cameraScene }, [buffer]);
             return;
         }

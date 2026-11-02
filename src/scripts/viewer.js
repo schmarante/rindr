@@ -50,7 +50,7 @@ import { PhysicalCamera } from 'three-gpu-pathtracer/src/objects/PhysicalCamera.
 import { captureState, applyState, matchesModel, sceneModels, SCENE_FORMAT } from './scene-state.js';
 import { encodePng } from './png-encode.js';
 import { LightHelper, CameraMarkers } from './light-helper.js';
-import { LIGHT_KINDS, LOCAL_KINDS, IES_PROFILES, lightKind, createLight, placeLight, aimLight, refitLight, setStrength, strengthOf, prepareAreaLights, lightState, applyLightState, setIesProfile, setIesShape, profileValues, planesFromValues } from './scene-lights.js';
+import { LIGHT_KINDS, LOCAL_KINDS, IES_PROFILES, lightKind, createLight, placeLight, aimLight, refitLight, setStrength, strengthOf, prepareAreaLights, lightState, applyLightState, strengthFromIntensity, setIesProfile, setIesShape, profileValues, planesFromValues } from './scene-lights.js';
 import { setFisheye, RasterFisheye, patchRaycaster, viewAngle, setViewAngle, fisheyeEnabled, fisheyeProject, PERSPECTIVE_LIMIT, MIN_VIEW_ANGLE } from './fisheye.js';
 import { PropertiesPanel } from './properties.js';
 import { Slicer, isClosedGeometry } from './slicer.js';
@@ -2289,6 +2289,76 @@ function addImportedViews(cameras, root, boxCenter) {
     if (!added.length) return;
     setCameraViews([...cameraViews, ...added]);
     flashStatus(t('status.camerasImported', { count: added.length }), 4000);
+}
+// Lights of an imported file (glTF, FBX, MAX, C4D, Blender, USD – importedLight in mesh-importer.js; user: "take over the
+// lights from gltf/fbx/max etc.") → scene lights, `fixed` (they stay at their fixtures when the scene size changes,
+// scene-lights.js). In the model's space like the cameras: through its root into the scene.
+// Brightness: files light for their own exposure (physical units, or relative ones without falloff), RINDR's picture is
+// calibrated for its default lights – so the file's lights keep their ratios and are scaled together: the illuminance
+// they give at the model's centre (unshadowed, each light from at least a tenth of the model size, spots as if aimed at
+// it) sums to that of the default lights (main + fill). The default lights are switched off then (still in the Scene
+// Graph); lights the user added stay. modelSize: the model's diagonal in the scene (mm).
+async function addImportedLights(lights, root, boxCenter, modelSize) {
+    if (!lights?.length) return;
+    root.updateMatrixWorld(true);
+    const m = root.matrixWorld, unit = new THREE.Vector3().setFromMatrixScale(m).x;
+    const center = boxCenter.clone().applyMatrix4(m);
+    const size = Math.max(modelSize, 1e-6);
+    const items = lights.map(l => {
+        const position = new THREE.Vector3().fromArray(l.position).applyMatrix4(m);
+        const dir = new THREE.Vector3().fromArray(l.direction).transformDirection(m);
+        const target = l.target ? new THREE.Vector3().fromArray(l.target).applyMatrix4(m)
+            : position.clone().addScaledVector(dir, Math.max(center.clone().sub(position).dot(dir), size * 0.5));
+        const d = Math.max(position.distanceTo(center), size * 0.1);   // mm
+        const width = (l.width ?? size * 0.1) * (l.width ? unit : 1), height = (l.height ?? l.width ?? size * 0.1) * (l.height || l.width ? unit : 1);
+        const areaMm = width * height * (l.kind === 'disc' ? Math.PI / 4 : 1);
+        // illuminance at the centre in the file's own terms
+        const e = l.unit === 'candela' ? l.intensity / (d / 1000) ** 2
+            : l.unit === 'nits' ? l.intensity * (areaMm / 1e6) / (d / 1000) ** 2
+                : l.intensity;   // lux, relative
+        return { l, position, target, d, width, height, areaMm, e: l.kind === 'directional' ? l.intensity : e };
+    });
+    debugLog(`[Lights] from the file: ${lights.map(l => `${l.name} ${l.kind} ${l.intensity.toPrecision(4)} ${l.unit}${l.width ? ` ${l.width.toFixed(0)}×${l.height?.toFixed(0)}` : ''}`).join(', ')}`);
+    const total = items.reduce((a, x) => a + x.e * Math.max(...x.l.color, 0), 0);
+    if (!(total > 0)) return;
+    const defaults = [dirLight1, dirLight2].filter(l => l.parent === lightsGroup && l.visible);
+    const reference = defaults.reduce((a, l) => a + l.intensity, 0) || dirLight1.intensity + dirLight2.intensity;
+    const k = reference / total;
+    if (items.some(x => x.l.kind === 'rect' || x.l.kind === 'disc')) await prepareAreaLights();
+    const created = [];
+    for (const { l, position, target, d, width, height, areaMm } of items) {
+        if (sceneLights().some(o => o.name === l.name && lightKind(o) === l.kind && o.position.distanceTo(position) < 1e-3)) continue;   // loaded again
+        const light = createLight(l.kind, l.name || lightNameOf(l.kind));
+        const meta = light.userData.rindr;
+        meta.fixed = true;
+        light.color.setRGB(...l.color);
+        light.position.copy(position);
+        meta.target = target.toArray();
+        // three.js intensities (scene in mm): directional = illuminance, point/spot = intensity (E = I / d²), area =
+        // luminance (E ≈ L · A / d²)
+        light.intensity = l.kind === 'directional' ? k * l.intensity
+            : l.kind === 'rect' || l.kind === 'disc' ? (l.unit === 'nits' ? k * l.intensity : k * l.intensity * d * d / Math.max(areaMm, 1e-9))
+                : l.unit === 'candela' ? k * l.intensity * 1e6 : k * l.intensity * d * d;
+        if (light.isSpotLight) {
+            light.angle = THREE.MathUtils.degToRad(Math.min(Math.max(l.angle ?? 30, 1), 89));
+            light.penumbra = Math.min(Math.max(l.penumbra ?? 0.2, 0), 1);
+            light.radius = l.radius ? l.radius * unit : size * 0.01;
+        }
+        if (light.isRectAreaLight) { light.width = width; light.height = height; }
+        meta.size = lightSize;
+        meta.strength = strengthFromIntensity(light, lightSize);
+        aimLight(light);
+        if (light.isDirectionalLight) { light.position.copy(center).addScaledVector(target.clone().sub(position).normalize().negate(), size); rememberLightDirection(light); }
+        else if (light.shadow) fitLocalShadow(light, lightSize);
+        if (light.shadow) light.shadow.intensity = shadowsOn ? 1 : 0;
+        created.push(light);
+    }
+    if (!created.length) return;
+    for (const l of defaults) l.visible = false;
+    setSceneLights([...sceneLights(), ...created]);
+    fitShadows(lightSize, lightCenter.clone());
+    flashStatus(t(defaults.length ? 'status.lightsImported' : 'status.lightsImportedKeep', { count: created.length }), 4000);
+    debugLog(`[Lights] imported ${created.length}: k ${k.toExponential(2)}, ${created.map(l => `${l.name} ${lightKind(l)} ${l.intensity.toExponential(2)}`).join(', ')}`);
 }
 // A different view angle (e.g. a nearly orthographic side view ↔ perspective, user: "switching between the two jumps
 // quite a bit" – the angle was set at once, the camera then flew straight from ~16× the distance): the angle blends like
@@ -4953,6 +5023,7 @@ async function loadModel(reload = false, safe = false) {
         root.userData.unmovedBox = bbox.clone().translate(root.position);   // placement of further models
         root.updateMatrixWorld(true);
         if (!reload) addImportedViews(result.cameras, root, center);
+        if (!reload) addImportedLights(result.lights, root, center, bbox.getSize(new THREE.Vector3()).length() * new THREE.Vector3().setFromMatrixScale(root.matrixWorld).x).catch(err => console.warn('[Lights] import failed', err));
         if (!reload) {
             camera.position.sub(center);
             controls.target.sub(center);
@@ -5481,6 +5552,7 @@ async function loadExtraModel(source, { sceneIndex, placement: savedPlacement } 
         slicer.group.add(holder);
         holder.updateMatrixWorld(true);
         addImportedViews(result.cameras, root, bbox.getCenter(new THREE.Vector3()));
+        addImportedLights(result.lights, root, bbox.getCenter(new THREE.Vector3()), bbox.getSize(new THREE.Vector3()).length() * new THREE.Vector3().setFromMatrixScale(root.matrixWorld).x).catch(err => console.warn('[Lights] import failed', err));
         const size = source.file?.size ?? source.main?.size ?? null;
         extraModels.push({ id, name, source, size, sceneIndex, missingTextures: result.missing || [], root, holder, unmovedBox, meshes: meshList, nodeGroups: groups,
             content: { name, importNodes: nodes, groups, partCounts, root, id, warn: (result.missing || []).length } });

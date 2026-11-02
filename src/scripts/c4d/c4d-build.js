@@ -15,7 +15,7 @@
 // 88 joints of the stored pose exactly on it, edge lengths of the skinned mesh 1 ± 0.003 (99 %).
 import * as THREE from 'three/webgpu';
 
-const T_POLYGON = 5100, T_CAMERA = 5103, T_JOINT = 1019362, T_SKIN = 1019363;
+const T_POLYGON = 5100, T_LIGHT = 5102, T_CAMERA = 5103, T_JOINT = 1019362, T_SKIN = 1019363;
 const P_POSITION = 903, P_ROTATION = 904, P_SCALE = 905;
 const _e = new THREE.Euler(), _q = new THREE.Quaternion();
 
@@ -46,7 +46,9 @@ function applyLocal(obj, t) {
 /**
  * @param {object} scene  parseC4d() result
  * @param {THREE.LoadingManager} manager  resolves texture file names (dropped files / next to the model)
- * @returns {{ object: THREE.Group, cameras: { name, object, target, fov }[], unsupported: object[] }}
+ * @returns {{ object: THREE.Group, cameras: { name, object, target, fov }[], lights: object[], unsupported: object[] }}
+ *   lights: the light's values (c4d-parse.js readLight) with its node, target node and linear colour – switched-off
+ *   lights and those not rendered left out (mesh-importer.js c4dLight)
  */
 export function buildC4d(scene, manager, name = '') {
     const root = new THREE.Group();
@@ -89,7 +91,7 @@ export function buildC4d(scene, manager, name = '') {
 
     // objects in file order (parents before children)
     const nodes = new Array(scene.objects.length).fill(null);
-    const cameras = [];
+    const cameras = [], lights = [];
     for (const o of scene.objects) {
         if (o.typeId === T_SKIN) continue;   // the deformer: the weights of its mesh do the work
         let node;
@@ -99,6 +101,11 @@ export function buildC4d(scene, manager, name = '') {
             node = new THREE.Group();
             const fov = THREE.MathUtils.radToDeg(2 * Math.atan(o.camera.aperture / 2 / Math.max(o.camera.focal, 1e-6)));
             cameras.push({ name: o.name, object: node, target: o.tags.find(t => t.kind === 'target')?.target ?? -1, fov });
+        } else if (o.typeId === T_LIGHT) {
+            node = new THREE.Group();
+            if (o.light && lightRenders(o, scene)) {
+                lights.push({ ...o.light, name: o.name, object: node, target: o.tags.find(t => t.kind === 'target')?.target ?? -1, color: lightColor(o.light) });
+            }
         } else node = new THREE.Group();
         node.name = o.name;
         applyLocal(node, o.transform);
@@ -111,7 +118,7 @@ export function buildC4d(scene, manager, name = '') {
         while (parent >= 0 && !nodes[parent]) parent = scene.objects[parent].parent;
         (parent >= 0 ? nodes[parent] : root).add(node);
     }
-    for (const c of cameras) c.target = c.target >= 0 ? nodes[c.target] : null;
+    for (const c of [...cameras, ...lights]) c.target = c.target >= 0 ? nodes[c.target] : null;
 
     // skinning: bones = the weight tag's joints in its order
     for (const o of scene.objects) {
@@ -123,7 +130,34 @@ export function buildC4d(scene, manager, name = '') {
         mesh.bind(new THREE.Skeleton(bones, inverses), w.geomMatrix ? fromC4d(w.geomMatrix) : new THREE.Matrix4());
     }
     root.animations = buildClip(scene, nodes);
-    return { object: root, cameras, unsupported: scene.unsupported, scale: (scene.unitMeters || 0.01) * 1000 };
+    return { object: root, cameras, lights, unsupported: scene.unsupported, scale: (scene.unitMeters || 0.01) * 1000 };
+}
+
+// A light shines when switched on and rendered: the first render visibility up the hierarchy that is not "default"
+// decides (C4D: default = like the parent; the editor visibility does not switch a light off for rendering – a key light
+// of a sample scene is hidden in the editor only)
+function lightRenders(o, scene) {
+    if (o.transform?.off) return false;
+    for (let x = o; x; x = x.parent >= 0 ? scene.objects[x.parent] : null) {
+        const r = x.transform?.render ?? 2;
+        if (r !== 2) return r === 0;
+    }
+    return true;
+}
+
+// Linear colour of a light: the colour as picked (sRGB, like the materials' colours) or, with "use colour temperature",
+// a black body of that temperature (the fit used for the white balance in lens-effects.js, 6500 K ≈ white)
+function lightColor(l) {
+    if (l.temperature > 0) {
+        const t = Math.min(Math.max(l.temperature, 1000), 40000) / 100;
+        const r = t <= 66 ? 255 : 329.698727446 * (t - 60) ** -0.1332047592;
+        const g = t <= 66 ? 99.4708025861 * Math.log(t) - 161.1195681661 : 288.1221695283 * (t - 60) ** -0.0755148492;
+        const b = t >= 66 ? 255 : t <= 19 ? 0 : 138.5177312231 * Math.log(t - 10) - 305.0447927307;
+        const c = new THREE.Color().setRGB(...[r, g, b].map(v => Math.min(Math.max(v / 255, 0), 1)), THREE.SRGBColorSpace);
+        const max = Math.max(c.r, c.g, c.b, 1e-6);
+        return [c.r / max, c.g / max, c.b / max];
+    }
+    return new THREE.Color().setRGB(...l.color, THREE.SRGBColorSpace).toArray();
 }
 
 // C4D's bone frame of a joint relative to its own: Z' = −(direction to the first child joint), Y' = its Y made

@@ -1957,6 +1957,14 @@
             "one": "{count} Kamera aus der Datei übernommen (unter „Kamera“)",
             "other": "{count} Kameras aus der Datei übernommen (unter „Kamera“)"
         },
+        "lightsImportedKeep": {
+            "one": "{count} Licht aus der Datei übernommen (unter „Lichter“)",
+            "other": "{count} Lichter aus der Datei übernommen (unter „Lichter“)"
+        },
+        "lightsImported": {
+            "one": "{count} Licht aus der Datei übernommen (unter „Lichter“, Standardlichter ausgeschaltet)",
+            "other": "{count} Lichter aus der Datei übernommen (unter „Lichter“, Standardlichter ausgeschaltet)"
+        },
         "viewOverwritten": "Kamera „{name}“ gespeichert",
         "modelIncomplete": "{name} unvollständig – fehlt: {files}. Dateien ins Fenster ziehen oder im Asset-Fenster verknüpfen",
         "relinked": {

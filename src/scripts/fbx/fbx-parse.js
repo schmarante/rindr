@@ -139,7 +139,7 @@ export function describeScene(tree) {
         childrenOf.get(t).push({ id: f, kind, rel: rel ?? null });
     }
 
-    const models = [], modelIndex = new Map(), cameraModels = [];
+    const models = [], modelIndex = new Map(), cameraModels = [], lightModels = [];
     const transformOf = p => {
         const vec = (k, d) => (Array.isArray(p[k]?.value) ? p[k].value.slice(0, 3) : d);
         return {
@@ -154,6 +154,7 @@ export function describeScene(tree) {
         if (o.name !== 'Model') continue;
         const type = o.props[2];
         if (type === 'Camera') cameraModels.push([oid, o]);
+        if (type === 'Light') lightModels.push([oid, o]);
         if (type === 'Camera' || type === 'Light' || type === 'CameraSwitcher') continue;
         modelIndex.set(oid, models.length);
         const p = properties70(o);
@@ -263,6 +264,28 @@ export function describeScene(tree) {
         };
     });
 
+    // lights (the viewer creates scene lights): transform and parent like a model, look-at target, the attribute's
+    // LightType (0 point, 1 directional, 2 spot, 3 area – AreaLightShape 0 rectangle, 1 sphere; 4 volume → point),
+    // Color, Intensity (percent), CastLightOnObject (0 = off), Inner/OuterAngle (degrees, whole cone), DecayType (0 none,
+    // 1 linear, 2 quadratic, 3 cubic). An FBX light shines along its local −Y.
+    const lights = lightModels.map(([oid, o]) => {
+        const attr = (childrenOf.get(oid) || []).map(c => byId.get(c.id)).find(a => a?.name === 'NodeAttribute');
+        const a = attr ? properties70(attr) : {};
+        const num = (k, d) => (a[k] !== undefined && !Array.isArray(a[k].value) && Number.isFinite(Number(a[k].value)) ? Number(a[k].value) : d);
+        const parent = (parentsOf.get(oid) || []).find(pid => modelIndex.has(pid));
+        const lookAt = (childrenOf.get(oid) || []).find(c => c.rel === 'LookAtProperty' && modelIndex.has(c.id));
+        const mp = properties70(o);
+        return {
+            name: cleanName(o.props[1]) || '', parent: parent ? remap[modelIndex.get(parent)] : -1, transform: transformOf(mp),
+            target: lookAt ? remap[modelIndex.get(lookAt.id)] : -1,
+            type: num('LightType', 0), areaShape: num('AreaLightShape', 0),
+            color: Array.isArray(a.Color?.value) ? a.Color.value.slice(0, 3).map(Number) : [1, 1, 1],
+            intensity: num('Intensity', 100) / 100, enabled: num('CastLightOnObject', 1) !== 0,
+            visible: mp.Visibility ? Number(mp.Visibility.value) !== 0 : true,
+            outer: num('OuterAngle', num('Cone angle', 45)), inner: num('InnerAngle', 0), decay: num('DecayType', 0),
+        };
+    });
+
     let hasAnimation = false, hasDeformers = false;
     const stillModels = new Set();   // cameras, lights
     for (const [oid, o] of byId) if (o.name === 'Model' && ['Camera', 'Light', 'CameraSwitcher'].includes(o.props[2])) stillModels.add(oid);
@@ -272,8 +295,12 @@ export function describeScene(tree) {
         // animation of cameras and lights alone (exporters key them) leaves the models still – no reason for FBXLoader
         if (o.name === 'AnimationCurveNode' && (parentsOf.get(id(o.props[0])) || []).some(p => !stillModels.has(p))) hasAnimation = true;
     }
+    // exporting program (header): Blender writes light colours linear and the intensity as its own value (watts, sun in
+    // W/m²) – other programs sRGB colours and a relative intensity
+    const headerExt = top('FBXHeaderExtension');
+    const creator = String(child(headerExt, 'Creator')?.props[0] ?? top('Creator')?.props[0] ?? '');
     return {
-        models: sorted, cameras, materials, textures, geometryIds,
+        models: sorted, cameras, lights, materials, textures, geometryIds, creator,
         geometryNodes: geometryIds.map(g => byId.get(g)),
         upAxis: settings.UpAxis ? Number(settings.UpAxis.value) : 1,
         upAxisSign: settings.UpAxisSign ? Number(settings.UpAxisSign.value) : 1,

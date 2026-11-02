@@ -103,23 +103,26 @@ export async function importMeshFile(source, { renderer, materialManager, onStat
         const { object, scale } = loaded;
         onStatus(t('import.mesh.buildingGeometries'));
         result = convert(object, scale, materialManager, source.name);
-        if (fbxCameraScene) result.cameras = fbxCameras(fbxCameraScene, scale);   // read by the lean reader
+        if (fbxCameraScene) { result.cameras = fbxCameras(fbxCameraScene, scale); result.lights = fbxLights(fbxCameraScene, scale); }   // read by the lean reader
         if (object.userData.blend) {
             // Blender cameras look along −Z, up +Y; modifiers are not applied (the saved meshes are their input)
-            const { cameras, modifiers } = object.userData.blend;
+            const { cameras, lights, modifiers } = object.userData.blend;
             object.updateMatrixWorld(true);
             result.cameras = cameras.map(c => importedCamera(c.name, c.object.matrixWorld, { forward: FORWARD_MINUS_Z, up: UP_Y, fov: c.fov, fovAxis: c.fovAxis, aspect: c.aspect, scale, near: c.near }));
+            result.lights = (lights || []).map(l => blendLight(l, scale));
             if (modifiers.length) result.blendModifiers = modifiers;
             delete object.userData.blend;
         }
         if (object.userData.c4d) {
-            // C4D cameras look along their −Z after the mirroring, up = +Y; objects the reader does not build: notice
-            const { cameras, unsupported } = object.userData.c4d;
+            // C4D cameras and lights look along their −Z after the mirroring (C4D: +Z), up = +Y; objects the reader does not
+            // build: notice
+            const { cameras, lights, unsupported } = object.userData.c4d;
             object.updateMatrixWorld(true);
             result.cameras = cameras.map(c => importedCamera(c.name, c.object.matrixWorld, {
                 forward: FORWARD_MINUS_Z, up: UP_Y, target: c.target ? new THREE.Vector3().setFromMatrixPosition(c.target.matrixWorld) : null,
                 fov: c.fov, fovAxis: 'h', scale,
             }));
+            result.lights = (lights || []).map(l => c4dLight(l, scale)).filter(l => l.intensity > 0);
             if (unsupported.length) result.c4dSkipped = { count: unsupported.reduce((a, x) => a + x.count, 0), what: unsupported.map(x => x.name) };
             delete object.userData.c4d;
         }
@@ -276,7 +279,7 @@ async function load(source, ext, renderer, onStatus = () => {}, preloaded = null
             onStatus(t('import.mesh.buildingGeometries'));
             const built = (await import('./c4d/c4d-build.js')).buildC4d(scene, manager, source.name.replace(/\.[^.]+$/, ''));
             object = built.object;
-            object.userData.c4d = { cameras: built.cameras, unsupported: built.unsupported };
+            object.userData.c4d = { cameras: built.cameras, lights: built.lights, unsupported: built.unsupported };
             scale = built.scale;   // project unit → mm
         } else if (ext === 'blend') {
             // Blender: own reader in a worker (blend/blend-parse.js, the file's self description), packed images from the
@@ -287,7 +290,7 @@ async function load(source, ext, renderer, onStatus = () => {}, preloaded = null
             onStatus(t('import.mesh.buildingGeometries'));
             const built = (await import('./blend/blend-build.js')).buildBlend(scene, manager, source.name.replace(/\.[^.]+$/, ''));
             object = built.object;
-            object.userData.blend = { cameras: built.cameras, modifiers: built.modifiers };
+            object.userData.blend = { cameras: built.cameras, lights: built.lights, modifiers: built.modifiers };
             setTimeout(() => built.urls.forEach(u => URL.revokeObjectURL(u)), 30000);
             scale = built.scale;
         } else if (ext === 'obj') {
@@ -526,11 +529,21 @@ function convert(object, scale, materialManager, fileName = '') {
     for (const g of geometries) delete g.sourceVertex;   // not to the BVH worker
     // glTF cameras: look along −Z, vertical field of view, no target (FBX cameras: fbxCameras, from the own reader for
     // both ways of loading)
-    const cameras = [];
+    const cameras = [], lights = [];
     if (/\.(gltf|glb)$/i.test(fileName)) object.traverseVisible(o => {
         if (o.isPerspectiveCamera) cameras.push(importedCamera(o.name, o.matrixWorld, { forward: FORWARD_MINUS_Z, up: UP_Y, fov: o.fov, fovAxis: 'v', scale }));
+        // KHR_lights_punctual (GLTFLoader: three.js lights, shining along −Z): point / spot in candela, directional in lux
+        if (o.isLight && (o.isPointLight || o.isSpotLight || o.isDirectionalLight)) {
+            lights.push(importedLight(o.name, o.matrixWorld, {
+                kind: o.isDirectionalLight ? 'directional' : o.isSpotLight ? 'spot' : 'point', forward: FORWARD_MINUS_Z,
+                color: [o.color.r, o.color.g, o.color.b], intensity: o.intensity, unit: o.isDirectionalLight ? 'lux' : 'candela',
+                angle: o.isSpotLight ? THREE.MathUtils.radToDeg(o.angle) : null, penumbra: o.isSpotLight ? o.penumbra : null, scale,
+            }));
+        }
     });
-    return { nodes, geometries, meshes, links, cameras };
+    // UsdLux lights (usd-importer.js keeps their values in userData.usdLight)
+    if (/\.usd[acz]?$/i.test(fileName)) object.traverseVisible(o => { if (o.isLight && o.userData.usdLight) lights.push(usdLight(o, scale)); });
+    return { nodes, geometries, meshes, links, cameras, lights };
 }
 
 // Source material → id of an import material in the MaterialManager (once per source material)
@@ -591,6 +604,42 @@ function fbxCameras(scene, scale, world = null) {
         forward: new THREE.Vector3(1, 0, 0), up: UP_Y, target: c.target >= 0 ? new THREE.Vector3().setFromMatrixPosition(world[c.target]) : null,
         distance: c.distance, fov: c.fov, fovAxis: c.fovAxis, aspect: c.aspect, scale,
     }));
+}
+
+/**
+ * Lights of an FBX scene description (fbx-parse.js) in the model's space. An FBX light shines along its local −Y; the
+ * intensity is relative (percent / 100, no unit) – the viewer keeps the ratios. Area lights: 1 × 1 unit times the
+ * node's scale (no size in the file). world: the models' world matrices if computed already
+ */
+function fbxLights(scene, scale, world = null) {
+    if (!scene?.lights?.length) return [];
+    const up = fbxUp(scene);
+    if (!world) {
+        world = [];
+        scene.models.forEach((m, i) => { world[i] = new THREE.Matrix4().multiplyMatrices(m.parent >= 0 ? world[m.parent] : up, fbxLocalMatrix(m.transform)); });
+    }
+    // Blender's exporter (detected from the header): linear colours, intensity = its light value – watts (point, spot,
+    // area) and W/m² (sun), converted like its glTF exporter (683 lm/W; point/spot over the sphere 4π, area: radiance
+    // P / (π · A)); others: sRGB colours, relative intensity
+    const blender = /^blender/i.test(scene.creator || '');
+    return scene.lights.filter(l => l.visible && l.enabled && l.intensity > 0).map(l => {
+        const matrix = new THREE.Matrix4().multiplyMatrices(l.parent >= 0 ? world[l.parent] : up, fbxLocalMatrix(l.transform));
+        const kind = l.type === 1 ? 'directional' : l.type === 2 ? 'spot' : l.type === 3 ? (l.areaShape === 1 ? 'disc' : 'rect') : 'point';
+        const outer = Math.min(Math.max(l.outer, 1), 179) / 2;
+        const size = new THREE.Vector3().setFromMatrixScale(matrix);
+        const areaM2 = Math.max(size.x * size.y * (kind === 'disc' ? Math.PI / 4 : 1) * (scale / 1000) ** 2, 1e-9);
+        const physical = !blender ? { intensity: l.intensity, unit: 'relative' }
+            : kind === 'directional' ? { intensity: l.intensity * 683, unit: 'lux' }
+                : kind === 'rect' || kind === 'disc' ? { intensity: l.intensity * 683 / (Math.PI * areaM2), unit: 'nits' }
+                    : { intensity: l.intensity * 683 / (4 * Math.PI), unit: 'candela' };
+        return importedLight(l.name, matrix, {
+            kind, forward: FORWARD_MINUS_Y, color: blender ? l.color : new THREE.Color().setRGB(...l.color, THREE.SRGBColorSpace).toArray(), ...physical,
+            target: l.target >= 0 ? new THREE.Vector3().setFromMatrixPosition(world[l.target]) : null,
+            angle: kind === 'spot' ? outer : null, penumbra: kind === 'spot' ? Math.min(Math.max(1 - Math.min(l.inner, l.outer) / Math.max(l.outer, 1e-6), 0), 1) : null,
+            width: kind === 'rect' || kind === 'disc' ? size.x * scale : null, height: kind === 'rect' || kind === 'disc' ? size.y * scale : null,
+            scale, noScaleSize: true,
+        });
+    });
 }
 
 // FBX RotationOrder (extrinsic eXYZ …) → three.js (intrinsic) Euler order
@@ -700,7 +749,7 @@ async function convertLeanFbx({ scene, geometries: parts }, source, materialMana
                 instance++;
             }
         });
-        return { result: { nodes, geometries, meshes, cameras: fbxCameras(scene, scale, world), animation: null }, missing };
+        return { result: { nodes, geometries, meshes, cameras: fbxCameras(scene, scale, world), lights: fbxLights(scene, scale, world), animation: null }, missing };
     } finally {
         release();
         setTimeout(() => embedded.forEach(u => URL.revokeObjectURL(u)), 1000);
@@ -726,7 +775,127 @@ function importedCamera(name, world, { forward, up, target = null, distance = 0,
         ...(near > 0 ? { near: near * new THREE.Vector3().setFromMatrixScale(world).x * scale } : {}),   // clip start, mm
     };
 }
-const FORWARD_MINUS_Z = new THREE.Vector3(0, 0, -1), UP_Y = new THREE.Vector3(0, 1, 0);
+const FORWARD_MINUS_Z = new THREE.Vector3(0, 0, -1), UP_Y = new THREE.Vector3(0, 1, 0), FORWARD_MINUS_Y = new THREE.Vector3(0, -1, 0);
+
+// --- lights of a file (glTF, FBX, MAX, C4D, Blender, USD) → scene lights in the viewer (docs/mesh-import.md "Lichter") ---
+
+/**
+ * One light in the model's space (mm, Y up – like the meshes and cameras):
+ *   { name, kind ('directional' | 'point' | 'spot' | 'rect' | 'disc'), position, direction (where it shines), target
+ *     (point aimed at or null), color (linear rgb), intensity + unit ('lux' directional, 'candela' point/spot – peak,
+ *     'nits' area luminance, 'relative' – no unit: the illuminance at the model, as lights without falloff give it),
+ *     angle (spot: half angle of the cone, degrees), penumbra (0…1: share of the cone that fades), width / height
+ *     (area, mm), radius (soft shadows, mm) }
+ * world: the light's matrix (file units, Y up); forward: its direction in its own space; sizes are in file units
+ * (× scale → mm) unless noScaleSize (already mm).
+ */
+function importedLight(name, world, { kind, forward, color = [1, 1, 1], intensity = 1, unit = 'relative', target = null, distance = 0,
+    angle = null, penumbra = null, width = null, height = null, radius = null, scale, noScaleSize = false }) {
+    const position = new THREE.Vector3().setFromMatrixPosition(world);
+    const dir = forward.clone().transformDirection(world);
+    let aim = target?.clone() ?? (distance > 0 ? position.clone().addScaledVector(dir, distance) : null);
+    if (aim && aim.distanceToSquared(position) < 1e-12) aim = null;
+    if (aim) dir.copy(aim).sub(position).normalize();
+    const mm = v => (v > 0 ? v * (noScaleSize ? 1 : scale) : null);
+    return {
+        name, kind, position: position.multiplyScalar(scale).toArray(), direction: dir.toArray(), target: aim ? aim.multiplyScalar(scale).toArray() : null,
+        color: color.map(c => Math.max(Number(c) || 0, 0)), intensity: Math.max(Number(intensity) || 0, 0), unit,
+        angle, penumbra, width: mm(width), height: mm(height), radius: mm(radius),
+    };
+}
+
+/**
+ * A Blender light (blend-parse.js) → importedLight. Shines along its −Z. Watts → photometric like Blender's glTF
+ * exporter (683 lm/W): point/spot candela = P / 4π (a spot has the power of the point light it cuts), sun lux = W/m²,
+ * area luminance = P / (π · A) (A in m² – Blender's units × metersPerUnit; scale = mm per unit).
+ */
+function blendLight(l, scale) {
+    const m = l.object.matrixWorld, s = new THREE.Vector3().setFromMatrixScale(m);
+    const kind = l.type === 1 ? 'directional' : l.type === 2 ? 'spot' : l.type === 4 ? (l.shape === 4 || l.shape === 5 ? 'disc' : 'rect') : 'point';
+    const width = l.sizeX * s.x, height = (l.shape === 1 || l.shape === 5 ? l.sizeY : l.sizeX) * s.y;
+    const areaM2 = Math.max(width * height * (kind === 'disc' ? Math.PI / 4 : 1) * (scale / 1000) ** 2, 1e-9);
+    const physical = kind === 'directional' ? { intensity: l.energy * 683, unit: 'lux' }
+        : kind === 'rect' || kind === 'disc' ? { intensity: l.energy * 683 / (Math.PI * areaM2), unit: 'nits' }
+            : { intensity: l.energy * 683 / (4 * Math.PI), unit: 'candela' };
+    return importedLight(l.name, m, {
+        kind, forward: FORWARD_MINUS_Z, color: l.color, ...physical,
+        angle: kind === 'spot' ? THREE.MathUtils.radToDeg(l.spotSize) / 2 : null, penumbra: kind === 'spot' ? l.spotBlend : null,
+        width: kind === 'rect' || kind === 'disc' ? width : null, height: kind === 'rect' || kind === 'disc' ? height : null,
+        radius: l.radius > 0 ? l.radius * s.x : null, scale,
+    });
+}
+
+/**
+ * A C4D light (c4d/c4d-build.js, values from c4d-parse.js readLight) → importedLight. Shines along its −Z after the
+ * mirroring. Types: omni / tube → point, spot / square spot → spot (cone = half the stored whole angle, penumbra =
+ * 1 − inner / outer), infinite / parallel / parallel spots → directional, area: rectangle (size X = 2 × outer radius
+ * along X, size Y along Y), disc (2 × outer radius), other shapes → point with that radius, photometric → point (IES
+ * file name in iesFile). Brightness (1 = 100 %) without falloff: relative; with falloff (inverse square & co.) the
+ * brightness holds at the falloff radius r0: candela = brightness × r0² (m), area luminance = that / area. Photometric
+ * units on: intensity × brightness in candela, lumen (point / spot: / 4π, area: / (π · A)) or lux.
+ */
+function c4dLight(l, scale) {
+    const m = l.object.matrixWorld, s = new THREE.Vector3().setFromMatrixScale(m);
+    const area = l.type === 8, round = l.shape === 0;
+    const kind = l.type === 1 || l.type === 2 ? 'spot' : l.type >= 3 && l.type <= 6 ? 'directional'
+        : area && (l.shape === 1 || round) ? (round ? 'disc' : 'rect') : 'point';
+    const sized = kind === 'rect' || kind === 'disc';
+    const width = 2 * l.radius * s.x, height = (round ? 2 * l.radius : l.sizeY) * s.y;
+    const areaM2 = Math.max(width * height * (round ? Math.PI / 4 : 1) * (scale / 1000) ** 2, 1e-9);
+    let physical;
+    if (l.photometric) {
+        const k = l.photometric.intensity * l.brightness, unit = l.photometric.unit;   // 0 lumen, 1 candela, 2 lux
+        physical = kind === 'directional' ? { intensity: k, unit: 'lux' }
+            : sized ? { intensity: unit === 0 ? k / (Math.PI * areaM2) : unit === 1 ? k / areaM2 : k / Math.PI, unit: 'nits' }
+                : { intensity: unit === 0 ? k / (4 * Math.PI) : k, unit: 'candela' };
+    } else if (kind === 'directional' || !l.falloff) physical = { intensity: l.brightness, unit: 'relative' };
+    else {
+        const r0 = Math.max(l.decay * (scale / 1000), 1e-6);   // m
+        physical = sized ? { intensity: l.brightness * r0 * r0 / areaM2, unit: 'nits' } : { intensity: l.brightness * r0 * r0, unit: 'candela' };
+    }
+    const outer = Math.min(Math.max(l.outer, 1e-4), THREE.MathUtils.degToRad(175));
+    const light = importedLight(l.name, m, {
+        kind, forward: FORWARD_MINUS_Z, color: l.color, ...physical,
+        target: l.target ? new THREE.Vector3().setFromMatrixPosition(l.target.matrixWorld) : null,
+        angle: kind === 'spot' ? THREE.MathUtils.radToDeg(outer) / 2 : null,
+        penumbra: kind === 'spot' ? Math.min(Math.max(1 - Math.min(l.inner, outer) / outer, 0), 1) : null,
+        width: sized ? width : null, height: sized ? height : null,
+        radius: kind === 'point' && area && l.radius > 0 ? l.radius * s.x : null, scale,
+    });
+    if (l.iesFile) light.iesFile = l.iesFile.split(/[\\/]/).pop();
+    return light;
+}
+
+/**
+ * A UsdLux light → importedLight. Shines along its −Z (rect: width along X, height along Y). Radiance = intensity ×
+ * 2^exposure × colour; normalize divides it by the light's area (sphere 4πr², rect, disc πr²) – the power is then
+ * π × intensity whatever the size. Distant light: illuminance = intensity (normalize) or intensity × the disc's solid
+ * angle. Sphere light → point (spot with ShapingAPI: cone angle = half angle, softness = penumbra), intensity
+ * Φ / 4π. Units as authored (scale = mm per stage unit).
+ */
+function usdLight(o, scale) {
+    const u = o.userData.usdLight, m = o.matrixWorld, s = new THREE.Vector3().setFromMatrixScale(m);
+    const k = u.intensity * 2 ** u.exposure;
+    const unitM = scale / 1000;   // stage unit in metres
+    const common = { forward: FORWARD_MINUS_Z, color: [o.color.r, o.color.g, o.color.b], scale };
+    if (u.typeName === 'DistantLight') {
+        const half = THREE.MathUtils.degToRad(Math.max(u.angle, 1e-3)) / 2;
+        return importedLight(o.name, m, { ...common, kind: 'directional', intensity: u.normalize ? k : k * 2 * Math.PI * (1 - Math.cos(half)), unit: 'lux' });
+    }
+    if (u.typeName === 'RectLight' || u.typeName === 'DiskLight') {
+        const disc = u.typeName === 'DiskLight';
+        const width = (disc ? 2 * u.radius : u.width) * s.x, height = (disc ? 2 * u.radius : u.height) * s.y;
+        const areaM2 = Math.max(width * height * (disc ? Math.PI / 4 : 1) * unitM ** 2, 1e-12);
+        return importedLight(o.name, m, { ...common, kind: disc ? 'disc' : 'rect', intensity: u.normalize ? k / areaM2 : k, unit: 'nits', width, height });
+    }
+    const r = u.radius * s.x, areaM2 = 4 * Math.PI * (r * unitM) ** 2;
+    const power = Math.PI * k * (u.normalize ? 1 : areaM2);
+    const spot = u.coneAngle > 0 && u.coneAngle < 90;
+    return importedLight(o.name, m, {
+        ...common, kind: spot ? 'spot' : 'point', intensity: power / (4 * Math.PI), unit: 'candela',
+        angle: spot ? u.coneAngle : null, penumbra: spot ? Math.min(Math.max(u.softness, 0), 1) : null, radius: r > 0 ? r : null,
+    });
+}
 
 // --- Blender (blend/blend-parse.js in a worker) ---
 
@@ -806,6 +975,78 @@ function maxMatrix(position, quaternion, scale, axis) {
     const s = new THREE.Matrix4().makeRotationFromQuaternion(a).multiply(new THREE.Matrix4().makeScale(...scale))
         .multiply(new THREE.Matrix4().makeRotationFromQuaternion(a.clone().invert()));
     return m.multiply(s);
+}
+
+/**
+ * Colour of light at T kelvin, white at 6500 K as in MAX (its colours for 1000–20 000 K are the black body's in its
+ * working space divided by 6500 K's). Planckian locus after Kim et al. (1667–25 000 K), XYZ → linear sRGB; very warm
+ * light lies outside sRGB – negative components are cut.
+ */
+function kelvinRgb(T) {
+    const rgb = t => {
+        const x = t <= 4000 ? -0.2661239e9 / t ** 3 - 0.2343589e6 / t ** 2 + 0.8776956e3 / t + 0.179910
+            : -3.0258469e9 / t ** 3 + 2.1070379e6 / t ** 2 + 0.2226347e3 / t + 0.240390;
+        const y = t <= 2222 ? -1.1063814 * x ** 3 - 1.34811020 * x ** 2 + 2.18555832 * x - 0.20219683
+            : t <= 4000 ? -0.9549476 * x ** 3 - 1.37418593 * x ** 2 + 2.09137015 * x - 0.16748867
+                : 3.0817580 * x ** 3 - 5.87338670 * x ** 2 + 3.75112997 * x - 0.37001483;
+        const X = x / y, Z = (1 - x - y) / y;
+        return [3.2404542 * X - 1.5371385 - 0.4985314 * Z, -0.969266 * X + 1.8760108 + 0.041556 * Z, 0.0556434 * X - 0.2040259 + 1.0572252 * Z];
+    };
+    const white = rgb(6500), c = rgb(Math.min(Math.max(T, 1667), 25000));
+    return c.map((v, i) => Math.max(v / white[i], 0));
+}
+
+/**
+ * A MAX light (max-parse.js lightOf) → importedLight. matrix: the light's (file units, Y up; −Z = where it shines);
+ * target: the aimed-at point of a target light. Colours sRGB (like the materials), times the kelvin colour.
+ *   - standard: multiplier as relative intensity; with inverse-square decay MAX keeps the multiplier up to the decay
+ *     start r0 and falls off as (r0 / d)² beyond – a point light of multiplier × r0² (m²) candela; spots: hotspot /
+ *     falloff are full angles → half angle of the falloff, penumbra 1 − hotspot / falloff (rectangular cone → round)
+ *   - photometric: candela (× dimmer); spotlight distribution → spot, rectangle / disc emitters → area light with
+ *     luminance cd / A (uniform diffuse = the emitter's cosine lobe), uniform diffuse from a point → spot over the
+ *     hemisphere, photometric web → point light (`iesFile`: the profile's file name), line / sphere / cylinder → point
+ *   - render plugin area light: units → luminance – default "image" units taken as luminance (multiplier), lm / W over
+ *     the emitting area (L = Φ / (π A), 683 lm/W); sphere → point light of L × π r²
+ */
+function maxLight(name, matrix, L, target, scale) {
+    const color = new THREE.Color().setRGB(...L.color, THREE.SRGBColorSpace).toArray();
+    if (L.kelvin > 0) { const k = kelvinRgb(L.kelvin); for (let i = 0; i < 3; i++) color[i] *= k[i]; }
+    const s = new THREE.Vector3().setFromMatrixScale(matrix);   // node scale (aimed lights: 1)
+    const m2 = (scale / 1000) ** 2;                               // file unit² → m²
+    const common = { forward: FORWARD_MINUS_Z, color, target, scale };
+    const cone = (hot, fall) => ({ angle: Math.min(Math.max(fall, 0.5), 179) / 2, penumbra: Math.min(Math.max(1 - Math.min(hot, fall) / Math.max(fall, 1e-6), 0), 1) });
+    if (L.type === 'omni' || L.type === 'spot' || L.type === 'directional') {
+        if (!(L.multiplier > 0)) return null;   // a negative multiplier darkens in MAX
+        if (L.type === 'directional') return importedLight(name, matrix, { ...common, kind: 'directional', intensity: L.multiplier, unit: 'relative' });
+        const physical = L.decay === 2 && L.decayStart > 0 ? { intensity: L.multiplier * L.decayStart ** 2 * m2, unit: 'candela' } : { intensity: L.multiplier, unit: 'relative' };
+        return importedLight(name, matrix, { ...common, kind: L.type === 'spot' ? 'spot' : 'point', ...physical, ...(L.type === 'spot' ? cone(L.hotspot, L.falloff) : {}) });
+    }
+    if (L.type === 'photometric') {
+        if (!(L.candela > 0)) return null;
+        const radius = (L.shape === 'sphere' || L.shape === 'cylinder' || L.shape === 'disc') && L.radius > 0 ? L.radius * s.x : null;
+        if (L.distribution === 1) return importedLight(name, matrix, { ...common, kind: 'spot', intensity: L.candela, unit: 'candela', ...cone(L.hotspot, L.falloff), radius });
+        if (L.distribution !== 3 && (L.shape === 'rect' || L.shape === 'disc')) {
+            const disc = L.shape === 'disc';
+            const width = (disc ? 2 * L.radius : L.width) * s.x, height = (disc ? 2 * L.radius : L.length) * s.y;
+            const area = Math.max(width * height * (disc ? Math.PI / 4 : 1) * m2, 1e-12);
+            return importedLight(name, matrix, { ...common, kind: L.shape, intensity: L.candela / area, unit: 'nits', width, height });
+        }
+        if (L.distribution === 2) return importedLight(name, matrix, { ...common, kind: 'spot', intensity: L.candela, unit: 'candela', angle: 90, penumbra: 1, radius });
+        const light = importedLight(name, matrix, { ...common, kind: 'point', intensity: L.candela, unit: 'candela', radius });
+        if (L.distribution === 3 && L.web) light.iesFile = L.web.split(/[\\/]/).pop();
+        return light;
+    }
+    if (L.type === 'area') {
+        if (!(L.multiplier > 0)) return null;
+        const r = L.halfLength * s.x;
+        const width = L.shape === 'disc' ? 2 * r : 2 * L.halfLength * s.x, height = L.shape === 'disc' ? 2 * r : 2 * L.halfWidth * s.y;
+        const areaM2 = Math.max((L.shape === 'sphere' ? 4 * Math.PI * r * r : L.shape === 'disc' ? Math.PI * r * r : width * height) * m2, 1e-12);
+        const v = L.multiplier;
+        const nits = [v, v / (Math.PI * areaM2), v, 683 * v / (Math.PI * areaM2), 683 * v][L.units] ?? v;
+        if (L.shape === 'sphere') return importedLight(name, matrix, { ...common, kind: 'point', intensity: nits * Math.PI * r * r * m2, unit: 'candela', radius: r > 0 ? r : null });
+        return importedLight(name, matrix, { ...common, kind: L.shape === 'disc' ? 'disc' : 'rect', intensity: nits, unit: 'nits', width, height });
+    }
+    return null;
 }
 
 /** .max scene → { nodes, geometries, meshes } like convert(); Physical Materials with their values, others by colour */
@@ -939,28 +1180,38 @@ async function convertMax({ scene, geometries: parts }, source, materialManager)
             }
             instance++;
         });
-        // cameras: MAX looks along local −Z with Y up; a Look At controller aims at its target node, level to the world's
-        // up (Z in MAX, Y here) and rolled about the view axis
+        // cameras and lights: MAX looks / shines along local −Z with Y up; a Look At controller aims at its target node,
+        // level to the world's up (Z in MAX, Y here) and rolled about the view axis
+        const aimed = (k, look) => {
+            const position = new THREE.Vector3().setFromMatrixPosition(world[k]);
+            const target = new THREE.Vector3().setFromMatrixPosition(world[look.target]);
+            const z = position.clone().sub(target).normalize();
+            const x = new THREE.Vector3(0, 1, 0).cross(z);
+            if (x.lengthSq() < 1e-12) x.set(1, 0, 0); else x.normalize();   // looking straight up/down
+            const y = z.clone().cross(x);
+            const c = Math.cos(look.roll || 0), s = Math.sin(look.roll || 0);
+            const xr = x.clone().multiplyScalar(c).addScaledVector(y, s), yr = y.multiplyScalar(c).addScaledVector(x, -s);
+            return { matrix: new THREE.Matrix4().makeBasis(xr, yr, z).setPosition(position), target };
+        };
         const cameras = [];
         scene.nodes.forEach((m, k) => {
             if (!m.camera) return;
             const look = m.transform.lookAt;
-            let matrix = world[k], target = null;
-            if (look && look.target >= 0) {
-                const position = new THREE.Vector3().setFromMatrixPosition(world[k]);
-                target = new THREE.Vector3().setFromMatrixPosition(world[look.target]);
-                const z = position.clone().sub(target).normalize();
-                const x = new THREE.Vector3(0, 1, 0).cross(z);
-                if (x.lengthSq() < 1e-12) x.set(1, 0, 0); else x.normalize();   // looking straight up/down
-                const y = z.clone().cross(x);
-                const c = Math.cos(look.roll || 0), s = Math.sin(look.roll || 0);
-                const xr = x.clone().multiplyScalar(c).addScaledVector(y, s), yr = y.multiplyScalar(c).addScaledVector(x, -s);
-                matrix = new THREE.Matrix4().makeBasis(xr, yr, z).setPosition(position);
-            }
+            const { matrix, target } = look && look.target >= 0 ? aimed(k, look) : { matrix: world[k], target: null };
             cameras.push(importedCamera(m.name, matrix, { forward: FORWARD_MINUS_Z, up: UP_Y, target, distance: m.camera.distance,
                 fov: THREE.MathUtils.radToDeg(m.camera.fov), fovAxis: m.camera.fovAxis, aspect: scene.renderAspect, scale }));
         });
-        const result = { nodes, geometries, meshes, cameras, animation: null };
+        // lights that are on (free lights: node · object offset)
+        const lights = [];
+        scene.nodes.forEach((m, k) => {
+            if (!m.light?.on) return;
+            const look = m.transform.lookAt, o = m.offset;
+            const { matrix, target } = look && look.target >= 0 ? aimed(k, look)
+                : { matrix: new THREE.Matrix4().multiplyMatrices(world[k], maxMatrix(o.position, new THREE.Quaternion(...o.quat), o.scale, o.scaleAxis)), target: null };
+            const light = maxLight(m.name, matrix, m.light, target, scale);
+            if (light) lights.push(light);
+        });
+        const result = { nodes, geometries, meshes, cameras, lights, animation: null };
         const u = scene.unsupported;
         if (u.nodes || u.objects.length) result.maxSkipped = { count: u.nodes, what: [...u.modifiers, ...u.objects].map(x => x.name) };
         if (u.approx?.length) result.maxApprox = { count: u.approx.reduce((a, x) => a + x.count, 0), what: u.approx.map(x => x.name) };

@@ -217,6 +217,24 @@ USDComposer.prototype.compose = function (...args) {
     }
     return group;
 };
+// lights (UsdLux): three builds them but reads the cone under the wrong name ("shaping:cone:angle" instead of
+// "inputs:shaping:cone:angle" – spots became point lights) and ignores exposure and normalize – the raw values go along
+// in userData.usdLight for mesh-importer.js (usdLight)
+const originalBuildLight = USDComposer.prototype._buildLight;
+USDComposer.prototype._buildLight = function (path, typeName) {
+    const light = originalBuildLight.call(this, path, typeName);
+    if (light) {
+        const a = this._getAttributes(path);
+        const num = (k, d) => this._parseNumber(a[`inputs:${k}`] ?? a[k], d);
+        const normalize = a['inputs:normalize'] ?? a.normalize;
+        light.userData.usdLight = {
+            typeName, intensity: num('intensity', 1), exposure: num('exposure', 0), normalize: [true, 1, '1', 'true'].includes(normalize),
+            radius: num('radius', 0.5), width: num('width', 1), height: num('height', 1), angle: num('angle', 0.53),
+            coneAngle: num('shaping:cone:angle', 0), softness: num('shaping:cone:softness', 0),
+        };
+    }
+    return light;
+};
 // transform ops: three only knows the plain op names – suffixed ones ("xformOp:rotateX:unitsResolve",
 // "xformOp:translate:pivot2", common in exports of DCC tools) and rotations other than XYZ were skipped. The op stack
 // in xformOpOrder, each op by its type, "!invert!" inverted, composed like three does (column vectors: forward).

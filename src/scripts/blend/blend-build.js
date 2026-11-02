@@ -77,7 +77,7 @@ export function buildBlend(scene, manager, name = '') {
     const fallback = new THREE.MeshStandardMaterial({ name: 'Standard', color: 0xb0b0b0, roughness: 0.5 });
 
     const nodes = [];
-    const cameras = [];
+    const cameras = [], lights = [];
     const local = o => {
         const q = new THREE.Quaternion();
         if (o.rotmode === 0 && o.quat) q.set(o.quat[1], o.quat[2], o.quat[3], o.quat[0]).normalize();
@@ -117,7 +117,8 @@ export function buildBlend(scene, manager, name = '') {
             const fov = THREE.MathUtils.radToDeg(2 * Math.atan(sensor / 2 / o.camera.lens));
             cameras.push({ name: o.name, object: node, fov, fovAxis: horizontal ? 'h' : 'v', aspect, near: o.camera.clip > 0.01 ? o.camera.clip : 0 });
         }
+        if (o.light && !o.hidden) lights.push({ name: o.name, object: node, ...o.light });
     });
     scene.objects.forEach((o, i) => (o.parent >= 0 && nodes[o.parent] ? nodes[o.parent] : zUp).add(nodes[i]));
-    return { object: root, cameras, scale: (scene.metersPerUnit || 1) * 1000, urls, modifiers: [...new Set(scene.objects.flatMap(o => o.modifiers))] };
+    return { object: root, cameras, lights, scale: (scene.metersPerUnit || 1) * 1000, urls, modifiers: [...new Set(scene.objects.flatMap(o => o.modifiers))] };
 }

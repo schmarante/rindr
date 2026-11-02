@@ -2,7 +2,7 @@
 //
 // File: "?C4DC4D6" (8 bytes), u32 program version (e.g. 18057), then one stream of tokens, big-endian:
 //   0x01 chunk start: u32 id, u32 version      0x02 chunk end
-//   0x0c u8   0x0f i32   0x10 u32   0x11 8 bytes (date)   0x13 f64   0x15 bool (u8)   0x16 time (f64 num, f64 den)
+//   0x0c u8   0x0f i32   0x10 u32   0x11 8 bytes (date)   0x12 i64   0x13 f64   0x15 bool (u8)   0x16 time (f64 num, f64 den)
 //   0x17 vector (3 × f64)   0x19 matrix (12 × f64: offset, v1, v2, v3)
 //   0x80 / 0x81 / 0x84 memory (u32 length + bytes)   0x82 / 0x83 string / file name (u32 byte length + UTF-16)
 //   0x8c array (u32 length + 1 byte element size code – 2: 16 bit, 3: 32 bit, 6: 64 bit – + elements)
@@ -14,7 +14,7 @@
 //   110064 type: i32 type id, i32, type name string, then type-specific data (joints, weights …)
 //   110100 children list (header 110069, then the child nodes)
 // Objects (nodes 5154 / 1001091 – the class of the node, not of the object): 110417 tracks, 110050, 110064 (5100
-// polygon, 5140 null, 5103 camera, 1019362 joint, 1019363 skin …), 110100 child objects, 110108 tags, 110052
+// polygon, 5140 null, 5102 light, 5103 camera, 1019362 joint, 1019363 skin …), 110100 child objects, 110108 tags, 110052
 // transform (relative position, scale, rotation HPB; frozen scale, rotation, position; rotation order last).
 // Tags: 5600 points (i32 count, x/y/z each an f64 array), 5604 polygons (i32 count, a/b/c/d each an i32 array –
 // c = d: triangle), 5671 UVW (i32 count, f32 array: per polygon 4 corners × u, v), 5711 normals (i32 count, i16 array:
@@ -25,12 +25,14 @@
 // 1000/1001/1002 = x/y/z resp. H/P/B) > 5351 curve > 5352 keys (110416: time, value, interpolation).
 // Materials: 5703 > 110131 > shaders 5707 (5833 bitmap: 1000 file name; 1011123 layer: bitmaps inside), the material
 // container: 2100 colour, 8000 colour shader, 8012 normal shader (as in the test files).
+// Lights (5102): see readLight – most values in the type data of 110064 (a fixed layout), the newer ones (area size Y,
+// shape, photometric, colour temperature) in the container.
 // Coordinates: left-handed, Y up – read as they are; conversion in mesh-importer.js (convertC4d).
 
 const MAGIC = 'C4DC4D6';
 const T_START = 0x01, T_END = 0x02;
 const FIXED = new Uint8Array(256);
-FIXED[0x0c] = 1; FIXED[0x0f] = 4; FIXED[0x10] = 4; FIXED[0x11] = 8; FIXED[0x13] = 8; FIXED[0x15] = 1; FIXED[0x16] = 16;
+FIXED[0x0c] = 1; FIXED[0x0f] = 4; FIXED[0x10] = 4; FIXED[0x11] = 8; FIXED[0x12] = 8; FIXED[0x13] = 8; FIXED[0x15] = 1; FIXED[0x16] = 16;
 FIXED[0x17] = 24; FIXED[0x19] = 96;
 
 export function isC4dFile(buffer) {
@@ -101,6 +103,7 @@ class Reader {
                 case 0x0f: return dv.getInt32(p);
                 case 0x10: return dv.getUint32(p);
                 case 0x13: return dv.getFloat64(p);
+                case 0x12: return Number(dv.getBigInt64(p));   // 64-bit integer (files of the program's own scenes)
                 case 0x0c: case 0x15: return buf[p];
                 case 0x16: return { time: dv.getFloat64(p) / (dv.getFloat64(p + 8) || 1) };
                 case 0x17: return { vec: [dv.getFloat64(p), dv.getFloat64(p + 8), dv.getFloat64(p + 16)] };
@@ -220,7 +223,7 @@ function interpret(root, version, buf) {
             // shaders (5707, nested: a layer shader holds its layers): each with the bitmap files in it (its own first)
             const shaders = [];
             const walkShaders = (node, owners) => {
-                for (const s of node.kids) {
+                for (const s of node.kids ?? []) {   // keys (110416) are compact, without kids
                     if (s.id === 5707) {
                         const si = nodeInfo(s);
                         // the bitmap shader's file (1000) – shaders of render plugins keep it under keys of their own: the first
@@ -253,6 +256,7 @@ function interpret(root, version, buf) {
             index: objects.length, parent, name: info.name, typeId: info.typeId, typeName: info.type.vals.find(v => v?.str)?.str ?? '',
             mark: info.mark, bc: container(info.data), transform: readTransform(kid(node, 110052)), tags: [], tracks: [],
         };
+        if (info.typeId === T_LIGHT) obj.light = readLight(info.type.vals, obj.bc);
         objects.push(obj);
         if (info.mark) marks.set(info.mark, { kind: 'object', obj });
         for (const tagNode of listItems(kid(kid(node, 110108), 110100))) obj.tags.push(readTag(tagNode, buf));
@@ -290,11 +294,11 @@ function interpret(root, version, buf) {
             mat.emissionMap = fileOf(link(2557));
             mat.roughness = num(mat.bc.get(2532));
             mat.ior = num(mat.bc.get(2551));
-        } else if (mat.typeId === VRAY_MATERIAL) {
+        } else if (mat.typeId === PLUGIN_MATERIAL_2) {
             // another render plugin's material: keys are hashes (found on one scene) – 2131196938 / 605015197 diffuse
             // colour / texture, 1668198367 bump, 451657623 reflection glossiness (1 = mirror), 2035585782 reflection
             // colour (black = no reflection); a normal-map shader linked anywhere: the normal map
-            mat.kind = 'vray';
+            mat.kind = 'plugin2';
             mat.color = vec(2131196938);
             mat.colorMap = fileOf(link(605015197));
             mat.bumpMap = fileOf(link(1668198367));
@@ -302,7 +306,7 @@ function interpret(root, version, buf) {
             mat.roughness = reflect && Math.max(...reflect) < 0.02 ? 0.9 : gloss !== null ? 1 - gloss : 0.5;
             for (const v of mat.bc.values()) {
                 const sh = v?.mark?.key ? marks.get(v.mark.key)?.shader : null;
-                if (sh?.typeId === VRAY_NORMAL_MAP && !mat.normalMap) mat.normalMap = fileOf(sh);
+                if (sh?.typeId === PLUGIN_NORMAL_MAP && !mat.normalMap) mat.normalMap = fileOf(sh);
             }
         } else {
             mat.colorMap = fileOf(link(8000));
@@ -332,9 +336,9 @@ function interpret(root, version, buf) {
         delete obj.bc;
     }
     // object types without a reading here (generators, splines, deformers other than the skin …): named for the notice;
-    // lights and the scene's environment (sky, floor, background, physical sky …) are left out without one (as with MAX).
-    // Type names are in the language of the program that saved the file.
-    const KNOWN = new Set([5100, 5140, 5103, 1019362, 1019363]);
+    // the scene's environment (sky, floor, background, physical sky …) and render plugins' lights are left out without
+    // one (as with MAX). Type names are in the language of the program that saved the file.
+    const KNOWN = new Set([5100, 5140, 5103, T_LIGHT, 1019362, 1019363]);
     const unsupported = new Map();
     for (const o of objects) {
         if (KNOWN.has(o.typeId) || IGNORED.has(o.typeId)) continue;
@@ -347,10 +351,10 @@ function interpret(root, version, buf) {
 }
 
 const num = v => (typeof v === 'number' ? v : null);
-const PLUGIN_MATERIAL = 1029501, VRAY_MATERIAL = 1053286, VRAY_NORMAL_MAP = 1057881;
-// light, sky, environment, floor, background, foreground, stage, physical sky; a render plugin's lights (rectangle, sphere,
+const PLUGIN_MATERIAL = 1029501, PLUGIN_MATERIAL_2 = 1053286, PLUGIN_NORMAL_MAP = 1057881, T_LIGHT = 5102;
+// sky, environment, floor, background, foreground, stage, physical sky; a render plugin's lights (rectangle, sphere,
 // sun …: 1053280–1053290) and its scene assets (1061766 – meshes of lights from an external scene file)
-const IGNORED = new Set([5102, 5105, 5106, 5168, 5122, 5123, 5136, 1011146, 1061766]);
+const IGNORED = new Set([5105, 5106, 5168, 5122, 5123, 5136, 1011146, 1061766]);
 for (let id = 1053280; id <= 1053290; id++) if (id !== 1053283 && id !== 1053286) IGNORED.add(id);
 const IMAGE_FILE = /\.(png|jpe?g|tiff?|exr|hdr|bmp|tga|webp|psd)$/i;
 
@@ -359,13 +363,47 @@ function readTransform(chunk) {
     if (!chunk) return null;
     const vecs = chunk.vals.filter(v => v && v.vec).map(v => v.vec);
     const ints = chunk.vals.filter(v => typeof v === 'number');
-    // after the three vectors: visibility in the editor and when rendering (0 on, 1 off, 2 default = like the parent)
-    const [editor, render] = chunk.vals.slice(3, 5);
+    // after the three vectors: visibility in the editor and when rendering (0 on, 1 off, 2 default = like the parent),
+    // then 1 = switched off (the tick in the object list – seen only on generators in the sample files: a walk cycle of
+    // a rig template, a render plugin's scene assets; taken as a light's on/off – unconfirmed, no switched-off light)
+    const [editor, render, off] = chunk.vals.slice(3, 6);
     return {
-        editor: typeof editor === 'number' ? editor : 2, render: typeof render === 'number' ? render : 2,
+        editor: typeof editor === 'number' ? editor : 2, render: typeof render === 'number' ? render : 2, off: off === 1,
         position: vecs[0] ?? [0, 0, 0], scale: vecs[1] ?? [1, 1, 1], rotation: vecs[2] ?? [0, 0, 0],
         frozenScale: vecs[3] ?? [1, 1, 1], frozenRotation: vecs[4] ?? [0, 0, 0], frozenPosition: vecs[5] ?? [0, 0, 0],
         order: ints[ints.length - 1] ?? 6,
+    };
+}
+
+// Light object (5102). The type data of 110064 (after type id, 0, type name) is the light's own block with a fixed
+// layout – the same in files of program versions 13 to 2023 (29 distinct sample lights; chunk version 8 has two more
+// values at the end than version 6 of version 13); positions found against the defaults (colour white, 100 %, 30°
+// cone, 100 cm radius = a 200 × 200 cm area) and the varied values of the sample scenes: 117 colour, 118 brightness
+// (1 = 100 %), 119 type (0 omni, 1 spot, 2 square spot, 3 infinite, 4 parallel, 5 parallel spot, 6 square parallel
+// spot, 7 tube, 8 area, 9 photometric), 120 shadow, 127 / 128 inner / outer angle (radians, the whole cone – the
+// description allows up to 175°), 130 outer radius (area: size X / 2), 131 falloff (0 none, 5 step, 6 / 7 inverse
+// (square) clamped, 8 linear, 9 inverse, 10 inverse square), 142 radius of the falloff (500 cm by default; the only one
+// of the three 500-values that was edited on its own in a sample – unconfirmed). The container (keys of the program's
+// light description): 90036 IES file, 90037 photometric unit (0 lumen, 1 candela, 2 lux), 90038 / 90039 use colour
+// temperature / kelvin, 90042 use photometric data, 90043 photometric intensity, 90046 photometric units on, 100011
+// area size Y, 100015 area shape (0 disc, 1 rectangle, 2 sphere, 3 cylinder, 4 cube, 5 hemisphere, 6 object, 7 line,
+// 8 perpendicular cylinder).
+function readLight(vals, bc) {
+    const at = vals.findIndex(v => typeof v?.str === 'string');
+    const d = at >= 0 ? vals.slice(at + 1) : [];
+    const real = (i, fallback) => (typeof d[i] === 'number' ? d[i] : fallback);
+    const ok = d.length > 142 && d[117]?.vec;   // the known layout
+    const radius = ok ? real(130, 100) : 100;
+    return {
+        type: ok ? real(119, 0) : 0,
+        color: ok ? d[117].vec : [1, 1, 1],
+        brightness: ok ? real(118, 1) : 1,
+        inner: ok ? real(127, 0) : 0, outer: ok ? real(128, Math.PI / 6) : Math.PI / 6,
+        radius, falloff: ok ? real(131, 0) : 0, decay: ok ? real(142, 500) : 500,
+        sizeY: num(bc.get(100011)) ?? radius * 2, shape: num(bc.get(100015)) ?? 1,
+        temperature: bc.get(90038) ? num(bc.get(90039)) : null,
+        photometric: bc.get(90046) ? { intensity: num(bc.get(90043)) ?? 1000, unit: num(bc.get(90037)) ?? 1 } : null,
+        iesFile: bc.get(90042) ? bc.get(90036)?.str || null : null,
     };
 }
 
@@ -414,8 +452,8 @@ function readTag(node, buf) {
                 kind: 'texture', materialMark: bc.get(1010)?.mark?.key ?? null, projection: bc.get(1004) ?? 6,
                 offset: [bc.get(1000) ?? 0, bc.get(1001) ?? 0], tiles: [bc.get(1002) ?? 1, bc.get(1003) ?? 1],
             };
-        case 5676:   // target expression (camera / light aims at an object): its link – untested, no sample file
-            return { kind: 'target', targetMark: [...bc.values()].find(v => v?.mark?.key)?.mark.key ?? null };
+        case 5676:   // target expression (camera / light aims at an object): 1001 the link (1002 up vector object, 1003 pitch)
+            return { kind: 'target', targetMark: bc.has(1001) ? bc.get(1001)?.mark?.key ?? null : [...bc.values()].find(v => v?.mark?.key)?.mark.key ?? null };
         case 5691:
             if (info.typeId === 1019365) return { kind: 'weights', ...readWeights(info.type, buf) };
             return { kind: 'plugin', typeId: info.typeId, name: info.type?.vals.find(v => v?.str)?.str ?? '' };

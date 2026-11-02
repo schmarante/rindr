@@ -15,7 +15,7 @@
 import { BlendFile } from './blend-file.js';
 import { orientOutward } from '../orient-outward.js';
 
-const OB_MESH = 1, OB_CAMERA = 11;
+const OB_MESH = 1, OB_LAMP = 10, OB_CAMERA = 11;
 
 export function parseBlend(bytes, onProgress = () => {}) {
     const f = new BlendFile(bytes);
@@ -272,7 +272,7 @@ export function parseBlend(bytes, onProgress = () => {}) {
             name: idName(ob), type, parent: parent >= 0 ? parent : -1,
             loc: ob.floats('loc'), rot: ob.floats('rot'), quat: ob.floats('quat'), size: ob.floats('size'), rotmode: ob.int('rotmode'),
             rotAxis: ob.floats('rotAxis'), rotAngle: ob.float('rotAngle'), parentinv: ob.floats('parentinv'),
-            hidden: !!(restrict & 4) || !!(restrict & 1), geometry: -1, slots: [], camera: null,
+            hidden: !!(restrict & 4) || !!(restrict & 1), geometry: -1, slots: [], camera: null, light: null,
             modifiers: list(ob.sub('modifiers'), null).map(m => m.string('name')),
         };
         if (type === OB_MESH) {
@@ -287,6 +287,22 @@ export function parseBlend(bytes, onProgress = () => {}) {
         if (type === OB_CAMERA) {
             const ca = ob.deref('data', 'Camera');
             if (ca) o.camera = { lens: ca.float('lens') || 50, sensor: ca.float('sensor_x') || 36, sensorY: ca.float('sensor_y') || 24, fit: ca.int('sensor_fit') || 0, type: ca.int('type') || 0, clip: ca.float('clipsta') ?? ca.float('clip_start') ?? 0 };
+        }
+        if (type === OB_LAMP) {
+            // Light (Lamp before 2.8): type 0 point, 1 sun, 2 spot, 4 area (area_shape 0 square, 1 rectangle, 4 disc,
+            // 5 ellipse); energy in watts (sun: W/m²) × 2^exposure (newer files) – in the DNA `energy_new` (since 2.8;
+            // `energy` is the old value, area lights × 4/π), struct name still `Lamp`; spot size = whole cone, blend = soft
+            // share; radius = shadow soft size; colour linear
+            const la = ob.deref('data', f.structByName.has('Light') ? 'Light' : 'Lamp');
+            if (la) {
+                const num = (k, d) => (la.has(k) ? la.float(k) : d);
+                o.light = {
+                    type: la.int('type') || 0, color: [num('r', 1), num('g', 1), num('b', 1)],
+                    energy: num('energy_new', num('energy', 10)) * 2 ** num('exposure', 0), spotSize: num('spotsize', Math.PI / 4), spotBlend: num('spotblend', 0.15),
+                    shape: la.has('area_shape') ? la.int('area_shape') : 0, sizeX: num('area_size', 0.25), sizeY: num('area_sizey', 0.25),
+                    radius: la.has('radius') ? la.float('radius') : num('soft', 0),
+                };
+            }
         }
         const index = objects.push(o) - 1;
         objectIndex.set(block.old, index);

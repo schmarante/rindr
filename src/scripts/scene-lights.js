@@ -9,6 +9,9 @@
 // (environment.modelSize); a new size (another model) scales positions, targets and areas of the local lights with it
 // (refitLight), like the directional lights keep their direction and move to twice the size.
 //
+// Lights from a model file (viewer.js addImportedLights) are `fixed`: they keep their place and intensity when the scene
+// size changes (a lamp stays at its fixture); their strength is derived from the intensity instead.
+//
 // Spot and area lights aim at their target (userData.rindr.target, world) – moving one keeps it on the target
 // (aimLight). Area lights in the raster need the LTC tables of three.js (~80 KB, loaded with the first one,
 // prepareAreaLights); they cast no raster shadows (three.js has none for them), in HQ every light casts shadows.
@@ -259,6 +262,15 @@ export function setStrength(light, strength, size) {
             : strength;
 }
 
+/** the strength (see top) that gives the light's current intensity at this scene size */
+export function strengthFromIntensity(light, size) {
+    const kind = light.userData.rindr?.kind ?? lightKind(light);
+    const s2 = Math.max(size * size, 1e-12);
+    return kind === 'point' || kind === 'spot' || kind === 'ies' ? light.intensity / s2
+        : kind === 'rect' || kind === 'disc' ? light.intensity * area(light) / s2
+            : light.intensity;
+}
+
 /** a new light of this kind (not placed yet: placeLight) */
 export function createLight(kind, name) {
     let light;
@@ -320,6 +332,13 @@ export function aimLight(light) {
 export function refitLight(light, { fromCenter, toCenter, size }) {
     const meta = light.userData.rindr;
     if (!meta || !LOCAL_KINDS.has(meta.kind)) return;
+    // a light from a model file (meta.fixed) stays at its fixture with its intensity – the strength follows the size
+    if (meta.fixed) {
+        meta.size = size;
+        meta.strength = strengthFromIntensity(light, size);
+        aimLight(light);
+        return;
+    }
     const from = meta.size > 0 ? meta.size : size;
     const k = size / from;
     if (Math.abs(k - 1) > 1e-6 || !fromCenter.equals(toCenter)) {
@@ -343,6 +362,7 @@ export function lightState(light) {
     };
     if (LOCAL_KINDS.has(kind)) {
         s.target = light.userData.rindr.target.map(x => +x.toFixed(4));
+        if (light.userData.rindr.fixed) s.fixed = true;
     }
     if (light.shadow && kind !== 'directional') s.castShadow = light.castShadow;
     if (light.isSpotLight) Object.assign(s, { angle: +THREE.MathUtils.radToDeg(light.angle).toFixed(3), penumbra: light.penumbra, radius: light.radius || 0 });
@@ -364,6 +384,7 @@ export function applyLightState(light, s, size) {
 
 function applyLightValues(light, s, size) {
     const meta = light.userData.rindr ??= { kind: lightKind(light) };
+    meta.fixed = !!s.fixed;
     if (s.name) light.name = s.name;
     light.visible = s.visible !== false;
     light.position.fromArray(s.position);

@@ -1957,6 +1957,14 @@
             "one": "{count} camera taken over from the file (under \"Camera\")",
             "other": "{count} cameras taken over from the file (under \"Camera\")"
         },
+        "lightsImportedKeep": {
+            "one": "{count} light taken from the file (under “Lights”)",
+            "other": "{count} lights taken from the file (under “Lights”)"
+        },
+        "lightsImported": {
+            "one": "{count} light taken from the file (under “Lights”, default lights switched off)",
+            "other": "{count} lights taken from the file (under “Lights”, default lights switched off)"
+        },
         "viewOverwritten": "Camera “{name}” saved",
         "modelIncomplete": "{name} is incomplete – missing: {files}. Drag the files into the window or link them in the asset window",
         "relinked": {
