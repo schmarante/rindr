@@ -8,6 +8,8 @@
 // stand-in of each material) – right before the ray test and the kernel are built from it. The tag itself is in
 // kernel-feature-tag.js (with the WGSL helpers – only the path tracer's modules import it).
 
+import { glows } from './emitters.js';
+
 // mirroring metal that sends caustics (caustics.js): the material's values – before maps and the glossy filter
 export const MIRROR = { metalness: 0.9, roughness: 0.2 };
 export const isMirror = m => !m.matte && (m.transmission ?? 0) <= 0.5 && (m.metalness ?? 0) >= MIRROR.metalness && (m.roughness ?? 1) <= MIRROR.roughness;
@@ -23,6 +25,8 @@ export const KERNEL_FEATURES = [
     'edges',    // rounded edges (edge radius in anisotropyRotation, anisotropy 0)
     'ground',   // shadow catcher (matte ground)
     'caustics', // glass or mirroring metal with the glass shadows set to caustics (caustics.js): photon grid lookup
+    'emitters', // glowing meshes (emitters.js): next event estimation towards their triangles, MIS on hits
+    'radiance', // radiance cache on (radiance-cache.js, setting): diffuse light from a world-space grid
 ];
 
 // ?kernel=all: every feature, whatever the scene (comparison, debugging)
@@ -31,6 +35,7 @@ const ALL = typeof location !== 'undefined' && new URLSearchParams(location.sear
 export const kernelFeatures = {
     current: new Set(KERNEL_FEATURES),   // until the first material data: everything
     caustics: false,                     // glass shadows set to caustics (pathtracer.js setGlassShadow)
+    radiance: false,                     // radiance cache switched on (pathtracer.js setRadianceCache)
     shown: new Set(),                    // materials of visible objects (the library packs every object's material –
                                          // the hidden proxies of the cloud slots would always count as volumes)
     /** the library collects the scene's materials: an object of the scene */
@@ -43,6 +48,7 @@ export const kernelFeatures = {
     /** the library starts packing the material data */
     begin() {
         this.current = new Set(ALL ? KERNEL_FEATURES : []);
+        if (this.radiance) this.current.add('radiance');
     },
     /** a material as the kernel sees it (m: its stand-in, material: itself) – returns m */
     see(m, material) {
@@ -60,6 +66,7 @@ export const kernelFeatures = {
         if ((m.transmission ?? 0) > 0 && scatter && scatter.r + scatter.g + scatter.b > 0) add('medium');
         if (m.anisotropyRotation && !m.anisotropy) add('edges');
         if (m.matte) add('ground');
+        if (glows(m)) add('emitters');
         return m;
     },
     /** the features as a key (sorted) – one kernel per key */

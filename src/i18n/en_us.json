@@ -1802,6 +1802,12 @@
         "openSettings": "Open settings"
     },
     "debugStats": {
+        "radiance": {
+            "show": "Show radiance cache cells",
+            "off": "Radiance cache: off (HQ with the cache switched on only)",
+            "stats": "Radiance cache: {taken} cells, {usable} usable, {fresh} new – {share} % of the table",
+            "counter": "counter {counter}, clears at 70 %"
+        },
         "lod": {
             "enabled": "LOD on",
             "threshold": "Error px",
@@ -2121,6 +2127,10 @@
         "adaptive": "Adaptive sampling",
         "adaptiveThreshold": "Noise threshold",
         "noiseMap": "Show noise map",
+        "radianceCache": "Radiance cache (faster after turning)",
+        "radianceMinRate": "Min rate (cells on surfaces)",
+        "radianceMaxRate": "Max rate (cells in corners)",
+        "radianceShow": "Show cells",
         "glossyFilter": "Glossy filter",
         "glassShadow": "Glass shadows",
         "glassShadowTransparent": "Transparent",

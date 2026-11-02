@@ -17,13 +17,14 @@
 // Fresnel with the metal's colour, rough ones tilted like glass.
 // Anything else ends the photon: after at least one caster face it is deposited – flux as fixed point (× FIXED) into the
 // cell's slot (key claimed by compare-exchange, linear probing, CAUSTICS_PROBES slots; a full table drops the photon).
-import { Vector3, Vector4, Matrix3, Matrix4, Quaternion, StorageBufferAttribute, Box3, Sphere, DataUtils, HalfFloatType, SRGBColorSpace, DoubleSide, BackSide } from 'three/webgpu';
+import { Vector3, Vector4, Matrix3, Matrix4, Quaternion, StorageBufferAttribute, Box3, Sphere, DataUtils, HalfFloatType } from 'three/webgpu';
 import { uniform, globalId, storage } from 'three/tsl';
 import { proxy, proxyFn, wgslTagFn, rayStruct } from 'three-mesh-bvh/webgpu';
 import { offsetRayOriginFunc } from 'three-gpu-pathtracer/src/webgpu/nodes/utils.wgsl.js';
 import { applyDispersionFunc, dispersionColorWeightFunc, transmissionAttenuationFunc, DISPERSION_MIN_WAVELENGTH, DISPERSION_MAX_WAVELENGTH } from 'three-gpu-pathtracer/src/webgpu/nodes/material.wgsl.js';
 import { CAUSTICS, CAUSTICS_HASH, CAUSTICS_PROBES, CAUSTICS_MIRROR } from './caustics.js';
 import { isMirror } from './kernel-features.js';
+import { EMITTERS, EMITTER_TABLE, MAX_EMITTERS } from './emitters.js';
 
 const FIXED = 32;          // grid units per photon of weight 1 (stochastic rounding – a cell overflows after ~1e8 photons)
 const WORKGROUP = 64;
@@ -31,7 +32,6 @@ const MAX_SOURCES = 16;    // lamps + the HDRI (more lamps: the dimmest ones get
 const SOURCE_VEC4 = 5;     // vec4 per source (see prepare)
 const MAX_CASTERS = 64;    // bounding spheres the photons aim at (more objects: merged)
 const ENV_W = 1024, ENV_H = 512;   // the HDRI's copy for sampling (at most; a sun of 0.5° stays about one cell)
-const MAX_EMITTERS = 65536;        // triangles of glowing meshes (more: drawn by their power – see collectEmitters)
 // IES profiles of the sources as tables: 180 angles from the axis (0…180°, like the profile textures' columns) × 72
 // directions around it (5° steps, −180…180° like their rows; one row repeated for symmetric profiles)
 const PROFILE_THETA = 180, PROFILE_PHI = 72;
@@ -122,123 +122,6 @@ function envTable(map, cdf, colour) {
 }
 const packHalf2 = (a, b) => DataUtils.toHalfFloat(Math.min(a, 65504)) | (DataUtils.toHalfFloat(Math.min(b, 65504)) << 16);
 
-// mean colour of a texture (linear) – the emission of a glowing mesh with an emissive map: the photons carry the map's
-// mean (per texture version); unreadable → 1
-const textureMeans = new Map();
-function textureMean(tex) {
-    const key = `${tex.uuid}:${tex.version}`;
-    if (textureMeans.has(key)) return textureMeans.get(key);
-    let mean = [1, 1, 1];
-    const lin = v => tex.colorSpace === SRGBColorSpace ? (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4) : v;
-    try {
-        const img = tex.image;
-        if (img?.data && img.width && img.height) {
-            const { data, width, height } = img, ch = Math.max(1, Math.round(data.length / (width * height)));
-            const half = data instanceof Uint16Array ? halfToFloat() : null, scale = data instanceof Uint8Array || data instanceof Uint8ClampedArray ? 1 / 255 : 1;
-            const sum = [0, 0, 0], step = Math.max(1, Math.floor(Math.sqrt(width * height / 4096)));
-            let n = 0;
-            for (let y = 0; y < height; y += step) for (let x = 0; x < width; x += step) {
-                const i = (y * width + x) * ch;
-                for (let c = 0; c < 3; c++) { const v = data[i + Math.min(c, ch - 1)]; sum[c] += lin(half ? half[v] : v * scale); }
-                n++;
-            }
-            if (n) mean = sum.map(v => v / n);
-        } else if (img && typeof OffscreenCanvas !== 'undefined' && (img.width || img.videoWidth)) {
-            const ctx = new OffscreenCanvas(32, 32).getContext('2d');
-            ctx.drawImage(img, 0, 0, 32, 32);
-            const d = ctx.getImageData(0, 0, 32, 32).data, sum = [0, 0, 0];
-            for (let i = 0; i < d.length; i += 4) for (let c = 0; c < 3; c++) sum[c] += lin(d[i + c] / 255);
-            mean = sum.map(v => v / 1024);
-        }
-    } catch { /* tainted / unreadable: 1 */ }
-    textureMeans.set(key, mean);
-    return mean;
-}
-
-/** emission of a material like the path tracer (emissive × intensity × emissive map – here its mean), linear rgb, or
- *  null when it does not glow */
-function emissionOf(m) {
-    if (!m?.emissive || m.matte) return null;
-    const k = m.emissiveIntensity ?? 1;
-    const e = [m.emissive.r * k, m.emissive.g * k, m.emissive.b * k];
-    if (m.emissiveMap) { const t = textureMean(m.emissiveMap); for (let c = 0; c < 3; c++) e[c] *= t[c]; }
-    return e[0] + e[1] + e[2] > 1e-6 ? e : null;
-}
-
-/**
- * Triangles of the glowing meshes (world space) → the photon kernel's emitter table (4 vec4 each: corner + sides that
- * glow (0 front, 1 back, 2 both – the material's side), edge 1, edge 2, weight rgb + cdf). Picked ∝ power (luminance × area); weight = colour / luminance × total power (what a
- * triangle sends ÷ its pick probability). More than `max`: `max` triangles drawn ∝ power (with repetition), picked
- * uniformly – the same distribution, fixed for the scene version. Returns { count, power, meshes: [{ center, power }] }
- * (meshes: for the source's flux estimate) or null.
- */
-function collectEmitters(scene, out, max) {
-    const tris = [], power = [], colour = [], sides = [], meshes = [];
-    const a = new Vector3(), b = new Vector3(), c = new Vector3(), m4 = new Matrix4(), inst = new Matrix4();
-    scene.traverseVisible(o => {
-        if (!o.isMesh || !o.geometry?.attributes?.position) return;
-        const mats = Array.isArray(o.material) ? o.material : [o.material];
-        const glow = mats.map(emissionOf);
-        if (!glow.some(Boolean)) return;
-        const pos = o.geometry.attributes.position, index = o.geometry.index;
-        const triCount = (index ? index.count : pos.count) / 3;
-        const groups = Array.isArray(o.material) && o.geometry.groups.length ? o.geometry.groups : [{ start: 0, count: triCount * 3, materialIndex: 0 }];
-        const copies = o.isInstancedMesh ? o.count : 1;
-        let meshPower = 0;
-        const box = new Box3();
-        for (let k = 0; k < copies; k++) {
-            m4.copy(o.matrixWorld);
-            if (o.isInstancedMesh) { o.getMatrixAt(k, inst); m4.multiply(inst); }
-            for (const g of groups) {
-                const e = glow[g.materialIndex ?? 0];
-                if (!e) continue;
-                // sides that glow: 0 front, 1 back, 2 both; a mirrored placement turns the winding around
-                const mat = mats[g.materialIndex ?? 0];
-                let side = mat.side === DoubleSide ? 2 : mat.side === BackSide ? 1 : 0;
-                if (side < 2 && m4.determinant() < 0) side = 1 - side;
-                const lum = luminance({ x: e[0], y: e[1], z: e[2] });
-                if (!(lum > 0)) continue;
-                const end = Math.min(g.start + g.count, triCount * 3);
-                for (let i = g.start; i + 2 < end; i += 3) {
-                    const ia = index ? index.getX(i) : i, ib = index ? index.getX(i + 1) : i + 1, ic = index ? index.getX(i + 2) : i + 2;
-                    a.fromBufferAttribute(pos, ia).applyMatrix4(m4);
-                    b.fromBufferAttribute(pos, ib).applyMatrix4(m4).sub(a);
-                    c.fromBufferAttribute(pos, ic).applyMatrix4(m4).sub(a);
-                    const area = 0.5 * b.clone().cross(c).length();
-                    if (!(area > 0)) continue;
-                    tris.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
-                    power.push(lum * area);
-                    sides.push(side);
-                    colour.push(e[0] / lum, e[1] / lum, e[2] / lum);
-                    meshPower += lum * area;
-                    box.expandByPoint(a);
-                }
-            }
-        }
-        if (meshPower > 0) meshes.push({ center: box.getCenter(new Vector3()), power: meshPower });
-    });
-    const n = power.length;
-    if (!n) return null;
-    const cum = new Float64Array(n);
-    let total = 0;
-    for (let i = 0; i < n; i++) { total += power[i]; cum[i] = total; }
-    const write = (j, i, cdf) => {
-        out.set([tris[i * 9], tris[i * 9 + 1], tris[i * 9 + 2], sides[i], tris[i * 9 + 3], tris[i * 9 + 4], tris[i * 9 + 5], 0,
-            tris[i * 9 + 6], tris[i * 9 + 7], tris[i * 9 + 8], 0, colour[i * 3] * total, colour[i * 3 + 1] * total, colour[i * 3 + 2] * total, cdf], j * 16);
-    };
-    if (n <= max) {
-        for (let i = 0; i < n; i++) write(i, i, i === n - 1 ? 2 : cum[i] / total);
-        return { count: n, power: total, meshes };
-    }
-    for (let j = 0; j < max; j++) {
-        const r = Math.random() * total;
-        let lo = 0, hi = n - 1;
-        while (lo < hi) { const mid = (lo + hi) >> 1; if (cum[mid] < r) lo = mid + 1; else hi = mid; }
-        write(j, lo, j === max - 1 ? 2 : (j + 1) / max);
-    }
-    return { count: max, power: total, meshes };
-}
-
 /** caster spheres → at most `max`: merged by a grid over their centres, coarser until few enough cells are taken */
 function clusterSpheres(spheres, max) {
     if (spheres.length <= max) return spheres;
@@ -283,8 +166,6 @@ export class CausticsKernel {
         this._casterCdf = new StorageBufferAttribute(new Float32Array(MAX_CASTERS), 1);
         this._envCdf = new StorageBufferAttribute(new Float32Array(ENV_H + ENV_W * ENV_H), 1);
         this._envColour = new StorageBufferAttribute(new Uint32Array(ENV_W * ENV_H * 2), 1);
-        // glowing triangles: 4 vec4 each – corner, edge 1, edge 2 (xyz), weight rgb + cdf of the pick (see collectEmitters)
-        this._emitters = new StorageBufferAttribute(new Float32Array(MAX_EMITTERS * 16), 4);
         const p = this.params = {
             bvhData: { value: null },
             globalId,
@@ -301,7 +182,8 @@ export class CausticsKernel {
         const casterCdf = storage(this._casterCdf, 'float', MAX_CASTERS).toReadOnly();
         const envCdf = storage(this._envCdf, 'float', ENV_H + ENV_W * ENV_H).toReadOnly();
         const envColour = storage(this._envColour, 'uint', ENV_W * ENV_H * 2).toReadOnly();
-        const emitters = storage(this._emitters, 'vec4', MAX_EMITTERS * 4).toReadOnly();
+        // glowing triangles (emitters.js – the megakernel's buffer)
+        const emitters = storage(EMITTER_TABLE, 'vec4', MAX_EMITTERS * 4).toReadOnly();
         // cone from x around caster j: cos of its half angle (−1: x inside), 0 solid angle when it lies behind the
         // emitting side `side` (area lights; zero vector: all around)
         const cone = wgslTagFn/* wgsl */`
@@ -501,11 +383,11 @@ export class CausticsKernel {
 
                         let re = ${ random }( &rng );
                         var lo = 0u;
-                        var hi = u32( s3.w ) - 1u;
+                        var hi = ${ EMITTERS.count } - 1u;
                         while ( lo < hi ) {
 
                             let mid = ( lo + hi ) / 2u;
-                            if ( ${ emitters }[ mid * 4u + 3u ].w < re ) { lo = mid + 1u; } else { hi = mid; }
+                            if ( ${ emitters }[ mid * 4u + 2u ].w < re ) { lo = mid + 1u; } else { hi = mid; }
 
                         }
                         let e1 = ${ emitters }[ lo * 4u + 1u ].xyz;
@@ -521,7 +403,8 @@ export class CausticsKernel {
                         x = ${ emitters }[ lo * 4u ].xyz + e1 * bu + e2 * bv;
                         meshNormal = normalize( cross( e1, e2 ) );
                         meshSide = ${ emitters }[ lo * 4u ].w;
-                        throughput *= ${ emitters }[ lo * 4u + 3u ].xyz;
+                        // radiance ÷ area density of the pick (luminance of the material's emission / total)
+                        throughput *= ${ emitters }[ lo * 4u + 3u ].xyz * ( ${ EMITTERS.total } / max( ${ emitters }[ lo * 4u + 1u ].w, 1e-30 ) );
 
                     }
                     if ( area ) {
@@ -877,9 +760,9 @@ export class CausticsKernel {
      * / k there; point / spot / IES the intensity, rectangle / disc radiance × area – × 2π Σ (1 − cos) / k and the
      * emission towards the photon (cone, profile, cos at the light) there. The estimated flux only steers the picking.
      * @param {object} o { bvhData, scene (the path tracer's), env (the library's EquirectHdrInfoNode or null), version
-     *   (scene data / materials / transforms) }
+     *   (scene data / materials / transforms), emitters (emitters.js EmitterTable – the glowing triangles) }
      */
-    prepare({ bvhData, scene, env, version }) {
+    prepare({ bvhData, scene, env, version, emitters }) {
         if (bvhData !== this._bvhData || bvhData.fns.raycastFirstHit !== this._raycast) this._build(bvhData);
         scene.updateMatrixWorld();
         // casters and the scene's bounds: once per scene version
@@ -907,9 +790,6 @@ export class CausticsKernel {
             });
             this._areaSum = areaSum;
             this._casters.needsUpdate = this._casterCdf.needsUpdate = true;
-            this._glow = this._spheres.length ? collectEmitters(scene, this._emitters.array, MAX_EMITTERS) : null;
-            if (this._glow) this._emitters.needsUpdate = true;
-            this._glowId = (this._glowId ?? 0) + 1;
         }
         const spheres = this._spheres;
         if (!spheres.length || !this._bounds) return false;
@@ -965,10 +845,10 @@ export class CausticsKernel {
         // the glowing meshes: one source over all their triangles (flux estimate per mesh: power × the casters' solid
         // angle from its centre × ½ – the mean |cos| towards them)
         let glowing = null;
-        if (this._glow) {
-            const flux = this._glow.meshes.reduce((t, m) => t + m.power * coneSum(m.center), 0) * 0.5;
+        if (emitters?.info) {
+            const flux = emitters.info.meshes.reduce((t, m) => t + m.power * coneSum(m.center), 0) * 0.5;
             glowing = { kind: SOURCE_KIND.mesh, dir: new Vector3(), weight: new Vector3(1, 1, 1), flux, u: new Vector3(), penumbra: 0,
-                cone: this._glow.count, glowId: this._glowId };
+                cone: emitters.info.count, glowId: emitters.id };
             if (flux > 0) sources.push(glowing);
         }
         // the HDRI (sampling table once per map), turned and scaled like the environment
@@ -1062,7 +942,7 @@ export class CausticsKernel {
     }
 
     dispose() {
-        for (const b of [this.buffer, this._sources, this._profiles, this._casters, this._casterCdf, this._envCdf, this._envColour, this._emitters]) b.dispose?.();
+        for (const b of [this.buffer, this._sources, this._profiles, this._casters, this._casterCdf, this._envCdf, this._envColour]) b.dispose?.();
         CAUSTICS.on.value = 0;
     }
 }

@@ -585,6 +585,100 @@ function motionJitterPatch() {
   };
 }
 
+// Glowing meshes as lights (src/scripts/emitters.js – fails loudly if the library changed): next event estimation
+// towards a point on a glowing triangle at every surface (shadow ray through the glass shadows: a //@glass-shadow marker,
+// rindr-glass-shadow fills it in – so this plugin runs before it), MIS-weighted with the library's power heuristic; a path
+// that hits a glowing surface gets the matching weight (area density from the material record – emitterAreaPdf). A
+// caustic path (refraction after a rough bounce) hitting it counts nothing while the glass shadows are transparent – the
+// light sample through the glass brings that light (like the lamps); with caustics the photons (rindr-caustics). Kernel
+// feature 'emitters'.
+const EMITTERS_MODULE = fileURLToPath(new URL('./src/scripts/emitters.js', import.meta.url));
+function emittersPatch() {
+  return {
+    name: 'rindr-emitters',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.replace(/\\/g, '/').split('?')[0];
+      if (!file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) return null;
+      const emissionLine = 'let emission = ${ clampPathContributionFunc }( throughputColor * surface.emission, bounce, clampDirect, clampIndirect );';
+      if (code.split(emissionLine).length !== 2) this.error('rindr-emitters: emission value not found exactly once in PathTracerMegaKernel.js (three-gpu-pathtracer changed?)');
+      const from = /\n(\t+)resultColor \+= vec4f\( emission, 0\.0 \);\n/;
+      if ((code.match(new RegExp(from.source, 'g')) || []).length !== 1) this.error('rindr-emitters: emission line not found exactly once in PathTracerMegaKernel.js (three-gpu-pathtracer changed?)');
+      const tab = (code.match(from) || [])[1] ?? '\t\t\t\t\t\t';
+      // a path hitting a glowing surface: weighted against next event estimation from the vertex it left
+      code = code.replace(emissionLine, () => gate('emitters', `var emMis = 1.0;
+${tab}if ( \${ __EM_NEE }() && any( surface.emission > vec3f( 0.0 ) ) ) {
+
+${tab}\tif ( misEnabled != 0u && bounce > 0u ) {
+
+${tab}\t\tlet emCos = abs( dot( ray.direction, hitResult.normal ) );
+${tab}\t\tlet emPdf = \${ __EM_PDF }( materialInfo.emissive * materialInfo.emissiveIntensity ) * hitResult.dist * hitResult.dist / max( emCos, 1e-8 );
+${tab}\t\temMis = \${ misHeuristicFn }( bsdfPdf, emPdf );
+
+${tab}\t}
+${tab}\tif ( gsCaustic && \${ __GS.mode } == 1u ) {
+
+${tab}\t\temMis = 0.0;
+
+${tab}\t}
+
+${tab}}
+${tab}let emission = \${ clampPathContributionFunc }( throughputColor * surface.emission * emMis, bounce, clampDirect, clampIndirect );`, emissionLine));
+      // next event estimation towards a glowing triangle
+      code = code.replace(from, m => m + gate('emitters', `
+${tab}// RINDR glowing meshes (emitters.js): a point on a glowing triangle (picked ∝ power), its light through the glass shadows
+${tab}if ( \${ __EM_NEE }() && misEnabled != 0u && materialInfo.matte == 0 && ! surface.volumeParticle ) {
+
+${tab}\tlet emR = \${ rand3 }( 241u );
+${tab}\tlet emI = \${ __EM_PICK }( emR );
+${tab}\tlet emA = \${ __EM.table }[ emI * 4u ];
+${tab}\tlet emB = \${ __EM.table }[ emI * 4u + 1u ];
+${tab}\tlet emC = \${ __EM.table }[ emI * 4u + 2u ];
+${tab}\tvar emU = emR.y;
+${tab}\tvar emV = emR.z;
+${tab}\tif ( emU + emV > 1.0 ) {
+
+${tab}\t\temU = 1.0 - emU;
+${tab}\t\temV = 1.0 - emV;
+
+${tab}\t}
+${tab}\tlet emTo = emA.xyz + emB.xyz * emU + emC.xyz * emV - vertexData.position.xyz;
+${tab}\tlet emD2 = dot( emTo, emTo );
+${tab}\tlet emDist = sqrt( emD2 );
+${tab}\tlet emDir = emTo / max( emDist, 1e-20 );
+${tab}\tlet emFace = - dot( emDir, normalize( cross( emB.xyz, emC.xyz ) ) );
+${tab}\tlet emCos = select( select( max( 0.0, emFace ), max( 0.0, - emFace ), emA.w == 1.0 ), abs( emFace ), emA.w == 2.0 );
+${tab}\tif ( emCos > 0.0 && emDist > 0.0 ) {
+
+${tab}\t\tlet emPdf = emB.w / max( \${ __EM.total }, 1e-30 ) * emD2 / emCos;
+${tab}\t\tlet emEval = \${ bsdfEvalPdfFn }( view, emDir, surface );
+${tab}\t\tif ( emEval.pdf > 0.0 && emPdf > 0.0 ) {
+
+${tab}\t\t\tlet emMax = emDist * ( 1.0 - 2e-4 );   // stops short of the glowing triangle (it is geometry – a hit on it would block)
+${tab}\t\t\t//@glass-shadow vertexData.position.xyz | emDir | emMax | hitResult.normal | bounce == 0u
+` + gate('caustics', `${tab}\t\t\tif ( ( ( gsGlass && surface.transmission <= 0.5 ) || ( gsRough && \${ __CA_MIR }( materialInfo.metalness, materialInfo.roughness, materialInfo.transmission, materialInfo.matte != 0 ) ) ) && \${ __CA_EMI }() ) {
+
+${tab}\t\t\t\tgsShadow = vec3f( 0.0 );
+
+${tab}\t\t\t}
+`) + `${tab}\t\t\tif ( any( gsShadow > vec3f( 0.0 ) ) ) {
+
+${tab}\t\t\t\tlet emDirect = throughputColor * \${ __EM.table }[ emI * 4u + 3u ].xyz * emEval.color * select( \${ misHeuristicFn }( emPdf, emEval.pdf ), 1.0, gsGlass ) * gsShadow / emPdf;
+${tab}\t\t\t\tresultColor += vec4f( \${ clampPathContributionFunc }( emDirect, bounce + 1u, clampDirect, clampIndirect ), 0.0 );
+
+${tab}\t\t\t}
+
+${tab}\t\t}
+
+${tab}\t}
+
+${tab}}
+`));
+      return { code: `import { EMITTERS as __EM, EMITTER_NEE as __EM_NEE, EMITTER_PDF_PLACEHOLDER, EMITTER_PICK as __EM_PICK } from ${JSON.stringify(EMITTERS_MODULE)};\n`.replace('EMITTER_PDF_PLACEHOLDER', 'EMITTER_AREA_PDF as __EM_PDF') + code, map: null };
+    },
+  };
+}
+
 // Glass shadows (src/scripts/glass-shadow.js): shadow rays through glass (next event estimation + shadow catcher), the
 // colour fringe, and no caustic paths while that is on (fails loudly if the library changed – check on every update).
 const GLASS_SHADOW_MODULE = fileURLToPath(new URL('./src/scripts/glass-shadow.js', import.meta.url));
@@ -632,10 +726,10 @@ function glassShadowPatch() {
         code = code.replace(from, to);
       };
       // markers of other patches: shadow catcher (shadow-catcher.patch.wgsl, rindr-shadow-catcher) and the light samples
-      // of the volume walk (volume-walk.patch.wgsl, rindr-cloud), the traced Gaussians and the medium walk
-      // (medium-walk.patch.wgsl, rindr-medium) – all inserted before this plugin
+      // of the volume walk (volume-walk.patch.wgsl, rindr-cloud), the traced Gaussians, the medium walk
+      // (medium-walk.patch.wgsl, rindr-medium) and the glowing meshes (rindr-emitters) – all inserted before this plugin
       const markers = /\n\t*\/\/@glass-shadow ([^\n]+)/g;
-      if ((code.match(markers) || []).length !== 4) this.error('rindr-glass-shadow: expected 4 //@glass-shadow markers in PathTracerMegaKernel.js (shadow catcher, volume walk, traced Gaussians, medium walk)');
+      if ((code.match(markers) || []).length !== 5) this.error('rindr-glass-shadow: expected 5 //@glass-shadow markers in PathTracerMegaKernel.js (shadow catcher, volume walk, traced Gaussians, medium walk, glowing meshes)');
       code = code.replace(markers, (_, args) => {
         const [origin, dir, maxDist, normal, primary] = args.split('|').map(a => a.trim());
         return '\n' + snippet({ origin, dir, maxDist, normal, primary });
@@ -675,6 +769,81 @@ function glassShadowPatch() {
   };
 }
 
+// Radiance cache (src/scripts/radiance-cache.js – fails loudly if the library changed): the first diffuse surface (or
+// glossy one softened by the glossy filter – per direction bucket) after a rough bounce takes its outgoing light from a world-space grid once the cell has enough samples (the training share of
+// the paths always goes on), and a path that went on writes what that surface sent back (light gathered after it ÷ its
+// throughput). Kernel feature 'radiance'. Runs after rindr-glass-shadow (gsRough).
+const RADIANCE_MODULE = fileURLToPath(new URL('./src/scripts/radiance-cache.js', import.meta.url));
+function radianceCachePatch() {
+  return {
+    name: 'rindr-radiance-cache',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.replace(/\\/g, '/').split('?')[0];
+      if (!file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) return null;
+      const once = (re, fn) => {
+        if ((code.match(new RegExp(re.source, 'g')) || []).length !== 1) this.error(`rindr-radiance-cache: ${re} not found exactly once in PathTracerMegaKernel.js (three-gpu-pathtracer changed?)`);
+        code = code.replace(re, fn);
+      };
+      once(/\n(\t+)var transparentBounce = 0u;/, (m, tab) => m + gate('radiance', `
+${tab}var rcSeen = false;           // the first cacheable surface after a rough bounce was reached (radiance cache)
+${tab}var rcSlot = 0xffffffffu;    // … its light cell, claimed: the path adds what the surface sent back at its end
+${tab}var rcDSlot = 0xffffffffu;   // … its distance cell: the next hit adds how far the ray travelled (finer cells in corners)
+${tab}var rcThr = vec3f( 0.0 );
+${tab}var rcStart = vec3f( 0.0 );`));
+      // (rindr-marble puts its code right before this comment – no line start to anchor on)
+      once(/(\t*)\/\/ emission, clamped at the depth of the segment that found it, as in Cycles/, (m, tab) => gate('radiance', `
+${tab}// RINDR radiance cache (radiance-cache.js): the first diffuse surface after a rough bounce
+${tab}if ( rcDSlot != 0xffffffffu ) {
+
+${tab}\t\${ __RC_ADD_DIST }( rcDSlot, hitResult.dist );
+${tab}\trcDSlot = 0xffffffffu;
+
+${tab}}
+${tab}// (diffuse, or glossy but softened by the glossy filter: then per direction bucket)
+${tab}if ( \${ __RC_ON }() && ! rcSeen && gsRough && materialInfo.matte == 0 && surface.transmission <= 0.5 && ! surface.volumeParticle ) {
+
+${tab}\tlet rcB = \${ __RC_BUCKET }( view, surface.roughness, surface.metalness, surface.clearcoat, surface.clearcoatRoughness, vec2f( 0.5 ) );
+${tab}\tif ( rcB != 0xffffffffu ) {
+
+${tab}\t\trcSeen = true;
+${tab}\t\tlet rcL = \${ __RC_LEVEL }( vertexData.position.xyz, hitResult.normal );
+${tab}\t\tlet rcBr = select( 0u, \${ __RC_BUCKET }( view, surface.roughness, surface.metalness, surface.clearcoat, surface.clearcoatRoughness, \${ rand2 }( 253u ) ), rcB != 0u );
+${tab}\t\tlet rcC = \${ __RC_LOOKUP }( vertexData.position.xyz, hitResult.normal, \${ rand2 }( 251u ), rcL, rcBr );
+${tab}\t\tif ( rcC.w > 0.0 && \${ rand1 }( 252u ) >= \${ __RC.train } ) {
+
+${tab}\t\t\tresultColor += vec4f( \${ clampPathContributionFunc }( throughputColor * rcC.rgb, bounce, clampDirect, clampIndirect ), 0.0 );
+${tab}\t\t\tbreak;
+
+${tab}\t\t}
+${tab}\t\trcSlot = \${ __RC_SLOT }( vertexData.position.xyz, hitResult.normal, rcL, rcB );
+${tab}\t\trcDSlot = \${ __RC_DIST_SLOT }( vertexData.position.xyz, hitResult.normal );
+${tab}\t\trcThr = throughputColor;
+${tab}\t\trcStart = resultColor.rgb + lightHits;
+
+${tab}\t}
+
+${tab}}
+`) + m);
+      once(/\n(\t+)resultColor \+= vec4f\( lightHits, 0\.0 \);\n/, (m, tab) => m + gate('radiance', `
+${tab}// radiance cache: what the recorded surface sent back towards the path
+${tab}if ( rcSlot != 0xffffffffu ) {
+
+${tab}\tlet rcD = resultColor.rgb - rcStart;
+${tab}\t\${ __RC_ADD }( rcSlot, select( vec3f( 0.0 ), rcD / max( rcThr, vec3f( 1e-6 ) ), rcThr > vec3f( 1e-4 ) ) );
+
+${tab}}
+${tab}if ( rcDSlot != 0xffffffffu ) {
+
+${tab}\t\${ __RC_ADD_DIST }( rcDSlot, - 1.0 );   // the ray after the recorded surface escaped
+
+${tab}}
+`));
+      return { code: `import { RADIANCE_CACHE as __RC, RADIANCE_ON as __RC_ON, RADIANCE_LOOKUP as __RC_LOOKUP, RADIANCE_LEVEL as __RC_LEVEL, RADIANCE_BUCKET as __RC_BUCKET, RADIANCE_SLOT as __RC_SLOT, RADIANCE_DIST_SLOT as __RC_DIST_SLOT, RADIANCE_ADD as __RC_ADD, RADIANCE_ADD_DIST as __RC_ADD_DIST } from ${JSON.stringify(RADIANCE_MODULE)};\n` + code, map: null };
+    },
+  };
+}
+
 // Caustics (src/scripts/caustics.js, photons: caustics-kernel.js – fails loudly if the library changed): where a path
 // hits a surface (not glass, not a mirror, not the shadow catcher – that one in shadow-catcher.patch.wgsl) the
 // irradiance of the photons there, through the surface's BSDF towards its normal. The light of the lamps and the HDRI
@@ -690,9 +859,10 @@ function causticsPatch() {
       const from = /\n(\t+)resultColor \+= vec4f\( emission, 0\.0 \);\n/;
       if ((code.match(new RegExp(from.source, 'g')) || []).length !== 1) this.error('rindr-caustics: emission line not found exactly once in PathTracerMegaKernel.js (three-gpu-pathtracer changed?)');
       // the emission of a glowing mesh reached over a caustic path: from the photons (caustics-kernel.js) – 0 here
-      const emissionLine = 'let emission = ${ clampPathContributionFunc }( throughputColor * surface.emission, bounce, clampDirect, clampIndirect );';
-      if (code.split(emissionLine).length !== 2) this.error('rindr-caustics: emission value not found exactly once in PathTracerMegaKernel.js (three-gpu-pathtracer changed?)');
-      code = code.replace(emissionLine, () => gate('caustics', 'let emission = select( ${ clampPathContributionFunc }( throughputColor * surface.emission, bounce, clampDirect, clampIndirect ), vec3f( 0.0 ), gsCaustic && ${ __CA_EMI }() );', emissionLine));
+      // (both forms of the line: plain and with the MIS weight of rindr-emitters)
+      const emissionLine = /let emission = (\$\{ clampPathContributionFunc \}\( throughputColor \* surface\.emission( \* emMis)?, bounce, clampDirect, clampIndirect \));/g;
+      if ((code.match(emissionLine) || []).length !== 2) this.error('rindr-caustics: emission values (plain + rindr-emitters) not found in PathTracerMegaKernel.js (three-gpu-pathtracer changed?)');
+      code = code.replace(emissionLine, (m, value) => gate('caustics', `let emission = select( ${value}, vec3f( 0.0 ), gsCaustic && \${ __CA_EMI }() );`, m));
       code = code.replace(from, (m, tab) => m + gate('caustics', `
 ${tab}// RINDR caustics (caustics.js): the photons' irradiance here (cell by the geometric normal – the photons' side),
 ${tab}// through the BSDF towards the shading normal
@@ -1096,6 +1266,8 @@ ${tab}}${lpT(tab, 'scShadow * scSurf.z * ( 1.0 - scSurf.x ) * throughputColor')}
       wrap('resultColor += vec4f( ${ clampPathContributionFunc }( throughputColor * gxCaught, bounce, clampDirect, clampIndirect ), 0.0 );', `${LP.EMISSION}u`, { direct: LP.DIRECT_EMISSION });
       // relit traced Gaussians: their glow is emission, their light sample a light slot, the scatter the path's first kind
       wrap('resultColor += vec4f( ${ clampPathContributionFunc }( throughputColor * ${ __GX.glow }, bounce, clampDirect, clampIndirect ), 0.0 );', `${LP.EMISSION}u`, { direct: LP.DIRECT_EMISSION });
+      // glowing meshes (rindr-emitters): their light sample counts as emission
+      wrap('resultColor += vec4f( ${ clampPathContributionFunc }( emDirect, bounce + 1u, clampDirect, clampIndirect ), 0.0 );', `${LP.EMISSION}u`, { direct: LP.DIFFUSE });
       wrap('resultColor += vec4f( ${ clampPathContributionFunc }( gxDirect, bounce + 1u, clampDirect, clampIndirect ), 0.0 );', lpLightSlot('gxLightIndex'), { direct: LP.DIFFUSE });
       replaceN(/\n(\t+)let gxScatter = true;/, (m, tab) => `${m}${lpClassify(tab, lpKind(0))}`);
       // the background seen through traced Gaussians (rindr-gaussians)
@@ -1795,7 +1967,7 @@ export default defineConfig({
     headers: isolationHeaders,
   },
   vite: {
-    plugins: [tailwindcss(), threeCompileStatePatch(), cameraRayPatch(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), bucketPatch(), ptStandInPatch(), openPbrPatch(), mediumPatch(), glassBouncesPatch(), motionJitterPatch(), cloudPatch(), gaussianPatch(), woolPatch(), soapPatch(), edgesPatch(), glassShadowPatch(), causticsPatch(), glassSplitPatch(), nanGuardPatch(), adaptivePatch(), lightPassesPatch()],
+    plugins: [tailwindcss(), threeCompileStatePatch(), cameraRayPatch(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), stableKernelPatch(), bucketPatch(), ptStandInPatch(), openPbrPatch(), mediumPatch(), glassBouncesPatch(), motionJitterPatch(), cloudPatch(), gaussianPatch(), woolPatch(), soapPatch(), edgesPatch(), emittersPatch(), glassShadowPatch(), radianceCachePatch(), causticsPatch(), glassSplitPatch(), nanGuardPatch(), adaptivePatch(), lightPassesPatch()],
     server: { headers: isolationHeaders },
     preview: { headers: isolationHeaders },
     worker: { format: 'es' },

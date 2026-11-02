@@ -11,6 +11,10 @@ export const PATHTRACING = {
     // (standard error / √mean of the tone-compressed luminance, per 8 × 8 block incl. neighbours) – maxSamples is the
     // upper limit then; at least `minSamples` everywhere (at most half the maximum)
     adaptive: { enabled: true, threshold: 0.08, minSamples: 16 },
+    // radiance cache (radiance-cache.js): diffuse light kept in a world-space grid across camera moves; a cell is about
+    // 2^−minRate pixels on screen where it lies (power-of-two sizes by the distance to the camera), finer where other
+    // geometry is near (corners) down to 2^−maxRate pixels; cleared when fuller than `fill`
+    radianceCache: { enabled: true, minRate: -4, maxRate: -1, glossy: true, fill: 0.7, train: 0.25, minCount: 16 },
     renderScale: 1,           // resolution relative to the window (0.25–1); < 1 is upscaled via FSR
     hidpi: true,                // HiDPI screens: false = traced at the CSS pixel size (1/devicePixelRatio of the canvas) and
                                 // upscaled, true = every device pixel (GUI "Full HiDPI resolution")
