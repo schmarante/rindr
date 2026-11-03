@@ -8,7 +8,8 @@
 // three.js r187 does the same itself (Renderer.compileAsync: a state snapshot per queued item, reapplied whenever
 // precompilation continues; pipelines compile in parallel) – what is left is the one place to call it from.
 
-/** renderer.compileAsync(scene, camera) for the current renderer state (target, MRT) */
-export function compileAsync(renderer, scene, camera) {
-    return renderer.compileAsync(scene, camera);
+/** renderer.compileAsync(scene, camera) for the current renderer state (target, MRT). `scene` may also be a single
+ *  object of `targetScene` – only its subtree is compiled, lights and cache keys come from `targetScene`. */
+export function compileAsync(renderer, scene, camera, targetScene = null) {
+    return renderer.compileAsync(scene, camera, targetScene);
 }

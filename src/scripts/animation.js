@@ -139,6 +139,14 @@ export class ModelAnimation {
         this._followParts();
     }
 
+    /** Materials the live puppet shows (after startLive) – other ones need their skinned shader variants compiled
+     *  (viewer.js goLive) */
+    liveKey() {
+        const ids = [];
+        for (const mesh of this.live.keys()) for (const m of [mesh.material].flat()) ids.push(m?.id ?? '-');
+        return ids.join(',');
+    }
+
     // the puppet's deformed meshes show the materials of our meshes
     _syncMaterials() {
         for (const [mesh, its] of this.live) {

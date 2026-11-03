@@ -56,6 +56,7 @@ import { setFisheye, RasterFisheye, patchRaycaster, viewAngle, setViewAngle, fis
 import { PropertiesPanel } from './properties.js';
 import { Slicer, isClosedGeometry } from './slicer.js';
 import { RenderBatcher, BATCH_LAYER } from './render-batcher.js';
+import { compileAsync } from './shader-compile.js';
 import { ClusterLods } from './lod/lod-store.js';
 import { SplatShadow } from './splat/splat-shadow.js';
 import { SplatComposite } from './splat/splat-composite.js';
@@ -922,7 +923,7 @@ skeletonView.addEventListener('dragstart', e => {
     controls.enabled = false;
     if (animPlaying) setAnimPlaying(false);
     pathTracing.pauseForEdit();
-    e.detail.anim.startLive();
+    goLive(e.detail.anim);
 });
 skeletonView.addEventListener('change', () => { loadRender.dirty = true; });
 skeletonView.addEventListener('dragend', e => {
@@ -2493,7 +2494,7 @@ const playbar = createPlaybar(document.getElementById('playbar'), {
             animScrubbing = true;
             setAnimPlaying(false);
             pathTracing.pauseForEdit();
-            clipAnims().forEach(a => a.anim.startLive());   // GPU skinning while scrubbing
+            clipAnims().forEach(a => goLive(a.anim));   // GPU skinning while scrubbing
         }
         clipAnims().forEach(a => a.anim.setTime(time));
         loadRender.dirty = true;
@@ -2509,6 +2510,7 @@ function addAnimation(anim, owner) {
     animations.push({ anim, owner });
     anim.setTime(time);
     updatePlaybar();
+    precompileLive(anim);
 }
 // models with animation clips (the play bar); models with morph targets only are in `animations` too
 const clipAnims = () => animations.filter(a => a.anim.clips.length);
@@ -2544,11 +2546,62 @@ function setAnimPlaying(play) {
     // the path tracer, which does not show the running animation) – back to HQ on pause
     if (play && viewMode === 'hq') { setViewMode('default'); hqBeforePlay = true; }
     if (play) finishPoseBlend();
-    if (play) { animLast = performance.now(); pathTracing.pauseForEdit(); clipAnims().forEach(a => a.anim.startLive()); }
+    if (play) { animLast = performance.now(); pathTracing.pauseForEdit(); clipAnims().forEach(a => goLive(a.anim)); }
     else settleAnimation();
     if (!play && hqBeforePlay) { hqBeforePlay = false; setViewMode('hq'); }
     updatePlaybar();
 }
+// Show a model's deformed parts live (play, scrub, joint drag, pose blend, morph slider). The first time with these
+// materials (and view mode / lens target) the puppet's skinned meshes need new shader variants (vertex shader with the
+// bone matrices): built in the first live frame, three.js creates their pipelines synchronously – the GPU process
+// blocked and the page froze (FBX figure with 5 maps: 1.1 s with a warm shader cache, much longer without; playing
+// again was smooth). Instead the next frame only compiles them like the first Basic/Default (announcePrepare):
+// compileLive – the puppet alone, in the raster context and for the AO pre-pass, pipelines asynchronous; the canvas
+// keeps the previous image, the animation clock and a pose blend wait.
+function goLive(anim) {
+    anim.startLive();
+    if (!anim.isLive) return;   // node animation only: nothing skinned
+    const key = liveCompileKey(anim);
+    if (anim.compiledKey !== key) {
+        anim.compiledKey = key;
+        prepare.live.add(anim);
+        prepare.shown = true;
+    } else if (anim.compiling) {   // precompileLive still running: wait for it the same way
+        prepare.jobs++;
+        prepare.shown = true;
+        anim.compiling.finally(() => { prepare.jobs--; loadRender.force = true; });
+    }
+}
+const liveCompileKey = anim => `${anim.liveKey()}|${viewMode === 'hq' ? 'default' : viewMode}|${lens.active ? 1 : 0}`;
+// After loading, in idle time: the same compile ahead, so even the first play starts at once. The puppet hangs in
+// the scene only while three.js collects it (synchronously in the call) – no frame is drawn in between. Only models
+// with clips (play bar): with morph targets the compile also builds three's morph texture in one synchronous step
+// (head with 7 shapes: long tasks of 0.8 s + 3 × 0.15 s right after loading) – a morph-only model pays that at its
+// first slider move instead (goLive), when the user expects work; a model with clips and morphs pays it here.
+function precompileLive(anim) {
+    if (!anim.clips.length) return;
+    const run = () => {
+        if (!animations.some(a => a.anim === anim)) return;   // model replaced meanwhile
+        if (loading || preparing() || anim.isLive) { setTimeout(() => whenIdle(run, 2000), 500); return; }
+        anim.startLive();
+        try {
+            if (!anim.isLive) return;
+            const key = liveCompileKey(anim);
+            if (anim.compiledKey === key) return;
+            anim.compiledKey = key;
+            const t0 = performance.now();
+            anim.compiling = compileLive([anim])
+                .then(() => debugLog(`[Animation] live shaders compiled in ${(performance.now() - t0).toFixed(0)} ms`))
+                .catch(err => { anim.compiledKey = null; console.warn('[Animation] shader precompile failed:', err); })
+                .finally(() => { anim.compiling = null; });
+        } finally {
+            anim.stopLive();
+        }
+    };
+    whenIdle(run, 3000);
+}
+const whenIdle = (fn, timeout) => window.requestIdleCallback ? requestIdleCallback(fn, { timeout }) : setTimeout(fn, 500);
+
 // paused: the path tracer renders the current frame (deformed meshes: new BVHs + scene)
 function settleAnimation(list = clipAnims(), options) {
     list.forEach(a => a.anim.settle(options));
@@ -2586,7 +2639,7 @@ const morphApi = {
     set(entry, name, value) {
         const anim = animOf(entry);
         if (!anim) return;
-        if (morphEditing !== anim) { morphEditing = anim; pathTracing.pauseForEdit(); anim.startLive(); }
+        if (morphEditing !== anim) { morphEditing = anim; pathTracing.pauseForEdit(); goLive(anim); }
         anim.setMorph(name, value);
         loadRender.dirty = true;
     },
@@ -2651,7 +2704,7 @@ function blendPose(anim, values, { partial = false, onDone } = {}) {
     if (!(ms > 0)) { applyPose(anim, values, { partial }); onDone?.(); return; }
     const from = anim.bones.map(b => [...b.position.toArray(), ...b.quaternion.toArray()]);
     pathTracing.pauseForEdit();
-    anim.startLive();
+    goLive(anim);
     let to = anim.poseTargets(values, { partial });
     if (!Object.keys(values).length && anim.clips.length) {
         // back to the clip's pose at the current time: computed on the puppet, then the start posture again
@@ -2666,6 +2719,7 @@ function blendPose(anim, values, { partial = false, onDone } = {}) {
 function stepPoseBlend(now) {
     if (!poseBlend) return;
     const { anim, from, to, ms } = poseBlend;
+    if (preparing()) { poseBlend.last = now; return; }   // waits for the puppet's shaders (goLive)
     if (poseBlend.last !== null) poseBlend.elapsed += Math.min(now - poseBlend.last, 50);
     poseBlend.last = now;
     const t = Math.min(poseBlend.elapsed / ms, 1), e = t * t * (3 - 2 * t);
@@ -2809,6 +2863,7 @@ function setModelMorphs(rm, values) {
 let animUiLast = 0;
 function stepAnimation(now) {
     if (!animPlaying) return;
+    if (preparing()) { animLast = now; return; }   // the puppet's shaders compile (goLive): the clock waits
     const dt = Math.min((now - animLast) / 1000, 0.5);   // real time; at most 0.5 s per frame (inactive tab)
     animLast = now;
     clipAnims().forEach(a => a.anim.update(dt));
@@ -4560,7 +4615,8 @@ function setViewMode(mode) {
 // with pauses and creates the pipelines asynchronously. Until done no frame is drawn – the canvas keeps the previous image, the status shows
 // "Übernehme Szene", the page stays responsive.
 const preparedModes = new Set();
-const prepare = { compile: false, jobs: 0, shown: false, generation: 0 };
+const prepare = { compile: false, live: new Set(), jobs: 0, shown: false, generation: 0 };
+const preparing = () => prepare.jobs > 0 || prepare.compile || prepare.live.size > 0;
 function announcePrepare() {
     prepare.compile = true;
     prepare.shown = true;
@@ -4569,6 +4625,21 @@ function compileRaster() {
     if (lens.active) lens.begin();   // the raster view draws into the lens target then (other pipelines)
     try {
         return batcher.compileAsync(scene, camera);
+    } finally {
+        renderer.setRenderTarget(null);
+    }
+}
+// the live puppets only (goLive): their subtree with the scene's lights, raster view + AO pre-pass
+function compileLive(anims) {
+    if (lens.active) lens.begin();
+    try {
+        const jobs = [];
+        for (const anim of anims) {
+            if (!anim.isLive) continue;
+            const compile = () => compileAsync(renderer, anim.container, camera, scene);
+            jobs.push(compile(), rasterAO.compile(scene, slicer.group, compile));
+        }
+        return Promise.all(jobs);
     } finally {
         renderer.setRenderTarget(null);
     }
@@ -6620,11 +6691,15 @@ function renderFrame() {
     }
     updateShadowMaps();
     if (sssCheck && !sssBlock) syncSssFields();
-    if (prepare.compile) {
+    if (prepare.compile || prepare.live.size) {
+        // the whole raster view includes live puppets (not their AO variants – they compile in their first frame)
+        const live = [...prepare.live];
+        const task = prepare.compile ? compileRaster : () => compileLive(live);
         prepare.compile = false;
+        prepare.live.clear();
         prepare.jobs++;
         const t0 = performance.now();
-        Promise.resolve().then(compileRaster).catch(err => console.warn('[Render] shader precompile failed:', err)).finally(() => {
+        Promise.resolve().then(task).catch(err => console.warn('[Render] shader precompile failed:', err)).finally(() => {
             prepare.jobs--;
             loadRender.force = true;
             debugLog(`[Render] shaders compiled in ${(performance.now() - t0).toFixed(0)} ms`);
