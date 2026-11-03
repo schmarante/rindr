@@ -6612,8 +6612,13 @@ if (new URLSearchParams(location.search).has('debug')) {
         });
         // cluster LOD section in the debug display (threshold, on/off, colours by the share of triangles drawn)
         if (batcher.lods) import('./lod/lod-debug.js').then(m => m.attachLodDebug(debugStats.root, { batcher }));
+        // ray cost heat map (BVH work of the path tracer's first hit per pixel – debug-raycost.js)
+        import('./debug-raycost.js').then(m => {
+            rayCost = m.attachRayCostDebug(debugStats.root, { renderer, pathTracing, pickHit, startHQ: () => { if (viewMode !== 'hq') setViewMode('hq'); } });
+        });
     });
 }
+let rayCost = null;
 // state that follows the camera – every frame, and on a render client once the scene's camera is set (a client in a
 // background tab gets no frames: its vignette stayed oriented to the start camera → its buckets brighter/darker)
 function syncViewDependents() {
@@ -6884,6 +6889,7 @@ function renderFrame() {
         updatePathTracingStatus();
         return;
     }
+    rayCost?.draw(camera);   // ?debug heat map over the picture (not into captures/exports above)
     highlighter.render();
     lightHelper.update(selection?.kind === 'light' && transformer.object ? selection.object : null, lightSize);
     updateCameraDirty();   // active camera: "(not saved)" once the view differs from it

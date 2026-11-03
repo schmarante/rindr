@@ -1802,6 +1802,32 @@
         "openSettings": "Open settings"
     },
     "debugStats": {
+        "rayCost": {
+            "title": "Ray cost (first hit, path tracer BVH)",
+            "enabled": "Heat map",
+            "metric": {
+                "label": "Metric",
+                "boxes": "Box tests",
+                "tris": "Triangle tests",
+                "objects": "Clusters entered"
+            },
+            "scale": "Scale up to",
+            "scaleAuto": "auto (99 %)",
+            "order": {
+                "label": "Order",
+                "sign": "as path tracer (direction)",
+                "distance": "nearer box first"
+            },
+            "row": {
+                "boxes": "Boxes    median {p50} · 95 % {p95} · 99 % {p99} · max {max}",
+                "tris": "Triangles median {p50} · 95 % {p95} · 99 % {p99} · max {max}",
+                "objects": "Clusters median {p50} · 95 % {p95} · 99 % {p99} · max {max}"
+            },
+            "mouse": "Mouse    {boxes} boxes · {tris} triangles · {objects} clusters · {part}",
+            "background": "background",
+            "waiting": "Waiting for the HQ scene …",
+            "notCounted": "not counted: wool fibres, clouds, splats"
+        },
         "lod": {
             "enabled": "LOD on",
             "threshold": "Error px",

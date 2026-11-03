@@ -1802,6 +1802,32 @@
         "openSettings": "Einstellungen öffnen"
     },
     "debugStats": {
+        "rayCost": {
+            "title": "Strahlkosten (erster Treffer, BVH des Pathtracers)",
+            "enabled": "Wärmebild",
+            "metric": {
+                "label": "Kennzahl",
+                "boxes": "Box-Tests",
+                "tris": "Dreieckstests",
+                "objects": "Cluster betreten"
+            },
+            "scale": "Skala bis",
+            "scaleAuto": "auto (99 %)",
+            "order": {
+                "label": "Reihenfolge",
+                "sign": "wie Pathtracer (Richtung)",
+                "distance": "nähere Box zuerst"
+            },
+            "row": {
+                "boxes": "Boxen    Median {p50} · 95 % {p95} · 99 % {p99} · max {max}",
+                "tris": "Dreiecke Median {p50} · 95 % {p95} · 99 % {p99} · max {max}",
+                "objects": "Cluster  Median {p50} · 95 % {p95} · 99 % {p99} · max {max}"
+            },
+            "mouse": "Maus     {boxes} Boxen · {tris} Dreiecke · {objects} Cluster · {part}",
+            "background": "Hintergrund",
+            "waiting": "Wartet auf die HQ-Szene …",
+            "notCounted": "nicht gezählt: Wollfasern, Wolken, Splats"
+        },
         "lod": {
             "enabled": "LOD an",
             "threshold": "Fehler px",
