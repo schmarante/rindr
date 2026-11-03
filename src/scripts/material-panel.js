@@ -11,11 +11,12 @@
 //    process (the whole browser window froze now and then)
 import { messageDialog } from './dialog.js';
 import { materialDragData, libraryDragData } from './material-transfer.js';
-import { PARAMS, buildMaterial } from './material-manager.js';
+import { buildMaterial } from './material-manager.js';
 import { thumbKey } from './material-thumbs.js';
-import { shadingGraph } from './material-graph.js';
+import { shadingGraph, graphDrivenParams, NODE_TYPES, nodeLabel, paramLabel, optionLabel, portLabel } from './material-graph.js';
+import { materialGroups, graphValue } from './material-groups.js';
 import { MATERIALS } from './config.js';
-import { MATERIAL_TYPES, materialType, typeShows, typeAllowsGraph } from './material-types.js';
+import { MATERIAL_TYPES, materialType, typeAllowsGraph } from './material-types.js';
 import { MATERIAL_PRESETS, PRESET_CATEGORIES, presetName, presetCategoryLabel, libraryComplete, loadLibraryPresets } from './material-presets.js';
 import { t, has } from './i18n.js';
 import { colorField, SELECT, CHECKBOX } from './ui-controls.js';
@@ -513,30 +514,97 @@ export class MaterialPanel {
             frag.append(el('div', 'mb-1 text-white/50', t('materials.panel.importedTextures', { names })));
         }
 
-        if (def.graph?.nodes?.length) {
-            frag.append(el('div', 'mb-1 text-white/50', t('materials.panel.graphControlled')));
+        // the material's groups – the same list as the node editor's material output (material-groups.js): a value
+        // the node graph drives stays in its field, locked and showing the graph's value (user: "das Feld deaktivieren
+        // und mit dem jeweiligen Wert füllen"); the graph's settings and its inputs without a value in their groups
+        const withGraph = !!def.graph?.nodes?.length && typeAllowsGraph(type);
+        const linked = new Map();   // graph input → its source node
+        if (withGraph) {
+            const out = def.graph.nodes.find(n => n.type === 'output');
+            for (const l of def.graph.links) if (l.to.node === out?.id) linked.set(l.to.port, def.graph.nodes.find(n => n.id === l.from.node));
         }
-
-        // Standard: all its parameters in collapsible groups; a special type: only its few values, without groups
-        let group = null, box = null;
-        const grouped = type === 'standard';
-        for (const p of PARAMS) {
-            if (!typeShows(type, p.key)) continue;
-            if (!grouped) { frag.append(this._paramRow(def, p)); continue; }
-            if (p.group !== group) {
-                group = p.group;
-                const open = this.openGroups.has(group);
-                const head = el('button', 'mt-1 flex w-full items-center gap-1 text-left text-white/60 hover:text-white');
-                head.innerHTML = icon('caret-right', `size-3 ${open ? 'rotate-90' : ''}`);
-                head.append(t(`materials.paramGroups.${group}`));
-                head.dataset.group = group;
-                frag.append(head);
-                box = el('div', open ? 'mt-0.5' : 'hidden');
-                frag.append(box);
+        if (linked.size) frag.append(el('div', 'mb-1 text-white/50', t('materials.panel.graphControlled')));
+        const driven = withGraph ? graphDrivenParams(def.graph, def.render?.maps) : {};   // factors: the value stays
+        const outParams = withGraph ? { ...defaultOutputParams(), ...def.graph.nodes.find(n => n.type === 'output')?.params } : {};
+        for (const g of materialGroups(type, withGraph)) {
+            const rows = g.rows.filter(r => r.param || r.setting || linked.has(r.input));   // an input without a value: only linked
+            if (!rows.length) continue;
+            const open = this.openGroups.has(g.key);
+            const head = el('button', 'mt-1 flex w-full items-center gap-1 text-left text-white/60 hover:text-white');
+            head.innerHTML = icon('caret-right', `size-3 ${open ? 'rotate-90' : ''}`);
+            head.append(t(`materials.paramGroups.${g.key}`));
+            head.dataset.group = g.key;
+            const box = el('div', open ? 'mt-0.5' : 'hidden');
+            for (const r of rows) {
+                if (r.setting) box.append(this._settingRow(def, r.setting, outParams[r.setting]));
+                else if (r.param) {
+                    const src = r.input && linked.get(r.input);
+                    box.append(this._paramRow(def, r.param, src ? { node: src.id, type: src.type, factor: r.factor || !!driven[r.param.key]?.factor,
+                        value: graphValue(this.manager.get(def.id), r.input, r.param) } : null));
+                } else box.append(this._inputRow(def, r.input, linked.get(r.input)));
             }
-            box.append(this._paramRow(def, p));
+            frag.append(head, box);
         }
         this.editor.replaceChildren(frag);
+    }
+
+    /** the baked values of the node graph are there (graph-apply.js): the locked fields show them */
+    refreshValues(id) {
+        if (id !== this.current || this.tab !== 'scene' || this.editor.contains(document.activeElement)) return;
+        this._renderEditor();
+    }
+
+    // a setting of the node graph's output (tile size, resolution, relief, displacement)
+    _settingRow(def, key, value) {
+        const p = NODE_TYPES.output.params.find(q => q.key === key);
+        const row = el('div', 'mb-1 grid grid-cols-[5.5rem_1fr] items-center gap-1.5');
+        const label = el('span', 'truncate text-white/60', paramLabel('output', key));
+        label.title = t(`materials.graphParams.${key}`);
+        const ctl = el('div', 'flex min-w-0 items-center gap-1');
+        const set = v => this.manager.setOutputParams(def.id, { [key]: v });
+        if (p.kind === 'select') {
+            const sel = el('select', SELECT);
+            for (const o of p.options) sel.append(new Option(optionLabel('output', key, o), o, false, o === value));
+            sel.onchange = () => set(sel.value);
+            ctl.append(sel);
+        } else {
+            const n = el('input', INPUT);
+            n.type = 'number';
+            Object.assign(n, { min: p.min, max: p.max, step: p.step, value: round(value) });
+            // the tile size spans 10–10 000 mm: only the field (a slider over that range is useless)
+            if (key !== 'size') {
+                const r = el('input', 'min-w-0 flex-1 accent-sky-400');
+                r.type = 'range';
+                Object.assign(r, { min: p.min, max: p.max, step: p.step, value });
+                r.oninput = () => { n.value = round(Number(r.value)); set(Number(r.value)); };
+                n.onchange = () => { r.value = n.value; set(Number(n.value)); };
+                ctl.append(r);
+            } else n.onchange = () => set(Math.min(p.max, Math.max(p.min, Number(n.value) || p.default)));
+            ctl.append(n);
+        }
+        row.append(label, ctl);
+        return row;
+    }
+
+    // an input of the node graph without a value of its own (normal map, relief …), linked: its node
+    _inputRow(def, input, src) {
+        const row = el('div', 'mb-1 grid grid-cols-[5.5rem_1fr] items-center gap-1.5');
+        const label = el('span', 'truncate text-white/60', portLabel('output', 'inputs', input));
+        label.title = label.textContent;
+        row.append(label, this._drivenLink(def, { node: src.id, type: src.type }, false));
+        return row;
+    }
+
+    // a value the graph drives: its node (click → node editor, the node shown)
+    _drivenLink(def, d, small, factor = false) {
+        const name = d.type === 'importMap' ? t('nodeEditor.imageFromFileNode') : nodeLabel(d.type);
+        const b = el('button', small
+            ? 'shrink-0 rounded bg-sky-500/15 px-1 text-sky-200 hover:bg-sky-500/30'
+            : 'min-w-0 flex-1 truncate rounded bg-sky-500/15 px-1.5 py-0.5 text-left text-sky-200 hover:bg-sky-500/30');
+        b.textContent = factor ? '×' : small ? '←' : `← ${name}`;
+        b.title = t(factor ? 'materials.panel.drivenFactorTitle' : 'materials.panel.drivenTitle', { node: name });
+        b.onclick = () => this.hooks.onOpenNodeEditor?.(def.id, d.node);
+        return b;
     }
 
     // material type (material-types.js): Standard or one special kind – decides the parameters shown
@@ -555,10 +623,12 @@ export class MaterialPanel {
         return row;
     }
 
-    _paramRow(def, p) {
+    // a value of the material; `link` = { node, type, value }: the node graph drives it – the field locked, showing the
+    // graph's value (a constant, the mean of a baked map), a link to its node behind it
+    _paramRow(def, p, link = null) {
         const row = el('div', 'mb-1 grid grid-cols-[5.5rem_1fr] items-center gap-1.5');
         const ctl = el('div', 'flex min-w-0 items-center gap-1');
-        const value = def.params[p.key] ?? p.default;
+        const value = link && !link.factor ? link.value ?? def.params[p.key] ?? p.default : def.params[p.key] ?? p.default;
         const set = v => this.manager.setParams(def.id, { [p.key]: v });
         if (p.type === 'color') {
             ctl.append(colorField(value, { onInput: set }));
@@ -581,6 +651,9 @@ export class MaterialPanel {
             n.onchange = () => { r.value = n.value; set(Number(n.value)); };
             ctl.append(r, n);
         }
+        // a map that multiplies the value (grass masks, a picture from the file): the value stays editable, × behind it
+        if (link?.factor) ctl.append(this._drivenLink(def, link, true, true));
+        else if (link) lockControls(ctl, this._drivenLink(def, link, true));
         row.append(el('span', 'truncate text-white/60', t(`materials.params.${p.key}`)), ctl);
         return row;
     }
@@ -709,6 +782,16 @@ function el(tag, className, text) {
     if (text !== undefined) e.textContent = text;
     return e;
 }
+
+/** controls of a value the node graph drives: locked (inputs disabled, colour field not clickable), `link` behind them */
+export function lockControls(ctl, link) {
+    for (const input of ctl.querySelectorAll('input, select, button')) input.disabled = true;
+    for (const child of ctl.children) child.classList.add('pointer-events-none', 'opacity-50');
+    ctl.title = link.title;
+    ctl.append(link);
+}
+
+const defaultOutputParams = () => Object.fromEntries(NODE_TYPES.output.params.map(p => [p.key, p.default]));
 
 function round(v) {
     return Math.round(v * 100) / 100;

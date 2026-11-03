@@ -269,6 +269,25 @@ export class MaterialManager extends EventTarget {
     }
 
     /**
+     * Settings of the graph's output node (tile size, resolution, relief, displacement) – edited in the material panel.
+     * One undo step per setting while it is dragged; `outside`: the open node editor takes the graph over.
+     */
+    setOutputParams(id, params) {
+        const e = this.get(id);
+        const out = e?.def.graph?.nodes?.find(n => n.type === 'output');
+        if (!out) return;
+        const before = snapshot(e);
+        const graph = structuredClone(e.def.graph);
+        const o = graph.nodes.find(n => n.type === 'output');
+        o.params = { ...o.params, ...params };
+        e.def.graph = graph;
+        e.def.modified = true;
+        this._apply(e);
+        this._emit('update', { id, outside: true });
+        this._recordEdit(id, t('materials.undo.editGraph'), before, `output:${id}:${Object.keys(params).join()}`);
+    }
+
+    /**
      * Textures of an import material that were missing at import and arrived later (relinked in place): maps into
      * render.maps, the slots out of render.missing, base colour back to the shader's tint (it was toned down while
      * the image was missing) unless edited. An unedited material gets its import graph again (the image as a node);

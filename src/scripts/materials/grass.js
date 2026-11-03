@@ -30,6 +30,25 @@ const FADE = select(fade.greaterThanEqual(0), dither.lessThan(fade), dither.grea
 // grass parameters of a material (RindrMaterial.setGrass) or null
 const grassOf = material => (material && !Array.isArray(material) ? material.userData?.grass ?? null : null);
 
+// the maps of the material's node graph the blades read (graph-apply.js): colour (map) and the masks
+function grassMaps(material) {
+    const out = {};
+    for (const [key, prop] of [['color', 'map'], ['height', 'grassHeightMap'], ['density', 'grassDensityMap'], ['dry', 'grassDryMap']]) {
+        const tex = material?.[prop];
+        if (tex?.image?.data) out[key] = tex;
+    }
+    return out;
+}
+// …as plain data for the worker (copies – the textures keep theirs), placed as on the model; null without maps
+function mapData(material) {
+    const maps = grassMaps(material);
+    if (!Object.keys(maps).length) return null;
+    return Object.fromEntries(Object.entries(maps).map(([k, t]) => {
+        if (t.matrixAutoUpdate) t.updateMatrix();
+        return [k, { data: new Uint8Array(t.image.data), w: t.image.width, h: t.image.height, repeat: [t.repeat.x, t.repeat.y], offset: [t.offset.x, t.offset.y] }];
+    }));
+}
+
 /** Blades the whole scene may have on this device */
 export function grassBudget() {
     return Math.max(BLADES_MIN, Math.min(BLADES_MAX, Math.floor(memoryBudget() * BUDGET_SHARE / BYTES_PER_BLADE)));
@@ -152,7 +171,9 @@ export class GrassSystem {
             // key: geometry and its pose (animation.js writes the paused pose into the positions), height in 2 % steps
             // (scaling a little keeps the blades), density, dry share, budget
             const shape = `${w.o.geometry.uuid}@${w.o.geometry.attributes.position.version}`;
-            const key = [shape, Math.round(Math.log(w.height) / Math.log(1.02)), w.g.density, w.g.dry, maxBlades].join('|');
+            // the node graph's maps (colour, masks): another baked map = other blades
+            const maps = Object.values(grassMaps(w.o.material)).map(t => t.uuid).join(',');
+            const key = [shape, Math.round(Math.log(w.height) / Math.log(1.02)), w.g.density, w.g.dry, maxBlades, maps].join('|');
             keep.add(w.o);
             const item = this.items.get(w.o) ?? { key: null, shape: null, mesh: null, old: null, fadeStart: undefined, job: 0 };
             this.items.set(w.o, item);
@@ -168,7 +189,7 @@ export class GrassSystem {
             }
             item.key = key;
             item.shape = shape;
-            this._build(w.o, item, { height: w.height, density: w.g.density, dry: w.g.dry, maxBlades }, Math.min(w.blades, maxBlades));
+            this._build(w.o, item, { height: w.height, density: w.g.density, dry: w.g.dry, maxBlades, maps: mapData(w.o.material) }, Math.min(w.blades, maxBlades));
         }
         for (const [source, item] of this.items) {
             if (keep.has(source)) continue;
@@ -202,8 +223,12 @@ export class GrassSystem {
         // world up in the mesh's own units (blades on slopes bend towards it)
         const up = new THREE.Vector3(0, 1, 0).transformDirection(_m.copy(source.matrixWorld).invert()).toArray();
         const index = geometry.index ? new Uint32Array(geometry.index.array) : null;
+        // the surface's UVs where the node graph's maps are read (none: the maps are left out)
+        const uv = params.maps && geometry.attributes.uv;
+        const uvs = uv ? Float32Array.from({ length: uv.count * 2 }, (_, i) => (i & 1 ? uv.getY(i >> 1) : uv.getX(i >> 1))) : null;
+        const transfer = [positions.buffer, index?.buffer, uvs?.buffer, ...Object.values(params.maps || {}).map(m => m.data.buffer)].filter(Boolean);
         const t0 = performance.now();
-        const grass = await this._run({ positions, index, up, ...params }, [positions.buffer, index?.buffer].filter(Boolean),
+        const grass = await this._run({ positions, index, up, uvs, ...params }, transfer,
             f => { if (job === item.job) this._setProgress(item, f); }).catch(err => { console.warn('Grass failed:', err); return null; });
         if (job !== item.job || this.items.get(source) !== item) return;
         this._setProgress(item, 1);
@@ -325,9 +350,11 @@ export class GrassSystem {
         const group = new THREE.Group();
         const sphere = new THREE.SphereGeometry(radius * 0.82, 64, 48);
         const base = new THREE.Mesh(sphere, material);
+        const maps = mapData(material);
         const g = grassBlades({
             positions: sphere.attributes.position.array, index: sphere.index.array,
             height: radius * 0.2, density: grass.density, dry: grass.dry, maxBlades: PREVIEW_BLADES,
+            uvs: maps ? sphere.attributes.uv.array : null, maps,
         });
         const geometry = new THREE.BufferGeometry();
         geometry.setAttribute('position', new THREE.BufferAttribute(g.positions, 3));

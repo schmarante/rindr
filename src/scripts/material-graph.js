@@ -72,6 +72,9 @@ export const NODE_TYPES = {
             { key: 'sheen', type: 'float' },
             { key: 'sheenRoughness', type: 'float' },
             { key: 'iridescence', type: 'float' },
+            // thin film thickness: a factor 0..1 on the material's thickness (iridescenceThicknessMap, raster + path
+            // tracer) – oil films, tarnish, soap film swirls
+            { key: 'iridescenceThickness', type: 'float' },
             { key: 'emissive', type: 'color' },
             { key: 'normal', type: 'color' },
             { key: 'ao', type: 'float' },
@@ -84,6 +87,11 @@ export const NODE_TYPES = {
             { key: 'coatNormal', type: 'color' },
             { key: 'coatHeight', type: 'float' },
             { key: 'alpha', type: 'float' },
+            // grass (material type grass – grass.js): factors 0..1 on blade height, density (share of blades kept) and dry
+            // share, read at each blade's root
+            { key: 'grassHeight', type: 'float' },
+            { key: 'grassDensity', type: 'float' },
+            { key: 'grassDry', type: 'float' },
         ],
         outputs: [],
         params: [
@@ -248,7 +256,24 @@ export const isUvMode = graph => hasDecal(graph) || !!graph?.nodes?.some(n => n.
 /** node with a picture of its own (image parameter set); any: the node type takes one, set or not */
 export const hasImage = (n, any = false) => !!NODE_TYPES[n?.type]?.params?.some(p => p.kind === 'image') && (any || !!n.params?.image);
 
-export const NODE_CATEGORIES = ['input', 'texture', 'color', 'value'];
+// node list of the editor: its groups in this order (nodes.categories.*) – every type in one (Nov. 2026: "texture" had
+// grown to ~30 entries, now split up; only the list, a graph does not store it)
+export const NODE_CATEGORIES = ['input', 'image', 'pattern', 'noise', 'shape', 'color', 'convert', 'value', 'logic'];
+const NODE_GROUPS = {
+    value: 'input', color: 'input', texcoord: 'input',
+    image: 'image', importMap: 'image', hexImage: 'image',
+    gradient: 'pattern', checker: 'pattern', tiles: 'pattern', dots: 'pattern', weave: 'pattern', waves: 'pattern', wood: 'pattern',
+    marble: 'pattern', cellular: 'pattern', dent: 'pattern', scratches: 'pattern', speckle: 'pattern',
+    noise: 'noise', unifiedNoise: 'noise', flakes: 'noise',
+    ramp4: 'shape', split: 'shape', circle: 'shape', line: 'shape', hexagon: 'shape', cloverleaf: 'shape', grid: 'shape',
+    crosshatch: 'shape', tiledCircles: 'shape', tiledHexagons: 'shape', tiledCloverleafs: 'shape',
+    mix: 'color', ramp: 'color', blend: 'color', hsvAdjust: 'color', saturate: 'color', contrast: 'color', colorCorrect: 'color',
+    randomColor: 'color', blur: 'color',
+    separate: 'convert', combine: 'convert', luminance: 'convert', heightToNormal: 'convert',
+    math: 'value', remap: 'value', invert: 'value', clamp: 'value', smoothstep: 'value', range: 'value', randomFloat: 'value',
+    compare: 'logic', switch: 'logic', logic: 'logic',
+};
+for (const [type, def] of Object.entries(NODE_TYPES)) if (NODE_GROUPS[type]) def.category = NODE_GROUPS[type];
 
 /** Display label of a node type */
 export const nodeLabel = type => t(`nodes.types.${type}.label`);
@@ -320,6 +345,41 @@ export const IMPORT_SLOTS = {
 };
 // input -> channel that can be passed through
 const PASS_PORT = Object.fromEntries(Object.values(IMPORT_SLOTS));
+
+// output input → the material parameter it replaces (material panel: the graph drives that value; node editor: the
+// value shown at an input that is not linked)
+export const INPUT_PARAMS = {
+    color: 'color', metalness: 'metalness', roughness: 'roughness', diffuseRoughness: 'diffuseRoughness',
+    anisotropy: 'anisotropy', anisotropyDirection: 'anisotropyRotation', specularIntensity: 'specularIntensity', specularColor: 'specularColor',
+    clearcoat: 'clearcoat', clearcoatRoughness: 'clearcoatRoughness', coatAnisotropy: 'clearcoatAnisotropy', coatAnisotropyDirection: 'clearcoatAnisotropyRotation',
+    coatColor: 'clearcoatColor', coatIor: 'clearcoatIor', coatDarkening: 'clearcoatDarkening', transmission: 'transmission',
+    transmissionColor: 'attenuationColor', transmissionDepth: 'attenuationDistance', sheen: 'sheen', sheenRoughness: 'sheenRoughness',
+    iridescence: 'iridescence', iridescenceThickness: 'iridescenceThickness', emissive: 'emissive',
+    grassHeight: 'grassHeight', grassDensity: 'grassDensity', grassDry: 'grassDry',
+};
+/** inputs whose map multiplies the material's value (it stays editable) – thin film thickness, the grass masks */
+export const FACTOR_INPUTS = new Set(['iridescenceThickness', 'grassHeight', 'grassDensity', 'grassDry']);
+/**
+ * Material parameters the graph drives (material panel): { param: { node, type, factor } } – node / type of the node at
+ * that output input; factor: the parameter still counts, multiplied (a picture from the file passed through as it is,
+ * the transmission depth – a factor on the material's depth). A picture from the file that is missing drives nothing.
+ * @param {{ [mapKey]: THREE.Texture }} [importMaps]  the material's textures from the file
+ */
+export function graphDrivenParams(graph, importMaps = {}) {
+    const out = graph?.nodes?.find(n => n.type === 'output');
+    if (!out) return {};
+    const nodes = new Map(graph.nodes.map(n => [n.id, n]));
+    const driven = {};
+    for (const l of graph.links) {
+        const param = l.to.node === out.id && INPUT_PARAMS[l.to.port];
+        const src = param && nodes.get(l.from.node);
+        if (!src) continue;
+        if (src.type === 'importMap' && !importMaps[src.params?.map]) continue;
+        const passed = src.type === 'importMap' && IMPORT_SLOTS[src.params?.map]?.[0] === l.to.port && PASS_PORT[l.to.port] === l.from.port;
+        driven[param] = { node: src.id, type: src.type, factor: passed || l.to.port === 'transmissionDepth' || FACTOR_INPUTS.has(l.to.port) };
+    }
+    return driven;
+}
 
 /**
  * Graph for an imported material: one image node from the file per texture, connected to its inputs

@@ -1742,7 +1742,16 @@ initMaterialTransfer(materialManager);
 materialManager.scene = scene;
 materialManager.history = history;
 // Node graphs: constants directly, textures are baked (then update the path tracer)
-const graphApplier = new GraphApplier(renderer, { onBaked: () => pathTracing.updateMaterials(), uvDomain: material => uvDomainOf(material) });
+const graphApplier = new GraphApplier(renderer, {
+    onBaked: entry => {
+        pathTracing.updateMaterials();
+        // the means of the new maps: the locked value fields of the material panel and the output node show them
+        materialPanel?.refreshValues?.(entry.def.id);
+        nodeEditor?.now?.refreshValues?.(entry.def.id);
+        grass?.invalidate?.();   // grass reads the colour and its masks at the blades' roots
+    },
+    uvDomain: material => uvDomainOf(material),
+});
 // UV range of the meshes using a material – a material with a decal (non-repeating picture) is baked over it once
 // (graph-apply.js); the box per geometry is cached
 function uvDomainOf(material) {
@@ -1853,7 +1862,7 @@ const materialPanel = new MaterialPanel(document.getElementById('materials'), ma
         assignMaterial(selection.object, id);
         materialPanel.setSelection(selection.object);
     },
-    onOpenNodeEditor: id => openNodeEditor?.(id),
+    onOpenNodeEditor: (id, nodeId) => openNodeEditor?.(id, nodeId),
     // an open node editor follows the material opened in the panel
     onCurrentChange: id => followNodeEditor(id),
     onMergeDuplicates: () => mergeDuplicateMaterials(),
@@ -1894,7 +1903,12 @@ const nodeEditor = lazy(async () => new (await import('./node-editor.js')).NodeE
     linkFiles: files => relinkFiles(files),
     replaceImportMap: (materialId, key, file) => replaceImportImage(materialId, key, file),
 }));
-function openNodeEditor(id) { nodeEditor.get().then(editor => editor.open(id)); }
+function openNodeEditor(id, nodeId) {
+    nodeEditor.get().then(editor => {
+        editor.open(id);
+        if (nodeId) requestAnimationFrame(() => editor.reveal(nodeId));   // laid out first (node sizes)
+    });
+}
 function followNodeEditor(id) { if (nodeEditor.now?.isOpen) nodeEditor.now.open(id); }
 
 // --- HDRI editor (hdri/hdri-editor.js): own procedural HDRIs, free window – loaded with its first opening ---

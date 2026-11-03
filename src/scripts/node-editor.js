@@ -10,8 +10,13 @@
 //  - Image files dropped onto a texture node become its picture
 import {
     NODE_TYPES, NODE_CATEGORIES, IMPORT_SLOTS, createGraph, createImportGraph, defaultParams,
-    nodeLabel, portLabel, paramLabel, optionLabel, categoryLabel, sliderRange, hasImage,
+    nodeLabel, portLabel, paramLabel, optionLabel, categoryLabel, sliderRange, hasImage, graphDrivenParams,
 } from './material-graph.js';
+import { materialGroups, graphValue } from './material-groups.js';
+import { lockControls } from './material-panel.js';
+
+// open groups of the node list (per browser)
+const GROUPS_KEY = 'rindr.nodeEditor.groups';
 import { mapLabel } from './material-panel.js';
 import { t } from './i18n.js';
 import { colorField, CHECKBOX } from './ui-controls.js';
@@ -51,6 +56,7 @@ export class NodeEditor {
         this.hooks = hooks;
         this.previews = new Map();       // node ID -> preview element (kept across re-renders)
         this.hiddenPreviews = new Map(); // material ID -> Set of node IDs with folded preview (this session)
+        this.outputSections = new Map(); // material ID -> Set of open sections of the output node (this session)
         this.previewRun = 0;
         hooks.onThumbReady?.(() => this._updateOutputPreview());
         // material previews wait while a mouse button is held (material-panel.js) – ask again on release
@@ -84,17 +90,31 @@ export class NodeEditor {
             clearOf: () => document.getElementById('materials') });
         this.window.apply();
 
-        // node list on the left, by category (click = add, drag onto the canvas = add at the drop point)
+        // node list on the left, by category (click = add, drag onto the canvas = add at the drop point); the groups
+        // fold (open ones remembered per browser – a per-viewer convenience)
         const add = root.querySelector('[data-add]');
+        let openGroups;
+        try { openGroups = new Set(JSON.parse(localStorage.getItem(GROUPS_KEY)) ?? ['input']); } catch { openGroups = new Set(['input']); }
         for (const cat of NODE_CATEGORIES) {
             const types = Object.entries(NODE_TYPES).filter(([, def]) => def.category === cat);
             if (!types.length) continue;
             const group = document.createElement('div');
-            group.className = 'mb-2';
-            const head = document.createElement('div');
-            head.className = 'px-1.5 pb-0.5 text-white/40';
-            head.textContent = categoryLabel(cat);
-            group.append(head);
+            group.className = 'mb-1';
+            const head = document.createElement('button');
+            head.className = 'flex w-full items-center gap-1 rounded px-1 py-0.5 text-left text-white/50 hover:bg-white/10 hover:text-white';
+            const items = document.createElement('div');
+            const show = on => {
+                head.innerHTML = icon('caret-right', `size-3 shrink-0 ${on ? 'rotate-90' : ''}`);
+                head.append(span('min-w-0 flex-1 truncate', categoryLabel(cat)), span('text-white/30', String(types.length)));
+                items.hidden = !on;
+            };
+            show(openGroups.has(cat));
+            head.onclick = () => {
+                if (openGroups.has(cat)) openGroups.delete(cat); else openGroups.add(cat);
+                show(openGroups.has(cat));
+                try { localStorage.setItem(GROUPS_KEY, JSON.stringify([...openGroups])); } catch { /* storage blocked */ }
+            };
+            group.append(head, items);
             for (const [type, def] of types) {
                 const b = document.createElement('button');
                 b.className = 'block w-full truncate rounded px-1.5 py-0.5 text-left text-white/80 hover:bg-white/15';
@@ -105,7 +125,8 @@ export class NodeEditor {
                 b.onclick = () => this.addNode(type);
                 b.ondragstart = e => { e.dataTransfer.setData(NODE_MIME, type); e.dataTransfer.effectAllowed = 'copy'; };
                 if (def.importOnly) b.dataset.importOnly = '';
-                group.append(b);
+                b.className += ' pl-5';
+                items.append(b);
             }
             add.append(group);
         }
@@ -168,7 +189,7 @@ export class NodeEditor {
             if (e.detail?.id !== this.materialId) return;
             // switched to a type without node editor (cloud, wool, ...): nothing to edit here
             if (!typeAllowsGraph(materialType(manager.get(this.materialId)?.def.params))) { this.close(); return; }
-            if (!e.detail.restored && !e.detail.linked) return;
+            if (!e.detail.restored && !e.detail.linked && !e.detail.outside) return;
             const graph = manager.get(this.materialId).def.graph;
             this.drag = null;
             this.graph = graph ? structuredClone(graph) : createGraph();
@@ -176,6 +197,12 @@ export class NodeEditor {
         };
         manager.addEventListener('update', takeOver);
         manager.addEventListener('layout', takeOver);   // undo of a node move: same material, nodes back in place
+        // a value changed elsewhere (material panel): the output node shows the material's values – drawn anew
+        manager.addEventListener('update', e => {
+            if (e.detail?.id !== this.materialId || this._ownChange || !this.isOpen || e.detail.restored || e.detail.linked || e.detail.outside) return;
+            const out = this.graph?.nodes.find(n => n.type === 'output');
+            if (out) this._redrawNode(out);
+        });
     }
 
     get isOpen() {
@@ -200,6 +227,20 @@ export class NodeEditor {
         const w = this.canvas.clientWidth || 900;
         this.pan = { x: out ? w - (out.x + 240) * this.zoom : 0, y: 0 };
         this.render();
+    }
+
+    /** show a node: centred in the view, briefly outlined (material panel: a value the graph drives) */
+    reveal(nodeId) {
+        const n = this.graph?.nodes.find(x => x.id === nodeId);
+        const el = n && this.world.querySelector(`[data-node="${CSS.escape(nodeId)}"]`);
+        if (!el) return;
+        const w = this.canvas.clientWidth || 900, h = this.canvas.clientHeight || 500;
+        this.pan = { x: w / 2 - (n.x + el.offsetWidth / 2) * this.zoom, y: h / 2 - (n.y + Math.min(el.offsetHeight, h * 0.8) / 2) * this.zoom };
+        this._applyView();
+        this._renderWires?.();
+        el.style.outline = '2px solid #38bdf8';   // over the node's own ring (a second ring class would clash)
+        el.style.outlineOffset = '2px';
+        setTimeout(() => { el.style.outline = ''; el.style.outlineOffset = ''; }, 1500);
     }
 
     // textures of the imported file addressable by the graph (map key -> texture)
@@ -278,7 +319,9 @@ export class NodeEditor {
 
     // hand the graph to the material (triggers evaluation/baking)
     commit(mergeKey) {
+        this._ownChange = true;
         if (this.materialId) this.manager.setGraph(this.materialId, structuredClone(this.graph), mergeKey);
+        this._ownChange = false;
         this._schedulePreviews();
     }
 
@@ -302,7 +345,9 @@ export class NodeEditor {
 
         const head = div(`flex cursor-move items-center justify-between rounded-t-md px-2 py-1 font-medium ${type.color}`);
         head.dataset.handle = 'move';
-        head.append(span('min-w-0 flex-1 truncate', nodeLabel(n.type)));
+        // the material output names the material's type – its inputs follow the type
+        const title = n.type === 'output' ? `${nodeLabel(n.type)} (${t(`materials.types.${materialType(this.manager.get(this.materialId)?.def.params)}`)})` : nodeLabel(n.type);
+        head.append(span('min-w-0 flex-1 truncate', title));
         const previewPort = this._previewPort(n);
         const folded = this.hiddenPreviews.get(this.materialId)?.has(n.id);
         if (previewPort) {
@@ -324,8 +369,12 @@ export class NodeEditor {
         el.append(head);
         if (previewPort && !folded) el.append(this._previewEl(n));
 
-        const body = div('flex flex-col gap-1 py-1.5');
         const params = { ...defaultParams(n.type), ...n.params };
+        if (n.type === 'output') {
+            el.append(this._outputBody(n, linked, params));
+            return el;
+        }
+        const body = div('flex flex-col gap-1 py-1.5');
         for (const o of type.outputs) {
             const row = div('relative flex items-center justify-end px-3');
             row.append(span('text-white/70', portLabel(n.type, 'outputs', o.key)), this._port(n.id, o.key, o.type, 'out'));
@@ -356,6 +405,132 @@ export class NodeEditor {
         }
         el.append(body);
         return el;
+    }
+
+    // The material output: the material's groups – the same list as the material panel (material-groups.js), for its
+    // type ("Material output (Toon)" – what the type does not use drops out). A row with a port: linked, its value
+    // field stays, locked, showing the graph's value (a constant, the mean of a baked map); values without a port
+    // (IOR, subsurface, edges …) are plain fields; the graph's settings in their groups. Groups fold per material for
+    // this session – base and the ones with links open at first; a folded group lets its links end at its head.
+    _outputBody(n, linked, params) {
+        const body = div('flex flex-col gap-0.5 py-1.5');
+        const entry = this.manager.get(this.materialId), def = entry?.def;
+        const groups = materialGroups(materialType(def?.params), true);
+        const driven = graphDrivenParams(this.graph, def?.render?.maps);   // factors keep their value editable
+        let open = this.outputSections.get(this.materialId);
+        if (!open) {
+            open = new Set(['base', ...groups.filter(g => g.rows.some(r => r.input && linked.has(n.id + ':' + r.input))).map(g => g.key)]);
+            this.outputSections.set(this.materialId, open);
+        }
+        const inputType = key => NODE_TYPES.output.inputs.find(i => i.key === key)?.type;
+        for (const g of groups) {
+            const isOpen = open.has(g.key);
+            const links = g.rows.filter(r => r.input && linked.has(n.id + ':' + r.input)).map(r => r.input);
+            const head = div('relative mt-0.5 flex cursor-pointer items-center gap-1 px-3 text-white/55 hover:text-white');
+            head.innerHTML = icon('caret-right', `size-3 shrink-0 ${isOpen ? 'rotate-90' : ''}`);
+            head.append(span('min-w-0 flex-1 truncate', t(`materials.paramGroups.${g.key}`)));
+            if (!isOpen && links.length) {
+                head.append(span('text-white/40', String(links.length)));
+                // the links of the folded group end here (the wires look for these ports)
+                for (const k of links) {
+                    const dot = this._port(n.id, k, inputType(k), 'in');
+                    dot.classList.add('pointer-events-none');
+                    head.append(dot);
+                }
+            }
+            head.onclick = () => {
+                if (open.has(g.key)) open.delete(g.key); else open.add(g.key);
+                this._redrawNode(n);
+            };
+            body.append(head);
+            if (!isOpen) continue;
+            for (const r of g.rows) {
+                const isLinked = !!r.input && linked.has(n.id + ':' + r.input);
+                const row = div(`relative flex min-h-5 items-center gap-1 px-3${r.input ? '' : ' pl-3'}`);
+                if (r.input) row.append(this._port(n.id, r.input, inputType(r.input), 'in'));
+                if (r.setting) {
+                    const p = NODE_TYPES.output.params.find(q => q.key === r.setting);
+                    if (p) row.append(this._param(n, p, params[r.setting]));
+                } else if (r.param) {
+                    const label = t(`materials.params.${r.param.key}`);   // the panel's name – the same rows in both
+                    const factor = isLinked && (r.factor || !!driven[r.param.key]?.factor);
+                    const value = isLinked && !factor ? graphValue(entry, r.input, r.param) ?? def?.params?.[r.param.key] : def?.params?.[r.param.key];
+                    const ctl = this._valueParam(label, r.param, value);
+                    if (factor) {
+                        // the map multiplies the value (grass masks, a picture from the file): it stays editable
+                        const note = span('shrink-0 text-sky-300', '×');
+                        note.title = t('materials.panel.drivenFactorTitle', { node: '' });
+                        ctl.append(note);
+                    } else if (isLinked) {
+                        const src = this.graph.links.find(l => l.to.node === n.id && l.to.port === r.input);
+                        const from = src && this.graph.nodes.find(x => x.id === src.from.node);
+                        const note = span('shrink-0 text-sky-300', '←');
+                        note.title = t('materials.panel.drivenTitle', { node: from ? (from.type === 'importMap' ? t('nodeEditor.imageFromFileNode') : nodeLabel(from.type)) : '' });
+                        lockControls(ctl, note);
+                    }
+                    row.append(ctl);
+                } else {
+                    const label = span(`min-w-0 flex-1 truncate ${isLinked ? 'text-white' : 'text-white/50'}`, portLabel('output', 'inputs', r.input));
+                    label.title = label.textContent;
+                    row.append(label);
+                }
+                body.append(row);
+            }
+        }
+        return body;
+    }
+
+    /** the baked values of the node graph are there (graph-apply.js): the locked fields of the output show them */
+    refreshValues(id) {
+        if (id !== this.materialId || !this.isOpen || this.root.contains(document.activeElement) && document.activeElement !== document.body) return;
+        const out = this.graph?.nodes.find(n => n.type === 'output');
+        if (out) this._redrawNode(out);
+    }
+
+    // a value of the material (material-manager PARAMS) as a row of the output node – changes it like the material panel
+    _valueParam(text, p, current) {
+        const wrap = div('flex min-w-0 flex-1 items-center gap-1');
+        const label = span('w-16 shrink-0 truncate text-white/60', text);
+        label.title = text;
+        const value = current ?? p.default;
+        const set = v => {
+            this._ownChange = true;   // the update that follows is this editor's own (no redraw under the pointer)
+            this.manager.setParams(this.materialId, { [p.key]: v });
+            this._ownChange = false;
+        };
+        if (p.type === 'color') {
+            wrap.append(label, colorField(value, { onInput: set, className: 'flex-1' }));
+        } else if (p.toggle) {
+            const c = document.createElement('input');
+            c.type = 'checkbox';
+            c.className = CHECKBOX;
+            c.checked = value > 0;
+            c.onchange = () => set(c.checked ? 1 : 0);
+            wrap.append(label, c);
+        } else {
+            const step = p.step ?? (p.max - p.min) / 100;
+            const r = document.createElement('input');
+            r.type = 'range';
+            Object.assign(r, { min: p.min, max: p.max, step, value });
+            r.className = 'min-w-0 flex-1 accent-sky-400';
+            const num = document.createElement('input');
+            num.type = 'number';
+            Object.assign(num, { min: p.min, max: p.max, step, value: Number(Number(value).toFixed(3)) });
+            num.className = INPUT;
+            r.oninput = () => { num.value = r.value; set(Number(r.value)); };
+            num.onchange = () => { r.value = num.value; set(Number(num.value)); };
+            wrap.append(label, r, num);
+        }
+        return wrap;
+    }
+
+    // one node drawn anew in place (the output: a section folded, values changed in the material panel)
+    _redrawNode(n) {
+        const old = this.world.querySelector(`[data-node="${CSS.escape(n.id)}"]`);
+        if (!old) return;
+        const linked = new Set(this.graph.links.map(l => l.to.node + ':' + l.to.port));
+        old.replaceWith(this._nodeEl(n, linked));   // the preview box is kept (this.previews) and moves along
+        this._renderWires();
     }
 
     // --- Previews ---

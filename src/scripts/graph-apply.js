@@ -32,6 +32,8 @@ const SLOTS = {
     sheen: { prop: 'sheen', map: 'sheenColorMap', unit: 1 },
     sheenRoughness: { prop: 'sheenRoughness', map: 'sheenRoughnessMap', unit: 1, alpha: true },
     iridescence: { prop: 'iridescence', map: 'iridescenceMap', unit: 1 },
+    // thin film thickness: three and the path tracer mix minimum → maximum by the map (green) – minimum 0 below
+    iridescenceThickness: { map: 'iridescenceThicknessMap' },
     emissive: { prop: 'emissive', map: 'emissiveMap', unit: '#ffffff', srgb: true },
     ao: { map: 'aoMap' },
     normal: { map: 'normalMap' },
@@ -49,6 +51,10 @@ const SLOTS = {
     coatDarkening: { map: 'coatDarkeningMap' },
     transmissionColor: { prop: 'attenuationColor', map: 'attenuationColorMap', unit: '#ffffff', srgb: true },
     transmissionDepth: { map: 'attenuationDistanceMap' },
+    // grass masks (grass.js reads them at each blade's root – no map of three's; factors on the material's values)
+    grassHeight: { map: 'grassHeightMap' },
+    grassDensity: { map: 'grassDensityMap' },
+    grassDry: { map: 'grassDryMap' },
 };
 // relief inputs: baked from a height into a normal map
 const RELIEF = new Set(['height', 'coatHeight']);
@@ -114,6 +120,28 @@ export class GraphApplier {
                 if (maps[key]) material[slot.map] = maps[key];   // until (re)baked: previous texture
                 textured.push(key);
             }
+        }
+        // thin film thickness from the graph: a factor on the material's thickness (maximum) – a map from 0, a constant
+        // as both ends (material-manager.js set minimum = maximum = the thickness; the soap film keeps its own)
+        const film = result.iridescenceThickness;
+        if (film && !material.soap) {
+            if (film.kind === 'const') material.iridescenceThicknessMinimum = material.iridescenceThicknessMaximum *= Math.max(0, film.value);
+            else material.iridescenceThicknessMinimum = 0;
+        }
+        // grass masks as constants: factors on the blades' height, density and dry share (RindrMaterial.setGrass just
+        // set them from the params)
+        const grass = material.userData.grass;
+        if (grass) for (const [input, field] of [['grassHeight', 'height'], ['grassDensity', 'density'], ['grassDry', 'dry']]) {
+            if (result[input]?.kind === 'const') grass[field] *= Math.max(0, result[input].value);
+        }
+        // what the graph gives its inputs – shown locked in the material panel and the output node (material-groups.js
+        // graphValue): constants here, the mean of a baked map after the bake (graphMeans, _bake)
+        const values = material.userData.graphValues = {};
+        for (const [key, r] of Object.entries(result)) if (r?.kind === 'const') values[key] = r.value;
+        for (const [name, key] of [['anisotropyConst', 'anisotropy'], ['coatAnisotropyConst', 'coatAnisotropy']]) {
+            const c = result[name];
+            if (c?.strength !== null && c?.strength !== undefined) values[key] = c.strength;
+            if (c?.direction !== null && c?.direction !== undefined) values[key + 'Direction'] = c.direction;
         }
         if (result.height?.kind === 'tsl') material.normalScale.setScalar(1);
         if (result.coatHeight?.kind === 'tsl') material.clearcoatNormalScale.setScalar(1);
@@ -223,6 +251,13 @@ export class GraphApplier {
         const result = evaluateGraph(graph, images, def.render?.maps, { domain: this._domain(entry) });
         const maps = material.userData.graphMaps ||= {};
         const sigs = material.userData.graphSigs ||= {};
+        const means = material.userData.graphMeans ||= {};
+        // mean of a baked map for the locked value fields (anisotropy maps: the strength in blue)
+        const mean = (key, slot, sig) => {
+            if (RELIEF.has(key) || means[key]?.sig === sig) return;
+            const channel = key === 'anisotropyMap' || key === 'coatAnisotropyMap' ? 2 : null;
+            means[channel !== null ? key.replace('Map', '') : key] = { sig, value: meanOf(maps[key], slot, channel) };
+        };
         let changed = false;
         for (const [key, slot] of Object.entries(SLOTS)) {
             const r = result[key];
@@ -230,6 +265,7 @@ export class GraphApplier {
             const sig = (RELIEF.has(key) ? r.sig + '|' + result.reliefStrength : r.sig) + '|' + r.size + (result.domain ? '|' + JSON.stringify(result.domain) : '');
             if (maps[key] && sigs[key] === sig) {
                 material[slot.map] = maps[key];   // unchanged -> keep the existing texture
+                mean(key, slot, sig);
                 continue;
             }
             if (entry.def.graph !== graph) return;   // changed in the meantime -> a new run follows
@@ -243,6 +279,7 @@ export class GraphApplier {
             sigs[key] = sig;
             material[slot.map] = tex;
             if (key === 'sheen') material.sheenColor.set('#ffffff');
+            mean(key, slot, sig);
             changed = true;
         }
         // displacement (displacement.js): the height's values on the CPU – the meshes are moved there
@@ -400,6 +437,21 @@ function place(tex, entry, result) {
         tex.repeat.copy(entry.preview ? new THREE.Vector2(2, 1) : new THREE.Vector2(UV_TILE / result.size, UV_TILE / result.size));
         tex.offset.set(0, 0);
     }
+}
+
+// mean of a baked map (DataTexture, 8 bit, every few texels): a colour map as a colour (sRGB-coded → linear), a value
+// map its grey (or alpha – floatA maps), `channel` one channel 0–3; undefined without pixels
+function meanOf(tex, slot = {}, channel = null) {
+    const data = tex?.image?.data, n = tex?.image?.width;
+    if (!data || !n) return undefined;
+    const step = Math.max(1, Math.floor(n / 64));
+    const sum = [0, 0, 0, 0];
+    let count = 0;
+    for (let y = 0; y < n; y += step) for (let x = 0; x < n; x += step, count++) for (let c = 0; c < 4; c++) sum[c] += data[(y * n + x) * 4 + c];
+    const m = sum.map(v => v / count / 255);
+    if (channel !== null) return m[channel];
+    if (slot.srgb) return new THREE.Color().setRGB(m[0], m[1], m[2], THREE.SRGBColorSpace);
+    return slot.alpha ? m[3] : m[0];
 }
 
 // RGBA pixels (size², bottom row first) -> top row first

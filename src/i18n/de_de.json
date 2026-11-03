@@ -116,7 +116,7 @@
             "deleteInUse": "Wird noch verwendet",
             "deleteTitle": "Material entfernen",
             "importedTextures": "Texturen aus der Datei: {names} – im Node-Graph als „Bild-Textur (aus der Datei)“. Direkt verbunden werden die Werte unten mit der Textur multipliziert.",
-            "graphControlled": "Wird über den Node-Graph gesteuert – Werte unten gelten für nicht verbundene Eingänge.",
+            "graphControlled": "Werte mit ← kommen aus dem Node-Graph: gesperrt, sie zeigen den Wert aus dem Graph (bei Texturen ihren Mittelwert). Zum Ändern die Verbindung trennen.",
             "importFailed": "Import fehlgeschlagen: {message}",
             "importErrorTitle": "Import fehlgeschlagen",
             "merge": "Gleiche zusammenfassen",
@@ -128,7 +128,9 @@
             "importMtlx": "MaterialX importieren",
             "importMtlxTitle": "MaterialX importieren – .mtlx (mit ihren Texturen) oder Material-Paket (.zip); auch per Drag & Drop ins Fenster",
             "exportMtlx": "Als MaterialX exportieren",
-            "exportMtlxTitle": "Als Material-Paket exportieren (.zip): MaterialX mit OpenPBR, Texturen, glTF-Kugel und RINDR-Beschreibung"
+            "exportMtlxTitle": "Als Material-Paket exportieren (.zip): MaterialX mit OpenPBR, Texturen, glTF-Kugel und RINDR-Beschreibung",
+            "drivenTitle": "Kommt aus dem Node-Graph ({node}) – klicken zeigt den Node",
+            "drivenFactorTitle": "Die Map aus dem Node-Graph ({node}) multipliziert diesen Wert – er bleibt einstellbar"
         },
         "maps": {
             "map": "Farbe",
@@ -236,7 +238,9 @@
             "wool": "Wolle",
             "grass": "Gras",
             "soap": "Seifenhaut",
-            "edges": "Kanten abrunden (Shader)"
+            "edges": "Kanten abrunden (Shader)",
+            "textures": "Texturen",
+            "surface": "Relief & Displacement"
         },
         "categories": {
             "metal": "Metall",
@@ -313,13 +317,13 @@
             "glass-milk": "Milchglas",
             "gem-diamond-clear": "Diamant klar",
             "gem-diamond-blue": "Diamant hellblau",
+            "glass-crystal": "Kristallglas",
+            "glass-rainbow": "Glas mit Farbsaum",
+            "glass-flakes": "Glas mit Flakes",
             "ceramic-white": "Keramik weiß",
             "emissive-white": "Leuchtend weiß",
             "emissive-neon-green": "Neon-Grün leuchtend",
             "cloud-white": "Wolke",
-            "glass-crystal": "Kristallglas",
-            "glass-rainbow": "Glas mit Farbsaum",
-            "glass-flakes": "Glas mit Flakes",
             "sss-jelly": "Gelee",
             "sss-jade": "Jade",
             "sss-jade-cloudy": "Jade wolkig",
@@ -547,6 +551,13 @@
             "exporting": "Material-Paket wird erstellt …",
             "exported": "Gespeichert: {name}",
             "fileType": "Material-Paket (MaterialX)"
+        },
+        "graphParams": {
+            "size": "Kachelgröße: so viele mm deckt eine gebackene Texturkachel auf dem Modell ab",
+            "resolution": "Auflösung der gebackenen Texturen dieses Materials",
+            "reliefStrength": "Stärke des Reliefs (Eingang Relief → Normal-Map)",
+            "displacement": "Displacement in cm: verschiebt die Fläche um (Höhe − Mitte) × Wert (Eingang Displacement (Höhe))",
+            "displacementMid": "Höhe, bei der das Displacement die Fläche nicht verschiebt (0–1)"
         }
     },
     "nodeEditor": {
@@ -574,9 +585,14 @@
     "nodes": {
         "categories": {
             "input": "Eingabe",
-            "texture": "Textur",
+            "image": "Bilder",
+            "pattern": "Muster",
+            "noise": "Rauschen",
+            "shape": "Formen",
             "color": "Farbe",
-            "value": "Wert"
+            "convert": "Umwandeln",
+            "value": "Mathe",
+            "logic": "Bedingungen"
         },
         "types": {
             "output": {
@@ -596,6 +612,7 @@
                     "sheen": "Samt",
                     "sheenRoughness": "Samt-Rauheit",
                     "iridescence": "Schillern (Dünnfilm)",
+                    "iridescenceThickness": "Schillern-Dicke (Faktor)",
                     "emissive": "Leuchtfarbe",
                     "normal": "Normal-Map",
                     "ao": "Umgebungsverdeckung",
@@ -610,7 +627,10 @@
                     "coatIor": "Lack-IOR (0–1 = 1,0–3,0)",
                     "coatDarkening": "Abdunkeln unter dem Lack",
                     "transmissionColor": "Transmissionsfarbe",
-                    "transmissionDepth": "Transmissionstiefe (Faktor)"
+                    "transmissionDepth": "Transmissionstiefe (Faktor)",
+                    "grassHeight": "Halmhöhe (Faktor)",
+                    "grassDensity": "Dichte (Faktor)",
+                    "grassDry": "Trockenanteil (Faktor)"
                 },
                 "params": {
                     "reliefStrength": "Relief-Stärke",

@@ -18,6 +18,23 @@ export const GRASS_SHADE = { root: 0.3, tip: 1.08, ground: 0.3 };   // colour ro
 const VERTS = LEVELS.length * 2 + 1;
 const TRIS = (LEVELS.length - 1) * 2 + 1;
 
+// a map read like the GPU reads it on the model: uv × repeat + offset, repeating, bilinear; texel 0…1 (RGBA). Row 0 of
+// the baked data is v = 0 (graph-apply.js bakes bottom row first)
+function sampler(map) {
+    if (!map?.data || !(map.w > 0) || !(map.h > 0)) return null;
+    const { data, w, h } = map, [ru, rv] = map.repeat || [1, 1], [ou, ov] = map.offset || [0, 0];
+    const at = (x, y) => ((((y % h) + h) % h) * w + (((x % w) + w) % w)) * 4;
+    return (u, v, out) => {
+        let x = u * ru + ou, y = v * rv + ov;
+        x = (x - Math.floor(x)) * w - 0.5;
+        y = (y - Math.floor(y)) * h - 0.5;
+        const x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0;
+        const a = at(x0, y0), b = at(x0 + 1, y0), c = at(x0, y0 + 1), d = at(x0 + 1, y0 + 1);
+        for (let k = 0; k < 4; k++) out[k] = ((data[a + k] * (1 - fx) + data[b + k] * fx) * (1 - fy) + (data[c + k] * (1 - fx) + data[d + k] * fx) * fy) / 255;
+    };
+}
+const srgbToLinear = c => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+
 /** Blades wanted for a surface area (local units²) – before the budget */
 export function bladesFor(area, height, density) {
     const s = SPACING * height / Math.sqrt(Math.max(density, 1e-3));
@@ -53,11 +70,17 @@ function random(seed) {
 
 /**
  * @param {{ positions: Float32Array, index?: Uint32Array|Uint16Array, height: number, density: number, dry: number,
- *   maxBlades: number, up?: number[] }} input  height = blade height in the mesh's own units; up = world up in them
+ *   maxBlades: number, up?: number[], uvs?: Float32Array, maps?: object }} input  height = blade height in the mesh's
+ *   own units; up = world up in them; maps (with uvs – the material's node graph, read at each blade's root): color
+ *   (sRGB, multiplies the blade's colour), height / density / dry (grey, factors: blade height, share of blades kept,
+ *   dry share) – each { data: Uint8Array RGBA, w, h, repeat: [x, y], offset: [x, y] } as the map lies on the model
  * @param {(fraction: number) => void} [onProgress]  share of the blades done (now and then)
  * @returns {{ positions: Float32Array, normals: Float32Array, colors: Float32Array, index: Uint32Array, blades: number }}
  */
-export function grassBlades({ positions, index, height, density, dry = 0, maxBlades, up = [0, 1, 0] }, onProgress = null) {
+export function grassBlades({ positions, index, height, density, dry = 0, maxBlades, up = [0, 1, 0], uvs = null, maps = null }, onProgress = null) {
+    const read = uvs ? Object.fromEntries(Object.entries(maps || {}).map(([k, m]) => [k, sampler(m)]).filter(([, f]) => f)) : {};
+    const mapped = Object.keys(read).length > 0;
+    const texel = [0, 0, 0, 0];
     const count = index ? index.length / 3 : positions.length / 9;
     const areas = new Float64Array(count);
     let total = 0;
@@ -107,6 +130,19 @@ export function grassBlades({ positions, index, height, density, dry = 0, maxBla
             }
             normalize(N);
             if (!(N[0] * N[0] + N[1] * N[1] + N[2] * N[2] > 0.5)) { N[0] = face[0]; N[1] = face[1]; N[2] = face[2]; }
+            // the node graph's maps at the blade's root (UV of the surface there)
+            let tintMap = null, heightF = 1, dryF = 1;
+            if (mapped) {
+                const tu = uvs[ia * 2] * w + uvs[ib * 2] * u + uvs[ic * 2] * v, tv = uvs[ia * 2 + 1] * w + uvs[ib * 2 + 1] * u + uvs[ic * 2 + 1] * v;
+                if (read.density) {
+                    read.density(tu, tv, texel);
+                    // the mask keeps this share of the blades (the random number decides; black = none)
+                    if (rnd() >= texel[0]) { blade--; continue; }
+                }
+                if (read.height) { read.height(tu, tv, texel); heightF = texel[0]; if (heightF < 0.02) { blade--; continue; } }
+                if (read.dry) { read.dry(tu, tv, texel); dryF = texel[0]; }
+                if (read.color) { read.color(tu, tv, texel); tintMap = [srgbToLinear(texel[0]), srgbToLinear(texel[1]), srgbToLinear(texel[2])]; }
+            }
             // frame: width axis W at a random angle around N, lean axis B across the blade's face
             const ref = Math.abs(N[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
             const T = normalize(cross(ref, N)), S = cross(N, T);
@@ -118,14 +154,15 @@ export function grassBlades({ positions, index, height, density, dry = 0, maxBla
             // towards the light: the part of `up` across the normal (none on top or bottom faces)
             const nu = N[0] * U[0] + N[1] * U[1] + N[2] * U[2];
             const R = [U[0] - N[0] * nu, U[1] - N[1] * nu, U[2] - N[2] * nu];
-            const h = height * (0.6 + 0.55 * rnd());
+            const h = height * heightF * (0.6 + 0.55 * rnd());
             const lean = 0.15 + 0.55 * rnd() * rnd();          // sideways bend at the tip (× height), mostly small
             const twist = (rnd() - 0.5) * 0.8;                  // rotation of the width axis up the blade (radians)
             const width = WIDTH * height * widen * (0.7 + 0.6 * rnd());
             // colour of this blade
-            const isDry = rnd() < dry;
+            const isDry = rnd() < dry * dryF;
             const shade = 0.85 + 0.3 * rnd(), hue = rnd() * 2 - 1;
             const tint = isDry ? [1.7 * shade, 1.35 * shade, 0.45 * shade] : [shade * (1 + 0.12 * hue), shade * (1 + 0.05 * hue), shade * (1 - 0.15 * hue)];
+            if (tintMap) for (let i = 0; i < 3; i++) tint[i] *= tintMap[i];
 
             const v0 = blade * VERTS;
             for (let l = 0; l <= LEVELS.length; l++) {

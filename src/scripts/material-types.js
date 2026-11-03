@@ -8,16 +8,22 @@ import { MATERIAL_PRESETS } from './material-presets.js';
 // switch of each special type (> 0 = on); order = precedence when an older material had several on
 const SWITCHES = { cloud: ['cloud'], grass: ['grass'], wool: ['wool'], soap: ['soap'], marble: ['marble'], toon: ['toon', 'flat', 'contour'] };
 
+// inputs: the node graph's inputs without a value of their own this type uses (normal map, relief, displacement …;
+// the inputs with a value follow `keys`) – Standard takes all
 export const MATERIAL_TYPES = {
     // everything except the special effects (contour lines only with Toon – user's choice)
     standard: { graph: true },
-    toon: { keys: ['color', 'toon', 'flat', 'contour', 'contourColor', 'contourWidth'], graph: true, template: 'toon-orange' },
+    toon: { keys: ['color', 'toon', 'flat', 'contour', 'contourColor', 'contourWidth'], graph: true, template: 'toon-orange',
+        inputs: ['normal', 'height', 'alpha', 'displacementHeight'] },
     cloud: { keys: ['cloud', 'cloudColor', 'cloudPuff'], graph: false, template: 'cloud-white' },
     // wool, grass, soap film: their switch itself is not shown – the type is the switch (user: "wool as a material type is enough")
     wool: { keys: ['color', 'sheen', 'sheenColor', 'sheenRoughness', 'woolLength'], graph: false, template: 'wool-cream', on: { wool: 1 } },
-    grass: { keys: ['color', 'roughness', 'grassHeight', 'grassDensity', 'grassDry'], graph: false, template: 'grass-lawn', on: { grass: 1 } },
+    // grass: colour per blade from the graph, height / density / dry share as masks (Nov. 2026, user: blades coloured
+    // by noise) – no normal map, relief or displacement
+    grass: { keys: ['color', 'roughness', 'grassHeight', 'grassDensity', 'grassDry'], graph: true, template: 'grass-lawn', on: { grass: 1 }, inputs: [] },
     soap: { keys: ['soapFilm', 'soapSwirl', 'soapScale'], graph: false, template: 'soap-bubble', on: { soap: 1 } },
-    marble: { keys: ['color', 'roughness', 'clearcoat', 'clearcoatRoughness', 'marble', 'marbleColor', 'marbleScale'], graph: true, template: 'marble-glow-green' },
+    marble: { keys: ['color', 'roughness', 'clearcoat', 'clearcoatRoughness', 'marble', 'marbleColor', 'marbleScale'], graph: true, template: 'marble-glow-green',
+        inputs: ['normal', 'height', 'ao', 'coatNormal', 'coatHeight', 'alpha', 'displacementHeight'] },
 };
 
 // parameters only a special type has (hidden for Standard)
@@ -36,6 +42,9 @@ export function typeShows(type, key) {
     const keys = MATERIAL_TYPES[type]?.keys;
     return keys ? keys.includes(key) : !SPECIAL_KEYS.has(key);
 }
+
+/** Graph input without a value of its own (normal map, relief, displacement …) used by this type? */
+export const typeTakesInput = (type, key) => MATERIAL_TYPES[type]?.inputs?.includes(key) ?? true;
 
 /** Node editor offered for this type? */
 export const typeAllowsGraph = type => MATERIAL_TYPES[type]?.graph !== false;

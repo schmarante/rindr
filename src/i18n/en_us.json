@@ -116,7 +116,7 @@
             "deleteInUse": "Still in use",
             "deleteTitle": "Remove material",
             "importedTextures": "Textures from the file: {names} – in the node graph as “Image texture (from the file)”. When connected directly, the values below are multiplied with the texture.",
-            "graphControlled": "Controlled by the node graph – the values below apply to unconnected inputs.",
+            "graphControlled": "Values with ← come from the node graph: locked, they show the graph's value (for textures their mean). Disconnect to edit.",
             "importFailed": "Import failed: {message}",
             "importErrorTitle": "Import failed",
             "merge": "Merge identical",
@@ -128,7 +128,9 @@
             "importMtlx": "Import MaterialX",
             "importMtlxTitle": "Import MaterialX – .mtlx (with its textures) or material package (.zip); also by dragging into the window",
             "exportMtlx": "Export as MaterialX",
-            "exportMtlxTitle": "Export as material package (.zip): MaterialX with OpenPBR, textures, glTF sphere and RINDR description"
+            "exportMtlxTitle": "Export as material package (.zip): MaterialX with OpenPBR, textures, glTF sphere and RINDR description",
+            "drivenTitle": "Comes from the node graph ({node}) – click to show the node",
+            "drivenFactorTitle": "The map from the node graph ({node}) multiplies this value – it stays editable"
         },
         "maps": {
             "map": "Colour",
@@ -236,7 +238,9 @@
             "wool": "Wool",
             "grass": "Grass",
             "soap": "Soap film",
-            "edges": "Rounded edges (shader)"
+            "edges": "Rounded edges (shader)",
+            "textures": "Textures",
+            "surface": "Relief & displacement"
         },
         "categories": {
             "metal": "Metal",
@@ -313,13 +317,13 @@
             "glass-milk": "Milk glass",
             "gem-diamond-clear": "Diamond clear",
             "gem-diamond-blue": "Diamond light blue",
+            "glass-crystal": "Lead crystal",
+            "glass-rainbow": "Glass with rainbow fringes",
+            "glass-flakes": "Glass with flakes",
             "ceramic-white": "Ceramic white",
             "emissive-white": "Emissive white",
             "emissive-neon-green": "Neon green (emissive)",
             "cloud-white": "Cloud",
-            "glass-crystal": "Lead crystal",
-            "glass-rainbow": "Glass with rainbow fringes",
-            "glass-flakes": "Glass with flakes",
             "sss-jelly": "Jelly",
             "sss-jade": "Jade",
             "sss-jade-cloudy": "Jade cloudy",
@@ -547,6 +551,13 @@
             "exporting": "Creating material package …",
             "exported": "Saved: {name}",
             "fileType": "Material package (MaterialX)"
+        },
+        "graphParams": {
+            "size": "Tile size: how many mm one baked texture tile covers on the model",
+            "resolution": "Resolution of this material's baked textures",
+            "reliefStrength": "Strength of the relief (input Relief → normal map)",
+            "displacement": "Displacement in cm: moves the surface by (height − mid) × value (input Displacement (height))",
+            "displacementMid": "Height at which the displacement does not move the surface (0–1)"
         }
     },
     "nodeEditor": {
@@ -574,9 +585,14 @@
     "nodes": {
         "categories": {
             "input": "Input",
-            "texture": "Texture",
+            "image": "Images",
+            "pattern": "Patterns",
+            "noise": "Noise",
+            "shape": "Shapes",
             "color": "Colour",
-            "value": "Value"
+            "convert": "Convert",
+            "value": "Maths",
+            "logic": "Conditions"
         },
         "types": {
             "output": {
@@ -596,6 +612,7 @@
                     "sheen": "Sheen",
                     "sheenRoughness": "Sheen roughness",
                     "iridescence": "Iridescence (thin film)",
+                    "iridescenceThickness": "Thin film thickness (factor)",
                     "emissive": "Emissive colour",
                     "normal": "Normal map",
                     "ao": "Ambient occlusion",
@@ -610,7 +627,10 @@
                     "coatIor": "Coat IOR (0–1 = 1.0–3.0)",
                     "coatDarkening": "Coat darkening",
                     "transmissionColor": "Transmission colour",
-                    "transmissionDepth": "Transmission depth (factor)"
+                    "transmissionDepth": "Transmission depth (factor)",
+                    "grassHeight": "Blade height (factor)",
+                    "grassDensity": "Density (factor)",
+                    "grassDry": "Dry share (factor)"
                 },
                 "params": {
                     "reliefStrength": "Bump strength",
