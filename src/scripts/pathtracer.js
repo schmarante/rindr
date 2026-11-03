@@ -94,6 +94,8 @@ export class PathTracingView {
         this._injected = -1;            // restart count of an injected picture (injectImage) – no kernel needed for it
         this.holdKernel = false;        // a render job's picture comes as buckets (viewer): the view traces nothing until
                                         // it is injected – no kernel compiled when this computer does not render along
+        this.yieldTo = null;            // () => true: other GPU work waits (material previews, node graph bakes – viewer):
+                                        // the frame shows the picture without a sample (_renderPathTraced)
         this._envToken = 0;
         if (this.supported) { this._installAsyncCompile(); this._installTimestamps(); }
 
@@ -1311,16 +1313,23 @@ export class PathTracingView {
         }
         // glowing meshes as lights (emitters.js): their triangles once per scene version, before the samples
         this._updateEmitters(pt);
+        // other GPU work waiting (yieldTo): the picture is shown, no sample – their readbacks queued behind the samples'
+        // dispatches (user: no performance left for the material previews in HQ; a preview took 190 instead of 63 ms on
+        // the dev GPU, the first one 0.8 instead of 0.08 s). Only over a picture with samples and a still camera: while
+        // orbiting or right after a restart there is nothing to show – the view stayed black (user: "die kamera … bleibt
+        // dann schwarz")
+        const yielding = !this._motion && (pt._pathTracer?._completedSamples ?? 0) >= 1 && !!this.yieldTo?.();
+        if (yielding) this._skips = (this._skips || 0) + 1;   // no kernel time in this frame (_readTimestamps)
         // caustics behind the samples: a frame with photons only (the picture is shown, no sample)
-        const photonsOnly = this._traceCaustics(pt);
-        if (photonsOnly) pt.pause = true;
+        const photonsOnly = !yielding && this._traceCaustics(pt);
+        if (photonsOnly || yielding) pt.pause = true;
         pt.renderSample();
         pt.pause = false;
         // cheap samples (adaptive sampling with most pixels finished, small images): several per frame up to the GPU time
         // target – with one per frame the GPU idled most of the frame (60 samples/s at most, a finished-looking image
         // at 2 ms per sample still took as long as before). The last measured dispatch sets the count; a restart
         // forgets it (the new picture may cost far more per sample – one frame must stay below the GPU watchdog)
-        if (!photonsOnly && !this._motion && !this._compiling && this._frameMs > 0 && !this._isDone()) {
+        if (!photonsOnly && !yielding && !this._motion && !this._compiling && this._frameMs > 0 && !this._isDone()) {
             const target = PATHTRACING.frameTargetMs * (this.gpuCautious ? 0.5 : 1);
             // (not ahead of the caustics' photons, _traceCaustics)
             const extra = Math.min(Math.floor(target / Math.max(this._frameMs, 0.5)) - 1, PATHTRACING.maxDispatchesPerFrame - 1,

@@ -240,7 +240,10 @@ export class MaterialPanel {
         if (this.listPressed) { this.listStale = true; if (!keepEditor || !this.editor.contains(document.activeElement)) this._renderEditor(); return; }
         this.categorySelect.hidden = this.tab !== 'library';
         if (this.newButton) this.newButton.hidden = this.tab === 'library';
-        this.thumbObserver?.disconnect();   // the rows are built anew
+        // the rows are built anew: the previews asked for by the old ones are dropped (another category or tab – its
+        // previews first; the new rows ask again for what is in view)
+        this.thumbObserver?.disconnect();
+        if (this.thumbs) for (const sw of this.list.querySelectorAll('[data-thumb]')) this.thumbs.cancel(sw.dataset.group, sw.dataset.thumb);
         if (this.tab === 'scene') this._renderScene(); else this._renderLibrary();
         if (!keepEditor || !this.editor.contains(document.activeElement)) this._renderEditor();
     }

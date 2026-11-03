@@ -72,6 +72,8 @@ export class MaterialThumbs extends EventTarget {
         this.shown = new Map();     // group -> key of its last memory-only image (released when replaced)
         this.pending = new Set();   // keys requested and not ready yet
         this.active = null;         // key being rendered right now (one at a time)
+        this.busy = false;          // images are being made (bake, compile, draw, readback) – HQ pauses meanwhile
+        this._job = null;           // the job being rendered (cancel() marks it)
         this._running = false;
         this._setup = null;
         this._db = openDb();
@@ -122,6 +124,13 @@ export class MaterialThumbs extends EventTarget {
      */
     request(key, group, material, { persist = false, dispose = false, release = null, size = THUMB_SIZE } = {}) {
         if (this.has(key)) { this._release(group, { key, persist }); return; }
+        if (this._job?.key === key) {
+            // being rendered (cancelled: wanted again) – newer than what its group has queued
+            this._job.cancelled = false;
+            const queued = this.jobs.get(group);
+            if (queued && queued.key !== key) { this.jobs.delete(group); this.pending.delete(queued.key); }
+            return;
+        }
         if (this.pending.has(key) && !this.jobs.has(group)) return;   // being rendered
         const old = this.jobs.get(group);
         if (old?.key === key) return;
@@ -131,8 +140,11 @@ export class MaterialThumbs extends EventTarget {
         this._run();
     }
 
-    /** drop the queued request of `group` for `key` (its swatch left the view); a render already running finishes */
+    /** drop the request of `group` for `key` (its swatch left the view, another category is shown); a render already
+     *  running stops after its bake (user: switching from glass to fabrics, the glass previews went on for seconds) */
     cancel(group, key) {
+        const running = this._job;
+        if (running && running.group === group && running.key === key) { running.cancelled = true; return; }
         if (this.jobs.get(group)?.key !== key) return;
         this.jobs.delete(group);
         this.pending.delete(key);
@@ -141,6 +153,9 @@ export class MaterialThumbs extends EventTarget {
     async _run() {
         if (this._running) return;
         this._running = true;
+        // HQ pauses until the queue is empty – toggled per image, a frame of samples slipped in between two images and the
+        // next one's readback waited ~50 ms behind it
+        this.busy = true;
         try {
             while (this.jobs.size) {
                 const [group, job] = this.jobs.entries().next().value;
@@ -149,9 +164,22 @@ export class MaterialThumbs extends EventTarget {
                 const generation = this.generation;
                 let url = await this._stored(job);
                 if (url === undefined) {
-                    await new Promise(requestAnimationFrame);   // one render per frame
-                    this._setActive(job.key);
-                    url = await this._render(job, generation).catch(err => { console.warn('Material thumbnail failed:', err); return null; });
+                    job.group = group;
+                    this._job = job;
+                    try {
+                        await new Promise(requestAnimationFrame);   // one render per frame
+                        if (!job.cancelled) {
+                            this._setActive(job.key);
+                            url = await this._render(job, generation).catch(err => { console.warn('Material thumbnail failed:', err); return null; });
+                        }
+                    } finally {
+                        this._job = null;
+                    }
+                }
+                if (job.cancelled && url === undefined) {
+                    // cancelled while it ran: nothing kept, asked again when its swatch shows up again
+                    if (![...this.jobs.values()].some(j => j.key === job.key)) this.pending.delete(job.key);
+                    continue;
                 }
                 if (generation !== this.generation) {
                     // reloaded meanwhile: made with the old environment
@@ -169,6 +197,7 @@ export class MaterialThumbs extends EventTarget {
         } finally {
             this._setActive(null);
             this._running = false;
+            this.busy = false;
             this._setup?.mesh.dispatchEvent({ type: 'dispose' });   // drop the render objects of the materials shown
         }
     }
@@ -206,6 +235,10 @@ export class MaterialThumbs extends EventTarget {
     async _render(job, generation) {
         const s = this._setup ??= this._createSetup();
         const material = await job.material();   // may bake node maps first (preset with a graph)
+        if (job.cancelled) {   // not needed any more (cancel): no compile, no render
+            if (job.dispose) { job.release?.(material); material.dispose(); }
+            return undefined;
+        }
         const n = 2 * (job.size || THUMB_SIZE);
         if (s.target.width !== n) s.target.setSize(n, n);
         const special = this.special?.(material, RADIUS) ?? null;

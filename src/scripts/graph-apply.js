@@ -73,6 +73,7 @@ export class GraphApplier {
         this.pending = new Map();    // material ID -> timer
         this.waiting = new Set();    // material IDs with a bake run waiting in the queue
         this.baking = new Set();     // material IDs being baked right now
+        this.previewing = 0;         // node previews being baked right now (HQ pauses meanwhile, like for the bakes)
     }
 
     /** Synchronous part; schedules the baking */
@@ -336,7 +337,10 @@ export class GraphApplier {
             const pixels = await this.baker.bakePixels(r.node, r.type, { srgb: r.type === 'color', size });
             return { size, pixels: flipRows(pixels, size) };
         };
-        const job = this.queue.then(run);
+        const job = this.queue.then(async () => {
+            this.previewing++;
+            try { return await run(); } finally { this.previewing--; }
+        });
         this.queue = job.catch(() => {});
         const res = await job;
         cache.set(sig, res);

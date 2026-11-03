@@ -1892,6 +1892,9 @@ const materialPanel = new MaterialPanel(document.getElementById('materials'), ma
         if (meshes.length) sceneGraph.selectMeshes(meshes, t('viewer.objectsWithMaterial', { name: entry.def.name }));
     },
 });
+// HQ pauses (shows its picture, traces nothing) while material previews or node graph bakes use the GPU – their
+// readbacks waited behind the samples (user: "pathtracer anhalten wenn sich materials aktualisieren")
+pathTracing.yieldTo = () => materialPanel.thumbs?.busy || graphApplier.baking.size > 0 || graphApplier.previewing > 0;
 // node previews: one output baked small in the bake queue; output node = the material's sphere from the panel.
 // Loaded with its first opening (lazy).
 const nodeEditor = lazy(async () => new (await import('./node-editor.js')).NodeEditor(document.getElementById('node-editor'), materialManager, {
