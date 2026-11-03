@@ -564,12 +564,11 @@ export class PropertiesPanel {
             // colour bleeding (HQ): light of the model onto the ground
             range('groundBounce', 'properties.environment.bounce', 'properties.environment.undo.bounce', 'env-ground-bounce', 0, 3, 0.01),
         ]);
-        // flattened ground: HDRI height, floor height (distortion), sphere size (= where the floor ends), transition
+        // flattened ground: HDRI height, floor height (distortion), sphere size (= where the floor ends)
         section('env-dome', 'dome', { params: true }, () => [
             range('domeShift', 'properties.environment.height', 'properties.environment.undo.height', 'env-dome-shift', -0.5, 0.9, 0.01),
             range('groundHeight', 'properties.environment.floorHeight', 'properties.environment.undo.floorHeight', 'env-floor-height', 0.05, 5, 0.01),
             range('domeRadius', 'properties.environment.sphere', 'properties.environment.undo.sphere', 'env-dome-size', 1, 50, 0.5),
-            range('domeBlend', 'properties.environment.blend', 'properties.environment.undo.blend', 'env-dome-blend', 0, 1, 0.01),
         ]);
         section('env-reflection', 'reflection', { params: true }, () => [
             range('reflectionStrength', 'properties.environment.reflectionStrength', 'properties.environment.undo.reflectionStrength', 'env-refl-strength', 0, 1, 0.01),

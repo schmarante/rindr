@@ -1404,7 +1404,6 @@
                 "height": "HDRI height",
                 "floorHeight": "Floor height",
                 "sphere": "Sphere size",
-                "blend": "Floor transition",
                 "softness": "Floor softness",
                 "bounce": "Colour bleeding",
                 "lightBoost": "Light boost"
@@ -1415,7 +1414,6 @@
             "height": "HDRI height",
             "floorHeight": "Floor height",
             "sphere": "Sphere",
-            "blend": "Transition",
             "softness": "Softness",
             "bounce": "Colour bleeding",
             "ownHdris": "Custom (HDRI editor)",

@@ -1404,7 +1404,6 @@
                 "height": "HDRI-Höhe",
                 "floorHeight": "Bodenhöhe",
                 "sphere": "Kugelgröße",
-                "blend": "Boden-Übergang",
                 "softness": "Boden-Weichheit",
                 "bounce": "Farbübertrag",
                 "lightBoost": "Licht-Boost"
@@ -1415,7 +1414,6 @@
             "height": "HDRI-Höhe",
             "floorHeight": "Bodenhöhe",
             "sphere": "Kugel",
-            "blend": "Übergang",
             "softness": "Weichheit",
             "bounce": "Farbübertrag",
             "ownHdris": "Eigene (HDRI-Editor)",

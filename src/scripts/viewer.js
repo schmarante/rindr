@@ -693,7 +693,6 @@ const environment = {
     domeShift: 0,        // "HDRI height": HDRI pushed up (share of 90°) – sphere and projected floor
     groundHeight: 1,     // "floor height": projection point above the ground (× model size) – floor distortion
     domeRadius: 10,      // "sphere size": radius of the background sphere (× model size) – parallax when zooming
-    domeBlend: 0.3,      // "transition": rounding of the edge between floor and sphere (share of the radius)
     modelSize: 1,        // size of the whole scene (all models) – floor, dome, ground shadow scale with it
     groundY: 0,
     centerX: 0,          // middle of the scene's footprint (several models side by side)
@@ -810,7 +809,7 @@ const environment = {
             // no model yet: the plain panorama (the dome is sized by the models)
             enabled: showHdri && this.dome && !this.matte && sceneHasModels(), texture: this.texture, center: new THREE.Vector3(this.centerX, this.groundY + floorHeight, this.centerZ),
             radius: this.domeRadius * this.modelSize, floor: floorHeight,
-            blend: this.domeBlend, shift: this.domeShift,
+            shift: this.domeShift,   // edge between floor and sphere: fixed rounding (background-dome.js default)
         });
         dome.update(camera);
         ground.update(scene);

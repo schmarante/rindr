@@ -194,7 +194,7 @@ export function captureState(ctx) {
         environment: {
             on: env.on, hdri: env.hdri || null,
             intensity: env.intensity, lightBoost: env.lightBoost, rotation: +THREE.MathUtils.radToDeg(scene.environmentRotation.y).toFixed(3),
-            background: env.background, ground: env.ground, groundRadius: env.groundRadius, groundSoftness: env.groundSoftness, groundBounce: env.groundBounce, dome: env.dome, domeShift: env.domeShift, groundHeight: env.groundHeight, domeRadius: env.domeRadius, domeBlend: env.domeBlend,
+            background: env.background, ground: env.ground, groundRadius: env.groundRadius, groundSoftness: env.groundSoftness, groundBounce: env.groundBounce, dome: env.dome, domeShift: env.domeShift, groundHeight: env.groundHeight, domeRadius: env.domeRadius,
             // ground reflection + bad weather (ground-reflection.js)
             reflection: env.reflection, reflectionStrength: env.reflectionStrength, reflectionBlur: env.reflectionBlur,
             wet: env.wet, puddles: env.puddles, puddleSize: env.puddleSize,
@@ -359,7 +359,6 @@ export async function applyState(ctx, state) {
         if (e.domeShift != null) env.domeShift = e.domeShift;
         if (e.groundHeight != null) env.groundHeight = e.groundHeight;
         if (e.domeRadius != null) env.domeRadius = e.domeRadius;
-        if (e.domeBlend != null) env.domeBlend = e.domeBlend;
         if (e.intensity != null) env.intensity = e.intensity;
         env.lightBoost = e.lightBoost ?? 1;
         if (e.rotation != null) scene.environmentRotation.y = THREE.MathUtils.degToRad(e.rotation);

@@ -134,7 +134,9 @@ export class BackgroundDome {
      * @param {{enabled: boolean, texture?: THREE.Texture, center?: THREE.Vector3, radius?: number, floor?: number,
      *   blend?: number, shift?: number}} o
      *   center = projection point C, radius = sphere radius, floor = C above the ground plane,
-     *   blend 0…1 = rounding of the edge between floor and sphere (share of the radius),
+     *   blend 0…1 = rounding of the edge between floor and sphere (share of the radius) – fixed at the default since
+     *   Nov. 2026: the slider was removed (0 … 0.5 pixel-identical, 1 hardly visible – a change of the surface far out
+     *   shows only through the camera's offset from C, see the top of this file),
      *   shift −0.95…0.95: HDRI pushed up by shift · 90° (horizon shows latitude −shift · 90°)
      */
     set(scene, { enabled, texture: map, center, radius = 10, floor = 1, blend = 0.3, shift = 0 }) {
