@@ -925,6 +925,11 @@ export class PathTracingView {
     // the previous rendering in the old perspective shine through.
     render(rasterize) {
         if (!this.enabled || !this.ready || this.interacting || this.error || this.suspended || this.regionBusy) return false;
+        // nothing to trace: the canvas a pixel or two small (window squeezed, e.g. by docked dev tools; screenshots in
+        // headless tests shrink it to 1 × 1) – × renderScale rounds down to 0, and the library's size sync dispatched
+        // its clear and tile kernels with 0 workgroups (WebGPU warning "workgroup count of 0"). The raster draws instead
+        const size = this.traceSize();
+        if (!size.w || !size.h) return false;
         const pt = this.pathTracer;
         // a job with light passes renders everything with their kernel variant (passes off it traces the same as the
         // normal one) – compiled once instead of both; its picture stays, the next restart goes back to the normal kernel
