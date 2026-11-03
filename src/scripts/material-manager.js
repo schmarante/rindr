@@ -8,7 +8,7 @@
 import * as THREE from 'three/webgpu';
 import { uniform, screenCoordinate, fract, dot, vec2, materialThickness, modelWorldMatrix } from 'three/tsl';
 import { MATERIAL_PRESETS, presetName } from './material-presets.js';
-import { createImportGraph, IMPORT_SLOTS, shadingGraph } from './material-graph.js';
+import { createImportGraph, IMPORT_SLOTS, shadingGraph, migrateGraph } from './material-graph.js';
 import { t } from './i18n.js';
 import { RindrMaterial } from './materials/toon.js';
 import { normalizeType, paramsForType, typeAllowsGraph } from './material-types.js';
@@ -512,6 +512,7 @@ export class MaterialManager extends EventTarget {
 
     _apply(entry) {
         const { material, def } = entry;
+        migrateGraph(def.graph);   // older graph format (scenes, material files, the old library): up to date, same look
         applyParams(material, def.params);
         if (def.render) applyRender(material, def.render, !!def.graph?.nodes?.length);
         material.needsUpdate = true;

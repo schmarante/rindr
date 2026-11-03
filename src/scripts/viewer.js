@@ -6131,7 +6131,8 @@ async function exportMaterialX(id) {
         let preview = materialPanel.thumbUrl(id, 256);
         for (let i = 0; !preview && i < 25; i++) { await new Promise(r => setTimeout(r, 200)); preview = materialPanel.thumbUrl(id, 256); }
         const { exportMaterialPackage } = await import('./materialx.js');
-        const pkg = await exportMaterialPackage(entry, { preview, json: materialManager.toJSON([id]).materials[0], version: __APP_VERSION__ });
+        const graphEnv = entry.def.graph ? await graphApplier.exportEnv(entry.def) : null;   // node graph as MaterialX nodes
+        const pkg = await exportMaterialPackage(entry, { preview, json: materialManager.toJSON([id]).materials[0], version: __APP_VERSION__, graphEnv });
         const { saveFile } = await import('./hdri/hdri-export.js');
         if (await saveFile(pkg.bytes, pkg.name, 'application/zip', t('materials.mtlx.fileType'))) flashStatus(t('materials.mtlx.exported', { name: pkg.name }), 4000);
     } catch (err) {

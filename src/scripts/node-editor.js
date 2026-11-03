@@ -10,11 +10,11 @@
 //  - Image files dropped onto a texture node become its picture
 import {
     NODE_TYPES, NODE_CATEGORIES, IMPORT_SLOTS, createGraph, createImportGraph, defaultParams,
-    nodeLabel, portLabel, paramLabel, optionLabel, categoryLabel, sliderRange,
+    nodeLabel, portLabel, paramLabel, optionLabel, categoryLabel, sliderRange, hasImage,
 } from './material-graph.js';
 import { mapLabel } from './material-panel.js';
 import { t } from './i18n.js';
-import { colorField } from './ui-controls.js';
+import { colorField, CHECKBOX } from './ui-controls.js';
 import { floatWindow } from './float-window.js';
 import { materialType, typeAllowsGraph } from './material-types.js';
 import { icon } from './icons.js';
@@ -128,7 +128,7 @@ export class NodeEditor {
         const imageNodeAt = target => {
             const el = target?.closest?.('[data-node]');
             const n = el && this.graph?.nodes.find(x => x.id === el.dataset.node);
-            return n && (n.type === 'image' || n.type === 'importMap') ? { el, n } : null;
+            return n && (hasImage(n, true) || n.type === 'importMap') ? { el, n } : null;
         };
         for (const type of ['dragenter', 'dragover']) {
             root.addEventListener(type, e => {
@@ -223,7 +223,7 @@ export class NodeEditor {
     }
 
     async _imageDropped(n, file) {
-        if (n.type === 'image') {
+        if (hasImage(n, true)) {
             n.params = { ...n.params, image: await imageToDataUrl(file) };
             this.commit(n.id + ':image');
             this.render();
@@ -333,10 +333,12 @@ export class NodeEditor {
         }
         const inputKeys = new Set(type.inputs.map(i => i.key));
         for (const i of type.inputs) {
+            const isLinked = linked.has(n.id + ':' + i.key);
+            // only while it matters for the node's settings (math: b of one-input ops); linked it stays visible
+            if (i.when && !i.when(params) && !isLinked) continue;
             const row = div('relative flex min-h-5 items-center gap-1 px-3');
             row.append(this._port(n.id, i.key, i.type, 'in'));
             const p = (type.params || []).find(p => p.key === i.key);
-            const isLinked = linked.has(n.id + ':' + i.key);
             if (n.type === 'output' && !isLinked) {
                 row.append(span('text-white/50', portLabel(n.type, 'inputs', i.key)));
             } else if (p && !isLinked) {
@@ -347,7 +349,7 @@ export class NodeEditor {
             body.append(row);
         }
         for (const p of type.params || []) {
-            if (inputKeys.has(p.key)) continue;
+            if (inputKeys.has(p.key) || (p.when && !p.when(params))) continue;
             const row = div('flex items-center gap-1 px-3');
             row.append(this._param(n, p, params[p.key]));
             body.append(row);
@@ -459,7 +461,10 @@ export class NodeEditor {
             const s = document.createElement('select');
             s.className = 'min-w-0 flex-1 rounded bg-white/10 px-1 py-0.5 text-white outline-none';
             for (const k of p.options) s.append(new Option(optionLabel(n.type, p.key, k), k, false, k === value));
-            s.onchange = () => set(s.value);
+            // settings that show or hide other rows (`when`): draw the nodes anew
+            const type = NODE_TYPES[n.type];
+            const shapes = [...type.inputs, ...(type.params || [])].some(q => q.when);
+            s.onchange = () => { set(s.value); if (shapes) this.render(); };
             wrap.append(label, s);
         } else if (p.kind === 'importMap') {
             // an image node whose picture comes from the model file (the same texture for several maps – glTF
@@ -510,6 +515,14 @@ export class NodeEditor {
             }
             wrap.classList.add('flex-wrap');
             wrap.append(note);
+        } else if (p.kind === 'bool') {
+            // yes/no (MaterialX boolean inputs: clamp output, staggered rows …)
+            const c = document.createElement('input');
+            c.type = 'checkbox';
+            c.className = CHECKBOX;
+            c.checked = !!value;
+            c.onchange = () => set(c.checked);
+            wrap.append(label, c);
         } else if (p.kind === 'image') {
             const b = document.createElement('button');
             b.className = 'min-w-0 flex-1 truncate rounded bg-white/10 px-1 py-0.5 text-left text-white/80 hover:bg-white/20';

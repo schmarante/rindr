@@ -24,7 +24,7 @@
 // in between is it baked – with the model's UVs, at the resolution of the source texture.
 import { t, has } from './i18n.js';
 import * as THREE from 'three/webgpu';
-import { float, vec2, vec3, vec4, uv, uniform, texture, mat3, fract, floor, dot, mix, mod, clamp, max, min, pow, abs, step, dFdx, dFdy, sRGBTransferOETF, cos, sin } from 'three/tsl';
+import { float, vec2, vec3, vec4, uv, uniform, texture, mat3, fract, floor, ceil, round, sqrt, sign, dot, mix, mod, clamp, max, min, pow, abs, step, dFdx, dFdy, sRGBTransferOETF, cos, sin } from 'three/tsl';
 import { LUMA, linear, C, T, tsl, convert, input } from './node-lib.js';
 
 export const BAKE_SIZE = 1024;
@@ -75,7 +75,11 @@ export const NODE_TYPES = {
             { key: 'emissive', type: 'color' },
             { key: 'normal', type: 'color' },
             { key: 'ao', type: 'float' },
+            // relief: the height shades only (baked into a normal map – MaterialX: bump / normalmap into the normal)
             { key: 'height', type: 'float' },
+            // displacement (displacement.js): a height of its own that moves the surface by (h − mid) × displacement –
+            // MaterialX: a displacement node in the material's displacementshader (graph version 2, see migrateGraph)
+            { key: 'displacementHeight', type: 'float' },
             // OpenPBR geometry_coat_normal: the coat's own normal (normal map or relief, e.g. orange peel over a smooth base)
             { key: 'coatNormal', type: 'color' },
             { key: 'coatHeight', type: 'float' },
@@ -89,8 +93,8 @@ export const NODE_TYPES = {
             // resolution of the baked maps of this material (wish of the user: per material); auto = BAKE_SIZE, imported
             // textures at their own size
             { key: 'resolution', kind: 'select', options: BAKE_RESOLUTIONS, default: 'auto' },
-            // displacement (displacement.js): the relief (height input) moves the surface – height 0…1 → (h − mid) ×
-            // displacement along the normal, in cm (user: 0–5, "5 is already a lot"); 0 = off (relief only shades)
+            // displacement (displacement.js): the displacement input moves the surface – height 0…1 → (h − mid) ×
+            // displacement along the normal, in cm (user: 0–5, "5 is already a lot"); 0 = off
             { key: 'displacement', kind: 'number', min: 0, max: 5, step: 0.01, default: 0 },
             { key: 'displacementMid', kind: 'number', min: 0, max: 1, step: 0.01, default: 0.5 },
         ],
@@ -114,6 +118,9 @@ export const NODE_TYPES = {
             // per axis: repeat, mirror every other copy, or off (a single picture – decal; alpha 0 outside)
             { key: 'wrapU', kind: 'select', options: ['repeat', 'mirror', 'off'], default: 'repeat' },
             { key: 'wrapV', kind: 'select', options: ['repeat', 'mirror', 'off'], default: 'repeat' },
+            // colour space of the picture: sRGB (photos, colour maps) or raw values (roughness, height … – MaterialX
+            // images without colorspace; Nov. 2026, default sRGB = as before)
+            { key: 'colorspace', kind: 'select', options: ['srgb', 'raw'], default: 'srgb' },
         ],
     },
     importMap: {
@@ -171,14 +178,16 @@ export const NODE_TYPES = {
             { key: 't', kind: 'number', min: 0, max: 1, step: 0.01, default: 0.5 },
         ],
     },
+    // ops like MaterialX's math nodes (Nov. 2026: div … trianglewave added – graph-mtlx.js writes them as those nodes);
+    // one-input ops hide b (`when`: shown only while it matters – a linked input stays visible)
     math: {
         category: 'value', color: 'bg-violet-700',
-        inputs: [{ key: 'a', type: 'float' }, { key: 'b', type: 'float' }],
+        inputs: [{ key: 'a', type: 'float' }, { key: 'b', type: 'float', when: p => !MATH_UNARY.has(p.op) }],
         outputs: [{ key: 'value', type: 'float' }],
         params: [
-            { key: 'op', kind: 'select', options: ['add', 'sub', 'mul', 'pow', 'min', 'max'], default: 'mul' },
+            { key: 'op', kind: 'select', options: ['add', 'sub', 'mul', 'div', 'pow', 'min', 'max', 'mod', 'abs', 'floor', 'ceil', 'round', 'fract', 'sqrt', 'sin', 'cos', 'sign', 'trianglewave'], default: 'mul' },
             { key: 'a', kind: 'number', min: 0, max: 1, step: 0.01, default: 0.5 },
-            { key: 'b', kind: 'number', min: 0, max: 4, step: 0.01, default: 1 },
+            { key: 'b', kind: 'number', min: 0, max: 4, step: 0.01, default: 1, when: p => !MATH_UNARY.has(p.op) },
         ],
     },
     remap: {
@@ -199,10 +208,9 @@ export const NODE_TYPES = {
     },
 };
 
-// procedural texture nodes: one module per type in nodes/ (Vite glob – new files register themselves)
+// node types in nodes/ (Vite glob – new files register themselves): default export = one node type or a list of them
 for (const mod of Object.values(import.meta.glob('./nodes/*.js', { eager: true }))) {
-    const def = mod.default;
-    if (def?.type) NODE_TYPES[def.type] = def;
+    for (const def of [mod.default].flat()) if (def?.type) NODE_TYPES[def.type] = def;
 }
 
 // Coordinates of every texture node (not the imported textures – they follow the model's UVs): offset (in tile units
@@ -231,9 +239,14 @@ export function sliderRange(p, value) {
     return { min: Math.max(p.min, c - 1), max: Math.min(p.max, c + 1) };
 }
 
-/** graph with a picture that does not repeat (decal): baked over the UV range of its meshes instead of a tile */
-export const isUvMode = graph => !!graph?.nodes?.some(n => (n.type === 'image' && (n.params?.wrapU === 'off' || n.params?.wrapV === 'off'))
+/** graph with a picture that does not repeat (decal) or a gradient once over the object – tied to the meshes' UVs */
+export const hasDecal = graph => !!graph?.nodes?.some(n => (n.type === 'image' && (n.params?.wrapU === 'off' || n.params?.wrapV === 'off'))
     || (n.type === 'gradient' && n.params?.extent === 'object'));
+/** graph baked over the UV range of its meshes instead of a tile: decals, and hex tiling (it does not repeat with the
+ *  tile – once over the object it shows no repetition at all, as in other programs) */
+export const isUvMode = graph => hasDecal(graph) || !!graph?.nodes?.some(n => n.type === 'hexImage');
+/** node with a picture of its own (image parameter set); any: the node type takes one, set or not */
+export const hasImage = (n, any = false) => !!NODE_TYPES[n?.type]?.params?.some(p => p.kind === 'image') && (any || !!n.params?.image);
 
 export const NODE_CATEGORIES = ['input', 'texture', 'color', 'value'];
 
@@ -249,14 +262,36 @@ export const paramLabel = (type, key) => (has(`nodes.types.${type}.params.${key}
 export const optionLabel = (type, param, option) => (has(`nodes.types.${type}.options.${param}.${option}`)
     ? t(`nodes.types.${type}.options.${param}.${option}`) : t(`nodes.mapping.options.${param}.${option}`));
 
-/** Empty graph with output */
 /** The graph as far as it shapes the material – without where the nodes sit in the editor (moving a node changes nothing) */
 export function shadingGraph(graph) {
     return graph ? { ...graph, nodes: graph.nodes?.map(({ x, y, ...n }) => n) } : null;
 }
 
+/** Empty graph with output */
 export function createGraph() {
-    return { nodes: [{ id: 'out', type: 'output', x: 520, y: 40, params: { reliefStrength: 1 } }], links: [] };
+    return { version: GRAPH_VERSION, nodes: [{ id: 'out', type: 'output', x: 520, y: 40, params: { reliefStrength: 1 } }], links: [] };
+}
+
+// Graph format. 1 (no version): the relief input drove the bump and – with displacement > 0 – the displacement too.
+// 2 (Nov. 2026, aligned with MaterialX: normal vs. displacementshader): the displacement has its own input.
+export const GRAPH_VERSION = 2;
+/**
+ * Bring an older graph up to GRAPH_VERSION (in place; returns it): with displacement > 0 the relief's source is linked
+ * to the displacement input as well – it looks the same. Idempotent; a graph of the current version stays untouched
+ * (a displacement input unlinked on purpose is not linked again).
+ */
+export function migrateGraph(graph) {
+    if (!graph?.nodes || (graph.version ?? 1) >= GRAPH_VERSION) return graph;
+    const out = graph.nodes.find(n => n.type === 'output');
+    if (out && Number(out.params?.displacement) > 0) {
+        graph.links ||= [];
+        const relief = graph.links.find(l => l.to.node === out.id && l.to.port === 'height');
+        if (relief && !graph.links.some(l => l.to.node === out.id && l.to.port === 'displacementHeight')) {
+            graph.links.push({ from: { ...relief.from }, to: { node: out.id, port: 'displacementHeight' } });
+        }
+    }
+    graph.version = GRAPH_VERSION;
+    return graph;
 }
 
 // Import map -> input/channel that three.js reads for this map (can be passed through directly)
@@ -279,6 +314,9 @@ export const IMPORT_SLOTS = {
     coatColorMap: ['coatColor', 'color'],
     coatDarkeningMap: ['coatDarkening', 'r'],
     attenuationColorMap: ['transmissionColor', 'color'],
+    // displacement height (MaterialX import: displacementshader) – not three's displacementMap (that would move the
+    // raster vertices a second time)
+    displacementHeightMap: ['displacementHeight', 'r'],
 };
 // input -> channel that can be passed through
 const PASS_PORT = Object.fromEntries(Object.values(IMPORT_SLOTS));
@@ -358,9 +396,18 @@ export function evaluateGraph(graph, textures, importMaps = {}, { domain = null 
         if (!from || !nodes.has(from.node)) continue;
         // import texture directly at the matching input -> pass the original texture through
         const src = nodes.get(from.node);
+        // (the displacement height always as an expression: its values are baked for the CPU, displacement.js)
         // image from the file still missing: the material's own value (not a grey stand-in)
         if (src.type === 'importMap' && !importMaps[src.params?.map]) continue;
         const tex = src.type === 'importMap' && importMaps[src.params?.map];
+        if (tex && input.key === 'displacementHeight' && PASS_PORT[input.key] === from.port) {
+            // a height picture straight from the file (MaterialX import): one copy baked, placed like the picture lies
+            // on the model (its own repeat/offset – the material's tile size does not apply)
+            const n = Math.min(MAX_BAKE_SIZE, tex.image?.width || BAKE_SIZE);
+            result[input.key] = { kind: 'tsl', node: texture(tex, uv()).r, type: 'float', sig: signature(from.node, from.port) + '|placed', size: n,
+                placement: { repeat: [tex.repeat.x, tex.repeat.y], offset: [tex.offset.x, tex.offset.y] } };
+            continue;
+        }
         if (tex && PASS_PORT[input.key] === from.port) {
             result[input.key] = { kind: 'map', texture: tex };
             continue;
@@ -388,6 +435,8 @@ export function evaluateGraph(graph, textures, importMaps = {}, { domain = null 
     anisotropy(result.coatAnisotropy, result.coatAnisotropyDirection, 'coatAnisotropy');
     result.reliefStrength = out.params?.reliefStrength ?? 1;
     result.displacement = Math.max(0, Number(out.params?.displacement) || 0) * 10;   // cm → mm
+    // an older graph not migrated (e.g. a library thumbnail straight from a file): the relief displaces, as it did
+    if (!result.displacementHeight && (graph.version ?? 1) < GRAPH_VERSION && result.displacement > 0) result.displacementHeight = result.height;
     result.displacementMid = out.params?.displacementMid ?? 0.5;
     result.size = out.params?.size ?? 100;
     result.domain = domain;
@@ -425,10 +474,18 @@ function evaluator(graph, ctx, importMaps = ctx?.importMaps) {
         if (stack.has(nodeId)) throw new Error('Cycle in node graph');
         stack.add(nodeId);
         const n = nodes.get(nodeId);
+        // sample(key, offset): an input evaluated with the coordinate shifted by `offset` (tile units) – a fresh
+        // evaluation of everything before it (blur)
+        const sample = (key, offset) => {
+            const from = linkTo.get(nodeId + ':' + key);
+            if (!from || !nodes.has(from.node) || !ctx) return null;
+            const shifted = { ...ctx, base: ctx.base.add(offset), modelUv: ctx.modelUv.add(offset) };
+            return evaluator(graph, shifted, importMaps).outputOf(from.node, from.port);
+        };
         const res = evalNode(n, port, inp => {
             const from = linkTo.get(nodeId + ':' + inp);
             return from && nodes.has(from.node) ? outputOf(from.node, from.port, stack) : null;
-        }, ctx);
+        }, ctx && { ...ctx, sample });
         stack.delete(nodeId);
         cache.set(key, res);
         return res;
@@ -459,9 +516,10 @@ function evalNode(n, port, get, ctx) {
     const def = NODE_TYPES[n.type];
     // texture nodes: coordinate = connected `uv` input or the bake texel's, then the node's coordinate settings;
     // the node reads it through its `uv` input
-    let at = null;
+    let at = null, uvLinked = false;
     if (def?.texture && !def.importOnly) {
         const connected = get('uv');
+        uvLinked = connected?.type === 'vector';
         at = mapCoord(connected?.type === 'vector' ? connected.node : ctx.base, p);
         const inner = get;
         get = k => (k === 'uv' ? T(at, 'vector') : inner(k));
@@ -482,15 +540,7 @@ function evalNode(n, port, get, ctx) {
         }
         case 'math': {
             const a = input(get, 'a', 'float', p.a), b = input(get, 'b', 'float', p.b);
-            const ops = {
-                add: [(x, y) => x + y, (x, y) => x.add(y)],
-                sub: [(x, y) => x - y, (x, y) => x.sub(y)],
-                mul: [(x, y) => x * y, (x, y) => x.mul(y)],
-                pow: [(x, y) => Math.pow(Math.max(x, 0), y), (x, y) => pow(max(x, 0), y)],
-                min: [Math.min, (x, y) => min(x, y)],
-                max: [Math.max, (x, y) => max(x, y)],
-            };
-            const [js, gpu] = ops[p.op] || ops.mul;
+            const [js, gpu] = MATH_OPS[p.op] || MATH_OPS.mul;
             if (a.isConst && b.isConst) return C(js(a.value, b.value));
             return T(gpu(tsl(a), tsl(b)), 'float');
         }
@@ -529,7 +579,9 @@ function evalNode(n, port, get, ctx) {
             const u = wrapAxis(s.x, p.wrapU), v = wrapAxis(s.y, p.wrapV);
             const c = texture(tex, vec2(u.t, v.t)).grad(dFdx(s), dFdy(s));
             if (port === 'alpha') return T(c.a.mul(u.inside).mul(v.inside), 'float');
-            return port === 'value' ? T(dot(c.rgb, vec3(...LUMA)), 'float') : T(c.rgb, 'color');
+            // raw values: the texture decodes sRGB (shared by every node with this picture) – encoded back
+            const rgb = p.colorspace === 'raw' ? sRGBTransferOETF(c.rgb) : c.rgb;
+            return port === 'value' ? T(dot(rgb, vec3(...LUMA)), 'float') : T(rgb, 'color');
         }
         case 'importMap': {
             const tex = importMaps?.[p.map];
@@ -540,11 +592,37 @@ function evalNode(n, port, get, ctx) {
             return port === 'color' ? T(c.rgb, 'color') : T(c[port], 'float');
         }
     }
-    if (def?.evaluate) return def.evaluate(port, p, get, ctx);
+    if (def?.evaluate) return def.evaluate(port, p, get, ctx && { ...ctx, nodeId: n.id, uvLinked });
     return C(0);
 }
 
 const clamp01 = v => Math.min(Math.max(v, 0), 1);
+
+// math node: [constant, TSL] per op – as MaterialX defines them (modulo floors like GLSL's mod, trianglewave
+// 0.5 − |(|x| mod 1) − 0.5|; pow clamps the base at 0 – RINDR's from before)
+const jsMod = (x, y) => x - y * Math.floor(x / y);
+const MATH_OPS = {
+    add: [(x, y) => x + y, (x, y) => x.add(y)],
+    sub: [(x, y) => x - y, (x, y) => x.sub(y)],
+    mul: [(x, y) => x * y, (x, y) => x.mul(y)],
+    div: [(x, y) => x / y, (x, y) => x.div(y)],
+    pow: [(x, y) => Math.pow(Math.max(x, 0), y), (x, y) => pow(max(x, 0), y)],
+    min: [Math.min, (x, y) => min(x, y)],
+    max: [Math.max, (x, y) => max(x, y)],
+    mod: [jsMod, (x, y) => x.sub(y.mul(floor(x.div(y))))],
+    abs: [Math.abs, x => abs(x)],
+    floor: [Math.floor, x => floor(x)],
+    ceil: [Math.ceil, x => ceil(x)],
+    round: [Math.round, x => round(x)],
+    fract: [x => x - Math.floor(x), x => fract(x)],
+    sqrt: [Math.sqrt, x => sqrt(x)],
+    sin: [Math.sin, x => sin(x)],
+    cos: [Math.cos, x => cos(x)],
+    sign: [Math.sign, x => sign(x)],
+    trianglewave: [x => 0.5 - Math.abs(jsMod(Math.abs(x), 1) - 0.5), x => float(0.5).sub(abs(fract(abs(x)).sub(0.5)))],
+};
+/** math ops with one input (b unused) */
+export const MATH_UNARY = new Set(['abs', 'floor', 'ceil', 'round', 'fract', 'sqrt', 'sin', 'cos', 'sign', 'trianglewave']);
 
 // coordinate settings of a texture node: (c − offset) × tiling, turned by `angle` around the centre of the copy.
 // The values are uniforms: moving a decal changes only them, the bake shader stays the same (no new compile per step)

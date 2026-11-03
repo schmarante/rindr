@@ -9,7 +9,8 @@ import * as THREE from 'three/webgpu';
 import { encodePng } from './png-encode.js';
 import { zipStore } from './zip.js';
 import { readZip } from './splat/splat-formats.js';
-import { createImportGraph } from './material-graph.js';
+import { createImportGraph, createGraph, hasDecal } from './material-graph.js';
+import { graphToMtlx, graphFromMtlx, GRAPH_TO_OPENPBR } from './graph-mtlx.js';
 import { UV_TILE } from './step-importer.js';
 import { SUBSURFACE_RADIUS_SCALE } from './materials/medium.js';
 import { getLocale } from './i18n.js';
@@ -187,7 +188,7 @@ const pngBytes = async (data, w, h) => new Uint8Array(await (await encodePng(dat
  *   json: the material as materialManager.toJSON writes it
  * @returns {Promise<{ name: string, bytes: Uint8Array }>}
  */
-export async function exportMaterialPackage({ def, material: m }, { preview = null, json = null, version = '' } = {}) {
+export async function exportMaterialPackage({ def, material: m }, { preview = null, json = null, version = '', graphEnv = null } = {}) {
     const name = slug(def.name);
     const p = def.params || {};
     const values = openPbrValues(m, p);
@@ -197,7 +198,7 @@ export async function exportMaterialPackage({ def, material: m }, { preview = nu
     const outNode = def.graph?.nodes?.find(n => n.type === 'output');
     const uvMode = !!m.userData.graphUvMode;
     // tile size (mm) of baked node maps – an imported material's maps follow the model's UVs (no size)
-    const tileSize = def.graph?.nodes?.some(n => n.type !== 'output' && n.type !== 'importMap') && !uvMode ? (outNode?.params?.size ?? 100) : null;
+    const tileSize = def.graph?.nodes?.some(n => n.type !== 'output' && n.type !== 'importMap') && !hasDecal(def.graph) ? (outNode?.params?.size ?? 100) : null;
     const pixelCache = new Map();
     for (const slot of EXPORT_MAPS) {
         const tex = m[slot.prop];
@@ -222,6 +223,9 @@ export async function exportMaterialPackage({ def, material: m }, { preview = nu
         maps[slot.prop] = file;
         textured[slot.input] = { file, kind: slot.kind, remap: slot.remap };
     }
+    // the node graph as MaterialX nodes where its nodes have a counterpart (graph-mtlx.js) – the baked maps above stay
+    // in the package (RINDR's description names them: `baked`, for programs that take pictures only)
+    const nodegraph = await exportNodegraph(def, graphEnv, name, files, textured, !!m.userData.displacement?.data);
     // anisotropy map of the node graph (RG direction, B strength): roughness and strength converted per pixel to
     // OpenPBR's mapping (both depend on the local strength – roughness from its map, if any, sampled nearest), the
     // direction as a tangent map → geometry_tangent through the surface's tangent frame
@@ -271,7 +275,23 @@ export async function exportMaterialPackage({ def, material: m }, { preview = nu
             coatAnisotropyDirFile = dFile;
         }
     }
-    const mtlx = writeMtlx({ anisotropyDirFile, coatAnisotropyDirFile, name, label: def.name, values, textured, tileSize, clamp: uvMode, normalScale: Math.abs(m.normalScale?.x ?? 1),
+    // displacement (displacement.js, graph input "displacement height"): the baked heights as a grey texture (rows top
+    // first – MaterialX's origin is bottom left like the other maps), amount (mm) and mid → a displacement node
+    let displacement = null;
+    const disp = m.userData.displacement;
+    if (disp?.data && disp.amount > 0) {
+        const n = disp.n, grey = new Uint8ClampedArray(n * n * 4);
+        for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+            const v = Math.round(Math.min(Math.max(disp.data[(n - 1 - y) * n + x], 0), 1) * 255), i = (y * n + x) * 4;
+            grey[i] = grey[i + 1] = grey[i + 2] = v;
+            grey[i + 3] = 255;
+        }
+        const file = `textures/${name}_displacement.png`;
+        files.push({ name: file, data: await pngBytes(grey, n, n) });
+        maps.displacementHeightMap = file;
+        displacement = { file, amount: disp.amount, mid: disp.mid ?? 0.5, ref: nodegraph?.outputs.displacementHeight };
+    }
+    const mtlx = writeMtlx({ nodegraph: nodegraph?.xml, displacement, anisotropyDirFile, coatAnisotropyDirFile, name, label: def.name, values, textured, tileSize, clamp: uvMode, normalScale: Math.abs(m.normalScale?.x ?? 1),
         coatNormalScale: Math.abs(m.clearcoatNormalScale?.x ?? 1),
         rotation: p.anisotropy > 0 ? (p.anisotropyRotation ?? 0) : 0,
         coatRotation: p.clearcoatAnisotropy > 0 ? (p.clearcoatAnisotropyRotation ?? 0) : 0, version });
@@ -279,6 +299,11 @@ export async function exportMaterialPackage({ def, material: m }, { preview = nu
     const description = {
         format: MATERIAL_PACKAGE, version: PACKAGE_VERSION, generator: `RINDR ${version}`.trim(),
         material: json, maps, tileSize,
+        // OpenPBR input → its baked picture, where the .mtlx takes the node graph instead
+        baked: nodegraph ? {
+            ...Object.fromEntries(Object.entries(textured).filter(([, t]) => t.ref).map(([k, t]) => [k, t.file])),
+            ...(displacement?.ref ? { displacement: displacement.file } : {}),
+        } : undefined,
         openpbr: Object.fromEntries(Object.entries(values).map(([k, v]) => [k, v?.isColor ? [v.r, v.g, v.b] : v])),
         notOpenPbr: notOpenPbr(p),
     };
@@ -292,6 +317,46 @@ export async function exportMaterialPackage({ def, material: m }, { preview = nu
     return { name: `${name}.zip`, bytes: zipStore(files) };
 }
 
+/**
+ * The material's node graph as a MaterialX nodegraph (graph-mtlx.js) for the inputs that have a baked map in `textured`
+ * (+ the displacement height): their entries get `ref` (nodegraph output). Not for decals (UV mode) and imported
+ * materials (their pictures follow the model's UVs). Pictures (baked node outputs, image nodes) go into `files`.
+ */
+async function exportNodegraph(def, env, name, files, textured, displaced) {
+    const graph = def.graph;
+    if (!env || !graph?.nodes || hasDecal(graph) || graph.nodes.some(n => n.type === 'importMap')) return null;
+    const keys = Object.keys(GRAPH_TO_OPENPBR).filter(k => textured[GRAPH_TO_OPENPBR[k]]);
+    if (displaced) keys.push('displacementHeight');
+    const written = new Map();   // image node picture → file
+    const ng = await graphToMtlx(graph, keys, {
+        evaluate: env.evaluate,
+        bake: async (nodeId, port, type) => {
+            const r = await env.bake(nodeId, port, type);
+            if (!r) return null;
+            const file = `textures/${name}_${slug(nodeId)}_${port}.png`;
+            // bottom row first → MaterialX file order (top row first); values as grey
+            const data = flipRows(r.pixels, r.size, r.size);
+            if (type === 'float') for (let i = 0; i < data.length; i += 4) data[i + 1] = data[i + 2] = data[i];
+            for (let i = 3; i < data.length; i += 4) data[i] = 255;
+            files.push({ name: file, data: await pngBytes(data, r.size, r.size) });
+            return file;
+        },
+        image: async nodeId => {
+            const url = env.image(nodeId);
+            if (!url) return null;
+            if (written.has(url)) return written.get(url);
+            const blob = await (await fetch(url)).blob();
+            const file = `textures/${name}_${slug(nodeId)}.${blob.type === 'image/png' ? 'png' : 'jpg'}`;
+            files.push({ name: file, data: new Uint8Array(await blob.arrayBuffer()) });
+            written.set(url, file);
+            return file;
+        },
+    }, name);
+    if (!ng) return null;
+    for (const [key, ref] of Object.entries(ng.outputs)) if (textured[GRAPH_TO_OPENPBR[key]]) textured[GRAPH_TO_OPENPBR[key]].ref = ref;
+    return ng;
+}
+
 // RINDR effects without an OpenPBR counterpart (named in the description; the .mtlx carries the base surface)
 function notOpenPbr(p) {
     const out = [];
@@ -299,9 +364,11 @@ function notOpenPbr(p) {
     return out;
 }
 
-function writeMtlx({ name, label, values, textured, tileSize, clamp, normalScale, coatNormalScale, rotation, coatRotation, anisotropyDirFile, coatAnisotropyDirFile, version }) {
+function writeMtlx({ name, label, values, textured, tileSize, clamp, normalScale, coatNormalScale, rotation, coatRotation, anisotropyDirFile, coatAnisotropyDirFile, displacement, nodegraph, version }) {
     const shader = ident(`${name}_shader`);
-    const nodes = [];
+    const nodes = nodegraph ? [nodegraph] : [];
+    // source of an input: a node of the document or an output of the nodegraph
+    const from = (node, ref) => (ref ? `nodegraph="${ref.nodegraph}" output="${ref.output}"` : `nodename="${node}"`);
     const inputs = [];
     const address = clamp ? 'clamp' : 'periodic';
     const image = (node, type, file, colorspace) => nodes.push(`  <image name="${node}" type="${type}">
@@ -314,12 +381,13 @@ function writeMtlx({ name, label, values, textured, tileSize, clamp, normalScale
         const tex = textured[input];
         if (tex) {
             const node = ident(`${input}_image`);
-            image(node, type, tex.file, tex.kind === 'color' ? 'srgb_texture' : null);
+            if (!tex.ref) image(node, type, tex.file, tex.kind === 'color' ? 'srgb_texture' : null);
+            const src = from(node, tex.ref);
             if (tex.remap) {
                 // the map carries the value itself: offset + scale × picture
                 const mul = ident(`${input}_scale`), add = ident(`${input}_offset`);
                 nodes.push(`  <multiply name="${mul}" type="${type}">
-    <input name="in1" type="${type}" nodename="${node}" />
+    <input name="in1" type="${type}" ${src} />
     <input name="in2" type="${type}" value="${fmt(tex.remap[1])}" />
   </multiply>`, `  <add name="${add}" type="${type}">
     <input name="in1" type="${type}" nodename="${mul}" />
@@ -330,11 +398,11 @@ function writeMtlx({ name, label, values, textured, tileSize, clamp, normalScale
             }
             // three.js multiplies map × value: the factor as a multiply node (not for a neutral factor)
             const neutral = type === 'color3' ? isWhite(v) : Math.abs(v - 1) < 1e-4;
-            if (neutral || input === 'emission_color' && v.getHex() === 0) inputs.push(`    <input name="${input}" type="${type}" nodename="${node}" />`);
+            if (neutral || input === 'emission_color' && v.getHex() === 0) inputs.push(`    <input name="${input}" type="${type}" ${src} />`);
             else {
                 const mul = ident(`${input}_factor`);
                 nodes.push(`  <multiply name="${mul}" type="${type}">
-    <input name="in1" type="${type}" nodename="${node}" />
+    <input name="in1" type="${type}" ${src} />
     <input name="in2" type="${type}" value="${type === 'color3' ? color3(v) : fmt(v)}" />
   </multiply>`);
                 inputs.push(`    <input name="${input}" type="${type}" nodename="${mul}" />`);
@@ -412,6 +480,22 @@ function writeMtlx({ name, label, values, textured, tileSize, clamp, normalScale
   </rotate3d>`);
         inputs.push(`    <input name="${input}" type="vector3" nodename="${node}" />`);
     }
+    // displacement: height − mid along the normal × scale (mm, like RINDR's other distances) → displacementshader
+    let displacementInput = '';
+    if (displacement) {
+        const shaderName = ident(`${name}_displacement`);
+        if (!displacement.ref) image('displacement_image', 'float', displacement.file, null);
+        nodes.push(`  <subtract name="displacement_centered" type="float">
+    <input name="in1" type="float" ${from('displacement_image', displacement.ref)} />
+    <input name="in2" type="float" value="${fmt(displacement.mid)}" />
+  </subtract>
+  <displacement name="${shaderName}" type="displacementshader">
+    <input name="displacement" type="float" nodename="displacement_centered" />
+    <input name="scale" type="float" value="${fmt(displacement.amount)}" unittype="distance" unit="millimeter" />
+  </displacement>`);
+        displacementInput = `
+    <input name="displacementshader" type="displacementshader" nodename="${shaderName}" />`;
+    }
     return `<?xml version="1.0"?>
 <!-- ${esc(label)} – exported by RINDR ${esc(version)} (OpenPBR surface, docs/material-format.md) -->
 <materialx version="1.39" colorspace="lin_rec709">
@@ -419,7 +503,7 @@ ${nodes.join('\n')}${nodes.length ? '\n' : ''}  <open_pbr_surface name="${shader
 ${inputs.join('\n')}
   </open_pbr_surface>
   <surfacematerial name="${ident(name)}" type="material"${tileSize ? ` doc="${esc(`RINDR: one texture tile = ${fmt(tileSize)} mm`)}"` : ''}>
-    <input name="surfaceshader" type="surfaceshader" nodename="${shader}" />
+    <input name="surfaceshader" type="surfaceshader" nodename="${shader}" />${displacementInput}
   </surfacematerial>
 </materialx>
 `;
@@ -695,6 +779,12 @@ async function fromMtlx(text, dir, read) {
                 return { texture: { ...tex.texture, factor: val?.value ?? null } };
             }
             case 'normalmap': return resolve(inp('in'), nodeScope, depth + 1);
+            case 'subtract': {
+                // texture − value: RINDR's displacement height minus its mid
+                const a = resolve(inp('in1'), nodeScope, depth + 1), b = resolve(inp('in2'), nodeScope, depth + 1);
+                if (a?.texture) return { texture: { ...a.texture, offset: b?.value ?? null } };
+                return a ?? b;
+            }
             case 'extract': {
                 const r = resolve(inp('in'), nodeScope, depth + 1);
                 if (r?.texture) r.texture.channel = Number(inp('index')?.getAttribute('value') ?? 0);
@@ -708,6 +798,46 @@ async function fromMtlx(text, dir, read) {
     };
     const num = s => Number(String(s).split(',')[0]);
     const vec = s => String(s).split(',').map(Number);
+    // pictures of image nodes as data URLs (RINDR's image node keeps its picture in the graph)
+    const pictures = new Map();
+    const imageUrl = async file => {
+        const path = (prefixOf(file) + file.getAttribute('value')).replace(/^\.\//, '');
+        if (!pictures.has(path)) {
+            pictures.set(path, read(path).then(blob => blob && new Promise(res => {
+                const fr = new FileReader();
+                fr.onload = () => res(fr.result);
+                fr.onerror = () => res(null);
+                fr.readAsDataURL(blob);
+            })));
+        }
+        return pictures.get(path);
+    };
+    /**
+     * an input's node tree as RINDR nodes: { nodes, links, res } – null when a node is unknown, for a constant, or when it is
+     * only a picture (perhaps × a value): that stays a texture from the file as before (original resolution, model UVs)
+     */
+    let treeCount = 0;
+    const nodeTree = async input => {
+        const part = { nodes: [], links: [] };
+        let res = null;
+        try {
+            res = await graphFromMtlx(input, { root, children, byName, image: imageUrl }, part, `mx${treeCount++}`);
+        } catch (err) {
+            console.warn('[MaterialX] node graph not read:', err?.message || err);
+            return null;
+        }
+        if (!res?.node) return null;
+        const byId = new Map(part.nodes.map(n => [n.id, n]));
+        const top = byId.get(res.node);
+        const fed = id => part.links.filter(l => l.to.node === id).map(l => byId.get(l.from.node));
+        // a picture as it is: no coordinate settings, repeating, sRGB as a colour / raw as a value
+        const plain = n => n?.type === 'image' && (n.params.scale ?? 1) === 1 && !n.params.offsetU && !n.params.offsetV && (n.params.tilingU ?? 1) === 1
+            && (n.params.tilingV ?? 1) === 1 && !n.params.angle && (n.params.wrapU ?? 'repeat') === 'repeat' && (n.params.wrapV ?? 'repeat') === 'repeat';
+        const simple = n => plain(n) || n?.type === 'separate' && simple(fed(n.id)[0])
+            || ((n?.type === 'math' && n.params.op === 'mul') || (n?.type === 'blend' && n.params.op === 'multiply')) && fed(n.id).length === 1 && simple(fed(n.id)[0]);
+        if (simple(top)) return null;
+        return { ...part, res };
+    };
     for (const mat of children(root).filter(c => c.nodeName === 'surfacematerial')) {
         const ref = children(mat).find(c => c.nodeName === 'input' && c.getAttribute('name') === 'surfaceshader');
         const shader = ref && byName(root, ref.getAttribute('nodename'));
@@ -774,15 +904,82 @@ async function fromMtlx(text, dir, read) {
         if (baseWeight !== 1 && params.color) params.color = '#' + new THREE.Color(params.color).multiplyScalar(baseWeight).getHexString();
         if (params.emissiveIntensity > 0 && !params.emissive) params.emissive = '#ffffff';
         if (!(params.emissiveIntensity > 0)) { delete params.emissive; delete params.emissiveIntensity; }
+        // displacement: displacementshader → displacement node (height texture, its mid, scale in mm) → graph input
+        // "displacement height" with the output's amount (cm) and mid
+        let displacement = null;
+        const dispRef = children(mat).find(c => c.nodeName === 'input' && c.getAttribute('name') === 'displacementshader');
+        const dispNode = dispRef && byName(root, dispRef.getAttribute('nodename') || '');
+        let dispNodes = null;   // the height as RINDR nodes (a node tree behind the displacement)
+        if (dispNode?.nodeName === 'displacement') {
+            const dInp = name => children(dispNode).find(c => c.nodeName === 'input' && c.getAttribute('name') === name);
+            const h = resolve(dInp('displacement'), root);
+            if (!h?.texture) {
+                // displacement − mid (RINDR's own way out) with nodes before it
+                const centered = byName(root, dInp('displacement')?.getAttribute('nodename') || '');
+                const cInp = name => centered && children(centered).find(c => c.nodeName === 'input' && c.getAttribute('name') === name);
+                const scaleInput = dInp('scale');
+                const mm = num(scaleInput?.getAttribute('value') ?? 1) * (DISTANCE_MM[scaleInput?.getAttribute('unit') || 'meter'] ?? 1000);
+                const src = centered?.nodeName === 'subtract' ? cInp('in1') : dInp('displacement');
+                const part = src && mm > 0 ? await nodeTree(src) : null;
+                if (part) {
+                    dispNodes = part;
+                    displacement = { amount: Math.min(mm / 10, 5), mid: centered?.nodeName === 'subtract' ? num(cInp('in2')?.getAttribute('value') ?? 0) : 0 };
+                }
+            }
+            // scale in the unit it names (MaterialX distance units; RINDR writes millimeter), without one in metres – the
+            // reference unit of MaterialX's distance units; into the output's range (cm, up to 5)
+            const scaleInput = dInp('scale');
+            const mm = num(scaleInput?.getAttribute('value') ?? 1) * (DISTANCE_MM[scaleInput?.getAttribute('unit') || 'meter'] ?? 1000);
+            const blob = h?.texture && await read(h.texture.file.replace(/^\.\//, ''));
+            if (blob && mm > 0) {
+                maps.displacementHeightMap = await channelTexture(blob, 0, baseName(h.texture.file));
+                if (tile > 0) maps.displacementHeightMap.repeat.setScalar(UV_TILE / tile);
+                displacement = { amount: Math.min(mm / 10, 5), mid: h.texture.offset !== null && h.texture.offset !== undefined ? num(h.texture.offset) : 0 };
+            }
+        }
+        // inputs with a node tree RINDR knows (graph-mtlx.js): those nodes in the material's graph instead of the picture
+        // found behind them; coat IOR and transmission depth stay as before (RINDR codes them differently)
+        const trees = [];
+        for (const [key, openpbr] of Object.entries(GRAPH_TO_OPENPBR)) {
+            if (openpbr === 'coat_ior' || openpbr === 'transmission_depth') continue;
+            const name = std ? Object.keys(FROM_STANDARD).find(k => FROM_STANDARD[k] === openpbr) : openpbr;
+            const inp = name && children(shader).find(c => c.nodeName === 'input' && c.getAttribute('name') === name);
+            if (!inp || !(inp.hasAttribute('nodename') || inp.hasAttribute('nodegraph'))) continue;
+            const part = await nodeTree(inp);
+            if (part) trees.push([key, part]);
+        }
+        if (dispNodes) trees.push(['displacementHeight', dispNodes]);
+        let graph = Object.keys(maps).length ? createImportGraph(maps) : null;
+        if (trees.length) {
+            graph ||= createGraph();
+            const outNode = graph.nodes.find(n => n.type === 'output');
+            for (const [key, part] of trees) {
+                graph.links = graph.links.filter(l => !(l.to.node === outNode.id && l.to.port === key));
+                graph.nodes.push(...part.nodes);
+                graph.links.push(...part.links, { from: { node: part.res.node, port: part.res.port }, to: { node: outNode.id, port: key } });
+            }
+            // pictures from the file no input uses any more
+            for (const n of graph.nodes.filter(n => n.type === 'importMap' && !graph.links.some(l => l.from.node === n.id))) {
+                graph.nodes.splice(graph.nodes.indexOf(n), 1);
+                delete maps[n.params.map];
+            }
+            // the nodes work in tiles of the material's size (RINDR's own note) – the output takes it
+            if (tile > 0) outNode.params = { ...outNode.params, size: tile };
+        }
         const render = Object.keys(maps).length ? { maps } : null;
         if (maps.alphaMap) Object.assign(render, { alphaTest: 0.5 });
+        const out = graph?.nodes.find(n => n.type === 'output');
+        if (out && displacement) out.params = { ...out.params, displacement: displacement.amount, displacementMid: displacement.mid };
         defs.push({
             name: mat.getAttribute('name') || 'MaterialX', source: 'custom', params,
-            graph: render ? createImportGraph(maps) : null, render,
+            graph, render,
         });
     }
     return defs;
 }
+
+// MaterialX distance units (stdlib unitdef UD_stdlib_distance) in mm
+const DISTANCE_MM = { nanometer: 1e-6, micron: 1e-3, millimeter: 1, centimeter: 10, inch: 25.4, foot: 304.8, yard: 914.4, meter: 1000, kilometer: 1e6, mile: 1609344 };
 
 // linear rgb (MaterialX, lin_rec709) → THREE.Color in the working space
 const colorOf = ([r, g, b]) => new THREE.Color().setRGB(r ?? 0, g ?? r ?? 0, b ?? r ?? 0, THREE.LinearSRGBColorSpace);

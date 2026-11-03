@@ -597,6 +597,7 @@
                     "normal": "Normal-Map",
                     "ao": "Umgebungsverdeckung",
                     "height": "Relief (Höhe)",
+                    "displacementHeight": "Displacement (Höhe)",
                     "coatNormal": "Lack-Normal-Map",
                     "coatHeight": "Lack-Relief (Höhe)",
                     "alpha": "Ausschnitt (Alpha)",
@@ -652,7 +653,14 @@
                 },
                 "params": {
                     "image": "Bild",
-                    "scale": "Wiederholung"
+                    "scale": "Wiederholung",
+                    "colorspace": "Farbraum"
+                },
+                "options": {
+                    "colorspace": {
+                        "srgb": "sRGB (Farben)",
+                        "raw": "Roh (Werte)"
+                    }
                 }
             },
             "importMap": {
@@ -788,7 +796,19 @@
                         "mul": "A × B",
                         "pow": "A ^ B",
                         "min": "Minimum",
-                        "max": "Maximum"
+                        "max": "Maximum",
+                        "div": "A ÷ B",
+                        "mod": "Modulo",
+                        "abs": "Betrag",
+                        "floor": "Abrunden",
+                        "ceil": "Aufrunden",
+                        "round": "Runden",
+                        "fract": "Nachkommateil",
+                        "sqrt": "Wurzel",
+                        "sin": "Sinus",
+                        "cos": "Kosinus",
+                        "sign": "Vorzeichen",
+                        "trianglewave": "Dreieckswelle"
                     }
                 }
             },
@@ -1167,6 +1187,589 @@
                     "thickness": "Breite",
                     "variation": "Variation",
                     "seed": "Zufallswert"
+                }
+            },
+            "clamp": {
+                "label": "Begrenzen",
+                "inputs": {
+                    "value": "Wert",
+                    "low": "Minimum",
+                    "high": "Maximum"
+                },
+                "outputs": {
+                    "value": "Wert"
+                },
+                "params": {
+                    "value": "Wert",
+                    "low": "Minimum",
+                    "high": "Maximum"
+                }
+            },
+            "smoothstep": {
+                "label": "Weicher Übergang",
+                "inputs": {
+                    "value": "Wert",
+                    "low": "Unten",
+                    "high": "Oben"
+                },
+                "outputs": {
+                    "value": "Wert"
+                },
+                "params": {
+                    "value": "Wert",
+                    "low": "Unten",
+                    "high": "Oben"
+                }
+            },
+            "range": {
+                "label": "Bereich",
+                "inputs": {
+                    "value": "Wert"
+                },
+                "outputs": {
+                    "value": "Wert"
+                },
+                "params": {
+                    "value": "Wert",
+                    "inLow": "Ein von",
+                    "inHigh": "Ein bis",
+                    "gamma": "Gamma",
+                    "outLow": "Aus von",
+                    "outHigh": "Aus bis",
+                    "clamp": "Begrenzen"
+                }
+            },
+            "texcoord": {
+                "label": "Texturkoordinate",
+                "outputs": {
+                    "uv": "UV",
+                    "u": "U",
+                    "v": "V"
+                }
+            },
+            "separate": {
+                "label": "Kanäle trennen",
+                "inputs": {
+                    "color": "Farbe"
+                },
+                "outputs": {
+                    "r": "Rot",
+                    "g": "Grün",
+                    "b": "Blau"
+                },
+                "params": {
+                    "color": "Farbe"
+                }
+            },
+            "combine": {
+                "label": "Kanäle kombinieren",
+                "inputs": {
+                    "r": "Rot",
+                    "g": "Grün",
+                    "b": "Blau"
+                },
+                "outputs": {
+                    "color": "Farbe"
+                },
+                "params": {
+                    "r": "Rot",
+                    "g": "Grün",
+                    "b": "Blau"
+                }
+            },
+            "luminance": {
+                "label": "Helligkeit",
+                "inputs": {
+                    "color": "Farbe"
+                },
+                "outputs": {
+                    "value": "Wert"
+                },
+                "params": {
+                    "color": "Farbe"
+                }
+            },
+            "hsvAdjust": {
+                "label": "HSV anpassen",
+                "inputs": {
+                    "color": "Farbe"
+                },
+                "outputs": {
+                    "color": "Farbe"
+                },
+                "params": {
+                    "color": "Farbe",
+                    "hue": "Farbton +",
+                    "saturation": "Sättigung ×",
+                    "value": "Helligkeit ×"
+                }
+            },
+            "saturate": {
+                "label": "Sättigung",
+                "inputs": {
+                    "color": "Farbe"
+                },
+                "outputs": {
+                    "color": "Farbe"
+                },
+                "params": {
+                    "color": "Farbe",
+                    "amount": "Stärke"
+                }
+            },
+            "contrast": {
+                "label": "Kontrast",
+                "inputs": {
+                    "color": "Farbe"
+                },
+                "outputs": {
+                    "color": "Farbe"
+                },
+                "params": {
+                    "color": "Farbe",
+                    "amount": "Stärke",
+                    "pivot": "Drehpunkt"
+                }
+            },
+            "colorCorrect": {
+                "label": "Farbkorrektur",
+                "inputs": {
+                    "color": "Farbe"
+                },
+                "outputs": {
+                    "color": "Farbe"
+                },
+                "params": {
+                    "color": "Farbe",
+                    "hue": "Farbton +",
+                    "saturation": "Sättigung",
+                    "gamma": "Gamma",
+                    "lift": "Lift",
+                    "gain": "Verstärkung",
+                    "contrast": "Kontrast",
+                    "contrastPivot": "Kontrast-Drehpunkt",
+                    "exposure": "Belichtung"
+                }
+            },
+            "blend": {
+                "label": "Mischmodus",
+                "inputs": {
+                    "a": "Hintergrund",
+                    "b": "Vordergrund",
+                    "factor": "Anteil"
+                },
+                "outputs": {
+                    "color": "Farbe"
+                },
+                "params": {
+                    "op": "Modus",
+                    "a": "Hintergrund",
+                    "b": "Vordergrund",
+                    "factor": "Anteil"
+                },
+                "options": {
+                    "op": {
+                        "multiply": "Multiplizieren",
+                        "screen": "Negativ multiplizieren",
+                        "overlay": "Überlagern",
+                        "difference": "Differenz",
+                        "plus": "Addieren",
+                        "minus": "Subtrahieren",
+                        "dodge": "Abwedeln",
+                        "burn": "Nachbelichten"
+                    }
+                }
+            },
+            "ramp4": {
+                "label": "4-Ecken-Verlauf",
+                "inputs": {
+                    "uv": "Koordinate",
+                    "tl": "Oben links",
+                    "tr": "Oben rechts",
+                    "bl": "Unten links",
+                    "br": "Unten rechts"
+                },
+                "outputs": {
+                    "color": "Farbe"
+                },
+                "params": {
+                    "tl": "Oben links",
+                    "tr": "Oben rechts",
+                    "bl": "Unten links",
+                    "br": "Unten rechts"
+                }
+            },
+            "split": {
+                "label": "Teilung",
+                "inputs": {
+                    "uv": "Koordinate",
+                    "a": "Unten / links",
+                    "b": "Oben / rechts"
+                },
+                "outputs": {
+                    "color": "Farbe"
+                },
+                "params": {
+                    "axis": "Richtung",
+                    "center": "Position",
+                    "a": "Unten / links",
+                    "b": "Oben / rechts"
+                },
+                "options": {
+                    "axis": {
+                        "u": "Links | rechts",
+                        "v": "Unten | oben"
+                    }
+                }
+            },
+            "circle": {
+                "label": "Kreis",
+                "inputs": {
+                    "uv": "Koordinate"
+                },
+                "outputs": {
+                    "value": "Maske"
+                },
+                "params": {
+                    "centerU": "Mitte U",
+                    "centerV": "Mitte V",
+                    "radius": "Radius"
+                }
+            },
+            "line": {
+                "label": "Linie",
+                "inputs": {
+                    "uv": "Koordinate"
+                },
+                "outputs": {
+                    "value": "Maske"
+                },
+                "params": {
+                    "centerU": "Mitte U",
+                    "centerV": "Mitte V",
+                    "radius": "Halbe Breite",
+                    "x1": "Punkt 1 U",
+                    "y1": "Punkt 1 V",
+                    "x2": "Punkt 2 U",
+                    "y2": "Punkt 2 V"
+                }
+            },
+            "hexagon": {
+                "label": "Sechseck",
+                "inputs": {
+                    "uv": "Koordinate"
+                },
+                "outputs": {
+                    "value": "Maske"
+                },
+                "params": {
+                    "centerU": "Mitte U",
+                    "centerV": "Mitte V",
+                    "radius": "Radius"
+                }
+            },
+            "cloverleaf": {
+                "label": "Kleeblatt",
+                "inputs": {
+                    "uv": "Koordinate"
+                },
+                "outputs": {
+                    "value": "Maske"
+                },
+                "params": {
+                    "centerU": "Mitte U",
+                    "centerV": "Mitte V",
+                    "radius": "Radius"
+                }
+            },
+            "grid": {
+                "label": "Raster",
+                "inputs": {
+                    "uv": "Koordinate"
+                },
+                "outputs": {
+                    "value": "Maske"
+                },
+                "params": {
+                    "countU": "Anzahl U",
+                    "countV": "Anzahl V",
+                    "staggered": "Versetzt",
+                    "thickness": "Linienstärke"
+                }
+            },
+            "crosshatch": {
+                "label": "Kreuzschraffur",
+                "inputs": {
+                    "uv": "Koordinate"
+                },
+                "outputs": {
+                    "value": "Maske"
+                },
+                "params": {
+                    "countU": "Anzahl U",
+                    "countV": "Anzahl V",
+                    "staggered": "Versetzt",
+                    "thickness": "Linienstärke"
+                }
+            },
+            "tiledCircles": {
+                "label": "Kreismuster",
+                "inputs": {
+                    "uv": "Koordinate"
+                },
+                "outputs": {
+                    "value": "Maske"
+                },
+                "params": {
+                    "countU": "Anzahl U",
+                    "countV": "Anzahl V",
+                    "staggered": "Versetzt",
+                    "size": "Größe"
+                }
+            },
+            "tiledHexagons": {
+                "label": "Sechseckmuster",
+                "inputs": {
+                    "uv": "Koordinate"
+                },
+                "outputs": {
+                    "value": "Maske"
+                },
+                "params": {
+                    "countU": "Anzahl U",
+                    "countV": "Anzahl V",
+                    "staggered": "Versetzt",
+                    "size": "Größe"
+                }
+            },
+            "tiledCloverleafs": {
+                "label": "Kleeblattmuster",
+                "inputs": {
+                    "uv": "Koordinate"
+                },
+                "outputs": {
+                    "value": "Maske"
+                },
+                "params": {
+                    "countU": "Anzahl U",
+                    "countV": "Anzahl V",
+                    "staggered": "Versetzt",
+                    "size": "Größe"
+                }
+            },
+            "compare": {
+                "label": "Vergleich",
+                "inputs": {
+                    "value1": "Wert 1",
+                    "value2": "Wert 2",
+                    "in1": "Dann",
+                    "in2": "Sonst"
+                },
+                "outputs": {
+                    "color": "Farbe",
+                    "value": "Wert"
+                },
+                "params": {
+                    "op": "Bedingung",
+                    "value1": "Wert 1",
+                    "value2": "Wert 2",
+                    "in1": "Dann",
+                    "in2": "Sonst"
+                },
+                "options": {
+                    "op": {
+                        "greater": "Wert 1 > Wert 2",
+                        "greaterEqual": "Wert 1 ≥ Wert 2",
+                        "equal": "Wert 1 = Wert 2"
+                    }
+                }
+            },
+            "switch": {
+                "label": "Umschalter",
+                "inputs": {
+                    "in1": "Farbe 1",
+                    "in2": "Farbe 2",
+                    "in3": "Farbe 3",
+                    "in4": "Farbe 4",
+                    "in5": "Farbe 5",
+                    "which": "Auswahl"
+                },
+                "outputs": {
+                    "color": "Farbe",
+                    "value": "Wert"
+                },
+                "params": {
+                    "which": "Auswahl",
+                    "in1": "Farbe 1",
+                    "in2": "Farbe 2",
+                    "in3": "Farbe 3",
+                    "in4": "Farbe 4",
+                    "in5": "Farbe 5"
+                }
+            },
+            "logic": {
+                "label": "Logik",
+                "inputs": {
+                    "a": "A",
+                    "b": "B"
+                },
+                "outputs": {
+                    "value": "Ergebnis"
+                },
+                "params": {
+                    "op": "Verknüpfung",
+                    "a": "A",
+                    "b": "B"
+                },
+                "options": {
+                    "op": {
+                        "and": "Und",
+                        "or": "Oder",
+                        "xor": "Entweder-oder",
+                        "not": "Nicht"
+                    }
+                }
+            },
+            "unifiedNoise": {
+                "label": "Rauschen (vereinheitlicht)",
+                "inputs": {
+                    "uv": "Koordinate"
+                },
+                "outputs": {
+                    "value": "Wert"
+                },
+                "params": {
+                    "noiseType": "Art",
+                    "freqU": "Frequenz U",
+                    "freqV": "Frequenz V",
+                    "jitter": "Streuung",
+                    "style": "Darstellung",
+                    "octaves": "Oktaven",
+                    "lacunarity": "Lakunarität",
+                    "diminish": "Abnahme",
+                    "outMin": "Aus von",
+                    "outMax": "Aus bis",
+                    "clamp": "Begrenzen"
+                },
+                "options": {
+                    "noiseType": {
+                        "perlin": "Perlin",
+                        "cell": "Zellen",
+                        "worley": "Worley",
+                        "fractal": "Fraktal"
+                    },
+                    "style": {
+                        "distance": "Abstand",
+                        "solid": "Flächen"
+                    }
+                }
+            },
+            "flakes": {
+                "label": "Flakes",
+                "inputs": {
+                    "uv": "Koordinate"
+                },
+                "outputs": {
+                    "rand": "Zufall",
+                    "presence": "Präsenz",
+                    "normal": "Normale"
+                },
+                "params": {
+                    "size": "Größe",
+                    "roughness": "Rauheit",
+                    "coverage": "Dichte"
+                }
+            },
+            "randomFloat": {
+                "label": "Zufallswert",
+                "inputs": {
+                    "in": "Eingang"
+                },
+                "outputs": {
+                    "value": "Wert"
+                },
+                "params": {
+                    "in": "Eingang",
+                    "min": "Minimum",
+                    "max": "Maximum",
+                    "seed": "Variante"
+                }
+            },
+            "randomColor": {
+                "label": "Zufallsfarbe",
+                "inputs": {
+                    "in": "Eingang"
+                },
+                "outputs": {
+                    "color": "Farbe"
+                },
+                "params": {
+                    "in": "Eingang",
+                    "hueLow": "Farbton von",
+                    "hueHigh": "Farbton bis",
+                    "saturationLow": "Sättigung von",
+                    "saturationHigh": "Sättigung bis",
+                    "brightnessLow": "Helligkeit von",
+                    "brightnessHigh": "Helligkeit bis",
+                    "seed": "Variante"
+                }
+            },
+            "heightToNormal": {
+                "label": "Höhe → Normale",
+                "inputs": {
+                    "height": "Höhe"
+                },
+                "outputs": {
+                    "normal": "Normale"
+                },
+                "params": {
+                    "height": "Höhe",
+                    "scale": "Stärke"
+                }
+            },
+            "blur": {
+                "label": "Weichzeichnen",
+                "inputs": {
+                    "color": "Farbe"
+                },
+                "outputs": {
+                    "color": "Farbe"
+                },
+                "params": {
+                    "color": "Farbe",
+                    "size": "Abstand",
+                    "filter": "Filter"
+                },
+                "options": {
+                    "filter": {
+                        "box": "Kasten",
+                        "gaussian": "Gauß"
+                    }
+                }
+            },
+            "hexImage": {
+                "label": "Bild-Textur (Sechseck)",
+                "inputs": {
+                    "uv": "Koordinate"
+                },
+                "outputs": {
+                    "color": "Farbe",
+                    "value": "Wert"
+                },
+                "params": {
+                    "image": "Bild",
+                    "scale": "Kacheln",
+                    "rotation": "Drehung",
+                    "rotationMin": "Drehung von",
+                    "rotationMax": "Drehung bis",
+                    "randomScale": "Größe",
+                    "scaleMin": "Größe von",
+                    "scaleMax": "Größe bis",
+                    "offset": "Versatz",
+                    "offsetMin": "Versatz von",
+                    "offsetMax": "Versatz bis",
+                    "falloff": "Übergang",
+                    "falloffContrast": "Übergang Kontrast"
                 }
             }
         },

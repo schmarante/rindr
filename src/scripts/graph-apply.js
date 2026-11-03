@@ -9,7 +9,7 @@
 // UV mode (a picture that does not repeat – decal, isUvMode): the maps are baked once over the UV range of the meshes
 // using the material (uvDomain callback) and placed there (repeat/offset, clamped) – no repetition.
 import * as THREE from 'three/webgpu';
-import { evaluateGraph, evaluateNode, nodeSignature, GraphBaker, loadImageTexture, isUvMode } from './material-graph.js';
+import { evaluateGraph, evaluateNode, nodeSignature, GraphBaker, loadImageTexture, isUvMode, bakeResolution, BAKE_SIZE, hasImage } from './material-graph.js';
 import { PARAMS } from './material-manager.js';
 import { UV_TILE } from './step-importer.js';
 
@@ -80,7 +80,7 @@ export class GraphApplier {
             return;
         }
         // images not loaded yet count as constant grey for now -> load, then evaluate again
-        if (graph.nodes.some(n => n.type === 'image' && n.params?.image && !this.images.get(n.params.image)?.loaded)) {
+        if (graph.nodes.some(n => hasImage(n) && !this.images.get(n.params.image)?.loaded)) {
             this._imageTextures(graph)
                 .then(() => { if (entry.def.graph === graph) this.apply(entry); })
                 .catch(err => console.error('[Material graph] Image could not be loaded:', err));
@@ -151,7 +151,10 @@ export class GraphApplier {
         material.userData.graphUvMode = !!result.domain;
         for (const tex of Object.values(maps)) place(tex, entry, result);
         material.needsUpdate = true;
-        if (textured.length) this._schedule(entry);
+        // displacement height (its own input): its values are baked for the CPU even when no map needs a bake (an imported
+        // material whose maps all pass through), and a displacement switched off is removed there too
+        const dispWanted = result.displacement > 0 && result.displacementHeight?.kind === 'tsl';
+        if (textured.length || ((dispWanted || material.userData.displacement) && !entry.preview)) this._schedule(entry);
     }
 
     /**
@@ -244,10 +247,10 @@ export class GraphApplier {
         }
         // displacement (displacement.js): the height's values on the CPU – the meshes are moved there
         if (!entry.preview) {
-            const h = result.height;
+            const h = result.displacementHeight;   // its own input since graph version 2 (material-graph.js migrateGraph)
             const want = result.displacement > 0 && h?.kind === 'tsl';
             const size = want ? Math.min(h.size, 2048) : 0;
-            const dsig = want ? `${h.sig}|${size}|${result.size}|${result.domain ? JSON.stringify(result.domain) : ''}` : '';
+            const dsig = want ? `${h.sig}|${size}|${result.size}|${result.domain ? JSON.stringify(result.domain) : ''}|${h.placement ? JSON.stringify(h.placement) : ''}` : '';
             const old = material.userData.displacement;
             if (!want) {
                 if (old) { material.userData.displacement = null; this.onDisplacement?.(entry); }
@@ -260,9 +263,10 @@ export class GraphApplier {
                 const data = await this.baker.bakeHeight(h.node, size);
                 if (entry.def.graph !== graph) return;   // changed in the meantime
                 const d = result.domain;
-                const repeat = d ? [1 / (d.max[0] - d.min[0]), 1 / (d.max[1] - d.min[1])] : [UV_TILE / result.size, UV_TILE / result.size];
-                const offset = d ? [-d.min[0] * repeat[0], -d.min[1] * repeat[1]] : [0, 0];
-                material.userData.displacement = { sig: dsig, data, n: size, repeat, offset, clamp: !!d, amount: result.displacement, mid: result.displacementMid, tile: result.size };
+                // a height picture from the file lies as it is placed (material-graph.js: placement)
+                const repeat = h.placement?.repeat ?? (d ? [1 / (d.max[0] - d.min[0]), 1 / (d.max[1] - d.min[1])] : [UV_TILE / result.size, UV_TILE / result.size]);
+                const offset = h.placement?.offset ?? (d ? [-d.min[0] * repeat[0], -d.min[1] * repeat[1]] : [0, 0]);
+                material.userData.displacement = { sig: dsig, data, n: size, repeat, offset, clamp: !!d, amount: result.displacement, mid: result.displacementMid, tile: h.placement ? UV_TILE / Math.max(h.placement.repeat[0], 1e-6) : result.size };
                 this.onDisplacement?.(entry);
             }
         }
@@ -303,6 +307,29 @@ export class GraphApplier {
         return res;
     }
 
+    /**
+     * For the MaterialX export (graph-mtlx.js) of `def`'s graph: single node outputs as constants or baked pictures
+     * (tile mode, the material's bake size). bake → { size, pixels } (RGBA 8 bit, bottom row first; colours sRGB) or null.
+     */
+    async exportEnv(def) {
+        const graph = def.graph;
+        const images = await this._imageTextures(graph);
+        const size = bakeResolution(graph.nodes.find(n => n.type === 'output')?.params?.resolution) || BAKE_SIZE;
+        const evaluate = (nodeId, port) => evaluateNode(graph, nodeId, port, images, def.render?.maps, { bakeSize: size });
+        return {
+            size,
+            evaluate,
+            bake: (nodeId, port, type) => {
+                const r = evaluate(nodeId, port);
+                if (!r || r.isConst) return Promise.resolve(null);
+                const job = this.queue.then(async () => ({ size, pixels: await this.baker.bakePixels(r.node, type === 'float' ? 'float' : 'color', { srgb: type === 'color', size }) }));
+                this.queue = job.catch(() => {});
+                return job;
+            },
+            image: nodeId => graph.nodes.find(n => n.id === nodeId)?.params?.image || null,
+        };
+    }
+
     // UV mode: the bake domain (UV range of the meshes with this material; preview sphere 0..1) + tile scale; else null
     _domain(entry) {
         const graph = entry.def.graph;
@@ -334,7 +361,7 @@ export class GraphApplier {
     _imageTexturesSync(graph) {
         const out = new Map();
         for (const n of graph.nodes) {
-            if (n.type === 'image' && n.params?.image && this.images.get(n.params.image)?.loaded) {
+            if (hasImage(n) && this.images.get(n.params.image)?.loaded) {
                 out.set(n.id, this.images.get(n.params.image).loaded);
             }
         }
@@ -344,7 +371,7 @@ export class GraphApplier {
     async _imageTextures(graph) {
         const out = new Map();
         for (const n of graph.nodes) {
-            const url = n.type === 'image' && n.params?.image;
+            const url = hasImage(n) && n.params.image;
             if (!url) continue;
             let entry = this.images.get(url);
             if (!entry) {

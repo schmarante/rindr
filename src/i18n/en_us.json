@@ -597,6 +597,7 @@
                     "normal": "Normal map",
                     "ao": "Ambient occlusion",
                     "height": "Bump (height)",
+                    "displacementHeight": "Displacement (height)",
                     "coatNormal": "Coat normal map",
                     "coatHeight": "Coat bump (height)",
                     "alpha": "Cutout (alpha)",
@@ -652,7 +653,14 @@
                 },
                 "params": {
                     "image": "Image",
-                    "scale": "Repeat"
+                    "scale": "Repeat",
+                    "colorspace": "Colour space"
+                },
+                "options": {
+                    "colorspace": {
+                        "srgb": "sRGB (colours)",
+                        "raw": "Raw (values)"
+                    }
                 }
             },
             "importMap": {
@@ -788,7 +796,19 @@
                         "mul": "A × B",
                         "pow": "A ^ B",
                         "min": "Minimum",
-                        "max": "Maximum"
+                        "max": "Maximum",
+                        "div": "A ÷ B",
+                        "mod": "Modulo",
+                        "abs": "Absolute",
+                        "floor": "Floor",
+                        "ceil": "Ceiling",
+                        "round": "Round",
+                        "fract": "Fraction",
+                        "sqrt": "Square root",
+                        "sin": "Sine",
+                        "cos": "Cosine",
+                        "sign": "Sign",
+                        "trianglewave": "Triangle wave"
                     }
                 }
             },
@@ -1167,6 +1187,589 @@
                     "thickness": "Width",
                     "variation": "Variation",
                     "seed": "Seed"
+                }
+            },
+            "clamp": {
+                "label": "Clamp",
+                "inputs": {
+                    "value": "Value",
+                    "low": "Minimum",
+                    "high": "Maximum"
+                },
+                "outputs": {
+                    "value": "Value"
+                },
+                "params": {
+                    "value": "Value",
+                    "low": "Minimum",
+                    "high": "Maximum"
+                }
+            },
+            "smoothstep": {
+                "label": "Smoothstep",
+                "inputs": {
+                    "value": "Value",
+                    "low": "Low",
+                    "high": "High"
+                },
+                "outputs": {
+                    "value": "Value"
+                },
+                "params": {
+                    "value": "Value",
+                    "low": "Low",
+                    "high": "High"
+                }
+            },
+            "range": {
+                "label": "Range",
+                "inputs": {
+                    "value": "Value"
+                },
+                "outputs": {
+                    "value": "Value"
+                },
+                "params": {
+                    "value": "Value",
+                    "inLow": "In low",
+                    "inHigh": "In high",
+                    "gamma": "Gamma",
+                    "outLow": "Out low",
+                    "outHigh": "Out high",
+                    "clamp": "Clamp"
+                }
+            },
+            "texcoord": {
+                "label": "Texture coordinate",
+                "outputs": {
+                    "uv": "UV",
+                    "u": "U",
+                    "v": "V"
+                }
+            },
+            "separate": {
+                "label": "Separate RGB",
+                "inputs": {
+                    "color": "Colour"
+                },
+                "outputs": {
+                    "r": "Red",
+                    "g": "Green",
+                    "b": "Blue"
+                },
+                "params": {
+                    "color": "Colour"
+                }
+            },
+            "combine": {
+                "label": "Combine RGB",
+                "inputs": {
+                    "r": "Red",
+                    "g": "Green",
+                    "b": "Blue"
+                },
+                "outputs": {
+                    "color": "Colour"
+                },
+                "params": {
+                    "r": "Red",
+                    "g": "Green",
+                    "b": "Blue"
+                }
+            },
+            "luminance": {
+                "label": "Luminance",
+                "inputs": {
+                    "color": "Colour"
+                },
+                "outputs": {
+                    "value": "Value"
+                },
+                "params": {
+                    "color": "Colour"
+                }
+            },
+            "hsvAdjust": {
+                "label": "Adjust HSV",
+                "inputs": {
+                    "color": "Colour"
+                },
+                "outputs": {
+                    "color": "Colour"
+                },
+                "params": {
+                    "color": "Colour",
+                    "hue": "Hue +",
+                    "saturation": "Saturation ×",
+                    "value": "Value ×"
+                }
+            },
+            "saturate": {
+                "label": "Saturation",
+                "inputs": {
+                    "color": "Colour"
+                },
+                "outputs": {
+                    "color": "Colour"
+                },
+                "params": {
+                    "color": "Colour",
+                    "amount": "Amount"
+                }
+            },
+            "contrast": {
+                "label": "Contrast",
+                "inputs": {
+                    "color": "Colour"
+                },
+                "outputs": {
+                    "color": "Colour"
+                },
+                "params": {
+                    "color": "Colour",
+                    "amount": "Amount",
+                    "pivot": "Pivot"
+                }
+            },
+            "colorCorrect": {
+                "label": "Colour correction",
+                "inputs": {
+                    "color": "Colour"
+                },
+                "outputs": {
+                    "color": "Colour"
+                },
+                "params": {
+                    "color": "Colour",
+                    "hue": "Hue +",
+                    "saturation": "Saturation",
+                    "gamma": "Gamma",
+                    "lift": "Lift",
+                    "gain": "Gain",
+                    "contrast": "Contrast",
+                    "contrastPivot": "Contrast pivot",
+                    "exposure": "Exposure"
+                }
+            },
+            "blend": {
+                "label": "Blend",
+                "inputs": {
+                    "a": "Background",
+                    "b": "Foreground",
+                    "factor": "Factor"
+                },
+                "outputs": {
+                    "color": "Colour"
+                },
+                "params": {
+                    "op": "Mode",
+                    "a": "Background",
+                    "b": "Foreground",
+                    "factor": "Factor"
+                },
+                "options": {
+                    "op": {
+                        "multiply": "Multiply",
+                        "screen": "Screen",
+                        "overlay": "Overlay",
+                        "difference": "Difference",
+                        "plus": "Add",
+                        "minus": "Subtract",
+                        "dodge": "Dodge",
+                        "burn": "Burn"
+                    }
+                }
+            },
+            "ramp4": {
+                "label": "Four-corner ramp",
+                "inputs": {
+                    "uv": "Coordinate",
+                    "tl": "Top left",
+                    "tr": "Top right",
+                    "bl": "Bottom left",
+                    "br": "Bottom right"
+                },
+                "outputs": {
+                    "color": "Colour"
+                },
+                "params": {
+                    "tl": "Top left",
+                    "tr": "Top right",
+                    "bl": "Bottom left",
+                    "br": "Bottom right"
+                }
+            },
+            "split": {
+                "label": "Split",
+                "inputs": {
+                    "uv": "Coordinate",
+                    "a": "Below / left",
+                    "b": "Above / right"
+                },
+                "outputs": {
+                    "color": "Colour"
+                },
+                "params": {
+                    "axis": "Direction",
+                    "center": "Position",
+                    "a": "Below / left",
+                    "b": "Above / right"
+                },
+                "options": {
+                    "axis": {
+                        "u": "Left | right",
+                        "v": "Bottom | top"
+                    }
+                }
+            },
+            "circle": {
+                "label": "Circle",
+                "inputs": {
+                    "uv": "Coordinate"
+                },
+                "outputs": {
+                    "value": "Mask"
+                },
+                "params": {
+                    "centerU": "Centre U",
+                    "centerV": "Centre V",
+                    "radius": "Radius"
+                }
+            },
+            "line": {
+                "label": "Line",
+                "inputs": {
+                    "uv": "Coordinate"
+                },
+                "outputs": {
+                    "value": "Mask"
+                },
+                "params": {
+                    "centerU": "Centre U",
+                    "centerV": "Centre V",
+                    "radius": "Half width",
+                    "x1": "Point 1 U",
+                    "y1": "Point 1 V",
+                    "x2": "Point 2 U",
+                    "y2": "Point 2 V"
+                }
+            },
+            "hexagon": {
+                "label": "Hexagon",
+                "inputs": {
+                    "uv": "Coordinate"
+                },
+                "outputs": {
+                    "value": "Mask"
+                },
+                "params": {
+                    "centerU": "Centre U",
+                    "centerV": "Centre V",
+                    "radius": "Radius"
+                }
+            },
+            "cloverleaf": {
+                "label": "Cloverleaf",
+                "inputs": {
+                    "uv": "Coordinate"
+                },
+                "outputs": {
+                    "value": "Mask"
+                },
+                "params": {
+                    "centerU": "Centre U",
+                    "centerV": "Centre V",
+                    "radius": "Radius"
+                }
+            },
+            "grid": {
+                "label": "Grid",
+                "inputs": {
+                    "uv": "Coordinate"
+                },
+                "outputs": {
+                    "value": "Mask"
+                },
+                "params": {
+                    "countU": "Count U",
+                    "countV": "Count V",
+                    "staggered": "Staggered",
+                    "thickness": "Thickness"
+                }
+            },
+            "crosshatch": {
+                "label": "Crosshatch",
+                "inputs": {
+                    "uv": "Coordinate"
+                },
+                "outputs": {
+                    "value": "Mask"
+                },
+                "params": {
+                    "countU": "Count U",
+                    "countV": "Count V",
+                    "staggered": "Staggered",
+                    "thickness": "Thickness"
+                }
+            },
+            "tiledCircles": {
+                "label": "Tiled circles",
+                "inputs": {
+                    "uv": "Coordinate"
+                },
+                "outputs": {
+                    "value": "Mask"
+                },
+                "params": {
+                    "countU": "Count U",
+                    "countV": "Count V",
+                    "staggered": "Staggered",
+                    "size": "Size"
+                }
+            },
+            "tiledHexagons": {
+                "label": "Tiled hexagons",
+                "inputs": {
+                    "uv": "Coordinate"
+                },
+                "outputs": {
+                    "value": "Mask"
+                },
+                "params": {
+                    "countU": "Count U",
+                    "countV": "Count V",
+                    "staggered": "Staggered",
+                    "size": "Size"
+                }
+            },
+            "tiledCloverleafs": {
+                "label": "Tiled cloverleafs",
+                "inputs": {
+                    "uv": "Coordinate"
+                },
+                "outputs": {
+                    "value": "Mask"
+                },
+                "params": {
+                    "countU": "Count U",
+                    "countV": "Count V",
+                    "staggered": "Staggered",
+                    "size": "Size"
+                }
+            },
+            "compare": {
+                "label": "Compare",
+                "inputs": {
+                    "value1": "Value 1",
+                    "value2": "Value 2",
+                    "in1": "Then",
+                    "in2": "Else"
+                },
+                "outputs": {
+                    "color": "Colour",
+                    "value": "Value"
+                },
+                "params": {
+                    "op": "Condition",
+                    "value1": "Value 1",
+                    "value2": "Value 2",
+                    "in1": "Then",
+                    "in2": "Else"
+                },
+                "options": {
+                    "op": {
+                        "greater": "Value 1 > value 2",
+                        "greaterEqual": "Value 1 ≥ value 2",
+                        "equal": "Value 1 = value 2"
+                    }
+                }
+            },
+            "switch": {
+                "label": "Switch",
+                "inputs": {
+                    "in1": "Colour 1",
+                    "in2": "Colour 2",
+                    "in3": "Colour 3",
+                    "in4": "Colour 4",
+                    "in5": "Colour 5",
+                    "which": "Which"
+                },
+                "outputs": {
+                    "color": "Colour",
+                    "value": "Value"
+                },
+                "params": {
+                    "which": "Which",
+                    "in1": "Colour 1",
+                    "in2": "Colour 2",
+                    "in3": "Colour 3",
+                    "in4": "Colour 4",
+                    "in5": "Colour 5"
+                }
+            },
+            "logic": {
+                "label": "Logic",
+                "inputs": {
+                    "a": "A",
+                    "b": "B"
+                },
+                "outputs": {
+                    "value": "Result"
+                },
+                "params": {
+                    "op": "Operation",
+                    "a": "A",
+                    "b": "B"
+                },
+                "options": {
+                    "op": {
+                        "and": "And",
+                        "or": "Or",
+                        "xor": "Exclusive or",
+                        "not": "Not"
+                    }
+                }
+            },
+            "unifiedNoise": {
+                "label": "Unified noise",
+                "inputs": {
+                    "uv": "Coordinate"
+                },
+                "outputs": {
+                    "value": "Value"
+                },
+                "params": {
+                    "noiseType": "Type",
+                    "freqU": "Frequency U",
+                    "freqV": "Frequency V",
+                    "jitter": "Jitter",
+                    "style": "Style",
+                    "octaves": "Octaves",
+                    "lacunarity": "Lacunarity",
+                    "diminish": "Diminish",
+                    "outMin": "Out min",
+                    "outMax": "Out max",
+                    "clamp": "Clamp"
+                },
+                "options": {
+                    "noiseType": {
+                        "perlin": "Perlin",
+                        "cell": "Cell",
+                        "worley": "Worley",
+                        "fractal": "Fractal"
+                    },
+                    "style": {
+                        "distance": "Distance",
+                        "solid": "Solid"
+                    }
+                }
+            },
+            "flakes": {
+                "label": "Flakes",
+                "inputs": {
+                    "uv": "Coordinate"
+                },
+                "outputs": {
+                    "rand": "Random",
+                    "presence": "Presence",
+                    "normal": "Normal"
+                },
+                "params": {
+                    "size": "Size",
+                    "roughness": "Roughness",
+                    "coverage": "Coverage"
+                }
+            },
+            "randomFloat": {
+                "label": "Random value",
+                "inputs": {
+                    "in": "Input"
+                },
+                "outputs": {
+                    "value": "Value"
+                },
+                "params": {
+                    "in": "Input",
+                    "min": "Minimum",
+                    "max": "Maximum",
+                    "seed": "Seed"
+                }
+            },
+            "randomColor": {
+                "label": "Random colour",
+                "inputs": {
+                    "in": "Input"
+                },
+                "outputs": {
+                    "color": "Colour"
+                },
+                "params": {
+                    "in": "Input",
+                    "hueLow": "Hue low",
+                    "hueHigh": "Hue high",
+                    "saturationLow": "Saturation low",
+                    "saturationHigh": "Saturation high",
+                    "brightnessLow": "Brightness low",
+                    "brightnessHigh": "Brightness high",
+                    "seed": "Seed"
+                }
+            },
+            "heightToNormal": {
+                "label": "Height → normal",
+                "inputs": {
+                    "height": "Height"
+                },
+                "outputs": {
+                    "normal": "Normal"
+                },
+                "params": {
+                    "height": "Height",
+                    "scale": "Strength"
+                }
+            },
+            "blur": {
+                "label": "Blur",
+                "inputs": {
+                    "color": "Colour"
+                },
+                "outputs": {
+                    "color": "Colour"
+                },
+                "params": {
+                    "color": "Colour",
+                    "size": "Distance",
+                    "filter": "Filter"
+                },
+                "options": {
+                    "filter": {
+                        "box": "Box",
+                        "gaussian": "Gaussian"
+                    }
+                }
+            },
+            "hexImage": {
+                "label": "Image texture (hex tiling)",
+                "inputs": {
+                    "uv": "Coordinate"
+                },
+                "outputs": {
+                    "color": "Colour",
+                    "value": "Value"
+                },
+                "params": {
+                    "image": "Image",
+                    "scale": "Tiles",
+                    "rotation": "Rotation",
+                    "rotationMin": "Rotation min",
+                    "rotationMax": "Rotation max",
+                    "randomScale": "Scale",
+                    "scaleMin": "Scale min",
+                    "scaleMax": "Scale max",
+                    "offset": "Offset",
+                    "offsetMin": "Offset min",
+                    "offsetMax": "Offset max",
+                    "falloff": "Falloff",
+                    "falloffContrast": "Falloff contrast"
                 }
             }
         },
