@@ -9,9 +9,9 @@
 							// scans are drawn by the raster over the path traced image: camera rays pass the splat medium
 							let vmSplatOn = ! ( bounce == 0u && ${ __VOL.splatPrimary } < 0.5 );
 							var vmRng = u32( ${ rand1 }( 190u ) * 4294967040.0 ) ^ ( bounce * 2654435761u );
-							let vmHitPos = ray.origin + ray.direction * hitResult.dist;
+							let vmHitPos = traceOrigin + ray.direction * hitResult.dist;   // from the traversal start (0.0.28)
 							// already inside a medium (camera in a cloud, a bounce off a surface inside one): from the ray origin
-							var vmPos = select( vmHitPos, ray.origin, hitResult.side < 0.0 || ${ __VOL.inside }( ray.origin, vmSplatOn ) );
+							var vmPos = select( vmHitPos, traceOrigin, hitResult.side < 0.0 || ${ __VOL.inside }( traceOrigin, vmSplatOn ) );
 							var vmDir = ray.direction;
 							var vmScattered = false;
 							var vmDone = false;
@@ -48,7 +48,7 @@
 										break;
 
 									}
-									let vmFog = ( *materials )[ transforms[ vmHit.objectIndex ].materialIndex ].fogVolume;
+									let vmFog = ${ materialsStorage }[ ${ transformsStorage }[ vmHit.objectIndex ].materialIndex ].fogVolume;
 									if ( vmFog == 3 || vmFog == 6 ) {
 
 										vmSkipped = vmAt;
@@ -105,7 +105,7 @@
 
 									// out of all media (or onto the surface inside): the path goes on from there – at least past the face hit
 									var vmNext = vmPos + vmDir * select( vmEnd + vmEps, max( vmEnd - vmEps, 0.0 ), vmSurface );
-									if ( ! vmSurface && dot( vmNext - ray.origin, ray.direction ) < hitResult.dist + vmEps ) {
+									if ( ! vmSurface && dot( vmNext - traceOrigin, ray.direction ) < hitResult.dist + vmEps ) {
 
 										vmNext = vmHitPos + ray.direction * vmEps;
 
@@ -229,6 +229,8 @@
 							}
 
 							ray.origin = vmPos;
+							traceOrigin = ray.origin;   // 0.0.28: the traversal starts there (alpha passes move only it)
+							rayStart = 0.0;
 							ray.direction = vmDir;
 							ray.maxDist = 0.0;
 							if ( vmScattered ) {

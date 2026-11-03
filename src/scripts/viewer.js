@@ -2135,10 +2135,6 @@ async function restoreLights(items, warnings) {
 }
 
 // IES editor window (loaded on first use)
-// radiance cache cells over the picture ("show cells" in the path tracing settings, ?debug section) – radiance-debug.js
-const radianceCells = lazy(async () => (await import('./radiance-debug.js')).createRadianceCells({
-    renderer, camera, requestRender: () => { loadRender.force = true; }, meshes: () => allModelMeshes(),
-}));
 const iesEditor = lazy(async () => new (await import('./ies-editor.js')).IesEditor(document.getElementById('ies-editor'), {
     profile: light => profileValues(light),
     // the light's edited shape, or its profile as editable planes (own profile, file: symmetric → one curve, asymmetric
@@ -5312,27 +5308,6 @@ function setupGUI() {
         adaptiveControl.enable(pathTracing.adaptiveSupported);
         thresholdControl.enable(pathTracing.adaptiveSupported && pathTracing.adaptive.enabled);
         noiseMapControl.enable(pathTracing.adaptiveSupported && pathTracing.adaptive.enabled);
-        // radiance cache (radiance-cache.js): diffuse light kept across camera moves – converges faster after turning
-        // its cell sizes as rates (2^rate of the resolution, −4 = 16 pixels per cell): min = cells on open surfaces,
-        // max = the finest in corners; "show cells" draws them over the picture (radiance-debug.js)
-        const rateControls = [];
-        let showCells = false, cellsListening = false;
-        pt.toggle(t('setup.radianceCache'), () => pathTracing.radianceCache, v => {
-            pathTracing.setRadianceCache(v);
-            rateControls.forEach(c => c.enable(v));
-        });
-        rateControls.push(
-            pt.range(t('setup.radianceMinRate'), () => pathTracing.radianceRates.min, v => { pathTracing.setRadianceRates({ min: v }); rateControls[1].refresh(); }, -6, 0, 1),
-            pt.range(t('setup.radianceMaxRate'), () => pathTracing.radianceRates.max, v => { pathTracing.setRadianceRates({ max: v }); rateControls[1].refresh(); }, -6, 0, 1),
-            pt.toggle(t('setup.radianceShow'), () => showCells, v => {
-                showCells = v;
-                radianceCells.get().then(c => {
-                    c.visible = showCells;
-                    // the debug display's switch drives the same overlay
-                    if (!cellsListening) { cellsListening = true; c.listen((_, on) => { showCells = on; rateControls[2].refresh(); }); }
-                });
-            }));
-        rateControls.forEach(c => c.enable(pathTracing.radianceCache));
         pt.range(t('setup.glossyFilter'), () => pathTracing.filterGlossyFactor, v => { pathTracing.filterGlossyFactor = v; }, 0, 1, 0.01);
         // shadows of glass (glass-shadow.js): transparent with an optional colour fringe, opaque, or caustics (caustics.js)
         // with their photons per picture (millions)
@@ -6320,7 +6295,7 @@ if (new URLSearchParams(location.search).has('debug')) {
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel.thumbs, def)),
         // all library presets (categories loaded on demand) – tests bake their node graphs
         presets: () => loadLibraryPresets().then(() => MATERIAL_PRESETS),
-        skeletonView, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), radianceCache: () => import('./radiance-cache.js'), highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+        skeletonView, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 }
 
 // --- Resize ---
@@ -6579,8 +6554,6 @@ if (new URLSearchParams(location.search).has('debug')) {
         });
         // cluster LOD section in the debug display (threshold, on/off, colours by the share of triangles drawn)
         if (batcher.lods) import('./lod/lod-debug.js').then(m => m.attachLodDebug(debugStats.root, { batcher }));
-        // radiance cache section: its cells as red points over the picture (radiance-debug.js)
-        Promise.all([import('./radiance-debug.js'), radianceCells.get()]).then(([m, cells]) => m.attachRadianceDebug(debugStats.root, cells));
     });
 }
 // state that follows the camera – every frame, and on a render client once the scene's camera is set (a client in a
@@ -6854,10 +6827,6 @@ function renderFrame() {
     updateCameraDirty();   // active camera: "(not saved)" once the view differs from it
     cameraMarkers.update(selection?.kind === 'camera' || selection?.kind === 'view' || selection?.kind === 'views' ? cameraViews.filter(v => v !== activeView) : [], { aspect: camera.aspect, size: environment.modelSize });
     skeletonView.update();
-    // radiance cache cells ("show cells" / ?debug): hidden where the scene is in front (radiance-debug.js)
-    const cells = radianceCells.now;
-    cells?.update();
-    if (cells?.visible) cells.render();
     // gizmo (and skeleton) on top of everything
     const overlay = transformer.object || skeletonView.visible || cameraMarkers.object.visible;
     if (overlay && rasterFisheye.active) {

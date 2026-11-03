@@ -1802,12 +1802,6 @@
         "openSettings": "Einstellungen öffnen"
     },
     "debugStats": {
-        "radiance": {
-            "show": "Radiance-Cache-Zellen zeigen",
-            "off": "Radiance-Cache: aus (nur in HQ mit eingeschaltetem Cache)",
-            "stats": "Radiance-Cache: {taken} Zellen, {usable} nutzbar, {fresh} neu – {share} % der Tabelle",
-            "counter": "Zähler {counter}, leert ab 70 %"
-        },
         "lod": {
             "enabled": "LOD an",
             "threshold": "Fehler px",
@@ -2127,10 +2121,6 @@
         "adaptive": "Adaptives Sampling",
         "adaptiveThreshold": "Rauschschwelle",
         "noiseMap": "Rauschkarte anzeigen",
-        "radianceCache": "Radiance-Cache (schneller nach dem Drehen)",
-        "radianceMinRate": "Min-Rate (Zellen auf Flächen)",
-        "radianceMaxRate": "Max-Rate (Zellen in Ecken)",
-        "radianceShow": "Zellen anzeigen",
         "glossyFilter": "Glossy-Filter",
         "glassShadow": "Glas-Schatten",
         "glassShadowTransparent": "Transparent",

@@ -158,6 +158,8 @@
 									}
 									throughputColor *= scSurf.x * scScale;
 									ray.origin = ${ offsetRayOriginFunc }( scPos, scRefl, scUp );
+									traceOrigin = ray.origin;   // 0.0.28: the traversal starts there (alpha passes move only it)
+									rayStart = 0.0;
 									ray.direction = scRefl;
 									ray.maxDist = 0.0;
 									bsdfPdf = 1e6;   // like a mirror: no next event estimation here, environment hits count fully
@@ -184,9 +186,9 @@
 									scRayB.direction = scDirB;
 									scRayB.maxDist = 0.0;
 									var scHitB: ${ raycastOutput };
-									if ( ${ raycastFirstHitFn }( scRayB, &scHitB ) && ( *materials )[ transforms[ scHitB.objectIndex ].materialIndex ].matte == 0
-										&& ( *materials )[ transforms[ scHitB.objectIndex ].materialIndex ].fogVolume != 3
-										&& ( *materials )[ transforms[ scHitB.objectIndex ].materialIndex ].fogVolume != 6 ) {
+									if ( ${ raycastFirstHitFn }( scRayB, &scHitB ) && ${ materialsStorage }[ ${ transformsStorage }[ scHitB.objectIndex ].materialIndex ].matte == 0
+										&& ${ materialsStorage }[ ${ transformsStorage }[ scHitB.objectIndex ].materialIndex ].fogVolume != 3
+										&& ${ materialsStorage }[ ${ transformsStorage }[ scHitB.objectIndex ].materialIndex ].fogVolume != 6 ) {
 
 										let scAlbedo = min( ${ sampleEnvColor }( scLookup ).rgb * ${ __SC.bounce }.y, vec3f( 0.9 ) );
 										let scGain = select( 1.0, ${ __SC.bounce }.x, bounce == 0u );
@@ -195,6 +197,8 @@
 										gsRough = true;
 										gsCaustic = false;
 										ray.origin = scRayB.origin;
+										traceOrigin = ray.origin;   // 0.0.28: the traversal starts there (alpha passes move only it)
+										rayStart = 0.0;
 										ray.direction = scDirB;
 										ray.maxDist = 0.0;
 										bsdfPdf = max( scDirB.y, 1e-4 ) / 3.14159265;
@@ -211,6 +215,8 @@
 
 							// catcher inactive: invisible – continue behind it
 							ray.origin = ${ offsetRayOriginFunc }( scPos, ray.direction, hitResult.normal );
+							traceOrigin = ray.origin;   // 0.0.28: the traversal starts there (alpha passes move only it)
+							rayStart = 0.0;
 							continue;
 
 						}

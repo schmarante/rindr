@@ -40,7 +40,7 @@
 								}
 								let mdTr = exp( - mdSigmaT * mdT );
 								throughputColor *= mdSigmaS * mdTr / max( dot( mdSigmaT * mdTr, mdP ), 1e-30 );
-								let mdPos = ray.origin + ray.direction * mdT;
+								let mdPos = traceOrigin + ray.direction * mdT;   // hit distances run from the traversal start (0.0.28)
 								let mdDir = ray.direction;
 								let mdG = clamp( materialInfo.mediumAnisotropy, - 0.95, 0.95 );
 								mdEvents ++;
@@ -121,6 +121,8 @@
 								}
 
 								ray.origin = mdPos;
+								traceOrigin = ray.origin;   // 0.0.28: the traversal starts there (alpha passes move only it)
+								rayStart = 0.0;
 								ray.direction = mdNewDir;
 								ray.maxDist = 0.0;
 								bounce --;

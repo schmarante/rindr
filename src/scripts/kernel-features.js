@@ -26,7 +26,6 @@ export const KERNEL_FEATURES = [
     'ground',   // shadow catcher (matte ground)
     'caustics', // glass or mirroring metal with the glass shadows set to caustics (caustics.js): photon grid lookup
     'emitters', // glowing meshes (emitters.js): next event estimation towards their triangles, MIS on hits
-    'radiance', // radiance cache on (radiance-cache.js, setting): diffuse light from a world-space grid
 ];
 
 // ?kernel=all: every feature, whatever the scene (comparison, debugging)
@@ -35,7 +34,6 @@ const ALL = typeof location !== 'undefined' && new URLSearchParams(location.sear
 export const kernelFeatures = {
     current: new Set(KERNEL_FEATURES),   // until the first material data: everything
     caustics: false,                     // glass shadows set to caustics (pathtracer.js setGlassShadow)
-    radiance: false,                     // radiance cache switched on (pathtracer.js setRadianceCache)
     shown: new Set(),                    // materials of visible objects (the library packs every object's material –
                                          // the hidden proxies of the cloud slots would always count as volumes)
     /** the library collects the scene's materials: an object of the scene */
@@ -48,7 +46,6 @@ export const kernelFeatures = {
     /** the library starts packing the material data */
     begin() {
         this.current = new Set(ALL ? KERNEL_FEATURES : []);
-        if (this.radiance) this.current.add('radiance');
     },
     /** a material as the kernel sees it (m: its stand-in, material: itself) – returns m */
     see(m, material) {

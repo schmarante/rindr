@@ -46,8 +46,8 @@
 
 														}
 
-														let gsObject = transforms[ gsHit.objectIndex ];
-														let gsMaterial = ( *materials )[ gsObject.materialIndex ];
+														let gsObject = ${ transformsStorage }[ gsHit.objectIndex ];
+														let gsMaterial = ${ materialsStorage }[ gsObject.materialIndex ];
 														/*@if:volume,gaussians*/
 														if ( ( gsMaterial.fogVolume == 3 || gsMaterial.fogVolume == 6 ) && gsI < 15u ) {
 

@@ -27,7 +27,7 @@
 // Speed (Oct. 2026, user: "in MAX the UV gizmo is quick – what is the difference?"): a slider follows the mouse at
 // the speed of one projection with a frame drawn in between (no waiting for it to rest); no worker round trip (BVH
 // shared, tangents only for normal maps); the path tracer rebuilds its scene once the slider is released (viewer.js)
-// – the kernel stays compiled (astro.config.mjs rindr-stable-kernel).
+// – the kernel stays compiled (the library names the texture info uniform itself since 0.0.28 – formerly the Vite patch rindr-stable-kernel).
 import * as THREE from 'three/webgpu';
 import { UV_TILE } from './step-importer.js';
 

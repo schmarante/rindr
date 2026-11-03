@@ -11,7 +11,7 @@
 // the settings (samples, resolution, …) are only stored.
 // Responsiveness: large kernels (megakernel) are compiled asynchronously (_installAsyncCompile), the
 // environment's importance-sampling table is computed in a worker (env-cdf.js).
-import { Matrix4, Vector2, Vector3, Box3 } from 'three/webgpu';
+import { Matrix4, Vector2 } from 'three/webgpu';
 import { PATHTRACING } from './config.js';   // defaults (samples, resolution, bounces, …)
 import { isEnvCdfReady, prepareEnvCdf } from './env-cdf.js';
 import { KuwaharaFilter } from './kuwahara.js';
@@ -23,7 +23,6 @@ import { PT_MOTION } from './pt-motion.js';
 import { GLASS_SHADOW } from './glass-shadow.js';
 import { CAUSTICS } from './caustics.js';
 import { EmitterTable, EMITTERS } from './emitters.js';
-import { RADIANCE_CACHE, RADIANCE_SLOTS, clearRadianceCache, readRadianceOccupancy } from './radiance-cache.js';
 import { GLASS_SPLIT } from './glass-split.js';
 import { t } from './i18n.js';
 import { debugLog } from './log.js';
@@ -77,13 +76,6 @@ export class PathTracingView {
         // adaptive sampling (adaptive-sampling.js): samples per pixel until its noise is below the threshold; noise map
         // = where they went (display only)
         this.adaptive = { ...PATHTRACING.adaptive };
-        this.radianceCache = PATHTRACING.radianceCache?.enabled ?? true;   // radiance cache (setRadianceCache)
-        // its cell sizes as rates (2^rate of the resolution: −4 = cells of 16 pixels): coarse (min) … fine (max) – setRadianceRates
-        this.radianceRates = { min: PATHTRACING.radianceCache?.minRate ?? -4, max: PATHTRACING.radianceCache?.maxRate ?? -1 };
-        // glossy surfaces cached too, per direction bucket (radiance-cache.js radianceBucket)
-        this.radianceGlossy = PATHTRACING.radianceCache?.glossy ?? true;
-        kernelFeatures.radiance = this.radianceCache;
-        this._envParams = 0;   // environment intensity / rotation changed (radiance cache: starts over)
         this._noiseMap = false;
         this._adaptiveTask = null;      // state of the current render (the render task's, see _adaptiveCycle)
         this.denoiseProgress = 0;       // 0..1 of the OIDN tiles
@@ -209,10 +201,17 @@ export class PathTracingView {
         pt.dynamicLowRes = false;
         pt.renderDelay = 0;
         pt.fadeDuration = 0;
+        // frame budget and preview size are RINDR's own (_adapt from the GPU time of the dispatches – the library's
+        // timing is off, Vite patch rindr-pathtracer-perf); 0.0.28 would otherwise adapt both itself
+        pt.adaptiveFrameBudget = false;
+        pt.adaptiveDynamicRes = false;
 
         this.denoiser = new OIDNDenoiser({
             initUNetFromURL: (url, backend, options) => this._initUNet(url, backend, options),
             auxWeightsUrl: this._denoiseWeightsUrl,
+            // the guides come from our own kernel (denoiseGuides, see the update below): the library does not gather
+            // its albedo / normal in the megakernel then (0.0.28)
+            useAuxiliaryBuffers: false,
             ...this._denoiseTileOptions(),
         });
         this.upscaler = new FSRUpscaler({ Upscaler });
@@ -225,11 +224,6 @@ export class PathTracingView {
         // did not fit the fisheye – noise stayed, ghost edges –, nor depth of field or mirrors/glass)
         this.denoiseGuides = new GuideKernel({ ...PATHTRACING.denoiseMotion, samples: PATHTRACING.denoiseGuideSamples });
         this._GuideKernel = GuideKernel;   // helper passes of a light pass render (helperPasses)
-        this.denoiser._renderAuxiliaryBuffers = (width, height) => {
-            const guides = this.denoiseGuides, pt = this.pathTracer;
-            guides.trace(this.renderer, pt._bvhData, width, height, pt.camera);
-            return { textures: [guides.albedo, guides.normal] };
-        };
         this.imageFade = new ImageFade(this.renderer);
         this.adaptiveSampler = new AdaptiveSampler(this.renderer);
         setAdaptiveHandler((backend, completed, task) => this._adaptiveCycle(backend, completed, task));
@@ -251,15 +245,23 @@ export class PathTracingView {
             },
         };
         // the denoise waits until the guide kernel is compiled (_prepareDenoiser)
-        const denoiseUpdate = this.denoiser.update.bind(this.denoiser);
-        this.denoiser.update = target => {
-            if (this._denoisePrep && !this._denoisePrep.done) return this.denoiser.texture;
+        const denoiser = this.denoiser;
+        denoiser.update = target => {
+            if (this._denoisePrep && !this._denoisePrep.done) return denoiser.texture;
             // never while orbiting: with the camera still the reduced image reached the sample limit and got denoised –
             // a finished-looking picture at a third of the resolution (user: stuck in the low-res mode)
-            if (this._motion) return this.denoiser.texture;
+            if (this._motion) return denoiser.texture;
             // light passes: each pass is denoised instead of the image (the mix is made of them)
-            if (this.lightMix) { this._denoiseLightMix(); return this.denoiser.texture; }
-            return denoiseUpdate(target);
+            if (this.lightMix) { this._denoiseLightMix(); return denoiser.texture; }
+            if (denoiser.complete || denoiser.running || denoiser._failed) return denoiser.texture;
+            // OIDN's guides, traced like the image (the library's update would take them from the megakernel)
+            const guides = this.denoiseGuides, p = this.pathTracer;
+            guides.trace(this.renderer, p._bvhData, target.width, target.height, p.camera);
+            denoiser.denoise(target, guides.albedo, guides.normal).catch(err => {
+                denoiser._failed = true;   // reported once – no new pass until a reset (as the library's update)
+                console.warn('[Pathtracer] denoise failed:', err?.message || err);
+            });
+            return denoiser.texture;
         };
         pt.setDenoiser(this.denoiseEnabled ? this.denoiser : null);
         pt.setUpscaler(this._imageChain);
@@ -312,7 +314,8 @@ export class PathTracingView {
         this.denoiseLoading = true;
         let unet;
         try {
-            unet = await this._initUNetFromURL(url, backend, options);
+            // (0.0.28 passes only the device – oidn-web also takes the adapter's info)
+            unet = await this._initUNetFromURL(url, backend && { adapterInfo: backend.device?.adapterInfo, ...backend }, options);
         } finally {
             this.denoiseLoading = false;
         }
@@ -333,6 +336,9 @@ export class PathTracingView {
                 },
                 done: output => {
                     this._learnDenoiseSpeed(unet.getRuntimeInfo?.().lastExecution, overlap);
+                    // the whole result at once (0.0.28 copies it only in its progress callback, replaced above); the
+                    // light passes' denoise (light-mix.js) keeps its outputs itself
+                    if (!this.lightMix) this.denoiser._copyOutputToTexture(output, width, height);
                     inputs.done(output);
                 },
             });
@@ -425,26 +431,6 @@ export class PathTracingView {
         this._applyGlassShadow();
         // caustics: a kernel feature (photon grid lookup) – the materials collect it again
         if ((this.glassShadow.mode === 'caustics') !== caustics) this.updateMaterials();
-        this.reset();
-    }
-
-    /** Radiance cache on/off (radiance-cache.js) – a kernel feature: the materials collect it again */
-    setRadianceCache(on) {
-        on = !!on;
-        if (on === this.radianceCache) return;
-        this.radianceCache = on;
-        kernelFeatures.radiance = on;
-        this._rcSig = null;
-        this.updateMaterials();
-        this.reset();
-    }
-
-    /** Cell sizes of the radiance cache as rates { min, max } (−6 … 0; max ≥ min) – the cache starts over */
-    setRadianceRates({ min = this.radianceRates.min, max = this.radianceRates.max } = {}) {
-        min = Math.max(-6, Math.min(0, Math.round(min)));
-        max = Math.max(min, Math.min(0, Math.round(max)));
-        if (min === this.radianceRates.min && max === this.radianceRates.max) return;
-        this.radianceRates = { min, max };
         this.reset();
     }
 
@@ -641,7 +627,6 @@ export class PathTracingView {
     // (4k HDRI: 8 million pixels on the CPU -> stutter while dragging the sliders)
     updateEnvironmentParams() {
         if (!this.ready) return;
-        this._envParams++;
         const pt = this.pathTracer, scene = pt.scene;
         pt._pathTracer.setEnvironmentParams(scene.environmentIntensity, scene.environmentRotation);
         pt._pathTracer.setBackgroundParams(scene.backgroundIntensity, scene.backgroundRotation, scene.backgroundBlurriness);
@@ -1326,7 +1311,6 @@ export class PathTracingView {
         }
         // glowing meshes as lights (emitters.js): their triangles once per scene version, before the samples
         this._updateEmitters(pt);
-        this._updateRadianceCache(pt);
         // caustics behind the samples: a frame with photons only (the picture is shown, no sample)
         const photonsOnly = this._traceCaustics(pt);
         if (photonsOnly) pt.pause = true;
@@ -1397,74 +1381,6 @@ export class PathTracingView {
         this._emittersVersion = this._causticsVersion;
         (this._emitters ??= new EmitterTable()).update(pt.scene);
         pt.reset();
-    }
-
-    // Radiance cache (radiance-cache.js): cleared whenever anything but the camera changes – scene data, transforms (every
-    // frame of an animation), materials, lights (the caustics' version), environment, glass shadows, bounces (the set
-    // ones – the reduced ones while moving do not count), glossy filter; read but not written while the camera moves;
-    // off while light passes render.
-    _updateRadianceCache(pt) {
-        const on = this.radianceCache && kernelFeatures.current.has('radiance') && !pt._pathTracer?.kernel?.lightPasses;
-        if (!on) { RADIANCE_CACHE.on.value = 0; return; }
-        const cfg = PATHTRACING.radianceCache ?? {};
-        const camera = pt.camera;
-        const sig = [this._causticsVersion, this._envToken, this._envParams, this.glassShadow.mode, this.bounces, this.refractionBounces,
-            this.filterGlossyFactor, this.glassSplit ? 1 : 0, this.radianceRates.min, this.radianceRates.max, this.radianceGlossy ? 1 : 0].join('|');
-        if (sig !== this._rcSig) {
-            this._rcSig = sig;
-            const box = new Box3(), part = new Box3();
-            pt.scene.updateMatrixWorld();
-            pt.scene.traverseVisible(o => {
-                if (!o.isMesh || !o.geometry) return;
-                if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
-                box.union(part.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld));
-            });
-            if (box.isEmpty()) { this._rcSig = null; RADIANCE_CACHE.on.value = 0; return; }
-            // cell sizes: power-of-two steps by the distance to the camera (radiance-cache.js), from a millionth to an eighth
-            // of the scene's diagonal
-            const diag = box.getSize(new Vector3()).length();
-            this._rcBox = box;
-            RADIANCE_CACHE.cell.value.set(box.min.x, box.min.y, box.min.z, Math.max(diag * 1e-6, 1e-6));
-            RADIANCE_CACHE.maxSide.value = Math.max(diag / 8, 1e-6);
-            RADIANCE_CACHE.train.value = cfg.train ?? 0.25;
-            RADIANCE_CACHE.minCount.value = cfg.minCount ?? 16;
-            this._rcZoom = 0;
-            clearRadianceCache(this.renderer);
-        }
-        // the camera: a cell is `pixels` pixels on screen where it lies (the height the picture is traced at)
-        const height = Math.max(this.renderer.domElement.height * (this.renderScale ?? 1), 1);
-        const cam = RADIANCE_CACHE.camera.value;
-        camera.getWorldPosition(_rcPos);
-        if (camera.isOrthographicCamera) {
-            RADIANCE_CACHE.ortho.value = (camera.top - camera.bottom) / (camera.zoom || 1) / height;
-            cam.set(_rcPos.x, _rcPos.y, _rcPos.z, 0);
-        } else {
-            RADIANCE_CACHE.ortho.value = 0;
-            cam.set(_rcPos.x, _rcPos.y, _rcPos.z, 2 * Math.tan((camera.fov ?? 50) * Math.PI / 360) / (camera.zoom || 1) / height);
-        }
-        RADIANCE_CACHE.pixels.value = 2 ** -this.radianceRates.min;
-        RADIANCE_CACHE.refine.value = this.radianceRates.max - this.radianceRates.min;
-        RADIANCE_CACHE.glossy.value = this.radianceGlossy ? 1 : 0;
-        // zoomed in or out four times since the cache was cleared: the cells of the old distances only fill the table
-        const zoom = camera.isOrthographicCamera ? 1 / (camera.zoom || 1) : _rcPos.distanceTo(this._rcBox.getCenter(_rcCenter));
-        if (!this._rcZoom) this._rcZoom = zoom;
-        else if (Math.abs(Math.log2(zoom / this._rcZoom)) >= 2) { this._rcZoom = zoom; clearRadianceCache(this.renderer); }
-        // fuller than `fill` (default 70 %): cleared – lookups of a full table give up, new cells would not be kept (the
-        // sample scene's wide floor filled it within a minute of turning); the counter after the table, 4 bytes, once a second
-        const now = performance.now();
-        if (now - (this._rcRead ?? 0) > 1000) {
-            this._rcRead = now;
-            const clears = clearRadianceCache.count;
-            readRadianceOccupancy(this.renderer).then(taken => {
-                if (taken == null || clears !== clearRadianceCache.count) return;   // cleared meanwhile: the count is stale
-                if (taken > RADIANCE_SLOTS * (cfg.fill ?? 0.7)) {
-                    debugLog(`[Radiance cache] ${taken} of ${RADIANCE_SLOTS} slots taken – cleared`);
-                    clearRadianceCache(this.renderer);
-                }
-            });
-        }
-        RADIANCE_CACHE.on.value = 1;
-        RADIANCE_CACHE.write.value = this._motion ? 0 : 1;
     }
 
     // photons of the caustics per picture (glassShadow.photons in millions), 0 = off
@@ -1762,5 +1678,3 @@ export class PathTracingView {
         return status;
     }
 }
-
-const _rcPos = new Vector3(), _rcCenter = new Vector3();

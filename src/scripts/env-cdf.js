@@ -61,13 +61,12 @@ export function applyEnvCdf(info, envMap) {
     map.source = new TextureSource({ ...map.image });
     map.wrapS = RepeatWrapping;
     map.wrapT = ClampToEdgeWrapping;
-    const { width, height } = map.image;
     info.dispose();
-    info.marginalWeights.image = { width: height, height: 1, data: result.marginal };
-    info.marginalWeights.needsUpdate = true;
-    info.conditionalWeights.image = { width, height, data: result.conditional };
-    info.conditionalWeights.needsUpdate = true;
     info.totalSum = result.totalSum;
     info.map = map;
+    // the CDFs the node packs into its storage buffer (0.0.28: searched in the shader; the inverted half-float
+    // tables marginalWeights / conditionalWeights are no longer read)
+    info.cdfMarginal = result.cdfMarginal;
+    info.cdfConditional = result.cdfConditional;
     return true;
 }

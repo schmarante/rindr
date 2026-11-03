@@ -358,14 +358,6 @@ export class GraphApplier {
     }
 }
 
-// Workaround three.js r186/r187 (Renderer._getShadowNodes, still in r187): if a material had a color map, the shared
-// shadow material keeps its color node even after the map was removed
-// ("if (colorNode !== null)") -> the shadow pass reads map = null -> "reading 'matrix' of null",
-// the render loop aborts. Hence never set the color map to null, but to white (× color = color).
-const WHITE = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
-WHITE.colorSpace = THREE.SRGBColorSpace;
-WHITE.needsUpdate = true;
-
 // placement of a baked map on the model's UVs. Tile mode: repeat = UV_TILE mm per UV unit (box UVs) / mm per baked
 // tile; preview sphere (0..1 UVs around and from pole to pole): one tile across the visible half, square.
 // UV mode: the texture spans the bake domain once (clamped at its edges)
@@ -391,7 +383,6 @@ function flipRows(pixels, size) {
 }
 
 function setMap(material, key, texture) {
-    if (!texture && key === 'map' && material.map) texture = WHITE;
     if (material[key] !== texture) material[key] = texture;
 }
 

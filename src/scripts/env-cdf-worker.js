@@ -4,7 +4,7 @@
 import { DataUtils } from 'three';
 
 self.onmessage = ({ data: { data, width, height } }) => {
-    const { fromHalfFloat, toHalfFloat } = DataUtils;
+    const { fromHalfFloat } = DataUtils;
     const cdfConditional = new Float32Array(width * height);
     const cdfMarginal = new Float32Array(height);
     let totalSum = 0;
@@ -30,27 +30,6 @@ self.onmessage = ({ data: { data, width, height } }) => {
         for (let i = 0; i < height; i++) cdfMarginal[i] /= cumulativeWeightMarginal;
     }
 
-    // sorted lookup: random value → row / column (half-texel offset = pixel centre)
-    const marginal = new Uint16Array(height);
-    const conditional = new Uint16Array(width * height);
-    for (let i = 0; i < height; i++) {
-        const row = closestIndex(cdfMarginal, (i + 1) / height, 0, height);
-        marginal[i] = toHalfFloat((row + 0.5) / height);
-    }
-    for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-            const col = closestIndex(cdfConditional, (x + 1) / width, y * width, width);
-            conditional[y * width + x] = toHalfFloat((col + 0.5) / width);
-        }
-    }
-    self.postMessage({ marginal, conditional, totalSum }, [marginal.buffer, conditional.buffer]);
+    // three-gpu-pathtracer ≥ 0.0.28 searches these CDFs in the shader (EquirectHdrInfoNode packs them into a buffer)
+    self.postMessage({ cdfMarginal, cdfConditional, totalSum }, [cdfMarginal.buffer, cdfConditional.buffer]);
 };
-
-function closestIndex(array, target, offset, count) {
-    let lower = offset, upper = offset + count - 1;
-    while (lower < upper) {
-        const mid = (lower + upper) >> 1;
-        if (array[mid] < target) lower = mid + 1; else upper = mid;
-    }
-    return lower - offset;
-}
