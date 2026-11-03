@@ -8,7 +8,7 @@ import { ScreenFade } from './screen-fade.js';
 import { HdriRenderService } from './hdri/hdri-service.js';
 import { studioPreset, cloneHdri } from './hdri/hdri-model.js';
 import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
-import { TESS_PRESETS, normalizeQuality, abortStepImport, buildBVHIsolated, buildGeometryBVHs, fetchStepFile, readStepFile, releaseStepFile, tessellateStep, ImportLimitError } from './step-importer.js';
+import { TESS_PRESETS, normalizeQuality, abortStepImport, buildGeometryBVHs, fetchStepFile, readStepFile, releaseStepFile, tessellateStep, ImportLimitError } from './step-importer.js';
 import { UvMapper } from './uv-mapping.js';
 import { Displacer } from './displacement.js';
 import { floatWindow } from './float-window.js';
@@ -546,19 +546,6 @@ slicer.isClosed = mesh => {
     if (inst) return !currentPlan.solids[inst.solid]?.surface;
     return isClosedGeometry(mesh.geometry);
 };
-// Prebuild BVH + tangents of the ground disc (~98,000 triangles) in a worker – otherwise the path tracer
-// builds them synchronously on the main thread at the first HQ (~300 ms, even if the ground is hidden)
-if (pathTracing.supported) {
-    const src = ground.mesh.geometry;
-    const g = {
-        positions: src.getAttribute('position').array.slice(), normals: src.getAttribute('normal').array.slice(),
-        uvs: src.getAttribute('uv').array.slice(), index: Uint32Array.from(src.index.array),
-    };
-    buildBVHIsolated(g).then(() => {
-        ground.mesh.geometry = makeGeometry(g);
-        src.dispose();
-    }).catch(err => console.warn('[Ground] BVH in worker failed:', err));
-}
 // Preview of the environment for the environment panel. Per texture once a linear RGB copy (up to 1024 × 512,
 // box-filtered from the half float data – point samples looked blocky, cached); per draw bilinear into the canvas
 // at device pixels, × exposure (intensity × light boost), shifted by the rotation (world azimuth a shows texture

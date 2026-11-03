@@ -1,23 +1,25 @@
-// Ground shadow ("shadow catcher"): a large disc below the model that shows only the model's shadow –
-// everywhere else the background behind it (HDRI, dome or vignette) shows through unchanged. No HDRI
-// projection of its own, so it always matches the background and later also works for transparent images.
+// Ground shadow ("shadow catcher"): a disc below the model that shows only the model's shadow – everywhere else the
+// background behind it (HDRI, dome or vignette) shows through unchanged. No HDRI projection of its own, so it always
+// matches the background and later also works for transparent images.
 //
 // Raster: ShadowNodeMaterial (shadow maps of the directional lights). Path tracer: material flag `matte`,
 // the megakernel is patched to a real shadow catcher (shadow-catcher.js / shadow-catcher.patch.wgsl):
 // background × share of the light (HDRI + lights) that reaches the ground point.
 //
-// Soft edge: the disc fades out radially (alpha map with smootherstep between fadeStart and fadeEnd) so
-// the shadow area ends softly. The disc is built from rings of equal elevation as seen from the projection
-// centre `height` above the ground (fine near the model, coarse far away); uv.v depends only on the radius,
-// so a 1-pixel-wide alpha texture along v is enough (the path tracer supports alphaMap, green channel).
+// Soft edge between fadeStart and fadeEnd (smootherstep over the distance from the centre). The disc ends at fadeEnd:
+// a unit disc of a few hundred triangles, scaled to fadeEnd (radius slider = a transform, no new BVH). Raster: the fade
+// per pixel from the world position (opacityNode). Path tracer: nothing beyond the disc; inside it the catcher is a
+// full hit (its branch runs before the transparency test), ground reflection and puddles fade by position themselves
+// (ground-reflection.js). Before (Nov. 2026, found with the ray cost heat map, debug-raycost.js): a disc of 384 rings
+// × 128 segments = 98,304 triangles out to 150 × the model size (±300 m for the sample scene) with the fade in a
+// 1-pixel alpha map along uv.v (hence the fine rings) – in the path tracer every ray towards the horizon traversed it
+// and read the alpha map for the triangles beyond the fade only to skip them.
 import * as THREE from 'three/webgpu';
-import { texture, uniform } from 'three/tsl';
+import { uniform, positionWorld, clamp, float } from 'three/tsl';
 import { updateShadowCatcher } from './shadow-catcher.js';
 
-const RINGS = 384;         // elevation steps (fine, otherwise kinks in the gradient -> rings on the ground)
-const SEGMENTS = 128;      // azimuth segments
-const MIN_ELEVATION = Math.atan(1 / 150);   // edge of the disc: radius = 150 · height
-const FADE_TEXELS = 1024;  // resolution of the alpha map along v (whole range 0…1)
+const RINGS = [0.125, 0.25, 0.5, 0.75, 1];   // ring radii of the unit disc (roughly square cells out to the rim)
+const SEGMENTS = 64;                          // azimuth segments (rim 0.12 % inside the circle – where the fade is ~0)
 // raster preview: shadow maps give hard, fully black shadows – dampened to come closer to the soft
 // path traced shadow (only via opacityNode: material.opacity is read by the path tracer as transparency)
 const RASTER_SHADOW_OPACITY = 0.5;
@@ -27,22 +29,24 @@ export class GroundProjection {
         // raster: only the shadow (transparent black); path tracer: matte = shadow catcher (patched kernel)
         this.material = new THREE.ShadowNodeMaterial({ transparent: true, opacity: 1 });
         this.material.matte = true;
-        this._fadeNode = texture(new THREE.Texture());   // raster: same radial fade as the alpha map
+        this._center = uniform(new THREE.Vector2());
+        this._fade = uniform(new THREE.Vector2(1e30, 1e30));   // fadeStart, fadeEnd (world units)
         this._shadowOn = uniform(1);   // 0: disc only for the ground reflection (ground-reflection.js), no shadow
-        this.material.opacityNode = this._fadeNode.g.mul(RASTER_SHADOW_OPACITY).mul(this._shadowOn);
+        const e = clamp(positionWorld.xz.sub(this._center).length().sub(this._fade.x).div(this._fade.y.sub(this._fade.x).max(1e-6)), 0, 1);
+        const fade = float(1).sub(e.mul(e).mul(e).mul(e.mul(e.mul(6).sub(15)).add(10)));   // 1 - smootherstep
+        this.material.opacityNode = fade.mul(RASTER_SHADOW_OPACITY).mul(this._shadowOn);
         this.mesh = new THREE.Mesh(createGeometry(), this.material);
         this.mesh.name = 'GroundProjection';
         this.mesh.receiveShadow = true;
         this.mesh.castShadow = false;
         this.mesh.visible = false;
         this.mesh.renderOrder = -1;
-        this.height = 1;          // projection height (model units)
+        this.height = 1;          // model size the disc was placed for (model units)
         this.groundY = 0;
         this.strength = 1;        // shadow strength 0…1
         this.bounce = 1;          // colour bleeding (light of the model onto the ground, path tracer) 0 = off
         this._irradiance = null;  // E of the HDRI upper hemisphere (without environmentIntensity)
         this._texture = null;
-        this._fadeKey = '';
     }
 
     /** Shadow shown (false: the disc is only there for the ground reflection / puddles) */
@@ -67,43 +71,19 @@ export class GroundProjection {
     }
 
     /**
-     * Placement: ground at height groundY (world), projection height `height` above it;
-     * soft edge from fadeStart to fadeEnd (distance from the centre, world units)
+     * Placement: ground at height groundY (world), centre (x, z); soft edge from fadeStart to fadeEnd (distance from the
+     * centre, world units) – the disc ends at fadeEnd (without one: 150 × height, the old extent)
      */
     place(groundY, height, fadeStart = Infinity, fadeEnd = Infinity, x = 0, z = 0) {
         this.groundY = groundY;
         this.height = Math.max(height, 1e-6);
+        const radius = Number.isFinite(fadeEnd) && fadeEnd > 0 ? fadeEnd : 150 * this.height;
+        const start = Math.min(Number.isFinite(fadeStart) ? fadeStart : radius, radius);
         this.mesh.position.set(x, groundY, z);   // centre of the scene's footprint
-        this.mesh.scale.setScalar(this.height);
+        this.mesh.scale.setScalar(radius);
         this.mesh.updateMatrixWorld(true);
-        this._updateFade(fadeStart / this.height, fadeEnd / this.height);
-    }
-
-    // alpha map along v: texel -> elevation below the horizon -> radius (in units of the height)
-    _updateFade(start, end) {
-        const key = `${start.toPrecision(5)}|${end.toPrecision(5)}`;
-        if (key === this._fadeKey) return;
-        this._fadeKey = key;
-        const data = new Uint8Array(FADE_TEXELS * 4);
-        for (let y = 0; y < FADE_TEXELS; y++) {
-            const elevation = (0.5 - (y + 0.5) / FADE_TEXELS) * Math.PI;
-            let a = 0;
-            if (elevation > 0) {
-                const r = 1 / Math.tan(elevation);
-                const t = end > start ? Math.min(Math.max((r - start) / (end - start), 0), 1) : (r < end ? 0 : 1);
-                a = 1 - t * t * t * (t * (t * 6 - 15) + 10);   // 1 - smootherstep
-            }
-            data.fill(Math.round(a * 255), y * 4, y * 4 + 4);
-        }
-        // new texture instead of updating the data: the path tracer packs textures when materials change
-        const map = new THREE.DataTexture(data, 1, FADE_TEXELS, THREE.RGBAFormat, THREE.UnsignedByteType);
-        map.magFilter = map.minFilter = THREE.LinearFilter;
-        map.wrapS = map.wrapT = THREE.ClampToEdgeWrapping;
-        map.needsUpdate = true;
-        this.material.alphaMap?.dispose();
-        this.material.alphaMap = map;   // path tracer
-        this._fadeNode.value = map;     // raster
-        this.material.needsUpdate = true;
+        this._center.value.set(x, z);
+        this._fade.value.set(start, radius);
     }
 
     /** Update the shadow catcher weights (after changes of HDRI, intensity or lights) */
@@ -112,28 +92,22 @@ export class GroundProjection {
     }
 }
 
-// disc in units of the projection height (projection centre at y = 1)
+// unit disc in the xz plane (radius 1): a fan around the centre, then rings – counter-clockwise seen from above
 function createGeometry() {
-    const positions = [], uvs = [], normals = [], index = [];
-    const cols = SEGMENTS + 1;
-    for (let j = 0; j <= RINGS; j++) {
-        // elevation below the horizon: from 90° (straight down) to MIN_ELEVATION
-        const t = j / RINGS;
-        const alpha = Math.PI / 2 - t * (Math.PI / 2 - MIN_ELEVATION);
-        const r = 1 / Math.tan(alpha);
-        const v = 0.5 - alpha / Math.PI;
-        for (let i = 0; i <= SEGMENTS; i++) {
-            const u = i / SEGMENTS;
-            const phi = (u - 0.5) * 2 * Math.PI;       // u = atan2(z, x) / 2π + 0.5
+    const positions = [0, 0, 0], uvs = [0.5, 0.5], normals = [0, 1, 0], index = [];
+    for (const r of RINGS) {
+        for (let i = 0; i < SEGMENTS; i++) {
+            const phi = i / SEGMENTS * 2 * Math.PI;
             positions.push(r * Math.cos(phi), 0, r * Math.sin(phi));
-            uvs.push(u, v);
+            uvs.push(0.5 + 0.5 * r * Math.cos(phi), 0.5 + 0.5 * r * Math.sin(phi));
             normals.push(0, 1, 0);
         }
     }
-    for (let j = 0; j < RINGS; j++) {
+    const at = (ring, i) => 1 + ring * SEGMENTS + (i % SEGMENTS);
+    for (let i = 0; i < SEGMENTS; i++) index.push(0, at(0, i + 1), at(0, i));
+    for (let ring = 0; ring + 1 < RINGS.length; ring++) {
         for (let i = 0; i < SEGMENTS; i++) {
-            const a = j * cols + i, b = a + 1, c = a + cols, d = c + 1;
-            // counter-clockwise seen from above
+            const a = at(ring, i), b = at(ring, i + 1), c = at(ring + 1, i), d = at(ring + 1, i + 1);
             index.push(a, b, c, b, d, c);
         }
     }
