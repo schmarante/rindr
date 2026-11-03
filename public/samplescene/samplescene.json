@@ -5,46 +5,46 @@
  "model": {
   "name": "samplescene.usda",
   "type": "mesh",
-  "size": 2379339
+  "size": 2378004
  },
  "models": [
   {
    "file": {
     "name": "samplescene.usda",
     "type": "mesh",
-    "size": 2379339
+    "size": 2378004
    },
    "placement": null,
-   "count": 26,
+   "count": 25,
    "transforms": {},
    "hidden": [],
    "deleted": [],
    "assignments": {
     "mat-mvsgigmo-o": [
-     "0/all",
-     "1/all",
-     "2/all"
-    ],
-    "mat-mvsguqgk-p": [
-     "3/all"
-    ],
-    "mat-mvsgg7nj-m": [
-     "5/all",
-     "6/all",
      "7/all",
      "8/all",
-     "9/all",
+     "9/all"
+    ],
+    "mat-mvsguqgk-p": [
      "10/all"
     ],
+    "mat-mvsgg7nj-m": [
+     "1/all",
+     "2/all",
+     "3/all",
+     "4/all",
+     "5/all",
+     "6/all"
+    ],
     "mat-emissive-white-1": [
-     "4/all"
+     "11/all"
     ],
     "mat-floor-grid": [
-     "11/all"
+     "0/all"
     ]
    },
    "mappings": {
-    "n13": {
+    "n3": {
      "type": "standard",
      "axis": "y",
      "rotation": 0,
@@ -58,7 +58,7 @@
   {
    "kind": "model",
    "name": "samplescene.usda",
-   "size": 2379339
+   "size": 2378004
   }
  ],
  "tessellation": {

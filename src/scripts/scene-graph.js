@@ -160,7 +160,14 @@ export class SceneGraph {
             groups[i].visible = !this.hiddenModel.has(entry.key);
             return entry.parts > 0 || entry.children.length ? entry : (groups[i].visible = false, null);
         };
-        const children = roots.filter(r => total[r] > 0).map(build).filter(Boolean);
+        // a single top node named like the model without parts of its own (the importer's file root, e.g. USD) only
+        // repeats the model row: its children go directly below the model (display only – node keys stay)
+        let tops = roots.filter(r => total[r] > 0);
+        const modelName = (name || '').replace(/\.[^.]+$/, '').toLowerCase();
+        while (tops.length === 1 && !partCounts[tops[0]] && modelName && (importNodes[tops[0]].name || '').toLowerCase() === modelName) {
+            tops = kids[tops[0]].filter(k => total[k] > 0);
+        }
+        const children = tops.map(build).filter(Boolean);
         const parts = children.reduce((s, c) => s + c.parts, 0);
         if (!prefix) this.modelParts = parts;
         root.visible = !this.hiddenModel.has(prefix + 'model');
