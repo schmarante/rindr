@@ -601,7 +601,13 @@ export class MaterialPanel {
         const b = el('button', small
             ? 'shrink-0 rounded bg-sky-500/15 px-1 text-sky-200 hover:bg-sky-500/30'
             : 'min-w-0 flex-1 truncate rounded bg-sky-500/15 px-1.5 py-0.5 text-left text-sky-200 hover:bg-sky-500/30');
-        b.textContent = factor ? '×' : small ? '←' : `← ${name}`;
+        // the graph's mark: the checker icon (a factor: ×), with the node's name where there is room
+        if (factor) b.textContent = '×';
+        else {
+            b.classList.add('flex', 'items-center', 'gap-1');
+            b.innerHTML = ICON_CHECKER;
+            if (!small) b.append(el('span', 'min-w-0 truncate', name));
+        }
         b.title = t(factor ? 'materials.panel.drivenFactorTitle' : 'materials.panel.drivenTitle', { node: name });
         b.onclick = () => this.hooks.onOpenNodeEditor?.(def.id, d.node);
         return b;
@@ -783,12 +789,13 @@ function el(tag, className, text) {
     return e;
 }
 
-/** controls of a value the node graph drives: locked (inputs disabled, colour field not clickable), `link` behind them */
-export function lockControls(ctl, link) {
+/** controls of a value the node graph drives: locked (inputs disabled, colour field not clickable); `link` behind
+ *  them (material panel – the output node shows the linked port instead), `title` the tooltip */
+export function lockControls(ctl, link, title = link?.title) {
     for (const input of ctl.querySelectorAll('input, select, button')) input.disabled = true;
     for (const child of ctl.children) child.classList.add('pointer-events-none', 'opacity-50');
-    ctl.title = link.title;
-    ctl.append(link);
+    if (title) ctl.title = title;
+    if (link) ctl.append(link);
 }
 
 const defaultOutputParams = () => Object.fromEntries(NODE_TYPES.output.params.map(p => [p.key, p.default]));

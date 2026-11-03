@@ -116,7 +116,7 @@
             "deleteInUse": "Still in use",
             "deleteTitle": "Remove material",
             "importedTextures": "Textures from the file: {names} – in the node graph as “Image texture (from the file)”. When connected directly, the values below are multiplied with the texture.",
-            "graphControlled": "Values with ← come from the node graph: locked, they show the graph's value (for textures their mean). Disconnect to edit.",
+            "graphControlled": "Values with the checker symbol come from the node graph: locked, they show the graph's value (for textures their mean). Disconnect to edit.",
             "importFailed": "Import failed: {message}",
             "importErrorTitle": "Import failed",
             "merge": "Merge identical",

@@ -116,7 +116,7 @@
             "deleteInUse": "Wird noch verwendet",
             "deleteTitle": "Material entfernen",
             "importedTextures": "Texturen aus der Datei: {names} – im Node-Graph als „Bild-Textur (aus der Datei)“. Direkt verbunden werden die Werte unten mit der Textur multipliziert.",
-            "graphControlled": "Werte mit ← kommen aus dem Node-Graph: gesperrt, sie zeigen den Wert aus dem Graph (bei Texturen ihren Mittelwert). Zum Ändern die Verbindung trennen.",
+            "graphControlled": "Werte mit dem Schachbrett-Symbol kommen aus dem Node-Graph: gesperrt, sie zeigen den Wert aus dem Graph (bei Texturen ihren Mittelwert). Zum Ändern die Verbindung trennen.",
             "importFailed": "Import fehlgeschlagen: {message}",
             "importErrorTitle": "Import fehlgeschlagen",
             "merge": "Gleiche zusammenfassen",

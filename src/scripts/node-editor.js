@@ -462,11 +462,10 @@ export class NodeEditor {
                         note.title = t('materials.panel.drivenFactorTitle', { node: '' });
                         ctl.append(note);
                     } else if (isLinked) {
+                        // locked, no mark of its own – the linked port shows where the value comes from
                         const src = this.graph.links.find(l => l.to.node === n.id && l.to.port === r.input);
                         const from = src && this.graph.nodes.find(x => x.id === src.from.node);
-                        const note = span('shrink-0 text-sky-300', '←');
-                        note.title = t('materials.panel.drivenTitle', { node: from ? (from.type === 'importMap' ? t('nodeEditor.imageFromFileNode') : nodeLabel(from.type)) : '' });
-                        lockControls(ctl, note);
+                        lockControls(ctl, null, t('materials.panel.drivenTitle', { node: from ? (from.type === 'importMap' ? t('nodeEditor.imageFromFileNode') : nodeLabel(from.type)) : '' }));
                     }
                     row.append(ctl);
                 } else {
