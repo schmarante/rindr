@@ -105,7 +105,7 @@
    "fStop": 5,
    "focusDistance": 3186.887,
    "blades": 0,
-   "autoFocus": false,
+   "autoFocus": true,
    "showPlane": false
   },
   "views": [],

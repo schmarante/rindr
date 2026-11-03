@@ -44,7 +44,9 @@ export const PARAMS = [
     // OpenPBR transmission_dispersion_scale / _abbe_number: rainbow fringes in glass (three.js dispersion = 20 × scale
     // / Abbe number, KHR_materials_dispersion; the path tracer traces one wavelength per path)
     { key: 'dispersion', type: 'number', min: 0, max: 1, default: 0, group: 'glass' },
-    { key: 'dispersionAbbe', type: 'number', min: 9, max: 91, step: 1, default: 20, group: 'glass' },
+    // Abbe number: real glasses ~20 (dense flint) to ~90; below ~17 an artistic exaggeration (user, Nov. 2026: rainbow
+    // fringes like in a reference render – about 5 × dense flint; OpenPBR takes any positive value)
+    { key: 'dispersionAbbe', type: 'number', min: 2, max: 91, step: 1, default: 20, group: 'glass' },
     { key: 'thickness', type: 'number', min: 0, max: 50, default: 0, group: 'glass' },
     // OpenPBR geometry_thin_walled: a sheet without inside (leaf, paper, lamp shade) – no refraction, no absorption
     { key: 'thinWalled', type: 'number', min: 0, max: 1, step: 1, toggle: true, default: 0, group: 'glass' },
