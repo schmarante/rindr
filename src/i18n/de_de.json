@@ -1228,7 +1228,8 @@
         },
         "instance": "Instanz von „{name}“",
         "unsaved": "(nicht gespeichert)",
-        "activeCamera": "{name} – aktive Kamera"
+        "activeCamera": "{name} – aktive Kamera",
+        "locked": "Gesperrt – nicht verschiebbar, keine Materialien"
     },
     "properties": {
         "kind": {
@@ -1278,7 +1279,12 @@
             "sizeTitle": "Breite × Höhe × Tiefe – in der Lage beim Import, mit der Skalierung (Drehen ändert sie nicht)",
             "sizeValue": "{w} × {h} × {d} {unit}",
             "unitMm": "mm",
-            "unitM": "m"
+            "unitM": "m",
+            "lock": "Sperren",
+            "unlock": "Entsperren",
+            "lockTitle": "Sperren – nicht mehr verschieben, keine Materialien darauf ziehen (gilt auch für alles darunter)",
+            "unlockTitle": "Sperre lösen (gilt auch für alles darunter)",
+            "lockedHint": "Gesperrt – lässt sich nicht verschieben, Materialien lassen sich nicht darauf ziehen."
         },
         "explode": {
             "label": "Explosion"
@@ -2009,7 +2015,9 @@
             "other": "Die {count} Bauteile des Tickets sind in den geladenen IFC-Modellen nicht vorhanden"
         },
         "renderingHdri": "Berechne HDRI…",
-        "iesFailed": "IES-Datei „{name}“ nicht lesbar"
+        "iesFailed": "IES-Datei „{name}“ nicht lesbar",
+        "lockedNoMaterial": "Gesperrt – Material nicht zugewiesen",
+        "lockedPartial": "Material nur auf entsperrte Teile – {count} gesperrte ausgelassen"
     },
     "viewCube": {
         "title": "Ansicht wählen: Fläche, Kante oder Ecke anklicken – ziehen dreht die Kamera. Tasten: T oben, F vorne, B hinten, D unten, L links, R rechts",
@@ -2295,7 +2303,9 @@
             "deleteLight": "Licht „{name}“ löschen",
             "renameLight": "Licht umbenennen",
             "leaveCamera": "Ungespeicherte Änderungen an „{name}“ verworfen",
-            "iesProfile": "IES-Profil"
+            "iesProfile": "IES-Profil",
+            "lock": "Sperren",
+            "unlock": "Entsperren"
         },
         "objectsWithMaterial": "Objekte mit „{name}“",
         "ki": {

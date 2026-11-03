@@ -27,6 +27,8 @@ const ICONS = {
     view: icon('camera', 'size-3 text-sky-300'),
     // instance of another part (duplicate.js – Shift + gizmo drag), linked: two overlapping squares
     instance: icon('instance', 'size-3'),
+    // locked part (no moving, no materials dropped onto it) – lock toggle in its properties
+    locked: icon('lock', 'size-3'),
     morphs: icon('morphs', 'size-3.5'),
     skeleton: icon('skeleton', 'size-3.5'),
     missing: icon('missing', 'size-3 text-amber-300'),
@@ -61,6 +63,11 @@ export class SceneGraph {
         this.bySurface = new Map();   // mesh -> sub-surface entry
         this.expanded = new Set();
         this.hiddenModel = new Set();   // hidden model nodes/sub-surfaces (survive re-tessellation)
+        // locked model nodes ('model', 'n<i>' – with the prefix of additional models): no moving, no materials dropped
+        // onto them. Set on a node it is written to everything below (like visibility), a part below can be unlocked
+        // again; the state lives as userData.locked on every node group (and the model root) – see setLocked
+        this.lockedModel = new Set();
+        this._groupKey = new Map();     // node group / model root -> its key (all groups, also collapsed ones)
         this.deleted = new Set();       // deleted nodes/sub-surfaces (Del): invisible and not in the tree
         this.modelKey = null;
         this.selected = null;
@@ -84,6 +91,7 @@ export class SceneGraph {
      */
     setContent(sceneEntries, model, extras = [], missing = []) {
         const entries = [];
+        this._groupKey = new Map();   // filled by _buildModel (the groups of this content)
         if (model) entries.push(this._buildModel(model));
         for (const x of extras) entries.push(this._buildModel(x, `x${x.id}:`));
         // models of an opened scene whose files are missing: placeholders (click → asset window)
@@ -123,10 +131,15 @@ export class SceneGraph {
         // the main model resets hidden/expanded state when its structure changes (new model)
         if (!prefix && key !== this.modelKey) {
             this.hiddenModel.clear();
+            this.lockedModel = new Set([...this.lockedModel].filter(k => /^x\d+:/.test(k)));   // additional models keep theirs
             this.deleted.clear();
             this.expanded.clear();
             this.modelKey = key;
         }
+        // lock state onto every node group (re-tessellation builds new groups)
+        groups.forEach((g, i) => { if (!g) return; this._groupKey.set(g, prefix + 'n' + i); g.userData.locked = this.lockedModel.has(prefix + 'n' + i); });
+        this._groupKey.set(root, prefix + 'model');
+        root.userData.locked = this.lockedModel.has(prefix + 'model');
         const kids = importNodes.map(() => []);
         const roots = [];
         importNodes.forEach((n, i) => (n.parent >= 0 ? kids[n.parent] : roots).push(i));
@@ -276,6 +289,52 @@ export class SceneGraph {
         }
         this.render();
         this.onVisibility(changed);
+    }
+
+    // --- Locking ---
+
+    /** Locked part / model (no moving, no materials dropped onto it) */
+    isLocked(entry) {
+        return !!((entry?.kind === 'node' || entry?.kind === 'model') && entry.object?.userData.locked);
+    }
+
+    /**
+     * Lock or unlock entries – written to everything below them (like visibility; a part below can be unlocked again).
+     * Returns the previous states of the changed node keys (Map key -> locked) for undo.
+     */
+    setLocked(entries, locked) {
+        const before = new Map();
+        for (const entry of Array.isArray(entries) ? entries : [entries]) {
+            if (entry?.kind !== 'node' && entry?.kind !== 'model') continue;
+            entry.object?.traverse(o => {
+                const key = this._groupKey.get(o);
+                if (key === undefined) return;
+                if (!before.has(key)) before.set(key, !!o.userData.locked);
+                o.userData.locked = locked;
+                if (locked) this.lockedModel.add(key); else this.lockedModel.delete(key);
+            });
+        }
+        for (const [key, v] of before) if (v === locked) before.delete(key);
+        this.render();
+        return before;
+    }
+
+    /** Lock states of individual node keys (undo, scene state): Map key -> locked */
+    applyLocks(states) {
+        const byKey = new Map([...this._groupKey].map(([o, k]) => [k, o]));
+        for (const [key, v] of states) {
+            const o = byKey.get(key);
+            if (o) o.userData.locked = v;
+            if (v) this.lockedModel.add(key); else this.lockedModel.delete(key);
+        }
+        this.render();
+    }
+
+    /** Locked model nodes (scene state), keys as in lockedModel */
+    setLockedModel(keys) {
+        this.lockedModel = new Set(keys);
+        for (const [o, key] of this._groupKey) o.userData.locked = this.lockedModel.has(key);
+        this.render();
     }
 
     // State of a checkbox: 'on' | 'off' | 'mixed'
@@ -487,6 +546,14 @@ export class SceneGraph {
             m.className = 'shrink-0 text-sky-300/80';
             m.innerHTML = ICONS.instance;
             m.title = t('sceneGraph.instance', { name: entry.object.userData.instanceOf.name || t('sceneGraph.unnamed') });
+            row.append(m);
+        }
+        // locked (no moving, no materials) – toggled in its properties
+        if (this.isLocked(entry)) {
+            const m = document.createElement('span');
+            m.className = 'shrink-0 text-white/45';
+            m.innerHTML = ICONS.locked;
+            m.title = t('sceneGraph.locked');
             row.append(m);
         }
         // model with morph targets (blend shapes): sliders in its properties

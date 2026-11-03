@@ -19,6 +19,22 @@
    "transforms": {},
    "hidden": [],
    "deleted": [],
+   "locked": [
+    "model",
+    "n0",
+    "n1",
+    "n2",
+    "n15",
+    "n16",
+    "n17",
+    "n18",
+    "n19",
+    "n20",
+    "n21",
+    "n22",
+    "n23",
+    "n24"
+   ],
    "assignments": {
     "mat-mvsgigmo-o": [
      "7/all",

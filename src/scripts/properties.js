@@ -30,6 +30,8 @@ const TRANSFORM_ICONS = {
     translate: icon('translate', 'size-4'),   // four-way arrow
     rotate: icon('rotate', 'size-4'),         // circular arrow
     scale: icon('scale', 'size-4'),           // small box growing to a large one
+    lock: icon('lock', 'size-4'),             // locked part: closed padlock
+    unlock: icon('lock-open', 'size-4'),
     reset: icon('reset', 'size-4'),           // arrow back to the origin
 };
 const ACTION_ICONS = {
@@ -197,9 +199,20 @@ export class PropertiesPanel {
             b.onclick = () => { tf.setMode(mode); this.show(this.entry); };
             return b;
         };
+        // locked (no moving, no materials dropped onto it): modes off, no fields – the lock button toggles it for this
+        // part and everything below it
+        const locked = !!this.ctx.lock?.isLocked(this.entry);
         modes.append(mk('translate'));
         if (withRotation) modes.append(mk('rotate'));
         if (withScale) modes.append(mk('scale'));
+        if (locked) for (const b of modes.children) { b.disabled = true; b.classList.add('opacity-35', 'pointer-events-none'); }
+        if (this.ctx.lock && (this.entry?.kind === 'node' || this.entry?.kind === 'model')) {
+            const lock = iconButton(locked ? BUTTON_ACTIVE : BUTTON, TRANSFORM_ICONS[locked ? 'lock' : 'unlock'],
+                t(locked ? 'properties.transform.unlockTitle' : 'properties.transform.lockTitle'), t(locked ? 'properties.transform.unlock' : 'properties.transform.lock'));
+            lock.onclick = () => this.ctx.lock.set(this.entry, !locked);
+            modes.append(lock);
+        }
+        if (locked) return [modes, el('div', 'mb-1.5 text-white/50', t('properties.transform.lockedHint'))];
         const reset = iconButton(BUTTON + ' ml-auto', TRANSFORM_ICONS.reset, t('properties.transform.reset'), t('properties.transform.reset'));
         reset.onclick = () => tf.reset();
         if (withRotation) modes.append(reset);

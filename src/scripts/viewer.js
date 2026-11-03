@@ -959,7 +959,33 @@ const isHiddenEntry = e => (!e ? false
 // them); no explosion (one cloud without parts). A scan around the camera (room, outdoor capture) is not selected by
 // clicking into the viewport (pickSelectable) – the gizmo in its middle was in the way of double clicking into it
 const holdsSplat = o => { let found = false; o?.traverse?.(c => { if (c.isSplat) found = true; }); return found; };
-const gizmoTarget = entry => (isHiddenEntry(entry) ? null
+// locked parts (scene-graph.js setLocked): no gizmo, no materials dropped onto them – the nearest node group (or the
+// model root) carries the state as userData.locked
+const meshLocked = mesh => { for (let o = mesh; o; o = o.parent) if (o.userData.locked !== undefined) return o.userData.locked; return false; };
+const isLockedEntry = e => (!e ? false
+    : e.kind === 'selection' ? e.object.members.some(m => (m.isMesh ? meshLocked(m) : !!m.userData.locked))
+    : e.kind === 'node' || e.kind === 'model' ? !!e.object?.userData.locked
+    : false);
+// every mesh below the entry locked: a material cannot be dropped onto it
+const fullyLocked = entry => {
+    let meshes = 0, locked = 0;
+    entry?.object?.traverse?.(c => { if (c.isMesh) { meshes++; if (meshLocked(c)) locked++; } });
+    return meshes > 0 && locked === meshes;
+};
+// lock / unlock a part and everything below it (properties panel) – one undo step
+function setEntryLocked(entry, locked) {
+    const before = sceneGraph.setLocked(entry, locked);
+    if (!before.size) return;
+    const after = new Map([...before.keys()].map(k => [k, locked]));
+    const apply = states => { sceneGraph.applyLocks(states); afterLockChange(); };
+    afterLockChange();
+    history.record({ label: t(locked ? 'viewer.undo.lock' : 'viewer.undo.unlock'), undo: () => apply(before), redo: () => apply(after) });
+}
+function afterLockChange() {
+    if (selection && selection.kind !== 'slicer') transformer.attach(gizmoTarget(selection), selection.kind);
+    properties.show(selection);
+}
+const gizmoTarget = entry => (isHiddenEntry(entry) || isLockedEntry(entry) ? null
     : entry?.kind === 'selection'
     ? (entry.object.members.every(m => !m.isMesh) ? entry.object : null)
     : entry?.kind === 'surface' ? null   // a sub-surface belongs to the solid, cannot be moved on its own
@@ -1055,6 +1081,7 @@ const properties = new PropertiesPanel(document.getElementById('properties'), {
     dof,
     get exploder() { return exploder; },
     isHidden: entry => isHiddenEntry(entry),
+    lock: { isLocked: entry => sceneGraph.isLocked(entry), set: (entry, locked) => setEntryLocked(entry, locked) },
     // dragging the explode slider: raster preview, update the path tracing scene once on release
     onExplodeDrag: active => { explodeDragging = active; if (active) pathTracing.pauseForEdit(); else pathTracing.resumeAfterEdit('node'); },
     onDofChange: () => { dof.apply(); pathTracing.updateCamera(); },
@@ -3014,9 +3041,18 @@ function indexOfMesh(mesh) {
     allModelMeshes();
     return meshIndex.map.get(mesh);
 }
-function assignMaterial(object, id) {
+function assignMaterial(object, id, { force = false, quiet = false } = {}) {
     const target = materialManager.get(id)?.material;
     if (!target) return;
+    // locked parts keep their material (merging duplicates still applies – it changes nothing visible)
+    if (!force) {
+        const open = [];
+        let locked = 0;
+        object.traverse(c => { if (c.isMesh) { if (meshLocked(c)) locked++; else open.push(c); } });
+        if (locked && !quiet) flashStatus(t(open.length ? 'status.lockedPartial' : 'status.lockedNoMaterial', { count: locked }), 3000);
+        if (locked && !open.length) return;
+        if (locked) object = { traverse: fn => open.forEach(fn) };
+    }
     const previous = new Map();   // previous material ID -> mesh indices
     object.traverse(c => {
         if (!c.isMesh || c.material === target) return;
@@ -3052,7 +3088,7 @@ async function mergeDuplicateMaterials() {
         for (const [keeper, ...dups] of groups) {
             const dupSet = new Set(dups);
             for (const mesh of allModelMeshes()) {
-                if (dupSet.has(mesh.material?.userData?.materialId)) assignMaterial(mesh, keeper);
+                if (dupSet.has(mesh.material?.userData?.materialId)) assignMaterial(mesh, keeper, { force: true });
             }
             for (const id of dups) if (materialManager.remove(id)) merged++;
         }
@@ -3084,15 +3120,18 @@ const setDropTarget = entry => {
 };
 const isMaterialDrag = e => e.dataTransfer?.types.includes(MATERIAL_MIME);
 // dragover fires continuously (~every 50 ms) even without moving: pick only when the pointer/Alt changed
-let dragPick = '';
+let dragPick = '', dropLocked = false;
 renderer.domElement.addEventListener('dragover', e => {
     if (!isMaterialDrag(e)) return;
     e.preventDefault();
-    e.dataTransfer.dropEffect = 'copy';
     const key = `${e.clientX},${e.clientY},${e.altKey}`;
-    if (key === dragPick) return;
-    dragPick = key;
-    setDropTarget(dropEntryForMesh(pickMesh(e), e.altKey));
+    if (key !== dragPick) {
+        dragPick = key;
+        const target = dropEntryForMesh(pickMesh(e), e.altKey);
+        dropLocked = fullyLocked(target);   // locked part: no highlight, "not allowed" cursor
+        setDropTarget(dropLocked ? null : target);
+    }
+    e.dataTransfer.dropEffect = dropLocked ? 'none' : 'copy';
 });
 renderer.domElement.addEventListener('dragleave', () => { dragPick = ''; setDropTarget(null); });
 renderer.domElement.addEventListener('drop', e => {
@@ -3108,8 +3147,10 @@ graphList.addEventListener('dragover', e => {
     const entry = sceneGraph.entryAt(e.target);
     if (!isModelEntry(entry)) return setDropTarget(null);
     e.preventDefault();
-    e.dataTransfer.dropEffect = 'copy';
-    setDropTarget(dropEntryFor(entry));
+    const target = dropEntryFor(entry);
+    const locked = fullyLocked(target);
+    e.dataTransfer.dropEffect = locked ? 'none' : 'copy';
+    setDropTarget(locked ? null : target);
 });
 graphList.addEventListener('dragleave', () => setDropTarget(null));
 graphList.addEventListener('drop', e => {
@@ -4487,9 +4528,10 @@ function resetModel() {
             if (!byDefault.has(id)) byDefault.set(id, []);
             byDefault.get(id).push(mesh);
         }
-        byDefault.forEach((meshes, id) => assignMaterial({ traverse: fn => meshes.forEach(fn) }, id));
-        // moves/rotations/scaling of the parts
+        byDefault.forEach((meshes, id) => assignMaterial({ traverse: fn => meshes.forEach(fn) }, id, { quiet: true }));   // locked ones stay
+        // moves/rotations/scaling of the parts (locked ones stay)
         const changed = [...currentNodeGroups, ...extraModels.flatMap(x => x.nodeGroups)].filter(g => {
+            if (g.userData.locked) return false;
             const xf = g.userData.xf;
             return xf && (xf.offset.lengthSq() > 0 || xf.rotation.x || xf.rotation.y || xf.rotation.z || xf.scale.x !== 1 || xf.scale.y !== 1 || xf.scale.z !== 1);
         });

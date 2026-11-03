@@ -72,6 +72,7 @@ function modelState(rm, sceneGraph) {
         transforms,
         hidden: own(sceneGraph.hiddenModel),
         deleted: own(sceneGraph.deleted),
+        ...(own(sceneGraph.lockedModel).length ? { locked: own(sceneGraph.lockedModel) } : {}),   // locked nodes ('model', 'n<i>')
         assignments,
         ...(Object.keys(mappings).length ? { mappings } : {}),
         ...(rm.morphs && Object.keys(rm.morphs).length ? { morphs: rm.morphs } : {}),
@@ -155,6 +156,7 @@ export function applyModelState(ctx, rm, chunk, idMap, warnings) {
     return {
         hidden: (chunk.hidden || []).map(k => addKey(k, rm.prefix)),
         deleted: (chunk.deleted || []).map(k => addKey(k, rm.prefix)),
+        locked: (chunk.locked || []).map(k => addKey(k, rm.prefix)),
     };
 }
 
@@ -258,17 +260,19 @@ export async function applyState(ctx, state) {
     // materials, then per loaded model (rm.sceneIndex = its position in the saved list) its state
     const idMap = state.materials ? materialManager.restore(state.materials) : new Map();
     const chunks = sceneModels(state);
-    const hidden = [], deleted = [];
+    const hidden = [], deleted = [], locked = [];
     for (const rm of ctx.runtimeModels()) {
         const chunk = chunks[rm.sceneIndex];
         if (!chunk) continue;
         const keys = applyModelState(ctx, rm, chunk, idMap, warnings);
         hidden.push(...keys.hidden);
         deleted.push(...keys.deleted);
+        locked.push(...keys.locked);
     }
     sceneGraph.deleted = new Set(deleted);
     ctx.refreshSceneGraph?.();
     sceneGraph.setHiddenModel(hidden);
+    sceneGraph.setLockedModel(locked);   // older scenes: none
     // the file's own materials that no part uses any more after the saved assignments (sample scene: the model has no
     // materials of its own – its parts got placeholders on import): out of the list, as after loading a model
     materialManager.pruneUnused();

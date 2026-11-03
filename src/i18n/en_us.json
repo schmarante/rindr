@@ -1228,7 +1228,8 @@
         },
         "instance": "Instance of “{name}”",
         "unsaved": "(not saved)",
-        "activeCamera": "{name} – active camera"
+        "activeCamera": "{name} – active camera",
+        "locked": "Locked – cannot be moved, no materials"
     },
     "properties": {
         "kind": {
@@ -1278,7 +1279,12 @@
             "sizeTitle": "Width × height × depth – in the orientation as imported, with the scale (rotating does not change it)",
             "sizeValue": "{w} × {h} × {d} {unit}",
             "unitMm": "mm",
-            "unitM": "m"
+            "unitM": "m",
+            "lock": "Lock",
+            "unlock": "Unlock",
+            "lockTitle": "Lock – no more moving, no materials dropped onto it (applies to everything below too)",
+            "unlockTitle": "Unlock (applies to everything below too)",
+            "lockedHint": "Locked – cannot be moved, materials cannot be dropped onto it."
         },
         "explode": {
             "label": "Explode"
@@ -2009,7 +2015,9 @@
             "other": "The {count} elements of this issue are not in the loaded IFC models"
         },
         "renderingHdri": "Rendering HDRI…",
-        "iesFailed": "IES file “{name}” not readable"
+        "iesFailed": "IES file “{name}” not readable",
+        "lockedNoMaterial": "Locked – material not assigned",
+        "lockedPartial": "Material only on unlocked parts – {count} locked ones left out"
     },
     "viewCube": {
         "title": "Choose a view: click a face, edge or corner – drag to orbit the camera. Keys: T top, F front, B back, D bottom, L left, R right",
@@ -2295,7 +2303,9 @@
             "deleteLight": "Delete light “{name}”",
             "renameLight": "Rename light",
             "leaveCamera": "Unsaved changes to “{name}” dropped",
-            "iesProfile": "IES profile"
+            "iesProfile": "IES profile",
+            "lock": "Lock",
+            "unlock": "Unlock"
         },
         "objectsWithMaterial": "Objects with “{name}”",
         "ki": {
