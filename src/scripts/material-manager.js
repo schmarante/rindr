@@ -40,7 +40,9 @@ export const PARAMS = [
     { key: 'clearcoatAnisotropy', type: 'number', min: 0, max: 1, default: 0, group: 'clearcoat' },
     { key: 'clearcoatAnisotropyRotation', type: 'number', min: -180, max: 180, step: 1, default: 0, group: 'clearcoat' },
     { key: 'transmission', type: 'number', min: 0, max: 1, default: 0, group: 'glass' },
-    { key: 'ior', type: 'number', min: 1, max: 2.5, default: 1.5, group: 'glass' },
+    // up to 3.5: gems (diamond 2.42, moissanite 2.65, rutile 2.9) and scenes that exaggerate them for more sparkle; the
+    // path tracer refracts any value – only its energy compensation table for rough glass ends at 2.5
+    { key: 'ior', type: 'number', min: 1, max: 3.5, step: 0.01, default: 1.5, group: 'glass' },
     // OpenPBR transmission_dispersion_scale / _abbe_number: rainbow fringes in glass (three.js dispersion = 20 × scale
     // / Abbe number, KHR_materials_dispersion; the path tracer traces one wavelength per path)
     { key: 'dispersion', type: 'number', min: 0, max: 1, default: 0, group: 'glass' },

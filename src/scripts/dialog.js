@@ -37,11 +37,12 @@ const ICONS = {
  * Question with several answers, optional icon ('warning' | 'info') and facts below the text (label/value rows,
  * e.g. memory needed vs. device memory). Esc / a click next to it → the button with `cancel: true` (or null).
  * @param {{ title: string, message: string, icon?: string, facts?: [string, string][],
- *   buttons: { label: string, value: any, kind?: 'primary'|'secondary'|'cancel'|'danger', cancel?: boolean }[] }} o
+ *   buttons: { label: string, value: any, kind?: 'primary'|'secondary'|'cancel'|'danger', cancel?: boolean }[], list?: boolean }} o
+ *   list: the answers one below the other (a choice among several items, e.g. the scene files of a folder)
  */
-export function choiceDialog({ title, message, icon, facts, buttons }) {
+export function choiceDialog({ title, message, icon, facts, buttons, list = false }) {
     const cancel = buttons.find(b => b.cancel);
-    return show({ title, message, icon, facts, cancelValue: cancel ? cancel.value : null,
+    return show({ title, message, icon, facts, list, cancelValue: cancel ? cancel.value : null,
         buttons: buttons.map(b => ({ ...b, primary: b.kind === 'primary', className: KIND[b.kind || 'secondary'] })) });
 }
 
@@ -50,7 +51,7 @@ export function messageDialog({ title, message }) {
     return show({ title, message, buttons: [{ label: t('dialog.ok'), value: true, primary: true, className: 'bg-white/15 text-white hover:bg-white/25' }] });
 }
 
-function show({ title, message, buttons, icon, facts, cancelValue }) {
+function show({ title, message, buttons, icon, facts, cancelValue, list = false }) {
     open?.close(false);
     return new Promise(resolve => {
         const root = document.createElement('div');
@@ -81,12 +82,12 @@ function show({ title, message, buttons, icon, facts, cancelValue }) {
             body.append(grid);
         }
         const foot = document.createElement('div');
-        foot.className = 'flex justify-end gap-2 px-4 pb-3';
+        foot.className = list ? 'flex max-h-[50vh] flex-col gap-1 overflow-y-auto px-4 pb-3' : 'flex justify-end gap-2 px-4 pb-3';
         let primary = null;
         for (const b of buttons) {
             const el = document.createElement('button');
             el.type = 'button';
-            el.className = `${BUTTON} ${b.className}`;
+            el.className = `${BUTTON} ${b.className}${list ? ' text-left' : ''}`;
             el.textContent = b.label;
             el.onclick = () => close(b.value);
             if (b.primary) primary = el;

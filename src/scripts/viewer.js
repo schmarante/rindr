@@ -292,12 +292,16 @@ setPlainView(s => basicView.active && s === scene);   // helper groups (wool fib
 const DEFAULT_TONE_MAPPING = THREE.NeutralToneMapping;
 renderer.toneMapping = DEFAULT_TONE_MAPPING;
 renderer.toneMappingExposure = 1.0;
-// tone mapping curves selectable in the camera panel ("Image"); key = stored value
+// tone mapping curves selectable in the camera panel ("Image"); key = stored value. "none" = linear: the exposure times
+// the value, clipped – as a render's plain image (pbrt). three's NoToneMapping skips the exposure (the slider did
+// nothing with this curve), so it is LinearToneMapping; splat scenes still switch to NoToneMapping themselves (their
+// colours are display values) – shown as "none" too.
 const TONE_MAPPINGS = {
     aces: THREE.ACESFilmicToneMapping, agx: THREE.AgXToneMapping, neutral: THREE.NeutralToneMapping,
-    reinhard: THREE.ReinhardToneMapping, cineon: THREE.CineonToneMapping, none: THREE.NoToneMapping,
+    reinhard: THREE.ReinhardToneMapping, cineon: THREE.CineonToneMapping, none: THREE.LinearToneMapping,
 };
-const toneMappingKey = () => Object.keys(TONE_MAPPINGS).find(k => TONE_MAPPINGS[k] === renderer.toneMapping) || 'neutral';
+const toneMappingKey = () => (renderer.toneMapping === THREE.NoToneMapping ? 'none'
+    : Object.keys(TONE_MAPPINGS).find(k => TONE_MAPPINGS[k] === renderer.toneMapping) || 'neutral');
 // Bloom / chromatic aberration (camera panel): the image then goes through an HDR target
 const lens = new LensEffects(renderer);
 renderer.shadowMap.enabled = true;
@@ -1281,7 +1285,7 @@ let filePool = [];   // files handed in for relinking (models, textures, HDRIs) 
  * pool are passed along), 2. a handed-in file (drop, asset window), 3. the server (public/models).
  */
 async function resolveModelSource(info, pool) {
-    const extras = pool.filter(f => !MAIN_EXTENSIONS.includes(extOf(f.path)));
+    const extras = pool.filter(f => !MAIN_EXTENSIONS.includes(extOf(f.path)) || (extOf(info.name) === 'pbrt' && baseName(f.path) !== info.name.toLowerCase()));
     const loaded = runtimeModels().find(rm => sameFile(rm.file, info))?.source;
     if (loaded) return loaded.type === 'mesh' ? { ...loaded, files: [...(loaded.files || []), ...extras] } : loaded;
     // incomplete model (glTF without its .bin): the dropped file itself + the new files
@@ -2364,12 +2368,22 @@ function addImportedViews(cameras, root, boxCenter) {
             fov: THREE.MathUtils.radToDeg(2 * Math.atan(tv)), roll: rollFromUp(target.clone().sub(position), new THREE.Vector3().fromArray(c.up).transformDirection(m)),
             ...(c.near > 0 ? { near: c.near * new THREE.Vector3().setFromMatrixScale(m).x } : {}),
         };
+        // the file's picture (pbrt: film ISO × shutter time; lens radius + focus distance → depth of field – f-number
+        // for the focal length this angle gives on 35 mm film, as dof.js computes the aperture)
+        if (c.exposure > 0) view.exposure = c.exposure;
+        if (c.toneMapping && TONE_MAPPINGS[c.toneMapping]) view.toneMapping = c.toneMapping;
+        if (c.aperture > 0 && c.focusDistance > 0) {
+            const scaleM = new THREE.Vector3().setFromMatrixScale(m).x;
+            const focal = 0.5 * (35 / Math.max(windowAspect, 1)) / Math.tan(THREE.MathUtils.degToRad(view.fov) / 2);
+            view.dof = { enabled: true, fStop: Math.min(Math.max(focal / (2 * c.aperture * scaleM), 0.1), 64), focusDistance: c.focusDistance * scaleM, blades: 0, autoFocus: false, showPlane: false };
+        }
         if (cameraViews.some(v => v.name === view.name && new THREE.Vector3().fromArray(v.position).distanceTo(position) < 1e-3)) continue;
         added.push({ id: ++cameraViewSeq, ...view });
     }
-    if (!added.length) return;
+    if (!added.length) return added;
     setCameraViews([...cameraViews, ...added]);
     flashStatus(t('status.camerasImported', { count: added.length }), 4000);
+    return added;
 }
 // Lights of an imported file (glTF, FBX, MAX, C4D, Blender, USD – importedLight in mesh-importer.js; user: "take over the
 // lights from gltf/fbx/max etc.") → scene lights, `fixed` (they stay at their fixtures when the scene size changes,
@@ -2401,10 +2415,12 @@ async function addImportedLights(lights, root, boxCenter, modelSize) {
     });
     debugLog(`[Lights] from the file: ${lights.map(l => `${l.name} ${l.kind} ${l.intensity.toPrecision(4)} ${l.unit}${l.width ? ` ${l.width.toFixed(0)}×${l.height?.toFixed(0)}` : ''}`).join(', ')}`);
     const total = items.reduce((a, x) => a + x.e * Math.max(...x.l.color, 0), 0);
-    if (!(total > 0)) return;
+    // lights in absolute units (pbrt: the scene's own exposure comes with its camera) keep their values
+    const absolute = lights.every(l => l.absolute);
+    if (!(total > 0) && !absolute) return;
     const defaults = [dirLight1, dirLight2].filter(l => l.parent === lightsGroup && l.visible);
     const reference = defaults.reduce((a, l) => a + l.intensity, 0) || dirLight1.intensity + dirLight2.intensity;
-    const k = reference / total;
+    const k = absolute ? 1 : reference / total;
     if (items.some(x => x.l.kind === 'rect' || x.l.kind === 'disc')) await prepareAreaLights();
     const created = [];
     for (const { l, position, target, d, width, height, areaMm } of items) {
@@ -2425,7 +2441,11 @@ async function addImportedLights(lights, root, boxCenter, modelSize) {
             light.penumbra = Math.min(Math.max(l.penumbra ?? 0.2, 0), 1);
             light.radius = l.radius ? l.radius * unit : size * 0.01;
         }
-        if (light.isRectAreaLight) { light.width = width; light.height = height; }
+        if (light.isRectAreaLight) {
+            light.width = width; light.height = height;
+            // orientation of the rectangle about its axis: its height along `up` (long strip lights)
+            if (l.up) meta.up = new THREE.Vector3().fromArray(l.up).transformDirection(m).toArray();
+        }
         meta.size = lightSize;
         meta.strength = strengthFromIntensity(light, lightSize);
         aimLight(light);
@@ -2436,6 +2456,8 @@ async function addImportedLights(lights, root, boxCenter, modelSize) {
     }
     if (!created.length) return;
     for (const l of defaults) l.visible = false;
+    // a render scene's light is complete – no fill from the ambient light either (still in the Scene Graph)
+    if (absolute) ambientLight.visible = false;
     setSceneLights([...sceneLights(), ...created]);
     fitShadows(lightSize, lightCenter.clone());
     flashStatus(t(defaults.length ? 'status.lightsImported' : 'status.lightsImportedKeep', { count: created.length }), 4000);
@@ -4956,6 +4978,10 @@ function importNotices(result, name) {
         id: 'c4d-skipped', icon: 'info', title: t('import.c4d.skipped.title', { count: c4d.count }),
         message: t('import.c4d.skipped.message', { name: displayName(name), what: [...new Set(c4d.what)].join(', ') }),
     });
+    if (result.pbrtSkipped?.what.length) showNotice({
+        id: 'pbrt-skipped', icon: 'info', title: t('import.pbrt.skipped.title'), timeout: 15000,
+        message: t('import.pbrt.skipped.message', { name: displayName(name), what: result.pbrtSkipped.what.join(', ') }),
+    });
     const approx = result.maxApprox;
     if (approx?.count) showNotice({
         id: 'max-approx', icon: 'info', title: t('import.max.approx.title', { count: approx.count }), timeout: 15000,
@@ -5212,7 +5238,7 @@ async function loadModel(reload = false, safe = false) {
         root.userData.centerOffset = root.position.clone();
         root.userData.unmovedBox = bbox.clone().translate(root.position);   // placement of further models
         root.updateMatrixWorld(true);
-        if (!reload) addImportedViews(result.cameras, root, center);
+        const importedViews = reload ? [] : addImportedViews(result.cameras, root, center) || [];
         if (!reload) addImportedLights(result.lights, root, center, bbox.getSize(new THREE.Vector3()).length() * new THREE.Vector3().setFromMatrixScale(root.matrixWorld).x).catch(err => console.warn('[Lights] import failed', err));
         if (!reload) {
             camera.position.sub(center);
@@ -5255,6 +5281,10 @@ async function loadModel(reload = false, safe = false) {
         }
         streamFit.active = false;
         loadRender.active = false;
+        // a render scene (pbrt): its environment (or none) and its camera with the film's exposure
+        if (!reload && result.environment) await applyImportedEnvironment(result.environment);
+        if (!reload && result.render) applyImportedRender(result.render);
+        if (!reload && result.activateCamera && importedViews.length) activateCamera(importedViews[0], { record: false });
 
         // before the Scene Graph: its model row shows ⚠ for missing textures
         model.missingTextures = missing || [];
@@ -5494,6 +5524,8 @@ function setupGUI() {
             pt.range(t('setup.glassFringeRange'), () => pathTracing.glassShadow.range, v => pathTracing.setGlassShadow({ range: v }), 0.05, 2, 0.05));
         photonControl = pt.range(t('setup.causticPhotons'), () => pathTracing.glassShadow.photons, v => pathTracing.setGlassShadow({ photons: v }), 10, 1000, 10);
         glassShadowMode(pathTracing.glassShadow.mode);
+        // the mode set from elsewhere (a loaded scene, a pbrt import): photons / fringe enabled to match on refresh
+        setup.controls.push({ refresh: () => glassShadowMode(pathTracing.glassShadow.mode), enable() {} });
         pt.toggle(t('setup.glassSplit'), () => pathTracing.glassSplit, v => pathTracing.setGlassSplit(v));
         pt.toggle(t('setup.denoise'), () => pathTracing.denoiseEnabled, v => pathTracing.setDenoise(v));
         pt.toggle(t('setup.upscale'), () => pathTracing.upscaleEnabled, v => pathTracing.setUpscale(v));
@@ -5852,7 +5884,7 @@ const sceneStateContext = {
     setModelAnimation,
     setModelPose,
     setModelPoses,
-    scene, camera, controls, renderer, environment, lightsGroup, pathTracing, slicer, sceneGraph, materialManager, settings, dof, lens, toneMappings: TONE_MAPPINGS,
+    scene, camera, controls, renderer, environment, lightsGroup, pathTracing, slicer, sceneGraph, materialManager, settings, dof, lens, toneMappings: TONE_MAPPINGS, toneMappingKey,
     lights: () => lightsGroup.children.filter(l => l.isLight),
     meshes: () => currentMeshes,
     nodeGroups: () => currentNodeGroups,
@@ -6002,6 +6034,32 @@ function modelsFromFiles(files) {
     return mains.map(main => modelFromFiles([main, ...rest])).filter(Boolean);
 }
 const USD_LAYER_EXTENSIONS = ['usd', 'usda', 'usdc'];
+// pbrt (pbrt/): a scene folder holds the scene files (with WorldBegin – often several, one per camera), the files they
+// include, PLY meshes, textures. One scene file is the model (several: the user picks one), the rest are its files – the
+// PLY meshes are no models of their own then. null = no pbrt scene, false = cancelled.
+async function pbrtSceneOf(files) {
+    const scenes = files.filter(f => extOf(f.path) === 'pbrt');
+    if (!scenes.length) return null;
+    const isScene = async f => {
+        const head = await f.file.slice(0, 4 << 20).text().catch(() => '');
+        return /(^|\s)WorldBegin(\s|$)/m.test(head.replace(/#[^\n]*/g, ''));
+    };
+    const roots = [];
+    for (const f of scenes) if (await isScene(f)) roots.push(f);
+    const depth = f => f.path.split('/').length;
+    const pool = (roots.length ? roots : scenes).sort((a, b) => depth(a) - depth(b) || a.path.localeCompare(b.path));
+    let main = pool[0];
+    if (roots.length > 1) {
+        const choices = pool.slice(0, 12);
+        main = await choiceDialog({
+            icon: 'info', title: t('import.pbrt.choose.title'), message: t('import.pbrt.choose.message', { count: roots.length }), list: true,
+            buttons: [...choices.map((f, i) => ({ label: f.path.split('/').pop().replace(/\.pbrt$/i, ''), value: f, kind: i ? 'secondary' : 'primary' })),
+                { label: t('dialog.cancel'), value: null, kind: 'cancel', cancel: true }],
+        });
+        if (!main) return false;
+    }
+    return { main, files };
+}
 // root layer of dropped USD files: the one highest up in the folders; then the one named like its folder; then the
 // largest (a stage file next to component layers)
 function usdRootLayer(files) {
@@ -6248,6 +6306,46 @@ async function openHdriFile(file) {
     flashStatus(t('status.hdriDropped', { name: file.name }), 4000);
 }
 
+// Environment of a render scene (pbrt – mesh-importer result.environment): its panorama becomes the HDRI, seen as the
+// background, infinitely far (no dome, no ground shadow – the scene brings its floor), with the scene's intensity; a scene
+// without one is lit by its own lights only (pbrt's background is black – the environment off, as in the Scene Graph)
+async function applyImportedEnvironment(env) {
+    Object.assign(environment, { ground: false, reflection: false, wet: false, dome: false, lightBoost: 1 });
+    // the scene's light is complete: RINDR's default lights and the ambient light off (still in the Scene Graph) – also
+    // when the file has no lights of its own (lit by its environment only)
+    let changed = false;
+    for (const l of [dirLight1, dirLight2, ambientLight]) if (l.parent === lightsGroup && l.visible) { l.visible = false; changed = true; }
+    if (changed) lightsChanged();
+    if (env.off) {
+        environment.on = false;
+        environment.apply({ geometry: true });
+    } else {
+        environment.on = true;
+        environment.background = true;
+        environment.intensity = env.intensity;
+        scene.environmentRotation.y = 0;
+        try {
+            await environment.selectFile(env.file);
+        } catch (err) {
+            console.error(`HDRI ${env.file.name}: ${err.message}`);
+            showStatus(t('sceneState.hdriError', { name: env.file.name, message: err.message }));
+        }
+        environment.apply({ geometry: true });
+    }
+    sceneGraph.render();
+    if (selection?.kind === 'environment') properties.show(selection);
+    assetsWindow.render();
+    updateAssetsTool();
+}
+
+// path tracing settings a render scene (pbrt) needs: caustics for its solid glass, more refractions for gems – the
+// refractions never lowered (the user may have set more); both part of the saved scene, shown in the settings
+function applyImportedRender(render) {
+    if (render.glassShadow) pathTracing.setGlassShadow({ mode: render.glassShadow });
+    if (render.refractionBounces > pathTracing.refractionBounces) pathTracing.setRefractionBounces(render.refractionBounces);
+    setup.refresh();
+}
+
 // models in the scene (main, added, splat scene)?
 function sceneHasModels() {
     return !!rootGroup || extraModels.length > 0 || !!splatMesh;
@@ -6317,7 +6415,10 @@ async function openFiles(files, { side = 'add', relink = false } = {}) {
     // scene/material files (.json) – with or without a model
     const jsonFile = files.find(f => extOf(f.path) === 'json' && !/\.gltf$/i.test(f.path));
     const state = jsonFile ? await openJsonFile(jsonFile.file) : null;
-    const models = modelsFromFiles(files.filter(f => f !== jsonFile));
+    // a pbrt scene folder: one scene file is the model, everything else of the drop belongs to it
+    const pbrt = await pbrtSceneOf(files.filter(f => f !== jsonFile));
+    if (pbrt === false) return;   // choice cancelled
+    const models = pbrt ? [modelFromFilesWith(pbrt.main, pbrt.files)] : modelsFromFiles(files.filter(f => f !== jsonFile));
     if (jsonFile && !models.length) {
         if (state) { closeBcf(); openSceneFile(state); }
         return;

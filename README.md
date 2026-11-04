@@ -8,7 +8,7 @@
 
 Your local 3D file viewer – with real-time path tracing, right in the browser.
 
-**STEP · IGES · glTF/GLB · FBX · MAX · C4D · Blender · OBJ · 3MF · USD · STL · PLY · IFC · BCF · Gaussian splats (PLY/SOG) · MaterialX · HDRI (HDR/EXR)**
+**STEP · IGES · glTF/GLB · FBX · MAX · C4D · Blender · OBJ · 3MF · USD · STL · PLY · pbrt · IFC · BCF · Gaussian splats (PLY/SOG) · MaterialX · HDRI (HDR/EXR)**
 
 <a href="https://schmarante.github.io/rindr/"><img src="https://img.shields.io/badge/%E2%96%B6%20Live%20demo-schmarante.github.io%2Frindr-2ea44f?style=for-the-badge" alt="Live demo"></a>
 
@@ -26,6 +26,7 @@ Drop a CAD model, a mesh, a BIM file or a Gaussian splat into the window and get
   - **Blender (.blend)** via an own reader on the file's self-description: meshes, Principled BSDF materials with packed textures, cameras (modifiers not evaluated)
   - **3MF** via an own reader: assemblies and instances, multi-part slicer projects, colours and textures
   - **USD** (.usd/.usda/.usdc/.usdz): multi-file scenes with references, payloads and sublayers, shared geometry for referenced assets
+  - **pbrt-v4 scenes** (.pbrt) via an own reader: shapes, object instances, materials and textures (measured materials approximated), area lights as real rectangle/disc lights in absolute units, the scene's environment map and camera with its exposure
   - **IFC** (BIM) incl. properties, **BCF** issues
   - **MaterialX (.mtlx)** with OpenPBR: materials in and out – a material as a package with textures, glTF sphere and preview
   - **Gaussian splats** (PLY, SOG)

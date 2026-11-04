@@ -320,6 +320,8 @@ export function aimLight(light) {
         light.target.position.copy(target);
         light.target.updateMatrixWorld();
     } else {
+        // a rectangle from a file keeps its turn about the axis (its height along meta.up – strip lights)
+        if (meta.up) light.up.fromArray(meta.up); else light.up.copy(THREE.Object3D.DEFAULT_UP);
         light.lookAt(target);
     }
     light.updateMatrixWorld();
@@ -368,6 +370,7 @@ export function lightState(light) {
     if (light.isSpotLight) Object.assign(s, { angle: +THREE.MathUtils.radToDeg(light.angle).toFixed(3), penumbra: light.penumbra, radius: light.radius || 0 });
     if (kind === 'ies') s.ies = { ...light.userData.rindr.ies };
     if (light.isRectAreaLight) Object.assign(s, { width: light.width, height: light.height });
+    if (light.userData.rindr?.up) s.up = light.userData.rindr.up.map(x => +x.toFixed(5));
     return s;
 }
 
@@ -400,6 +403,7 @@ function applyLightValues(light, s, size) {
         if (s.height) light.height = s.height;
     }
     if (s.target) meta.target = [...s.target];
+    if (s.up) meta.up = [...s.up]; else delete meta.up;
     // positions are absolute (the scene's model has the size it was saved with); the strength refers to that size
     setStrength(light, s.strength ?? s.intensity ?? 1, size);
     light.updateMatrixWorld();

@@ -191,7 +191,7 @@ export function captureState(ctx) {
         },
         renderer: {
             exposure: ctx.renderer.toneMappingExposure,
-            toneMapping: Object.keys(ctx.toneMappings || {}).find(k => ctx.toneMappings[k] === ctx.renderer.toneMapping) || 'aces',
+            toneMapping: ctx.toneMappingKey?.() ?? (Object.keys(ctx.toneMappings || {}).find(k => ctx.toneMappings[k] === ctx.renderer.toneMapping) || 'aces'),
         },
         environment: {
             on: env.on, hdri: env.hdri || null,
