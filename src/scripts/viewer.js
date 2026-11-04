@@ -22,6 +22,8 @@ import { buildDistributedSection, clientView } from './distributed/settings.js';
 import { IMPORT, KI, SPLATS, RASTER, SCENE, TRANSITION, LOD, SKELETON } from './config.js';
 import { importMeshFile, MissingFilesError, MESH_EXTENSIONS } from './mesh-importer.js';
 import { MaterialManager, FADE_MASK } from './material-manager.js';
+import { BasicView } from './basic-view.js';
+import { setPlainView } from './materials/override-hide.js';
 import { MATERIAL_PRESETS, presetName, loadLibraryPresets } from './material-presets.js';
 import { requestField, clearFields } from './materials/sss-field.js';
 import { MaterialPanel, MATERIAL_MIME } from './material-panel.js';
@@ -112,6 +114,7 @@ const loadingEl = document.getElementById('loading');
 function showStatus(text) {
     loadingEl.textContent = text;
     loadingEl.style.opacity = '1';
+    loadingEl.inert = false;
 }
 // Empty scene: headline "drop a file into the window" + the supported formats below it
 // empty scene: drop hint, the formats (narrow – the long list ran across the window) and "open file" below
@@ -134,6 +137,7 @@ function showDropHint() {
     open.onclick = () => modelFileInput.click();
     loadingEl.replaceChildren(title, formats, open);
     loadingEl.style.opacity = '1';
+    loadingEl.inert = false;
 }
 // the preloader of the page (index.astro): complete the sweep from where its animation stands, fade out, remove
 let preloaderFrames = 0, preloaderStart = null, preloaderGone = false;
@@ -150,8 +154,11 @@ function hidePreloader() {
     setTimeout(() => { el.style.opacity = '0'; }, 300);
     setTimeout(() => el.remove(), 900);
 }
+// hidden = inert as well: only faded out, the drop hint's "open file" button stayed clickable in the middle of the
+// window – a drag to orbit (while a model loads and after) opened the file dialog instead
 function hideStatus() {
     loadingEl.style.opacity = '0';
+    loadingEl.inert = true;
 }
 // errors as a notice card at the top (like the other notices) instead of the status line; the empty scene gets its
 // drop hint back once the failed model is cleared away
@@ -277,6 +284,9 @@ renderer.setPixelRatio(window.devicePixelRatio);
 // ambient occlusion of the raster view: its hook into the materials' lighting goes in before any shader is built
 const rasterAO = new RasterAO(renderer);
 rasterAO.install();
+// Basic view: each model material drawn as a plain twin with its base colour (basic-view.js, swapped while drawing)
+const basicView = new BasicView(renderer, scene);
+setPlainView(s => basicView.active && s === scene);   // helper groups (wool fibres) out of Basic
 // default tone curve Neutral (user, Oct. 2026): material colours come out as set up – ACES bent mid tones and hues (a
 // 25 % black floor needed the lights at 0.55 to read right); ACES, AgX & co. stay selectable in the camera panel
 const DEFAULT_TONE_MAPPING = THREE.NeutralToneMapping;
@@ -413,6 +423,12 @@ function splatModelsBox() {
 let shadowInputs = '';
 let shadowsOn = true;   // false in Basic (setViewMode) – own flag: material events can fire before viewMode exists
 const shadowsWanted = () => shadowsOn;
+// During an import the light shadows and the ground shadow are redrawn at most every IMPORT_SHADOW_MS: parts stream in
+// and fade in all the time, every frame redrew both – as much main-thread time as the picture itself (large assembly
+// ~30 of 60 ms per frame, the frames came that much more rarely: IMPORT_RENDER_WAIT). A pending update is kept and
+// drawn with the next due frame; after the import every frame again.
+const IMPORT_SHADOW_MS = 1000;
+const importShadows = { pending: false, last: 0, contactPending: false, contactLast: 0 };
 function markShadowsDirty() {
     lens.volume.markDirty();   // volumetric light shafts: sun depth map (also in Basic)
     splatShadow.markDirty();   // models on a splat scene
@@ -421,7 +437,15 @@ function markShadowsDirty() {
     splatModels.dirty = true;
     rasterAO.markDirty();      // raster ambient occlusion: new snapshot
     if (!shadowsWanted()) return;
+    if (loadRender.active) { importShadows.pending = true; return; }
     for (const light of shadowLights()) light.shadow.needsUpdate = true;
+}
+// light shadows that waited during an import: due now? (updateShadowMaps, every drawn frame)
+function flushImportShadows(now) {
+    if (!importShadows.pending || (loadRender.active && now - importShadows.last < IMPORT_SHADOW_MS)) return;
+    importShadows.pending = false;
+    importShadows.last = now;
+    if (shadowsWanted()) for (const light of shadowLights()) light.shadow.needsUpdate = true;
 }
 batcher.onChange = markShadowsDirty;
 // the AO pre-pass's variants of new batches compile with them (otherwise its first draw builds them synchronously)
@@ -436,6 +460,7 @@ function updateShadowMaps() {
             l.angle ?? '', l.penumbra ?? '', c.left, c.right, c.top, c.bottom, c.near, c.far, l.shadow.mapSize.x, l.shadow.mapSize.y, l.shadow.bias, l.shadow.normalBias, l.shadow.radius].join();
     }).join('|') + `|${lightsGroup.visible}|${slicer.group.enabled}|${slicer.plane.normal.toArray()}|${slicer.plane.constant}`;
     if (sig !== shadowInputs || fading.size) { shadowInputs = sig; markShadowsDirty(); }
+    flushImportShadows(performance.now());
 }
 
 // Directional lights: keep the direction, adapt distance and shadow camera to the model size
@@ -637,8 +662,8 @@ function drawEnvironmentPreview(canvas, tex, exposure, rotation) {
 // apply() hands it the light)
 const clouds = new CloudSystem(scene, () => [rootGroup, ...extraModels.map(x => x.root)], () => (ground.enabled ? ground.groundY : null), () => lightsGroup.children);
 clouds.onChange = () => { pathTracing.updateTransforms(); pathTracing.updateMaterials(); markShadowsDirty(); };
-// override passes (contour, contact shadow, …) leave the boxes out; Basic (clay, defined further down) keeps them
-clouds.attach(renderer, () => { try { return clayMaterial; } catch { return null; } });
+// override passes (contour, contact shadow, …) leave the boxes out; Basic keeps them
+clouds.attach(renderer);
 // wool material (wool.js): fibre shells over the meshes that carry it; the path tracer intersects the same fibres
 // (wool-pt.js) from the material's stand-in – a new fibre length = new material data, maybe new BVH bounds
 const wool = new WoolSystem(scene, () => [rootGroup, ...extraModels.map(x => x.root)], () => environment?.modelSize ?? 1);
@@ -652,7 +677,7 @@ grass.onChange = () => { pathTracing.updateMaterials(); pathTracing.reset(); };
 grass.onMove = () => { pathTracing.updateTransforms(); markShadowsDirty(); };
 grass.onGeometry = () => { invalidatePathTracing(); updatePathTracingScene(); markShadowsDirty(); };
 // the blades block the sun in the light shafts' depth passes (volume-shafts.js) like any mesh
-grass.attach(renderer, () => { try { return [clayMaterial, lens.volume.sunDepthMaterial, lens.volume.camDepthMaterial]; } catch { return null; } });
+grass.attach(renderer, () => { try { return [lens.volume.sunDepthMaterial, lens.volume.camDepthMaterial]; } catch { return null; } });
 // rounded edges (edges.js): per-geometry edge data (worker) for materials with an edge radius – new data = new
 // material buffers; rotated triangle corners (first build of a geometry) = new path tracer scene
 const edges = new EdgeSystem(() => [rootGroup, ...extraModels.map(x => x.root)]);
@@ -3893,10 +3918,11 @@ function drawWireframe(cam) {
     }
 }
 
-// --- View mode: Basic (grey) / Default (raster with materials) / HQ (path tracing) ---
-// Basic only overrides the display (scene.overrideMaterial); ground etc. have allowOverride = false.
+// --- View mode: Basic (plain colours) / Default (raster with materials) / HQ (path tracing) ---
+// Basic draws every model material as a plain twin (basic-view.js), UV and wire override the display
+// (scene.overrideMaterial); ground etc. have allowOverride = false. Clay = the grey under the wireframe.
 const clayMaterial = new THREE.MeshStandardNodeMaterial({ color: 0x8a8a8a, roughness: 0.55, metalness: 0, side: THREE.DoubleSide });
-clayMaterial.maskNode = FADE_MASK;   // fade-in on import also in Basic
+clayMaterial.maskNode = FADE_MASK;   // fade-in on import also in the analysis views
 // analysis variants of Basic (view-mode.js): UV – the test pattern (uv-checker.js) through each mesh's uv, lit like the
 // clay; wire – the clay pushed back a little (polygon offset) and a second pass of its edges on top with the depth of
 // the first (only visible edges – a plain wireframe override showed the whole model see-through)
@@ -3909,7 +3935,7 @@ wireFillMaterial.polygonOffsetFactor = 1;
 wireFillMaterial.polygonOffsetUnits = 1;
 const wireMaterial = new THREE.MeshBasicNodeMaterial({ color: 0x1c1c1c, wireframe: true, transparent: true, opacity: 0.85, depthWrite: false });
 wireMaterial.maskNode = FADE_MASK;
-const ANALYSIS_MATERIALS = { basic: clayMaterial, uv: uvMaterial, wire: wireFillMaterial };
+const ANALYSIS_MATERIALS = { basic: null, uv: uvMaterial, wire: wireFillMaterial };   // Basic: no override (basic-view.js)
 const isAnalysis = mode => mode in ANALYSIS_MATERIALS;
 ground.material.allowOverride = false;
 let viewMode = pathTracing.enabled ? 'hq' : 'default';
@@ -4627,6 +4653,8 @@ function setViewMode(mode) {
     if (mode === 'hq' && viewMode !== 'hq') modeBeforeHq = viewMode;
     viewMode = mode;
     scene.overrideMaterial = ANALYSIS_MATERIALS[mode] ?? null;
+    basicView.active = mode === 'basic';
+    contactShadow.markDirty();   // off in Basic – stale when coming back
     // Basic without shadow maps: each one is another pass over the whole model (one draw call per mesh –
     // large assemblies: 2 × ~7500 extra draw calls per frame); the contact shadow stays.
     // Not via castShadow: switching it off disposes the light's ShadowNode, but cached render objects of the
@@ -4893,6 +4921,9 @@ function updateSplatSpin(now) {
 // throttled rendering during import (see render loop)
 const loadRender = { active: false, dirty: false, force: false, last: 0, cost: 0 };   // cost: main-thread ms of the last frame
 const IMPORT_RENDER_WAIT = 4;   // during an import: pause after a frame ≥ 4 × its main-thread cost (renderFrame)
+// during an import the batcher groups the parts so far at the latest every IMPORT_BATCH_MS (render-batcher.js maxWait) –
+// otherwise it waits for a quiet moment, which streaming never has: every part a draw call of its own until the end
+const IMPORT_BATCH_MS = 2000;
 controls.addEventListener('change', () => { if (!flight) loadRender.force = true; else loadRender.dirty = true; });
 window.addEventListener('resize', () => { loadRender.force = true; });
 window.addEventListener('pointermove', () => { if (loadRender.active) loadRender.dirty = true; });
@@ -5075,14 +5106,14 @@ async function loadModel(reload = false, safe = false) {
         const tessellateWithLimits = async () => {
             const levels = Object.keys(TESS_PRESETS);
             // safe mode (the last load of this file ended the tab): start at the coarsest level
-            if (safe && !reload) { settings.meshQuality = levels[0]; qualityController?.refresh(); }
+            if (safe && !reload) { settings.meshQuality = levels[0]; qualityController?.refresh(); basicForSize(); }
             const requested = settings.meshQuality;
             let quality = requested;
             const counted = {};   // level -> triangles counted until the limit stopped it
             for (;;) {
                 try {
                     const res = await tessellateStep(model.content, quality, showProgress, {
-                        bvh: pathTracing.supported, instancing: IMPORT.instancing, onPlan: p => { plan = p; setupNodes(p.nodes); }, onSolid,
+                        bvh: pathTracing.supported, instancing: IMPORT.instancing, onPlan: p => { plan = p; setupNodes(p.nodes); }, onSolid, onQuality: basicForSize,
                         // only part levels (null = global level – it may still become coarser)
                         solidQualities: p => solidQualities(p, quality).map(q => (q === quality ? null : q)),
                         limits: { auto: !reload, ...importLimits() },
@@ -5098,6 +5129,7 @@ async function loadModel(reload = false, safe = false) {
                     const coarser = levels[levels.indexOf(err.quality) - 1];
                     if (!(err instanceof ImportLimitError) || !err.during || reload || !coarser) throw err;
                     console.warn(`[Load] triangle limit reached at "${err.quality}" – retrying with "${coarser}"`);
+                    basicForSize();
                     counted[err.quality] = err.triangles;
                     // discard what was streamed so far
                     for (const c of [...root.children]) disposeRoot(c);
@@ -5113,6 +5145,14 @@ async function loadModel(reload = false, safe = false) {
         };
         let reducedQuality = null;
         if (!reload) settings.partQuality = {};
+        // so large that a coarser level is taken (or safe mode): straight into Basic while it streams in – the slimmed-down
+        // raster view (basic-view.js); from Default only, a restored scene's view mode comes after and wins
+        let toBasic = false;
+        function basicForSize() {
+            if (reload || toBasic || viewMode !== 'default') return;
+            toBasic = true;
+            setViewMode('basic');
+        }
         let plan = null, usedQualities = [];
         const result = model.type === 'step'
             ? await tessellateWithLimits()
@@ -5217,10 +5257,14 @@ async function loadModel(reload = false, safe = false) {
         finishProgress();
         loadedQuality = settings.meshQuality;
         appliedPartQuality = { ...settings.partQuality };
+        const toDefault = toBasic && viewMode === 'basic' ? [{ label: t('viewMode.default.label'), primary: true, onClick: () => setViewMode('default') }] : [];
         if (reducedQuality) {
             const q = reducedQuality;
-            showNotice({ id: 'quality', icon: 'info', title: t('memory.reduced.title'), timeout: 12000,
-                message: t('status.qualityReduced', { triangles: formatCount(q.triangles), from: t(`tessellation.quality.${q.from}`), to: t(`tessellation.quality.${q.to}`) }) });
+            showNotice({ id: 'quality', icon: 'info', title: t('memory.reduced.title'), timeout: 12000, actions: toDefault,
+                message: t('status.qualityReduced', { triangles: formatCount(q.triangles), from: t(`tessellation.quality.${q.from}`), to: t(`tessellation.quality.${q.to}`) })
+                    + (toDefault.length ? ` ${t('status.basicForSize')}` : '') });
+        } else if (toDefault.length) {
+            showNotice({ id: 'quality', icon: 'info', title: t('memory.reduced.title'), timeout: 12000, actions: toDefault, message: t('status.basicForSize') });
         }
         importNotices(result, model.name);
         assetsWindow.refresh();
@@ -6412,7 +6456,7 @@ if (new URLSearchParams(location.search).has('debug')) {
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel.thumbs, def)),
         // all library presets (categories loaded on demand) – tests bake their node graphs
         presets: () => loadLibraryPresets().then(() => MATERIAL_PRESETS),
-        skeletonView, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+        skeletonView, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, getPlan: () => currentPlan, setViewMode: m => setViewMode(m), getViewMode: () => viewMode, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 }
 
 // --- Resize ---
@@ -6700,6 +6744,7 @@ function syncViewDependents() {
 function renderFrame() {
     const frameStart = performance.now();
     batcher.newFrame();
+    batcher.maxWait = loadRender.active ? IMPORT_BATCH_MS : 0;
     stepAnimation(frameStart);
     stepPoseBlend(frameStart);
     updateFlight();
@@ -6798,9 +6843,18 @@ function renderFrame() {
     if (!opacityWanted && splatOpacity.enabled.value) { splatOpacity.enabled.value = 0; splatOpacity.markDirty(); }
     if (post) lens.begin();
     if (splatPass) splatComposite.begin({ models: extraModels.length > 0, draw: !post });
-    const contact = ground.enabled && environment.ground && rootGroup && !splatMesh;   // splats cast no shadow
+    // splats cast no shadow; Basic without (another pass over the whole model)
+    const contact = ground.enabled && environment.ground && rootGroup && !splatMesh && viewMode !== 'basic';
     if (contact) {
-        if ((contactLive && !animPlaying) || loadRender.active || fading.size) contactShadow.markDirty();
+        // during an import at most every IMPORT_SHADOW_MS (like the light shadows), afterwards while parts still fade in
+        const now = performance.now();
+        const contactDue = !loadRender.active || now - importShadows.contactLast >= IMPORT_SHADOW_MS;
+        if (loadRender.active) importShadows.contactPending = true;
+        if (contactDue && (importShadows.contactPending || (contactLive && !animPlaying) || fading.size)) {
+            if (loadRender.active) importShadows.contactLast = now;
+            importShadows.contactPending = false;
+            contactShadow.markDirty();
+        }
         contactShadow.update(renderer, scene, extraModels.length ? slicer.group : rootGroup, environment.groundY, [ground.mesh]);
     }
     // focus line while the camera is selected (not in the AI capture / image export); normal view: over the

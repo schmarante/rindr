@@ -15,6 +15,8 @@
 //   - geometry/material changed, transparent, fading in, morph … → the mesh leaves its batch at once and is
 //     drawn individually again; the grouping is rebuilt once nothing has changed for `delay` ms
 //   - new or removed meshes → rebuild likewise
+//   - during an import (maxWait > 0) changes never rest: the staged grouping takes over at the latest after maxWait,
+//     with the members it was staged with – meshes added since stay individual until the next round (_commitStaged)
 // Before a rebuild switches over, the shaders of its new InstancedMeshes are compiled asynchronously (_stage:
 // compileAsync in the real draw context, shader-compile.js) – meanwhile the current grouping keeps drawing. Compiled in
 // the draw frame, a regrouping blocked the main thread and then the GPU process (large assembly: ~0.7 s + ~0.9 s).
@@ -79,6 +81,8 @@ export class RenderBatcher {
         this.frame = 0;
         this._synced = -1;
         this._changedAt = null;          // last change of the grouping (null = none pending)
+        this._pendingSince = null;       // first change since the last (re)grouping
+        this.maxWait = 0;                // > 0 (viewer, during an import): regroup at the latest after this many ms
         this._depth = 0;
         this.generation = 0;             // +1 per rebuild that created batches (new shader variants possible)
         this.stats = { batches: 0, instances: 0, rebuilds: 0, rebuildMs: 0 };
@@ -188,6 +192,7 @@ export class RenderBatcher {
         this.enabled = on;
         if (!on) this._clear();
         this._changedAt = on ? -Infinity : null;
+        this._pendingSince = null;
         this.changed = true;
     }
 
@@ -256,8 +261,12 @@ export class RenderBatcher {
         if (sum !== this._visHash[0] || xor !== this._visHash[1]) { this._visHash = [sum, xor]; this._changed = true; }
 
         // 2. grouping changed and quiet since `delay` ms → compile the new batches (_stage), then rebuild
-        //    (before 3., so the batches draw this frame). Changed again during compiling → stage anew.
-        if (this._changedAt !== null && now - this._changedAt > this.delay) {
+        //    (before 3., so the batches draw this frame). Changed again during compiling → stage anew – or, overdue
+        //    (maxWait, import), take the staged batches as they are (_commitStaged).
+        const pending = this._changedAt !== null;
+        const quiet = pending && now - this._changedAt > this.delay;
+        const overdue = pending && !quiet && this.maxWait > 0 && now - this._pendingSince > this.maxWait;
+        if (quiet || overdue) {
             const staged = this._staged;
             // second compile round of the staging (see _stage), started from inside a real draw
             if (staged?.next && camera) {
@@ -265,9 +274,10 @@ export class RenderBatcher {
                 staged.next = null;
                 this._compileStaged(camera, staged.rest).then(next, next);
             }
-            if (!camera) this.rebuild();
+            if (!camera) { if (quiet) this.rebuild(); }
             else if (!staged) this._stage(camera);
             else if (staged.ready && staged.at >= this._changedAt) this.rebuild();
+            else if (staged.ready && overdue) this._commitStaged(now);
             else if (staged.ready) { this._dropStaged(); this._stage(camera); }
         }
 
@@ -303,7 +313,7 @@ export class RenderBatcher {
             st.matrix.set(e);
             st.moved = true;
             this._changed = true;
-            if (st.key !== null) this._changedAt = now;   // new mesh – might join a batch
+            if (st.key !== null) this._touch(now);   // new mesh – might join a batch
             return;
         }
         st.seen = frame;
@@ -332,7 +342,13 @@ export class RenderBatcher {
         if (key === null) return;
         // back to its batch (e.g. material transparent and opaque again): rejoin at once
         if (st.home?.alive && st.home.key === key) this._join(mesh, st, st.home);
-        else this._changedAt = now;
+        else this._touch(now);
+    }
+
+    // a change of the grouping: rebuild once it rests (delay) – or after maxWait at the latest
+    _touch(now) {
+        this._changedAt = now;
+        this._pendingSince ??= now;
     }
 
     _leave(mesh, st) {
@@ -356,7 +372,7 @@ export class RenderBatcher {
             if (st.batch !== batch) continue;
             if (st.seen !== frame) {
                 // hidden – or removed from the scene (then rebuild to drop it)
-                if (!inScene(m, this.scene)) { this._leave(m, st); this._changedAt = now; this._changed = true; }
+                if (!inScene(m, this.scene)) { this._leave(m, st); this._touch(now); this._changed = true; }
                 continue;
             }
             if (this._occOn && this.occlusion.hidden(m)) continue;   // behind others / outside the view
@@ -388,6 +404,7 @@ export class RenderBatcher {
     rebuild() {
         const t0 = performance.now();
         this._changedAt = null;
+        this._pendingSince = null;
         const byKey = new Map();
         const visit = o => {
             if (o.isMesh) {
@@ -439,7 +456,7 @@ export class RenderBatcher {
         this._dropStaged();
         if (created) this.generation++;
         const ms = performance.now() - t0;
-        this.stats = { batches: batches.length, instances, rebuilds: this.stats.rebuilds + 1, rebuildMs: ms };
+        this.stats = { batches: batches.length, instances, rebuilds: this.stats.rebuilds + 1, rebuildMs: ms, commits: this.stats.commits || 0 };
     }
 
     // Compile the shaders of the next grouping before switching to it: its new InstancedMeshes (filled, not drawn
@@ -531,6 +548,42 @@ export class RenderBatcher {
         im.frustumCulled = members[0].frustumCulled;
         this.group.add(im);
         return batch;
+    }
+
+    // Overdue during an import: the staged batches take over with the members they were staged with – if these are still
+    // in the scene with the same key (otherwise that batch waits for the next round); a current batch of the same key is
+    // replaced, the others stay. Meshes added after the staging are drawn individually until the next round. No LOD
+    // plan and no occlusion model here – the full rebuild after the import does that.
+    _commitStaged(now) {
+        const t0 = performance.now();
+        const staged = this._staged, current = new Map(this.batches.map(b => [b.key, b]));
+        let taken = 0;
+        for (const [key, b] of staged.batches) {
+            if (!b.members.every(m => this._state(m)?.key === key && inScene(m, this.scene))) continue;
+            staged.batches.delete(key);
+            const im = b.mesh;
+            im.count = 0;   // _update fills the instances
+            im.frustumCulled = b.members[0].frustumCulled;
+            this.group.add(im);
+            const old = current.get(key);
+            if (old) {
+                for (const m of old.members) {
+                    const st = this._state(m);
+                    if (st?.batch === old) this._leave(m, st);
+                }
+                this._dispose(old, this.group);
+            }
+            for (const m of b.members) this._join(m, m[STATE], b);
+            current.set(key, b);
+            taken++;
+        }
+        this.batches = [...current.values()];
+        this._dropStaged();
+        this._pendingSince = now;   // the changes since the staging: next round after maxWait
+        if (taken) this.generation++;
+        let instances = 0;
+        for (const b of this.batches) instances += b.members.length;
+        this.stats = { batches: this.batches.length, instances, rebuilds: this.stats.rebuilds, rebuildMs: performance.now() - t0, commits: (this.stats.commits || 0) + 1 };
     }
 
     _dropStaged() {

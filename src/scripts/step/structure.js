@@ -144,7 +144,12 @@ function invRigid(m) {
 }
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
-export function buildPlan(step, typeIds) {
+/**
+ * Product structure of a STEP file.
+ * solidDetails = false: size and edge limits per solid are left out (size null, edgeLimits null) – the importer
+ * computes them in all workers at once (analyzeSolids), the structure itself is read by one worker.
+ */
+export function buildPlan(step, typeIds, { solidDetails = true } = {}) {
     const angleUnit = angleFactor(step, typeIds);
     const units = lengthUnits(step, typeIds);
     const geo = new GeometryBuilder(step, angleUnit);
@@ -384,7 +389,7 @@ export function buildPlan(step, typeIds) {
         // surface: sheet body without a defined inside (orientFaces turns its skins outward)
         const surface = e.type === 'SHELL_BASED_SURFACE_MODEL' || e.type === 'FACE_BASED_SURFACE_MODEL' || e.type === 'OPEN_SHELL' || e.type === 'GEOMETRIC_SET';
         const features = [];
-        solids.push({ id, name: e.args[0] || '', faces, faceColors, color: solidColor, size: solidSize(step, geo, faces, features), surface, features, unit });
+        solids.push({ id, name: e.args[0] || '', faces, faceColors, color: solidColor, size: solidDetails ? solidSize(step, geo, faces, features) : null, surface, features, unit });
         solidIndex.set(id, idx);
         return idx;
     };
@@ -477,7 +482,51 @@ export function buildPlan(step, typeIds) {
         }
     }
 
-    return { solids, instances, nodes, angleUnit, lengthUnit: units.fallback, edgeLimits: featureLimits(step, geo, solids, angleUnit) };
+    if (!solidDetails) for (const s of solids) delete s.features;
+    return { solids, instances, nodes, angleUnit, lengthUnit: units.fallback, edgeLimits: solidDetails ? featureLimits(step, geo, solids, angleUnit) : null };
+}
+
+/**
+ * Size, edge limits and B-rep signature of solids (the part of the structure that walks every face, edge and vertex –
+ * most of the time of buildPlan on large files). Independent per solid: the importer spreads it over all workers.
+ * solids: [{ faces }] as in the plan. Returns { sizes, signatures, edgeLimits } – edge limits as in buildPlan (the
+ * importer merges the results of several jobs by their minimum, mergeEdgeLimits in step-importer.js).
+ * The signature is the same for solids that are copies of each other in any position or rotation (face count,
+ * per face: orientation, surface type, radii, bounds and edge count) – candidates for duplicates (brep-match.js).
+ */
+export function analyzeSolids(step, geo, solids, angleUnit) {
+    const sizes = new Float64Array(solids.length), signatures = [];
+    const details = solids.map((s, i) => {
+        const features = [], sig = [];
+        sizes[i] = solidSize(step, geo, s.faces, features, sig);
+        signatures.push(sig.length === s.faces.length ? `${s.faces.length}/${hashString(sig.sort().join(';'))}` : null);
+        return { size: sizes[i], features };
+    });
+    return { sizes, signatures, edgeLimits: featureLimits(step, geo, details, angleUnit) };
+}
+
+// 64-bit FNV-1a of a string as two 32-bit halves (hex) – signatures of solids
+function hashString(s) {
+    let h1 = 0x811c9dc5, h2 = 0x050c5d1f;
+    for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i);
+        h1 = Math.imul(h1 ^ c, 0x01000193);
+        h2 = Math.imul(h2 ^ c, 0x01000193) ^ (h1 >>> 7);
+    }
+    return (h1 >>> 0).toString(16) + (h2 >>> 0).toString(16);
+}
+
+// Rotation-invariant description of an analytic surface for the signature: type and radii (7 significant digits –
+// copies carry the same numbers; a rounding step between them only costs a duplicate, never a wrong one)
+const roundSig = x => (typeof x === 'number' && isFinite(x) ? Number(x.toPrecision(7)) : '?');
+function surfaceSignature(step, sref) {
+    const st = step.typeOf(sref);
+    if (st === 'CYLINDRICAL_SURFACE' || st === 'SPHERICAL_SURFACE') return `${st}:${roundSig(step.get(sref).args[2])}`;
+    if (st === 'CONICAL_SURFACE' || st === 'TOROIDAL_SURFACE' || st === 'DEGENERATE_TOROIDAL_SURFACE') {
+        const a = step.get(sref).args;
+        return `${st}:${roundSig(a[2])}:${roundSig(a[3])}`;
+    }
+    return st || '?';   // splines and other surfaces: type only (not parsed here)
 }
 
 // Edges next to a feature narrower than the tessellation tolerance: { ids, widths, radii } per EDGE_CURVE (Infinity =
@@ -556,8 +605,9 @@ function featureLimits(step, geo, solids, angleUnit) {
 }
 
 // Rough size of a solid (diagonal of the vertex bounding box) for the relative tolerance.
-// Also collects the candidates for featureLimits (small fillets, faces with several circles) into features.
-function solidSize(step, geo, faces, features) {
+// Also collects the candidates for featureLimits (small fillets, faces with several circles) into features, and with
+// sig one rotation-invariant description per face (analyzeSolids; curve bounded surfaces add none → no signature).
+function solidSize(step, geo, faces, features, sig = null) {
     const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
     const seen = new Set();
     for (const fid of faces) {
@@ -581,11 +631,12 @@ function solidSize(step, geo, faces, features) {
         const torus = st === 'TOROIDAL_SURFACE' || st === 'DEGENERATE_TOROIDAL_SURFACE';
         const rings = st === 'PLANE' || st === 'CONICAL_SURFACE' || /SPLINE|COMPLEX/.test(st || '');
         const torusEdges = torus ? [] : null, circles = rings ? [] : null;
-        let edged = false;
+        let edged = false, edgeCount = 0, circleCount = 0;
         for (const bRef of f.args[1] || []) {
             const b = step.get(bRef);
             const loop = b && step.get(b.args[1]);
             if (!loop) continue;
+            edgeCount += loop.type === 'EDGE_LOOP' ? 1000 * loop.args[1].length : loop.type === 'POLY_LOOP' ? 1000 * loop.args[1].length + 1 : 7;
             // a pole of the face (apex of a cone, end of a degenerate torus)
             if (loop.type === 'VERTEX_LOOP') { try { ext(geo.point(loop.args[1])); } catch { /* no point */ } continue; }
             if (loop.type === 'POLY_LOOP') {
@@ -619,6 +670,7 @@ function solidSize(step, geo, faces, features) {
                 }
                 if (c && c.type === 'CIRCLE' && circles) circles.push({ id: ec.id, ref: c.args[1], r: c.args[2], pl: null });
                 if (c && c.type === 'CIRCLE') {
+                    circleCount++;
                     if (ec.args[1].id === ec.args[2].id) {
                         const p = geo.placement(c.args[1]).o, r = c.args[2];
                         ext([p[0] - r, p[1] - r, p[2] - r]); ext([p[0] + r, p[1] + r, p[2] + r]);
@@ -635,6 +687,7 @@ function solidSize(step, geo, faces, features) {
         // no edges (a whole sphere or torus bounded by a vertex loop, a face without bounds): the face is its
         // surface's whole domain – otherwise the size fell back to 1 (far too fine for a sphere of radius 10)
         if (!edged) surfaceExtent(geo, f.args[2], ext);
+        if (sig && st) sig.push(`${fid < 0 ? '-' : '+'}${f.type}:${f.args[3]}:${surfaceSignature(step, f.args[2])}:${(f.args[1] || []).length}:${edgeCount}:${circleCount}`);
         if (torusEdges && torusEdges.length) features.push({ torus: Math.abs(step.get(f.args[2]).args[3]), edges: torusEdges });
         if (circles && circles.length > 1) features.push({ circles, type: st, f });
     }

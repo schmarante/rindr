@@ -344,10 +344,15 @@ export class Tessellator {
         this.step = step;
         this.geo = new GeometryBuilder(step, angleUnit);
         this.edgeCache = new Map();
-        // EDGE_CURVE id → index into plan.edgeLimits (narrow ring / small fillet next to it)
+        this.setEdgeLimits(edgeLimits);
+    }
+
+    // EDGE_CURVE id → index into plan.edgeLimits (narrow ring / small fillet next to it); edges sampled before differ
+    setEdgeLimits(edgeLimits) {
         this.limits = edgeLimits;
         this.edgeLimit = new Map();
         if (edgeLimits) for (let i = 0; i < edgeLimits.ids.length; i++) this.edgeLimit.set(edgeLimits.ids[i], i);
+        this.edgeCache.clear();
     }
 
     // 3D points of an EDGE_CURVE in edge direction (start vertex -> end vertex)

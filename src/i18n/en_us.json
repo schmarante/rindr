@@ -22,7 +22,8 @@
                 "solid": "Solid {number}",
                 "model": "Model"
             },
-            "estimating": "Estimating model size …"
+            "estimating": "Estimating model size …",
+            "matching": "Finding identical parts …"
         },
         "3mf": {
             "not3mf": "Not a valid 3MF file"
@@ -2600,6 +2601,7 @@
         "hdriDropped": "HDRI “{name}” as environment",
         "hdriOne": "Several HDRIs – “{name}” chosen as environment",
         "qualityReduced": "Large model (≈ {triangles} triangles at “{from}”) – quality automatically reduced to “{to}”",
+        "basicForSize": "Opened in Basic because of its size.",
         "modelTooLarge": "Model too large: ≈ {triangles} triangles at “{quality}” (limit {limit}) – loading cancelled",
         "qualityTooFine": "“{quality}” is too fine for this model (≈ {triangles} triangles, limit {limit}) – quality stays “{previous}”",
         "partsTooFine": "Part quality too fine (≈ {triangles} triangles at “{quality}”, limit {limit}) – change reverted",
@@ -2739,8 +2741,8 @@
             "title": "UV – test pattern through the texture coordinates: distortion, seams, mirrored UVs"
         },
         "basic": {
-            "label": "Grey",
-            "title": "Grey – the whole model in grey"
+            "label": "Basic",
+            "title": "Basic – base colours without shadows or gloss (fast)"
         },
         "default": {
             "label": "Standard",

@@ -87,7 +87,7 @@ export class GrassSystem {
      * override-hide.js
      */
     attach(renderer, keep = () => null) {
-        hideInOverridePasses(renderer, this.group, { keep });
+        hideInOverridePasses(renderer, this.group, { keep, keepPlain: true });
     }
 
     /** materials or assignments changed – search again on the next update */

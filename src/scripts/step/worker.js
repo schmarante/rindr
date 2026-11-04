@@ -1,7 +1,11 @@
 // Web worker for the STEP import.
 // Messages:
-//   {type:'index', bytes, shared}          -> index + product structure (one worker only)
+//   {type:'index', bytes, shared}          -> index + product structure (one worker only; without the per-solid
+//                                             details – those come from all workers with 'solids')
 //   {type:'init', bytes, offsets, angleUnit, edgeLimits} -> initialise worker with the finished index
+//   {type:'solids', solids}                -> size, edge limits and B-rep signature of these solids (analyzeSolids)
+//   {type:'limits', edgeLimits}            -> edge limits of the whole file (merged from all 'solids' answers)
+//   {type:'match', members, tolRel}        -> B-rep duplicates within a group of solids with the same signature
 //   {type:'faces', job, faces, defl, ang, scale} -> tessellate faces (scale per face: length unit -> mm, optional)
 //   {type:'bvh', positions, index, shape}  -> build BVH (three-mesh-bvh, SAH) for one geometry;
 //                                             shape: true → also its fingerprint (shape-match.js, instancing)
@@ -9,7 +13,8 @@
 //   {type:'orient', positions}             -> STL: outward orientation repaired in place (mesh-orient.js)
 
 import { buildIndex, StepFile } from './parser.js';
-import { buildPlan, INDEX_TYPES } from './structure.js';
+import { buildPlan, analyzeSolids, INDEX_TYPES } from './structure.js';
+import { matchSolids } from './brep-match.js';
 import { Tessellator, boundaryEdges } from './tessellate.js';
 import { BufferAttribute, BufferGeometry } from 'three';
 import { MeshBVH, SAH } from 'three-mesh-bvh';
@@ -113,13 +118,25 @@ self.onmessage = e => {
             const bytes = new Uint8Array(m.bytes);
             const idx = buildIndex(bytes, INDEX_TYPES, m.shared);
             const step = new StepFile(bytes, idx.offsets);
-            const plan = buildPlan(step, idx.typeIds);
-            tess = new Tessellator(step, plan.angleUnit, plan.edgeLimits);
+            const plan = buildPlan(step, idx.typeIds, { solidDetails: false });
+            tess = new Tessellator(step, plan.angleUnit, null);
             trimCaches(true); // building the structure parsed almost the whole file
             self.postMessage({ type: 'index', offsets: idx.offsets, plan, entityCount: idx.count });
         } else if (m.type === 'init') {
             tess = new Tessellator(new StepFile(new Uint8Array(m.bytes), m.offsets), m.angleUnit, m.edgeLimits);
             self.postMessage({ type: 'init' });
+        } else if (m.type === 'solids') {
+            const res = analyzeSolids(tess.step, tess.geo, m.solids, tess.geo.angleUnit);
+            trimCaches();
+            const { ids, widths, radii } = res.edgeLimits;
+            self.postMessage({ type: 'solids', ...res }, [res.sizes.buffer, ids.buffer, widths.buffer, radii.buffer]);
+        } else if (m.type === 'limits') {
+            tess.setEdgeLimits(m.edgeLimits);
+            self.postMessage({ type: 'limits' });
+        } else if (m.type === 'match') {
+            const matches = matchSolids(tess.step, tess.geo, m.members, m.tolRel);
+            trimCaches();
+            self.postMessage({ type: 'match', matches });
         } else if (m.type === 'faces') {
             tessellateFaces(m);
         } else if (m.type === 'bvh') {

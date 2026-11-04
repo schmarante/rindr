@@ -1,8 +1,8 @@
 // View (one choice bottom centre, Oct. 2026 – user: "wire, UV, grey, standard and High Quality in one, the teapot
 // next to it"), tools next to it on the right (hide/show UI, fullscreen – addTool):
-//  - wire / uv / basic (key 1 – again: the next of them): one material for the whole model (scene.overrideMaterial,
-//    materials are kept) – wire (clay with its edges as a wireframe), uv (UV test pattern, uv-checker.js),
-//    basic (grey clay)
+//  - wire / uv / basic (key 1 – again: the next of them): wire and uv one material for the whole model
+//    (scene.overrideMaterial, materials are kept) – wire (clay with its edges as a wireframe), uv (UV test pattern,
+//    uv-checker.js); basic = slimmed-down Standard: base colours, no shadows or gloss (basic-view.js)
 //  - default (key 2): raster view with all materials and textures
 //  - hq (key 3): path tracing while still (raster preview while orbiting)
 // The button shows the current mode (ball + name + arrow), a click opens the choice above the bar; addCompanion puts a
@@ -19,7 +19,8 @@ export const VIEW_MODES = [
     { key: 'uv', labelKey: 'viewMode.uv.label', titleKey: 'viewMode.uv.title', keyHint: '1', ball: () => `url(${uvBall()}) center/cover` },
     {
         key: 'basic', labelKey: 'viewMode.basic.label', titleKey: 'viewMode.basic.title', keyHint: '1',
-        ball: () => 'radial-gradient(circle at 32% 28%, #f0f0f0 0, #a3a3a3 30%, #6e6e6e 62%, #2b2b2b 100%)',
+        // the Standard ball without its highlight: same colour, matte
+        ball: () => 'radial-gradient(circle at 32% 28%, #d8653f 0, #b93a1f 42%, #3d1007 100%)',
     },
     {
         key: 'default', labelKey: 'viewMode.default.label', titleKey: 'viewMode.default.title', keyHint: '2',

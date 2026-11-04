@@ -22,7 +22,8 @@
                 "solid": "Körper {number}",
                 "model": "Modell"
             },
-            "estimating": "Modellgröße wird abgeschätzt …"
+            "estimating": "Modellgröße wird abgeschätzt …",
+            "matching": "Erkenne gleiche Teile …"
         },
         "3mf": {
             "not3mf": "Keine gültige 3MF-Datei"
@@ -2600,6 +2601,7 @@
         "hdriDropped": "HDRI „{name}“ als Umgebung",
         "hdriOne": "Mehrere HDRIs – „{name}“ als Umgebung gewählt",
         "qualityReduced": "Großes Modell (≈ {triangles} Dreiecke bei „{from}“) – Qualität automatisch auf „{to}“ gesenkt",
+        "basicForSize": "Wegen der Größe in Basic geöffnet.",
         "modelTooLarge": "Modell zu groß: ≈ {triangles} Dreiecke bei „{quality}“ (Grenze {limit}) – Laden abgebrochen",
         "qualityTooFine": "„{quality}“ ist für dieses Modell zu fein (≈ {triangles} Dreiecke, Grenze {limit}) – Qualität bleibt „{previous}“",
         "partsTooFine": "Bauteil-Qualität zu fein (≈ {triangles} Dreiecke bei „{quality}“, Grenze {limit}) – Änderung zurückgenommen",
@@ -2739,8 +2741,8 @@
             "title": "UV – Prüfmuster über die Texturkoordinaten: Verzerrung, Nähte, gespiegelte UVs"
         },
         "basic": {
-            "label": "Grau",
-            "title": "Grau – Modell einheitlich grau"
+            "label": "Basic",
+            "title": "Basic – Grundfarben ohne Schatten und Glanz (schnell)"
         },
         "default": {
             "label": "Standard",

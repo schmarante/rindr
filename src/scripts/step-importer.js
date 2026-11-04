@@ -6,13 +6,18 @@
 //     product structure (assemblies, transformations, colours, face lists).
 //  2. All workers receive file + index. With cross-origin isolation both live in
 //     SharedArrayBuffers (no copy), otherwise each worker gets a copy.
-//  3. Faces are distributed dynamically in small batches to idle workers and
+//  3. All workers analyse the solids (size → tolerance, edge limits, B-rep signature – analyzePlanSolids).
+//  4. Instancing on the B-rep level: solids that are copies of another one in any position (brep-match.js, proven
+//     from the exact points and surfaces of the file) are not tessellated – their meshes use the other one's
+//     geometry with an alignment matrix (findBrepCopies, brepCopies).
+//  5. Faces are distributed dynamically in small batches to idle workers and
 //     tessellated there; the main thread assembles the results per solid and colour.
-//  4. Optional: build BVHs (for the path tracer) per geometry in parallel in the workers.
-//  5. Optional (with BVHs): instancing – geometries identical in shape to an earlier one (any position/rotation)
-//     are dropped, their meshes use the earlier geometry with an alignment matrix (Instancer below).
+//  6. Optional: build BVHs (for the path tracer) per geometry in parallel in the workers.
+//  7. Optional (with BVHs): instancing after tessellating – geometries identical in shape to an earlier one (any
+//     position/rotation) are dropped, their meshes use the earlier geometry with an alignment matrix (Instancer).
+//     Catches what step 4 cannot prove (other B-rep of the same shape).
 //
-// Index and structure stay cached, "re-tessellate" starts directly at step 3.
+// Index and structure stay cached, "re-tessellate" starts directly at step 5.
 
 import { t, getLocale } from './i18n.js';
 import { Matrix4 } from 'three';
@@ -152,7 +157,7 @@ const bvhJobBytes = g => 70 * (g.index.length / 3) + 40 * (g.positions.length / 
 let bvhGate = null;
 const gate = () => (bvhGate ??= new MemoryGate(memoryBudget() * 0.3));
 
-async function prepare(source, onStatus) {
+async function prepare(source, onStatus, { instancing = false } = {}) {
     if (session && session.source === source) return session.ready;
     const shared = !!self.crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined';
     // copies per worker: pool size depends on the file size (smaller pool for large files, back for small ones)
@@ -184,9 +189,17 @@ async function prepare(source, onStatus) {
             if (node.autoName) node.name = t(`import.step.autoName.${node.autoName[0]}`, { number: node.autoName[1] });
         }
         onStatus(t('import.step.initWorkers', { count: pool.workers.length }));
-        const init = (w, data) => pool.request(w, { type: 'init', bytes: data, offsets: res.offsets, angleUnit: res.plan.angleUnit, edgeLimits: res.plan.edgeLimits }, shared ? [] : [data]);
-        if (shared) await Promise.all(rest.map(w => init(w, bytes.buffer)));
-        else for (const w of rest) await init(w, copy());   // one after another: at most one extra copy here at a time
+        const init = (w, data) => pool.request(w, { type: 'init', bytes: data, offsets: res.offsets, angleUnit: res.plan.angleUnit, edgeLimits: null }, shared ? [] : [data]);
+        // every worker joins the analysis of the solids once it has the file – without shared memory the copies go out
+        // one after another (at most one extra copy here at a time)
+        const ready = new Map([[first, Promise.resolve()]]);
+        if (shared) for (const w of rest) ready.set(w, init(w, bytes.buffer));
+        else {
+            let chain = Promise.resolve();
+            for (const w of rest) ready.set(w, chain = chain.then(() => init(w, copy())));
+        }
+        await analyzePlanSolids(res.plan, ready, onStatus);
+        if (instancing && BREP_INSTANCING) await findBrepCopies(res.plan, onStatus);
         orientUpAxis(res.plan, bytes);
         session.plan = res.plan;
         return session;
@@ -197,6 +210,155 @@ async function prepare(source, onStatus) {
         session = null;
         throw err;
     }
+}
+
+// Size, edge limits and signature per solid in all workers (analyzeSolids in structure.js) – the part of the structure
+// that reads every face, edge and vertex: about 3/4 of the analysis of a large file, done by one worker before.
+// Jobs of consecutive solids (~1/8 of a worker's share), largest first; edge limits merged by their minimum.
+async function analyzePlanSolids(plan, ready, onStatus) {
+    const t0 = performance.now();
+    const solids = plan.solids;
+    const totalFaces = solids.reduce((n, s) => n + s.faces.length, 0);
+    const target = Math.max(2000, Math.ceil(totalFaces / (pool.workers.length * 8)));
+    const jobs = [];
+    for (let i = 0; i < solids.length;) {
+        const start = i;
+        let faces = 0;
+        while (i < solids.length && (i === start || faces + solids[i].faces.length <= target)) faces += solids[i++].faces.length;
+        jobs.push({ start, end: i, faces });
+    }
+    jobs.sort((a, b) => b.faces - a.faces);
+    const limits = [];
+    let next = 0, done = 0;
+    onStatus(t('import.step.analyzing'), 0);
+    await Promise.all(pool.workers.map(async w => {
+        await ready.get(w);
+        while (next < jobs.length) {
+            const job = jobs[next++];
+            const r = await pool.request(w, { type: 'solids', solids: solids.slice(job.start, job.end).map(s => ({ faces: Int32Array.from(s.faces) })) });
+            for (let k = job.start; k < job.end; k++) {
+                solids[k].size = r.sizes[k - job.start];
+                solids[k].signature = r.signatures[k - job.start];
+            }
+            limits.push(r.edgeLimits);
+            done += job.faces;
+            onStatus(t('import.step.analyzing'), totalFaces ? done / totalFaces : 1);
+        }
+    }));
+    plan.edgeLimits = mergeEdgeLimits(limits);
+    await Promise.all(pool.workers.map(w => pool.request(w, { type: 'limits', edgeLimits: plan.edgeLimits })));
+    debugLog(`[STEP] Solids analysed in ${(performance.now() - t0).toFixed(0)} ms (${jobs.length} jobs, ${plan.edgeLimits.ids.length} edge limits)`);
+}
+
+// Minimum per edge over the edge limits of several jobs (as mergeEdgeLimits in structure.js – not imported: the
+// geometry code would come into the main bundle)
+function mergeEdgeLimits(parts) {
+    const limit = new Map();
+    for (const p of parts) {
+        for (let i = 0; i < p.ids.length; i++) {
+            const l = limit.get(p.ids[i]);
+            if (!l) limit.set(p.ids[i], [p.widths[i], p.radii[i]]);
+            else { l[0] = Math.min(l[0], p.widths[i]); l[1] = Math.min(l[1], p.radii[i]); }
+        }
+    }
+    const ids = new Int32Array(limit.size), widths = new Float64Array(limit.size), radii = new Float64Array(limit.size);
+    let k = 0;
+    for (const [id, [w, r]] of limit) { ids[k] = id; widths[k] = w; radii[k++] = r; }
+    return { ids, widths, radii };
+}
+
+// --- Instancing on the B-rep level (before tessellating) ---
+// Groups of solids with the same signature are proven in the workers (brep-match.js). A copy gets
+// s.brep = { root, align (root geometry → copy, mm), colors (root face colour key → copy face colour) }, its root
+// { root, align: null, colors: null }. A copy needs the same split into face colours (one to one) – otherwise its meshes
+// (one per face colour) would differ from those of its own tessellation (keys of scene states, part quality).
+const BREP_TOL = 1e-5;          // point tolerance relative to the solid size – 20 × below the finest chord tolerance
+// ?brep=0 (testing): no instancing on the B-rep level (the instancing after tessellating stays)
+const BREP_INSTANCING = new URLSearchParams(self.location?.search || '').get('brep') !== '0';
+const MATCH_JOB_FACES = 20000;  // faces per comparison job (large groups are split, each part keeps the root)
+const colorKey = c => (c ? c.join(',') : '');
+
+async function findBrepCopies(plan, onStatus) {
+    const t0 = performance.now();
+    const groups = new Map();
+    plan.solids.forEach((s, i) => {
+        if (!s.signature || !s.faces.length) return;
+        const key = `${s.signature}/${s.unit || 1}/${s.surface ? 1 : 0}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(i);
+    });
+    const faces = i => plan.solids[i].faces.length;
+    const jobs = [];
+    for (const g of groups.values()) {
+        if (g.length < 2) continue;
+        let part = [g[0]], n = faces(g[0]);
+        for (const i of g.slice(1)) {
+            if (part.length > 1 && n + faces(i) > MATCH_JOB_FACES) { jobs.push({ members: part, faces: n }); part = [g[0]]; n = faces(g[0]); }
+            part.push(i);
+            n += faces(i);
+        }
+        jobs.push({ members: part, faces: n });
+    }
+    if (!jobs.length) return;
+    jobs.sort((a, b) => b.faces - a.faces);
+    const total = jobs.reduce((n, j) => n + j.faces, 0);
+    let next = 0, done = 0, copies = 0, copyFaces = 0, refused = 0;
+    onStatus(t('import.step.matching'), 0);
+    await Promise.all(pool.workers.map(async w => {
+        while (next < jobs.length) {
+            const job = jobs[next++];
+            const members = job.members.map(i => ({ index: i, faces: Int32Array.from(plan.solids[i].faces), size: plan.solids[i].size }));
+            const r = await pool.request(w, { type: 'match', members, tolRel: BREP_TOL });
+            for (const m of r.matches) {
+                if (setCopy(plan, m)) { copies++; copyFaces += faces(m.index); } else refused++;
+            }
+            done += job.faces;
+            onStatus(t('import.step.matching'), done / total);
+        }
+    }));
+    plan.brepStats = { copies, copyFaces };
+    debugLog(`[STEP] B-rep instancing: ${copies} of ${plan.solids.length} solids are copies (${copyFaces} faces not tessellated` +
+        `${refused ? `, ${refused} refused: other face colours` : ''}) – ${jobs.length} groups compared in ${(performance.now() - t0).toFixed(0)} ms`);
+}
+
+function setCopy(plan, m) {
+    const root = plan.solids[m.root], s = plan.solids[m.index];
+    const colors = new Map(), back = new Map();
+    for (let fi = 0; fi < root.faces.length; fi++) {
+        const rk = colorKey(root.faceColors[fi]), c = s.faceColors[m.faceMap[fi]], ck = colorKey(c);
+        if (colors.has(rk)) { if (colorKey(colors.get(rk)) !== ck) return false; }
+        else if (back.has(ck)) return false;
+        else { colors.set(rk, c); back.set(ck, rk); }
+    }
+    root.brep ??= { root: m.root, align: null, colors: null };
+    s.brep = { root: m.root, align: brepAlignment(m, s.unit || 1), colors };
+    return true;
+}
+
+// column-major (three.js) matrix of x_copy = R · (x_root − cA) + cB in mm (unit: mm per file unit, the same for both)
+function brepAlignment({ R, cA, cB }, unit) {
+    const t = [0, 1, 2].map(r => (cB[r] - (R[r * 3] * cA[0] + R[r * 3 + 1] * cA[1] + R[r * 3 + 2] * cA[2])) * unit);
+    return [R[0], R[3], R[6], 0, R[1], R[4], R[7], 0, R[2], R[5], R[8], 0, t[0], t[1], t[2], 1];
+}
+
+// Copies among the solids to tessellate: per B-rep group and level the first wanted solid is tessellated (the root, or
+// another member if the root is not part of this run – part quality), the others use its geometry.
+// → Map(copy → { rep, align (rep geometry → copy, mm), colors (rep face colour key → copy face colour) })
+function brepCopies(plan, wanted, presetOf) {
+    const reps = new Map(), copies = new Map();
+    plan.solids.forEach((s, si) => {
+        if (!s.brep || !wanted(si)) return;
+        const p = presetOf(si), key = `${s.brep.root}/${p.rel}/${p.ang}`;
+        const rep = reps.get(key);
+        if (rep === undefined) { reps.set(key, si); return; }
+        const a = plan.solids[rep].brep, b = s.brep;
+        // rep → copy = (root → copy) · (root → rep)⁻¹
+        const align = a.align ? _m.fromArray(b.align).multiply(_align.fromArray(a.align).invert()).toArray() : b.align;
+        const colors = new Map();
+        for (const [rk, c] of b.colors) colors.set(a.colors ? colorKey(a.colors.get(rk)) : rk, c);
+        copies.set(si, { rep, align, colors });
+    });
+    return copies;
 }
 
 // --- Up axis ---
@@ -275,6 +437,7 @@ function orientUpAxis(plan, bytes) {
  *   bvh: build BVHs (geometries[i].bvh = serialised roots for MeshBVH.deserialize)
  *   instancing: share geometries of identical shapes (only with bvh) – dropped entries of `geometries` are null
  *   onPlan: structure is known (plan.nodes), before tessellating
+ *   onQuality: the estimate chose a coarser level (limits.auto) – called with it before tessellating
  *   onSolid: finished solid – entries as in meshes, geometries via geometries[m.geometry]
  *   solidQualities: quality per solid (null = quality) – quality per part
  *   onlySolids: tessellate only these solids (meshes then contains only their instances)
@@ -282,22 +445,26 @@ function orientUpAxis(plan, bytes) {
  *   meshes: {geometry: number, matrix: number[], color: number[]|null, name: string, node: number, instance: number}[],
  *   nodes: {name: string, parent: number}[], stats: object}>}
  */
-export async function tessellateStep(content, quality, onStatus = () => {}, { bvh = false, onPlan, onSolid, solidQualities, onlySolids, limits, instancing = false } = {}) {
+export async function tessellateStep(content, quality, onStatus = () => {}, { bvh = false, onPlan, onSolid, onQuality, solidQualities, onlySolids, limits, instancing = false } = {}) {
     const t0 = performance.now();
-    const { plan } = await prepare(content, onStatus);
+    const requested = quality;
+    const { plan } = await prepare(content, onStatus, { instancing });
     onPlan?.(plan);
     const qualities = solidQualities?.(plan) || [];
     const presetOf = si => TESS_PRESETS[qualities[si] || quality] || TESS_PRESETS.medium;
     const only = onlySolids?.(plan) || null;
     const wanted = si => !only || only.has(si);
     const solidCount = only ? only.size : plan.solids.length;
+    // B-rep copies (found while preparing) are not tessellated themselves – they depend on the levels
+    let copyOf = instancing ? brepCopies(plan, wanted, presetOf) : new Map();
+    const tessellated = si => wanted(si) && !copyOf.has(si);
 
     // Memory protection: estimate the triangle count from a sample first – opening may choose a coarser
     // level automatically (limits.auto), beyond the hard limit nothing is tessellated at all
     let estimate = null;
     const estimates = {};   // level -> estimated triangles
     if (limits) {
-        const sample = sampleFaces(plan, wanted);
+        let sample = sampleFaces(plan, tessellated);
         if (sample) {
             onStatus(t('import.step.estimating'));
             const levels = Object.keys(TESS_PRESETS);
@@ -306,12 +473,22 @@ export async function tessellateStep(content, quality, onStatus = () => {}, { bv
                 const coarser = levels[levels.indexOf(quality) - 1];
                 if (!limits.auto || estimate <= limits.budget || !coarser) break;
                 quality = coarser;
+                if (instancing) copyOf = brepCopies(plan, wanted, presetOf);   // part levels may meet the new one
+                sample = sampleFaces(plan, tessellated) || sample;
             }
             debugLog(`[STEP] Estimate from ${sample.count} sample faces: ` +
                 Object.entries(estimates).map(([q, n]) => `"${q}" ~${Math.round(n).toLocaleString('en')}`).join(', ') +
                 ` triangles (budget ${limits.budget.toLocaleString('en')}, limit ${limits.limit.toLocaleString('en')})`);
             if (estimate > limits.limit) throw new ImportLimitError(estimate, limits.limit, quality, false);
         }
+    }
+    if (quality !== requested) onQuality?.(quality);   // chosen coarser for the model's size – before tessellating
+    const copiesOf = new Map();   // rep → its copies
+    let copyFaces = 0;
+    for (const [c, rel] of copyOf) {
+        if (!copiesOf.has(rel.rep)) copiesOf.set(rel.rep, []);
+        copiesOf.get(rel.rep).push(c);
+        copyFaces += plan.solids[c].faces.length;
     }
 
     // Instances per solid (for onSolid and the mesh list)
@@ -324,7 +501,7 @@ export async function tessellateStep(content, quality, onStatus = () => {}, { bv
     const facesLeft = plan.solids.map(s => s.faces.length);
     let totalFaces = 0;
     plan.solids.forEach((s, si) => {
-        if (!wanted(si)) return;
+        if (!tessellated(si)) return;
         const preset = presetOf(si);
         // tolerance in the file's length unit (s.size too), positions come back scaled to mm (s.unit)
         const defl = Math.max(preset.rel * s.size, 1e-6);
@@ -352,17 +529,25 @@ export async function tessellateStep(content, quality, onStatus = () => {}, { bv
     };
     const emitSolid = si => {
         solidsDone++;
-        if (!onSolid || !solidGroups[si].length) return;
-        const out = [];
-        for (const ii of instancesBySolid[si]) {
-            const inst = plan.instances[ii];
-            for (const g of solidGroups[si]) {
-                out.push(meshEntry(inst, ii, g));
+        if (onSolid && solidGroups[si].length) {
+            const out = [];
+            for (const ii of instancesBySolid[si]) {
+                const inst = plan.instances[ii];
+                for (const g of solidGroups[si]) {
+                    out.push(meshEntry(inst, ii, g));
+                }
             }
+            onSolid(out, geometries);
         }
-        onSolid(out, geometries);
+        // B-rep copies: the groups of their rep (after instancing) with the alignment and their own face colours
+        for (const c of copiesOf.get(si) || []) {
+            const rel = copyOf.get(c);
+            solidGroups[c] = solidGroups[si].map(g => ({ geometry: g.geometry, color: rel.colors.get(colorKey(g.color)) ?? null,
+                align: g.align ? _m.fromArray(rel.align).multiply(_align.fromArray(g.align)).toArray() : rel.align }));
+            emitSolid(c);
+        }
     };
-    plan.solids.forEach((s, si) => { if (!s.faces.length && wanted(si)) finishSolid(si); });
+    plan.solids.forEach((s, si) => { if (!s.faces.length && tessellated(si)) finishSolid(si); });
 
     const instancer = bvh && instancing ? new Instancer(geometries) : null;
     const runBVH = async (w, si) => {
@@ -477,6 +662,7 @@ export async function tessellateStep(content, quality, onStatus = () => {}, { bv
         flippedFaces, flippedSolids,   // orientation repaired (orientFaces)
         triangles: uniqueTriangles,
         quality,
+        brepCopies: copyOf.size, brepCopyFaces: copyFaces,   // solids not tessellated (copies of another one)
         estimate: estimate === null ? null : Math.round(estimate),
         prepareMs: Math.round(t1 - t0),
         tessellateMs: Math.round(t2 - t1),   // incl. BVH (runs interleaved)

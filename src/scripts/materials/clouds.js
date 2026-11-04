@@ -471,7 +471,7 @@ export class CloudSystem {
      * clouds' own depth). override-hide.js
      */
     attach(renderer, keep = () => null) {
-        hideInOverridePasses(renderer, this.group, { keep, active: () => !!this._depthPass });
+        hideInOverridePasses(renderer, this.group, { keep, active: () => !!this._depthPass, keepPlain: true });
     }
 
     /**
