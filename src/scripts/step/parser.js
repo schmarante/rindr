@@ -66,7 +66,7 @@ const POW10 = [];
 for (let i = 0; i <= 22; i++) POW10.push(Math.pow(10, i));
 
 // Finds the start of the DATA section ("DATA;")
-function findData(bytes) {
+export function findData(bytes) {
     const n = bytes.length;
     for (let i = 0; i < n - 5; i++) {
         if (bytes[i] === 68 && bytes[i + 1] === 65 && bytes[i + 2] === 84 && bytes[i + 3] === 65) {
@@ -92,17 +92,32 @@ function findData(bytes) {
  * @param {boolean} shared create the index in a SharedArrayBuffer
  */
 export function buildIndex(bytes, collectTypes = [], shared = false) {
+    const part = scanEntities(bytes, findData(bytes), bytes.length, collectTypes);
+    return mergeIndex([part], bytes.length, collectTypes, shared);
+}
+
+// Offsets type for a file of n bytes
+const offsetsType = n => (n > 0x7fffffff ? Float64Array : Int32Array);
+
+/**
+ * The scan of buildIndex over a part of the data: entities whose '#' lies before `stop`, starting at `start` (outside of
+ * any entity – the data start, or a start found by resyncEntity). The last entity is read to its ';' even beyond stop.
+ * Returns { ids, offs, count, maxId, typeIds, start, stop, end, ended }: end = where the scan stopped (outside of any entity,
+ * ≥ stop unless the data ended – ENDSEC: ended), so a sequential scan would go on at end.
+ * Several parts in order (each starting where the previous one ended) give exactly the index of one scan (mergeIndex).
+ */
+export function scanEntities(bytes, start, stop, collectTypes = []) {
     const n = bytes.length;
-    let pos = findData(bytes);
     const collect = new Set(collectTypes);
     const typeIds = {};
     for (const t of collectTypes) typeIds[t] = [];
-
     // collect ids and offsets in growing buffers first
-    const Offsets = n > 0x7fffffff ? Float64Array : Int32Array;
+    const Offsets = offsetsType(n);
     let ids = new Int32Array(1 << 16), offs = new Offsets(1 << 16), count = 0, maxId = 0;
+    let pos = start, ended = false;
 
     while (pos < n) {
+        if (pos >= stop) break;
         const c = bytes[pos];
         if (c === C_HASH) {
             pos++;
@@ -145,22 +160,97 @@ export function buildIndex(bytes, collectTypes = [], shared = false) {
                 else pos++;
             }
         } else if (c === C_SLASH && bytes[pos + 1] === C_STAR) {
-            pos += 2;
-            while (pos < n - 1 && !(bytes[pos] === C_STAR && bytes[pos + 1] === C_SLASH)) pos++;
-            pos += 2;
-        } else if (c === 69 && bytes[pos + 1] === 78 && bytes[pos + 2] === 68 && bytes[pos + 3] === 83) {
-            break; // ENDSEC
+            pos = skipComment(bytes, pos);
+        } else if (isEndsec(bytes, pos)) {
+            ended = true;
+            break;
         } else {
             pos++;
         }
     }
+    if (pos >= n) ended = true;
+    return { ids: ids.slice(0, count), offs: offs.slice(0, count), count, maxId, typeIds, start, stop, end: pos, ended };
+}
 
+const skipComment = (bytes, pos) => {
+    const n = bytes.length;
+    pos += 2;
+    while (pos < n - 1 && !(bytes[pos] === C_STAR && bytes[pos + 1] === C_SLASH)) pos++;
+    return pos + 2;
+};
+const isEndsec = (bytes, pos) => bytes[pos] === 69 && bytes[pos + 1] === 78 && bytes[pos + 2] === 68 && bytes[pos + 3] === 83;
+
+/**
+ * Where a sequential scan that stands at `pos` (outside of any entity) finds its next entity: the next '#' outside of
+ * comments – or -1 if the data end (ENDSEC, end of file) comes first.
+ */
+export function nextEntity(bytes, pos) {
+    const n = bytes.length;
+    while (pos < n) {
+        const c = bytes[pos];
+        if (c === C_HASH) return pos;
+        if (c === C_SLASH && bytes[pos + 1] === C_STAR) pos = skipComment(bytes, pos);
+        else if (isEndsec(bytes, pos)) return -1;
+        else pos++;
+    }
+    return -1;
+}
+
+/**
+ * A likely entity start at or after `from` for a scan of a part of the file: '#' digits '=' right after a ';' (only
+ * whitespace between). A string can contain the same – the caller checks it against the end of the previous part
+ * (nextEntity) and scans the part again from the right place if it does not fit. n if there is none.
+ */
+export function resyncEntity(bytes, from) {
+    const n = bytes.length;
+    for (let p = from; p < n; p++) {
+        if (bytes[p] !== C_HASH) continue;
+        let q = p + 1;
+        if (!isDigit(bytes[q])) continue;
+        while (q < n && isDigit(bytes[q])) q++;
+        while (q < n && isSpace(bytes[q])) q++;
+        if (bytes[q] !== C_EQ) continue;
+        let b = p - 1;
+        while (b >= 0 && isSpace(bytes[b])) b--;
+        if (b >= 0 && bytes[b] === C_SEMI) return p;
+    }
+    return n;
+}
+
+/**
+ * Index from parts scanned in parallel (one per worker, the first from the data start, the others from resyncEntity):
+ * each part must start where a sequential scan would find the next entity after the previous part's end – otherwise
+ * (its start lay in a string, or the previous part's last entity reaches into it) it is scanned again from there, or
+ * left out if that entity covers it completely. The result is the same as buildIndex. rescans = parts scanned again.
+ */
+export function indexFromParts(bytes, parts, collectTypes = [], shared = false) {
+    const used = [parts[0]];
+    let { end, ended } = parts[0], rescans = 0;
+    for (let k = 1; k < parts.length && !ended; k++) {
+        const want = nextEntity(bytes, end);
+        if (want < 0) break;
+        let p = parts[k];
+        if (want >= p.stop) continue;
+        if (p.start !== want) { p = scanEntities(bytes, want, p.stop, collectTypes); rescans++; }
+        used.push(p);
+        ({ end, ended } = p);
+    }
+    return { ...mergeIndex(used, bytes.length, collectTypes, shared), rescans };
+}
+
+/** Offsets table from scanned parts in file order (scanEntities) – later duplicates win, as in one scan */
+export function mergeIndex(parts, nBytes, collectTypes = [], shared = false) {
+    const Offsets = offsetsType(nBytes);
+    let maxId = 0, count = 0;
+    for (const p of parts) { if (p.maxId > maxId) maxId = p.maxId; count += p.count; }
     // shared with cross-origin isolation: postMessage to the workers then does not copy
     const size = (maxId + 1) * Offsets.BYTES_PER_ELEMENT;
     const buf = shared && typeof SharedArrayBuffer !== 'undefined' ? new SharedArrayBuffer(size) : new ArrayBuffer(size);
     const offsets = new Offsets(buf);
     offsets.fill(-1);
-    for (let i = 0; i < count; i++) offsets[ids[i]] = offs[i];
+    for (const p of parts) for (let i = 0; i < p.count; i++) offsets[p.ids[i]] = p.offs[i];
+    const typeIds = {};
+    for (const t of collectTypes) typeIds[t] = parts.length === 1 ? parts[0].typeIds[t] : parts.flatMap(p => p.typeIds[t] || []);
     return { offsets, maxId, count, typeIds };
 }
 

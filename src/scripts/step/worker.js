@@ -1,7 +1,9 @@
 // Web worker for the STEP import.
 // Messages:
-//   {type:'index', bytes, shared}          -> index + product structure (one worker only; without the per-solid
-//                                             details – those come from all workers with 'solids')
+//   {type:'scan', bytes, from, stop, first} -> index of one part of the file (scanEntities; large files, all workers)
+//   {type:'index', bytes, shared, parts?}  -> index + product structure (one worker only; parts: the 'scan' results,
+//                                             checked and joined – indexFromParts; without the per-solid details –
+//                                             those come from all workers with 'solids')
 //   {type:'init', bytes, offsets, angleUnit, edgeLimits} -> initialise worker with the finished index
 //   {type:'solids', solids}                -> size, edge limits and B-rep signature of these solids (analyzeSolids)
 //   {type:'limits', edgeLimits}            -> edge limits of the whole file (merged from all 'solids' answers)
@@ -12,7 +14,7 @@
 //   {type:'trim'}                          -> clear all caches (after the import, saves memory)
 //   {type:'orient', positions}             -> STL: outward orientation repaired in place (mesh-orient.js)
 
-import { buildIndex, StepFile } from './parser.js';
+import { buildIndex, indexFromParts, scanEntities, resyncEntity, findData, StepFile } from './parser.js';
 import { buildPlan, analyzeSolids, INDEX_TYPES } from './structure.js';
 import { matchSolids } from './brep-match.js';
 import { Tessellator, boundaryEdges } from './tessellate.js';
@@ -114,14 +116,18 @@ function buildBVH({ positions, index, normals, uvs, shape, seed }) {
 self.onmessage = e => {
     const m = e.data;
     try {
-        if (m.type === 'index') {
+        if (m.type === 'scan') {
             const bytes = new Uint8Array(m.bytes);
-            const idx = buildIndex(bytes, INDEX_TYPES, m.shared);
+            const part = scanEntities(bytes, m.first ? findData(bytes) : resyncEntity(bytes, m.from), m.stop, INDEX_TYPES);
+            self.postMessage({ type: 'scan', ...part }, [part.ids.buffer, part.offs.buffer]);
+        } else if (m.type === 'index') {
+            const bytes = new Uint8Array(m.bytes);
+            const idx = m.parts ? indexFromParts(bytes, m.parts, INDEX_TYPES, m.shared) : buildIndex(bytes, INDEX_TYPES, m.shared);
             const step = new StepFile(bytes, idx.offsets);
             const plan = buildPlan(step, idx.typeIds, { solidDetails: false });
             tess = new Tessellator(step, plan.angleUnit, null);
             trimCaches(true); // building the structure parsed almost the whole file
-            self.postMessage({ type: 'index', offsets: idx.offsets, plan, entityCount: idx.count });
+            self.postMessage({ type: 'index', offsets: idx.offsets, plan, entityCount: idx.count, rescans: idx.rescans ?? null });
         } else if (m.type === 'init') {
             tess = new Tessellator(new StepFile(new Uint8Array(m.bytes), m.offsets), m.angleUnit, m.edgeLimits);
             self.postMessage({ type: 'init' });

@@ -2,8 +2,8 @@
 // parallelised over a pool of web workers (one worker per CPU core).
 //
 // Flow:
-//  1. One worker indexes the file (byte offsets of all entities) and resolves the
-//     product structure (assemblies, transformations, colours, face lists).
+//  1. One worker indexes the file (byte offsets of all entities – large files: all workers scan a part each, the
+//     first joins them) and resolves the product structure (assemblies, transformations, colours, face lists).
 //  2. All workers receive file + index. With cross-origin isolation both live in
 //     SharedArrayBuffers (no copy), otherwise each worker gets a copy.
 //  3. All workers analyse the solids (size → tolerance, edge limits, B-rep signature – analyzePlanSolids).
@@ -39,6 +39,7 @@ const LEGACY_QUALITY = { 'Grob': 'coarse', 'Mittel': 'medium', 'Fein': 'fine', '
 export const normalizeQuality = q => (q in TESS_PRESETS ? q : LEGACY_QUALITY[q] || null);
 
 const FACES_PER_JOB = 16;
+const PARALLEL_INDEX_BYTES = 32 * 2 ** 20;   // from this file size the index is scanned in parts on all workers
 const QUEUED = 3;   // requests waiting per worker while tessellating (tessellateStep)
 
 // Loads the file. With cross-origin isolation directly into a SharedArrayBuffer (read by all
@@ -177,10 +178,22 @@ async function prepare(source, onStatus, { instancing = false } = {}) {
         const t0 = performance.now();
         // without shared memory: a copy that is transferred (not cloned once more by postMessage)
         const copy = () => source.slice().buffer;
-        const firstBytes = shared ? bytes.buffer : copy();
-        const res = await pool.request(first, { type: 'index', bytes: firstBytes, shared }, shared ? [] : [firstBytes]);
+        let res, scanMs = null;
+        if (shared && source.byteLength >= PARALLEL_INDEX_BYTES && pool.workers.length > 1) {
+            // large file: the index scan in parts on all workers (one linear pass over the bytes – a single worker took
+            // ~4 s for 1.5 GB), checked and joined by the first, which then reads the structure (indexFromParts in
+            // parser.js – the same index as one scan; a part that started inside a string is scanned again)
+            const n = bytes.length, k = pool.workers.length, at = i => (i >= k ? n : Math.floor(i * n / k));
+            const parts = await Promise.all(pool.workers.map((w, i) => pool.request(w, { type: 'scan', bytes: bytes.buffer, from: at(i), stop: at(i + 1), first: i === 0 })));
+            scanMs = performance.now() - t0;
+            res = await pool.request(first, { type: 'index', bytes: bytes.buffer, shared, parts }, parts.flatMap(p => [p.ids.buffer, p.offs.buffer]));
+        } else {
+            const firstBytes = shared ? bytes.buffer : copy();
+            res = await pool.request(first, { type: 'index', bytes: firstBytes, shared }, shared ? [] : [firstBytes]);
+        }
         debugLog(`[STEP] Index + structure: ${res.entityCount} entities, ${res.plan.solids.length} solids, ` +
             `${res.plan.instances.length} instances in ${(performance.now() - t0).toFixed(0)} ms ` +
+            (scanMs !== null ? `(index in ${pool.workers.length} parts ${scanMs.toFixed(0)} ms, ${res.rescans} scanned again) ` : '') +
             `(${pool.workers.length} workers, ${shared ? 'SharedArrayBuffer' : 'copy per worker'})`);
         const lengthUnits = [...new Set(res.plan.solids.map(s => s.unit || 1))];
         if (lengthUnits.some(u => u !== 1)) debugLog(`[STEP] Length units (mm per file unit): ${lengthUnits.join(', ')} – scaled to mm`);
