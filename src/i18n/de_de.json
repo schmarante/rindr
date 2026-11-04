@@ -25,6 +25,9 @@
             "estimating": "Modellgröße wird abgeschätzt …",
             "matching": "Erkenne gleiche Teile …"
         },
+        "iges": {
+            "converting": "Wandle IGES in STEP um..."
+        },
         "stl": {
             "analyzing": "Analysiere STL...",
             "joining": "Verbinde Teile...",
@@ -2604,7 +2607,7 @@
         "unsupportedFormat": "Format nicht unterstützt ({extensions})",
         "dropHint": "Datei ins Fenster ziehen",
         "openFile": "Datei öffnen",
-        "dropFormats": "STEP (.stp/.step) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · BIM (.ifc/.ifczip) · MaterialX (.mtlx) · BCF-Tickets (.bcfzip) · Gaussian Splats (.ply/.sog) · HDRI (.hdr/.exr) · IES-Lichtprofile (.ies)",
+        "dropFormats": "STEP (.stp/.step) · IGES (.igs/.iges) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · BIM (.ifc/.ifczip) · MaterialX (.mtlx) · BCF-Tickets (.bcfzip) · Gaussian Splats (.ply/.sog) · HDRI (.hdr/.exr) · IES-Lichtprofile (.ies)",
         "hdriDropped": "HDRI „{name}“ als Umgebung",
         "hdriOne": "Mehrere HDRIs – „{name}“ als Umgebung gewählt",
         "qualityReduced": "Großes Modell (≈ {triangles} Dreiecke bei „{from}“) – Qualität automatisch auf „{to}“ gesenkt",
@@ -2988,7 +2991,7 @@
         "sceneGraph": "Scene Graph",
         "drop": {
             "title": "Datei hier ablegen",
-            "hint": "STEP (.stp/.step), glTF/GLB, FBX, MAX (.max), C4D (.c4d), Blender (.blend), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, BIM (.ifc/.ifczip), MaterialX (.mtlx), BCF-Tickets (.bcfzip), Gaussian Splats (.ply/.sog), HDRI (.hdr/.exr), IES-Lichtprofile (.ies) – Texturen und .bin-Dateien einfach mit hineinziehen",
+            "hint": "STEP (.stp/.step), IGES (.igs/.iges), glTF/GLB, FBX, MAX (.max), C4D (.c4d), Blender (.blend), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, BIM (.ifc/.ifczip), MaterialX (.mtlx), BCF-Tickets (.bcfzip), Gaussian Splats (.ply/.sog), HDRI (.hdr/.exr), IES-Lichtprofile (.ies) – Texturen und .bin-Dateien einfach mit hineinziehen",
             "addHint": "Mehrere Modelle: zusammen oder nacheinander hineinziehen – sie erscheinen nebeneinander",
             "replaceTitle": "Modelle ersetzen",
             "replaceHint": "Die geladenen Modelle werden entfernt und durch die neue Datei ersetzt",
@@ -3005,7 +3008,7 @@
     },
     "about": {
         "title": "Über",
-        "description": "Your Local 3D-File Viewer – STEP, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, MaterialX, BIM (IFC, BCF), Gaussian Splats, HDRIs und IES-Lichtprofile direkt im Browser, mit Pathtracing in Echtzeit.",
+        "description": "Your Local 3D-File Viewer – STEP, IGES, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, MaterialX, BIM (IFC, BCF), Gaussian Splats, HDRIs und IES-Lichtprofile direkt im Browser, mit Pathtracing in Echtzeit.",
         "author": "Autor",
         "email": "E-Mail",
         "version": "Version",

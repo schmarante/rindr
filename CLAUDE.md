@@ -56,7 +56,7 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 | Datei | Inhalt |
 |---|---|
 | `docs/i18n.md` | Sprache / i18n – Oberflächentexte, Sprachdateien, Prüfskript. |
-| `docs/step-import.md` | STEP-Import – Eigener STEP-Kernel (`src/scripts/rindr.js`, `step/`, `step-importer.js`, `instancer.js`, `shape-match.js`): Struktur, Tessellierung, Orientierung, Hochachse, Speicher, Qualität, Instancing. |
+| `docs/step-import.md` | STEP-Import – Eigener STEP-Kernel (`src/scripts/rindr.js`, `step/`, `step-importer.js`, `instancer.js`, `shape-match.js`): Struktur, Tessellierung, Orientierung, Hochachse, Speicher, Qualität, Instancing; IGES (`iges/`, beim Einlesen in STEP übersetzt). |
 | `docs/mesh-import.md` | Mesh-Import (glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, PLY) – `src/scripts/mesh-importer.js`, `stl/` (STL in Teilen auf allen Workern), `usd-importer.js`, `usd-mdl.js`, `orient-outward.js`, `fbx/`, `max/`, `c4d/`, `blend/`, `obj/`, `3mf/`. |
 | `docs/bim.md` | IFC / BIM und BCF – `src/scripts/ifc/`, `src/scripts/bcf/`. |
 | `docs/splats.md` | Gaussian Splats – `src/scripts/splat/`. |

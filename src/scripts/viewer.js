@@ -3690,8 +3690,14 @@ const RELEASE_STEP_BYTES = 64 * 1024 * 1024;
 async function ensureStepContent() {
     if (model.content) return;
     showProgress(t('status.loadingFile'));
-    const signal = loadAbort?.signal;
-    model.content = model.file ? await readStepFile(model.file, signal) : await fetchStepFile(model.url, signal);
+    model.content = await readCadContent(model, loadAbort?.signal);
+}
+// STEP text of a CAD model: a STEP file as read; IGES converted to STEP in a worker first (iges/, loaded on demand)
+async function readCadContent(source, signal) {
+    const bytes = source.file ? await readStepFile(source.file, signal) : await fetchStepFile(source.url, signal);
+    if (!IGES_EXTENSIONS.includes(extOf(source.name))) return bytes;
+    const { convertIges } = await import('./iges/iges-import.js');
+    return convertIges(bytes, { name: source.name, onStatus: showProgress, signal });
 }
 async function releaseLargeStep() {
     if (model?.type !== 'step' || !model.content || model.content.byteLength < RELEASE_STEP_BYTES) return;
@@ -5654,7 +5660,7 @@ async function loadExtraModel(source, { sceneIndex, placement: savedPlacement } 
         const signal = loadAbort?.signal;
         let result, plan = null;
         if (source.type === 'step') {
-            const content = source.file ? await readStepFile(source.file, signal) : await fetchStepFile(source.url, signal);
+            const content = await readCadContent(source, signal);
             result = await tessellateStep(content, settings.meshQuality, showProgress, {
                 bvh: pathTracing.supported, instancing: IMPORT.instancing, onPlan: p => { plan = p; }, limits: { auto: true, ...importLimits() },
             });
@@ -5978,7 +5984,9 @@ async function openJsonFile(file) {
 }
 
 // --- Open files via drag & drop into the window ---
-const STEP_EXTENSIONS = ['stp', 'step'];
+// IGES goes the STEP way (converted to STEP text when read – readCadContent)
+const IGES_EXTENSIONS = ['igs', 'iges'];
+const STEP_EXTENSIONS = ['stp', 'step', ...IGES_EXTENSIONS];
 const MAIN_EXTENSIONS = [...STEP_EXTENSIONS, ...MESH_EXTENSIONS, ...SPLAT_EXTENSIONS];
 const extOf = name => name.split('.').pop().toLowerCase();
 

@@ -42,6 +42,10 @@ const LEGACY_QUALITY = { 'Grob': 'coarse', 'Mittel': 'medium', 'Fein': 'fine', '
 export const normalizeQuality = q => (q in TESS_PRESETS ? q : LEGACY_QUALITY[q] || null);
 
 const FACES_PER_JOB = 16;
+// tessellated face larger than this × its solid's size (structure.js solidSize): broken, left out (the checker counts
+// 3 × as an error – tools/stepcheck "boxTooBig"; a self-intersecting spline torus of an IGES export gave a 12.6 m face on
+// a 47 mm part)
+const MAX_FACE_EXTENT = 4;
 const PARALLEL_INDEX_BYTES = 32 * 2 ** 20;   // from this file size the index is scanned in parts on all workers
 const QUEUED = 3;   // requests waiting per worker while tessellating (tessellateStep)
 
@@ -290,7 +294,7 @@ function mergeEdgeLimits(parts) {
 // (one per face colour) would differ from those of its own tessellation (keys of scene states, part quality).
 const BREP_TOL = 1e-5;          // point tolerance relative to the solid size – 20 × below the finest chord tolerance
 // ?brep=0 (testing): no instancing on the B-rep level (the instancing after tessellating stays)
-const BREP_INSTANCING = new URLSearchParams(self.location?.search || '').get('brep') !== '0';
+const BREP_INSTANCING = new URLSearchParams(globalThis.location?.search || '').get('brep') !== '0';
 const MATCH_JOB_FACES = 20000;  // faces per comparison job (large groups are split, each part keeps the root)
 const colorKey = c => (c ? c.join(',') : '');
 
@@ -524,7 +528,10 @@ export async function tessellateStep(content, quality, onStatus = () => {}, { bv
         for (let i = 0; i < s.faces.length; i += FACES_PER_JOB) {
             const faces = Int32Array.from(s.faces.slice(i, i + FACES_PER_JOB));
             const scale = s.unit && s.unit !== 1 ? new Float64Array(faces.length).fill(s.unit) : null;
-            jobs.push({ si, start: i, faces, defl: new Float64Array(faces.length).fill(defl), ang: preset.ang, scale });
+            // a face spanning more than MAX_FACE_EXTENT × its solid is broken (bound projected across a huge surface) –
+            // left out with a warning instead of a spike through the scene
+            const limit = new Float64Array(faces.length).fill(s.size > 0 ? MAX_FACE_EXTENT * s.size : Infinity);
+            jobs.push({ si, start: i, faces, defl: new Float64Array(faces.length).fill(defl), ang: preset.ang, scale, limit });
         }
         totalFaces += s.faces.length;
     });
@@ -631,7 +638,7 @@ export async function tessellateStep(content, quality, onStatus = () => {}, { bv
             if (bvhQueue.length) return runBVH(w, bvhQueue.shift()).then(status);
             if (next >= jobs.length) return null;
             const job = jobs[next++];
-            return pool.request(w, { type: 'faces', job: 0, faces: job.faces, defl: job.defl, ang: job.ang, scale: job.scale }).then(r => handleFaces(job, r));
+            return pool.request(w, { type: 'faces', job: 0, faces: job.faces, defl: job.defl, ang: job.ang, scale: job.scale, limit: job.limit }).then(r => handleFaces(job, r));
         };
         try {
             for (;;) {

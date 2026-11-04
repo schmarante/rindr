@@ -49,7 +49,7 @@ function trimCaches(all = false) {
     if (all || tess.edgeCache.size > EDGE_CACHE_LIMIT) tess.edgeCache.clear();
 }
 
-function tessellateFaces({ job, faces, defl, ang, scale }) {
+function tessellateFaces({ job, faces, defl, ang, scale, limit }) {
     const results = [];
     let nv = 0, ni = 0;
     const errors = [];
@@ -59,6 +59,11 @@ function tessellateFaces({ job, faces, defl, ang, scale }) {
             r = tess.face(faces[i], defl[i], ang, scale ? scale[i] : 1);
         } catch (err) {
             errors.push(`#${faces[i]}: ${err.message}`);
+        }
+        // larger than its solid allows (limit: file units, positions scaled): broken face, left out
+        if (r && limit && extent(r.positions) > limit[i] * (scale ? scale[i] : 1)) {
+            errors.push(`#${faces[i]}: larger than its solid`);
+            r = null;
         }
         results.push(r);
         if (r) { nv += r.positions.length / 3; ni += r.indices.length; }
@@ -87,6 +92,15 @@ function tessellateFaces({ job, faces, defl, ang, scale }) {
     trimCaches();
     self.postMessage({ type: 'faces', job, positions, normals, indices, counts, edges, errors },
         [positions.buffer, normals.buffer, indices.buffer, counts.buffer, edges.buffer]);
+}
+
+function extent(P) {
+    let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+    for (let i = 0; i < P.length; i += 3) {
+        const x = P[i], y = P[i + 1], z = P[i + 2];
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; if (z < z0) z0 = z; if (z > z1) z1 = z;
+    }
+    return P.length ? Math.hypot(x1 - x0, y1 - y0, z1 - z0) : 0;
 }
 
 // Build the BVH and return it serialised. The index gets reordered in the process;
