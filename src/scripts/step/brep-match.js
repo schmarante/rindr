@@ -132,8 +132,10 @@ export function brepData(step, geo, faces) {
 /**
  * Proves that solid B is solid A in another position: { R (row-major 3 × 3), cA, cB, faceMap (face of A → face of B) }
  * with B = R · (A − cA) + cB, or null. tol: distance in file units under which points count as the same.
+ * verify(R, cA, cB): optional further test of a rotation under which the points (and faces) match – false = try the
+ * next one (STL parts: the triangles; a symmetric part has several rotations that map its points onto themselves).
  */
-export function matchBrep(A, B, tol, diag = null) {
+export function matchBrep(A, B, tol, diag = null, verify = null) {
     const n = A.points.length / 3;
     const fail = reason => { if (diag) diag.reason = reason; return null; };
     if (n < 3 || B.points.length !== A.points.length || A.faces.length !== B.faces.length) return fail('count');
@@ -200,7 +202,7 @@ export function matchBrep(A, B, tol, diag = null) {
             for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) R[r * 3 + c] = FB[r] * FA[c] + FB[3 + r] * FA[3 + c] + FB[6 + r] * FA[6 + c];
             if (!pointsMatch()) continue;
             const faceMap = matchFaces(A, B, map, R, tol, diag);
-            if (faceMap) return { R: Float64Array.from(R), cA, cB, faceMap };
+            if (faceMap && (!verify || verify(R, cA, cB))) return { R: Float64Array.from(R), cA, cB, faceMap };
             pointsOk = true;
         }
     }
@@ -315,27 +317,52 @@ function scatterStep(n) {
     return s % n || 1;
 }
 
-// points in a uniform grid (cell ≥ 2 × search radius): find(p, r) = index of a point within r, or −1
-class PointGrid {
+// points in a uniform grid (cell ≥ 2 × search radius): find(p, r) = index of a point within r, or −1. Cells hashed into
+// buckets (CSR over typed arrays – a Map of arrays per cell cost most of the copy proof of large STL assemblies);
+// cells sharing a bucket only cost a distance test more.
+export class PointGrid {
     constructor(X, cell) {
+        const n = X.length / 3;
         this.X = X;
-        this.cell = cell;
-        this.map = new Map();
-        for (let i = 0; i < X.length / 3; i++) {
-            const k = this.key(Math.floor(X[i * 3] / cell), Math.floor(X[i * 3 + 1] / cell), Math.floor(X[i * 3 + 2] / cell));
-            const list = this.map.get(k);
-            if (list) list.push(i); else this.map.set(k, [i]);
+        this.inv = 1 / cell;
+        let size = 16;
+        while (size < n * 2) size <<= 1;
+        this.mask = size - 1;
+        const bucket = new Int32Array(n), start = new Int32Array(size + 1);
+        for (let i = 0; i < n; i++) {
+            bucket[i] = this.hash(Math.floor(X[i * 3] * this.inv), Math.floor(X[i * 3 + 1] * this.inv), Math.floor(X[i * 3 + 2] * this.inv));
+            start[bucket[i] + 1]++;
         }
+        for (let b = 0; b < size; b++) start[b + 1] += start[b];
+        const order = new Int32Array(n), fill = start.slice(0, size);
+        for (let i = 0; i < n; i++) order[fill[bucket[i]]++] = i;
+        this.start = start;
+        this.order = order;
     }
-    key(x, y, z) { return (Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791)) >>> 0; }
-    find(p, r) {
-        const { X, cell } = this;
-        const x0 = Math.floor((p[0] - r) / cell), x1 = Math.floor((p[0] + r) / cell);
-        const y0 = Math.floor((p[1] - r) / cell), y1 = Math.floor((p[1] + r) / cell);
-        const z0 = Math.floor((p[2] - r) / cell), z1 = Math.floor((p[2] + r) / cell);
+    hash(x, y, z) { return ((Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791)) >>> 0) & this.mask; }
+    // calls visit(i) for the points of the cells around p within r (may repeat, may include points farther away);
+    // stops when it returns true
+    near(p, r, visit) {
+        const { inv } = this;
+        const x0 = Math.floor((p[0] - r) * inv), x1 = Math.floor((p[0] + r) * inv);
+        const y0 = Math.floor((p[1] - r) * inv), y1 = Math.floor((p[1] + r) * inv);
+        const z0 = Math.floor((p[2] - r) * inv), z1 = Math.floor((p[2] + r) * inv);
         for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) {
-            for (const i of this.map.get(this.key(x, y, z)) || []) {
-                if (Math.hypot(X[i * 3] - p[0], X[i * 3 + 1] - p[1], X[i * 3 + 2] - p[2]) <= r) return i;
+            const h = this.hash(x, y, z);
+            for (let k = this.start[h]; k < this.start[h + 1]; k++) if (visit(this.order[k])) return true;
+        }
+        return false;
+    }
+    find(p, r) {
+        const { X, inv, start, order } = this, r2 = r * r;
+        const x0 = Math.floor((p[0] - r) * inv), x1 = Math.floor((p[0] + r) * inv);
+        const y0 = Math.floor((p[1] - r) * inv), y1 = Math.floor((p[1] + r) * inv);
+        const z0 = Math.floor((p[2] - r) * inv), z1 = Math.floor((p[2] + r) * inv);
+        for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) {
+            const h = this.hash(x, y, z);
+            for (let k = start[h]; k < start[h + 1]; k++) {
+                const i = order[k], dx = X[i * 3] - p[0], dy = X[i * 3 + 1] - p[1], dz = X[i * 3 + 2] - p[2];
+                if (dx * dx + dy * dy + dz * dz <= r2) return i;
             }
         }
         return -1;

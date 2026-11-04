@@ -19,7 +19,8 @@ Drop a CAD model, a mesh, a BIM file or a Gaussian splat into the window and get
 - **Path tracing in real time (WebGPU)** – fast preview while you orbit, physically based rendering with AI denoising as soon as the camera stands still.
 - **Opens almost anything**
   - **STEP** via a custom CAD kernel: assemblies, colours, instancing, adjustable tessellation quality
-  - **glTF/GLB, FBX, STL, PLY**, **OBJ** (own reader for files of hundreds of MB, MTL materials)
+  - **glTF/GLB, FBX, PLY**, **OBJ** (own reader for files of hundreds of MB, MTL materials)
+  - **STL** split into its parts on all CPU cores: identical parts instanced, facet colours as materials
   - **MAX (.max)** via an own reader: Editable Mesh/Poly, primitives, text and splines, common modifiers (Extrude, Shell, Bend, FFD, TurboSmooth …), instances, Physical Materials
   - **C4D (.c4d)** via an own reader: polygon objects with UVs and phong smoothing, joints and weights (skinning), keyframe animation, materials with colour and normal maps
   - **Blender (.blend)** via an own reader on the file's self-description: meshes, Principled BSDF materials with packed textures, cameras (modifiers not evaluated)

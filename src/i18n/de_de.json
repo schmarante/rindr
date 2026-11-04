@@ -25,6 +25,12 @@
             "estimating": "Modellgröße wird abgeschätzt …",
             "matching": "Erkenne gleiche Teile …"
         },
+        "stl": {
+            "analyzing": "Analysiere STL...",
+            "joining": "Verbinde Teile...",
+            "building": "Baue Teile...",
+            "part": "Teil {number}"
+        },
         "3mf": {
             "not3mf": "Keine gültige 3MF-Datei"
         },
@@ -81,6 +87,7 @@
             "unnamedMaterial": "Material {number}",
             "defaultMaterial": "Standard",
             "vertexColorMaterial": "Vertex-Farben",
+            "colorMaterial": "Farbe {color}",
             "unnamedMesh": "Mesh"
         }
     },

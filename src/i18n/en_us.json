@@ -25,6 +25,12 @@
             "estimating": "Estimating model size …",
             "matching": "Finding identical parts …"
         },
+        "stl": {
+            "analyzing": "Analysing STL...",
+            "joining": "Joining parts...",
+            "building": "Building parts...",
+            "part": "Part {number}"
+        },
         "3mf": {
             "not3mf": "Not a valid 3MF file"
         },
@@ -81,6 +87,7 @@
             "unnamedMaterial": "Material {number}",
             "defaultMaterial": "Default",
             "vertexColorMaterial": "Vertex colours",
+            "colorMaterial": "Colour {color}",
             "unnamedMesh": "Mesh"
         }
     },

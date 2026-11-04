@@ -7,7 +7,8 @@
 // 3MF in the unit of its model part.
 // Materials become separate entries (source 'import') in the MaterialManager, textures are kept.
 import * as THREE from 'three/webgpu';
-import { boxProject, buildGeometryBVHs, orientTrianglesIsolated, UV_TILE } from './step-importer.js';
+import { boxProject, buildGeometryBVHs, importPool, readStepFile, releaseImportPool, UV_TILE } from './step-importer.js';
+import { importStlParts, stlLayout, colorOfCode } from './stl/stl-import.js';
 import { isBinaryFbx } from './fbx/fbx-parse.js';
 import { isCompoundFile } from './max/max-parse.js';
 import { isC4dFile } from './c4d/c4d-parse.js';
@@ -54,11 +55,15 @@ const baseName = path => path.split(/[\\/]/).pop().toLowerCase();
 /**
  * @param {{ name: string, main: Blob, files: {path: string, file: Blob}[], baseUrl?: string }} source
  *   main = main file, files = all supplied files (textures, .bin), baseUrl = fallback for relative paths
- * @param {{ renderer, materialManager, onStatus?, bvh?: boolean, checkSize?: (info) => Promise<boolean> }} options
+ * @param {{ renderer, materialManager, onStatus?, bvh?: boolean, checkSize?: (info) => Promise<boolean>, onLarge?: () => void,
+ *   largeAbove?: number }} options
  *   checkSize({ name, triangles }): asked once the triangle count is known, before the BVHs and the GPU upload
+ *   onLarge(): STL – the triangles that need memory (copies counted once) exceed largeAbove (viewer: opens in Basic)
+ *   limit: STL – the triangles above which checkSize asks (parts certainly needed are built before the copies are known)
+ *   onNodes(nodes), onSolid(meshes, geometries): STL – streaming of finished parts (as tessellateStep's onPlan / onSolid)
  *   (the memory-heavy part) – false = cancel (AbortError)
  */
-export async function importMeshFile(source, { renderer, materialManager, onStatus = () => {}, bvh = false, checkSize = null }) {
+export async function importMeshFile(source, { renderer, materialManager, onStatus = () => {}, bvh = false, checkSize = null, limit, onLarge = null, largeAbove = 0, onNodes = null, onSolid = null }) {
     const t0 = performance.now();
     const ext = extOf(source.name);
     if (ext === 'ifc' || ext === 'ifczip') return (await import('./ifc/ifc-importer.js')).importIfc(source, { materialManager, onStatus, bvh });
@@ -97,6 +102,8 @@ export async function importMeshFile(source, { renderer, materialManager, onStat
             }
         }
     }
+    // STL: in parts on all workers (stl/) – size check, BVHs and tangents done there
+    if (ext === 'stl') ({ result, missing } = await importStl(source, { materialManager, onStatus, bvh, checkSize, limit, onLarge, largeAbove, onNodes, onSolid }));
     if (!result) {
         const loaded = await load(source, ext, renderer, onStatus, buffer);
         missing = loaded.missing;
@@ -135,13 +142,13 @@ export async function importMeshFile(source, { renderer, materialManager, onStat
     }
     if (missing.size) console.warn('[Import] Files not found:', [...missing]);
     if (!result.meshes.length) throw new Error(t('import.mesh.noFaces'));
-    if (checkSize) {
+    if (checkSize && !result.prepared) {
         let triangles = 0;
         for (const g of result.geometries) triangles += g.index.length / 3;
         if (!await checkSize({ name: source.name, triangles })) throw new DOMException('Import cancelled', 'AbortError');
     }
     const t1 = performance.now();
-    if (bvh) await buildGeometryBVHs(result.geometries, onStatus);
+    if (bvh && !result.prepared) await buildGeometryBVHs(result.geometries, onStatus);
     let triangles = 0;
     for (const g of result.geometries) triangles += g.index.length / 3;
     result.stats = {
@@ -233,31 +240,7 @@ async function load(source, ext, renderer, onStatus = () => {}, preloaded = null
         // dropped .gltf: check the external buffers first (GLTFLoader would fail with an unclear error)
         if (ext === 'gltf' && !source.baseUrl) checkGltfFiles(buffer, byPath, byName);
         let object, scale;
-        if (ext === 'stl') {
-            // STL: one triangle soup, no units (by convention mm), no materials, no up axis (guessed:
-            // meshUpAxis). The facet normals would look faceted: dropped, computeNormals smooths across
-            // shared positions with a 30° crease angle (like FBX/glTF without normals)
-            const geometry = new STLLoader().parse(normalizeStl(buffer));
-            geometry.deleteAttribute('normal');
-            // colour per facet (binary STL of some programs – STLLoader: linear, the same at the 3 corners)
-            const stlColors = geometry.hasColors && geometry.getAttribute('color') ? true : false;
-            if (!stlColors && geometry.getAttribute('color')) geometry.deleteAttribute('color');
-            if (dropBrokenTriangles(geometry) === 0) throw new Error(t('import.mesh.noFaces'));
-            // panels facing inwards (open sheets with the wrong side, inside-out bodies): mesh-orient.js
-            const pos = geometry.getAttribute('position');
-            if (pos.count >= 3) {
-                onStatus(t('import.mesh.orienting'));
-                const r = await orientTrianglesIsolated(pos.array);
-                geometry.setAttribute('position', new THREE.BufferAttribute(r.positions, 3));
-                debugLog('[STL] orientation:', r.stats);
-            }
-            const mesh = new THREE.Mesh(geometry, stlColors ? VERTEX_COLOR_MATERIAL : DEFAULT_MATERIAL);
-            mesh.name = source.name.replace(/\.[^.]+$/, '');
-            if (meshUpAxis(geometry, new TextDecoder().decode(new Uint8Array(buffer, 0, Math.min(80, buffer.byteLength)))) === 'z') mesh.rotation.x = -Math.PI / 2;
-            object = new THREE.Group();
-            object.add(mesh);
-            scale = 1;
-        } else if (ext === 'ply') {
+        if (ext === 'ply') {
             // PLY mesh (scanner/photogrammetry; Gaussian splat PLYs go to splat/ instead): like STL – mm, no
             // materials (colours per vertex → a white material that shows them), Z up → Y up; normals from the file if
             // present
@@ -265,7 +248,8 @@ async function load(source, ext, renderer, onStatus = () => {}, preloaded = null
             if (!geometry.index) throw new Error(t('import.mesh.noFaces'));   // point cloud without faces
             const mesh = new THREE.Mesh(geometry, geometry.getAttribute('color') ? VERTEX_COLOR_MATERIAL : DEFAULT_MATERIAL);
             mesh.name = source.name.replace(/\.[^.]+$/, '');
-            if (meshUpAxis(geometry, '') === 'z') mesh.rotation.x = -Math.PI / 2;
+            geometry.computeBoundingBox();
+            if (meshUpAxis(geometry.boundingBox, '') === 'z') mesh.rotation.x = -Math.PI / 2;
             object = new THREE.Group();
             object.add(mesh);
             scale = 1;
@@ -401,27 +385,80 @@ export function normalizeStl(buffer) {
     return fixed;
 }
 
-/** Removes triangles with non-finite coordinates (NaN/Infinity from damaged files would break the bounds). Returns the triangle count. */
-function dropBrokenTriangles(geometry) {
-    const src = geometry.getAttribute('position').array;
-    const col = geometry.getAttribute('color')?.array ?? null;   // colours per facet go along
-    let n = 0;
-    const out = new Float32Array(src.length), outCol = col ? new Float32Array(col.length) : null;
-    for (let i = 0; i + 9 <= src.length; i += 9) {
-        let ok = true;
-        for (let k = 0; k < 9; k++) if (!Number.isFinite(src[i + k])) { ok = false; break; }
-        if (ok) {
-            out.set(src.subarray(i, i + 9), n * 9);
-            if (outCol) outCol.set(col.subarray(i, i + 9), n * 9);
-            n++;
-        }
+// STL in parts on all workers (stl/stl-import.js): binary files are read by the workers directly (with cross-origin
+// isolation from one SharedArrayBuffer), text files through three's STLLoader (rare and small). Result in the common
+// structure: one node per part ("Part n" below the file's node; a single part is the file's node itself, as before),
+// copies use the first part's geometries with an alignment matrix, one material per facet colour ("Colour #RRGGBB",
+// replaceable like every import material), without colours the default material. mm, up axis guessed (meshUpAxis).
+// Streaming like STEP: onNodes(nodes) once the parts are known, onSolid(meshes, geometries) for every finished part and
+// its copies (viewer: in the scene at once, the camera follows); the result repeats them with the same keys.
+async function importStl(source, { materialManager, onStatus, bvh, checkSize, limit, onLarge, largeAbove, onNodes, onSolid }) {
+    const blob = source.main;
+    const layout = stlLayout(new Uint8Array(await blob.slice(0, 1024).arrayBuffer()), blob.size);
+    const shared = !!self.crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined';
+    let input;
+    if (layout.kind === 'text') {
+        const { STLLoader } = await loadLibs();
+        const geometry = new STLLoader().parse(normalizeStl(await blob.arrayBuffer()));
+        input = { positions: geometry.getAttribute('position').array };
+    } else {
+        onStatus(t('import.mesh.reading', { name: source.name }));
+        const bytes = shared ? await readStepFile(blob) : new Uint8Array(await blob.arrayBuffer());
+        input = { bytes, count: layout.count, colors: layout.colors };
     }
-    if (n * 9 !== src.length) {
-        console.warn(`[STL] dropped ${src.length / 9 - n} triangles with invalid coordinates`);
-        geometry.setAttribute('position', new THREE.BufferAttribute(out.slice(0, n * 9), 3));
-        if (outCol) geometry.setAttribute('color', new THREE.BufferAttribute(outCol.slice(0, n * 9), 3));
+    if (!(input.positions?.length || input.count)) throw new Error(t('import.mesh.noFaces'));
+
+    // nodes, up axis and materials – set up once the parts are known (onPlan), used for the streamed and the final meshes
+    const name = source.name.replace(/\.[^.]+$/, '');
+    const materialId = materialIdFactory(materialManager, 1, source.name);
+    const colorMaterials = new Map();   // #RRGGBB → source material
+    const materialOf = code => {
+        const rgb = colorOfCode(code, layout.defaultRgb);
+        if (!rgb) return materialId(DEFAULT_MATERIAL);
+        const color = new THREE.Color().setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace);
+        const hex = '#' + color.getHexString(THREE.SRGBColorSpace).toUpperCase();
+        if (!colorMaterials.has(hex)) colorMaterials.set(hex, new THREE.MeshStandardMaterial({ name: t('import.mesh.colorMaterial', { color: hex }), color, roughness: 0.6 }));
+        return materialId(colorMaterials.get(hex));
+    };
+    let nodes = null, single = false, upMatrix = null;
+    const plan = ({ count, box: b }) => {
+        const up = meshUpAxis({ min: { y: b[1], z: b[2] }, max: { y: b[4], z: b[5] } }, layout.header || '');
+        upMatrix = up === 'z' ? new THREE.Matrix4().makeRotationX(-Math.PI / 2) : new THREE.Matrix4();
+        single = count === 1;
+        nodes = [{ name: '', parent: -1 }, { name, parent: 0 }];
+        if (!single) for (let i = 0; i < count; i++) nodes.push({ name: t('import.stl.part', { number: i + 1 }), parent: 1 });
+        onNodes?.(nodes);
+    };
+    const m = new THREE.Matrix4(), a = new THREE.Matrix4();
+    const meshesOf = (i, p, geometries) => {
+        const node = single ? 1 : 2 + i;
+        m.copy(upMatrix);
+        if (p.align) m.multiply(a.fromArray(p.align));
+        const matrix = m.toArray();
+        return p.geometries.map(({ code, gi }) => {
+            geometries[gi].name ??= nodes[node].name;
+            // key: a single-colour single part keeps the key of the one mesh before (scene states)
+            return { geometry: gi, matrix, materialId: materialOf(code), name: nodes[node].name, node, instance: i,
+                key: single && p.geometries.length === 1 ? '0/all' : `${i}/${code}` };
+        });
+    };
+
+    const STEPS = { analyzing: 'import.stl.analyzing', joining: 'import.stl.joining', orienting: 'import.mesh.orienting', matching: 'import.step.matching', building: 'import.stl.building' };
+    let r;
+    try {
+        r = await importStlParts(input, {
+            pool: importPool(blob.size, shared), shared: shared && input.bytes?.buffer instanceof SharedArrayBuffer, bvh, onLarge, largeAbove,
+            status: (step, fraction) => onStatus(t(STEPS[step]), fraction ?? undefined),
+            checkSize: checkSize ? triangles => checkSize({ name: source.name, triangles }) : null, limit,
+            onPlan: plan,
+            onParts: onSolid ? (list, geometries) => onSolid(list.flatMap(p => meshesOf(p.index, p, geometries)), geometries) : null,
+        });
+    } finally {
+        releaseImportPool();
     }
-    return n;
+    if (!r.parts.length) throw new Error(t('import.mesh.noFaces'));
+    const meshes = r.parts.flatMap((p, i) => meshesOf(i, p, r.geometries));
+    return { result: { nodes, geometries: r.geometries, meshes, cameras: [], lights: [], animation: null, prepared: true, stl: r.stats }, missing: new Set() };
 }
 
 /**
@@ -431,14 +468,13 @@ function dropBrokenTriangles(geometry) {
  * (cars, CAD assemblies: centred sideways). Undecided → Z (most STLs). Override: ?upAxis=y|z.
  * Example car STL: y 0 … 1257, z −1010 … 1010 → Y (lay on its side with the old fixed Z).
  */
-function meshUpAxis(geometry, header) {
+function meshUpAxis(box, header) {
     const forced = new URLSearchParams(globalThis.location?.search || '').get('upAxis');
     let up = 'z', reason = 'default';
     if (forced === 'y' || forced === 'z') { up = forced; reason = '?upAxis'; }
     else if (/solid\s*works/i.test(header)) { up = 'y'; reason = 'SolidWorks'; }
     else {
-        geometry.computeBoundingBox();
-        const { min, max } = geometry.boundingBox;
+        const { min, max } = box;
         const ext = { y: max.y - min.y, z: max.z - min.z };
         const onFloor = a => ext[a] > 0 && Math.abs(min[a]) <= 0.02 * ext[a];
         const centred = a => ext[a] > 0 && Math.abs(min[a] + max[a]) <= 0.02 * ext[a];

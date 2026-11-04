@@ -12,7 +12,7 @@
 //   {type:'bvh', positions, index, shape}  -> build BVH (three-mesh-bvh, SAH) for one geometry;
 //                                             shape: true → also its fingerprint (shape-match.js, instancing)
 //   {type:'trim'}                          -> clear all caches (after the import, saves memory)
-//   {type:'orient', positions}             -> STL: outward orientation repaired in place (mesh-orient.js)
+//   {type:'stl:…'}                         -> STL in parts (stl/stl-jobs.js: chunks, join, orientation, copies, geometries)
 
 import { buildIndex, indexFromParts, scanEntities, resyncEntity, findData, StepFile } from './parser.js';
 import { buildPlan, analyzeSolids, INDEX_TYPES } from './structure.js';
@@ -21,7 +21,7 @@ import { Tessellator, boundaryEdges } from './tessellate.js';
 import { BufferAttribute, BufferGeometry } from 'three';
 import { MeshBVH, SAH } from 'three-mesh-bvh';
 import { analyzeShape } from '../shape-match.js';
-import { orientTriangles } from '../mesh-orient.js';
+import { stlJob } from '../stl/stl-jobs.js';
 
 let tess = null;
 
@@ -147,9 +147,9 @@ self.onmessage = e => {
             tessellateFaces(m);
         } else if (m.type === 'bvh') {
             buildBVH(m);
-        } else if (m.type === 'orient') {
-            const stats = orientTriangles(m.positions);
-            self.postMessage({ type: 'orient', positions: m.positions, stats }, [m.positions.buffer]);
+        } else if (m.type.startsWith('stl:')) {
+            const { reply, transfer } = stlJob(m);
+            self.postMessage(reply, transfer);
         } else if (m.type === 'trim') {
             trimCaches(true);
             self.postMessage({ type: 'trim' });

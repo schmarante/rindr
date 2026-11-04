@@ -5156,7 +5156,8 @@ async function loadModel(reload = false, safe = false) {
         let plan = null, usedQualities = [];
         const result = model.type === 'step'
             ? await tessellateWithLimits()
-            : await importMeshFile(model, { renderer, materialManager, onStatus: showProgress, bvh: pathTracing.supported, checkSize: confirmLargeModel });
+            : await importMeshFile(model, { renderer, materialManager, onStatus: showProgress, bvh: pathTracing.supported, checkSize: confirmLargeModel,
+                onLarge: basicForSize, largeAbove: importLimits().budget, limit: importLimits().limit, onNodes: setupNodes, onSolid });
         const { geometries, meshes, nodes, missing } = result;
         root.userData.bim = result.bim || null;   // IFC: property lookups (worker stays open, closed in disposeRoot)
         root.userData.ifcOrigin = result.bim?.origin || null;   // IFC: shift to the origin (metres) – alignment, BCF
