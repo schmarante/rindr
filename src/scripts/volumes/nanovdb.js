@@ -1,6 +1,6 @@
 // NanoVDB files (the GPU-friendly, linearised form of OpenVDB grids – pbrt's "nanovdb" media, density/temperature of
-// smoke, clouds and fire) → dense grids. Own reader after the published format (NanoVDB 32.x, float grids); pure
-// functions, run in the import worker.
+// smoke, clouds and fire) → VDB grid sources (vdb-import.js). Own reader after the published format (NanoVDB 32.x,
+// float grids); pure functions, run in a worker.
 //
 // File: segments of { header "NanoVDB0" + version + grid count + codec (0 none, 1 zlib), per grid meta data (176 bytes)
 // + name, then the grid (zlib: int64 compressed size + stream) }. Grid: GridData (672 bytes: index → world map,
@@ -17,6 +17,7 @@ const internalSize = log2dim => {                // InternalData<float>: bbox (2
     return { n, mask, table: Math.ceil(head / 32) * 32, size: Math.ceil(head / 32) * 32 + 8 * n };
 };
 const LOWER = internalSize(4), UPPER = internalSize(5);
+const ROOT_BACKGROUND = 28;                      // RootData<float>: bbox (24) + table size (4), then the background value
 const GRID_TYPE_FLOAT = 1;
 
 /**
@@ -62,107 +63,43 @@ export function readNanoVdb(bytes, unzlib) {
 }
 
 /**
- * Dense samples of a float grid over an index box (default: its own), every `factor`-th voxel averaged (box filter) –
- * factor chosen so that at most maxVoxels remain. Inactive voxels count as 0 (fog volumes: the background).
- * @param {{ min: number[], max: number[] }} [box]  index box (inclusive) – e.g. the union with a second grid
- * @returns {{ dims: number[], factor, min: number[], data: Float32Array, max: number }}
+ * A float grid as a VDB grid source (vdb-import.js): its leaves (8³ values + activity mask, x-major: n = x·64 + y·8 + z,
+ * origin = bbox min rounded down to the leaf) and the active tiles of its internal nodes (a value over a whole child:
+ * lower 8³, upper 128³) straight from the node arrays.
  */
-export function denseGrid(g, maxVoxels, box = null) {
-    if (g.gridType !== GRID_TYPE_FLOAT) throw new Error(`NanoVDB grid "${g.name}": only float grids (type ${g.gridType})`);
-    const lo = box?.min ?? g.indexMin, hi = box?.max ?? g.indexMax;
-    const ext = [0, 1, 2].map(i => hi[i] - lo[i] + 1);
-    const factor = Math.max(1, Math.ceil(Math.cbrt(ext[0] * ext[1] * ext[2] / maxVoxels)));
-    const dims = ext.map(e => Math.ceil(e / factor));
-    const data = new Float32Array(dims[0] * dims[1] * dims[2]);
-    const w = 1 / factor ** 3, [mx, my, mz] = lo;
-    const add = (x, y, z, v) => {
-        const i = Math.floor((x - mx) / factor), j = Math.floor((y - my) / factor), k = Math.floor((z - mz) / factor);
-        if (i < 0 || j < 0 || k < 0 || i >= dims[0] || j >= dims[1] || k >= dims[2]) return;
-        data[(k * dims[1] + j) * dims[0] + i] += v * w;
-    };
+export function nanoSource(g) {
+    if (g.gridType !== GRID_TYPE_FLOAT) return { name: g.name, unsupported: `NanoVDB grid type ${g.gridType}` };
     const v = g.view, tree = GRID_DATA;
     const offset = n => tree + Number(v.getBigUint64(tree + 8 * n, true));
     const counts = [0, 1, 2].map(n => v.getUint32(tree + 32 + 4 * n, true));
-    // leaves: 8³ values, x-major (index n = x·64 + y·8 + z), origin = bbox min rounded down to the leaf
-    for (let l = 0, base = offset(0); l < counts[0]; l++, base += LEAF_SIZE) {
-        const ox = v.getInt32(base, true) & ~7, oy = v.getInt32(base + 4, true) & ~7, oz = v.getInt32(base + 8, true) & ~7;
-        for (let n = 0; n < 512; n++) {
-            if (!(v.getUint8(base + 16 + (n >> 3)) & (1 << (n & 7)))) continue;   // inactive: background
-            const val = v.getFloat32(base + 96 + 4 * n, true);
-            if (val !== 0) add(ox + (n >> 6), oy + ((n >> 3) & 7), oz + (n & 7), val);
-        }
-    }
-    // active tiles of the internal nodes: a value over a whole child (lower: 8³, upper: 128³)
-    const tiles = (level, info, childDim) => {
-        const log = info === LOWER ? 4 : 5, nodeDim = childDim << log;
-        for (let c = 0, base = offset(level); c < counts[level]; c++, base += info.size) {
-            const ox = Math.floor(v.getInt32(base, true) / nodeDim) * nodeDim, oy = Math.floor(v.getInt32(base + 4, true) / nodeDim) * nodeDim, oz = Math.floor(v.getInt32(base + 8, true) / nodeDim) * nodeDim;
-            const valueMask = base + 32, childMask = base + 32 + info.mask;
-            for (let n = 0; n < info.n; n++) {
-                const byte = n >> 3, bit = 1 << (n & 7);
-                if (!(v.getUint8(valueMask + byte) & bit) || (v.getUint8(childMask + byte) & bit)) continue;
-                const val = v.getFloat32(base + info.table + 8 * n, true);
-                if (val === 0) continue;
-                const tx = ox + (n >> (2 * log)) * childDim, ty = oy + ((n >> log) & ((1 << log) - 1)) * childDim, tz = oz + (n & ((1 << log) - 1)) * childDim;
-                for (let x = 0; x < childDim; x++) for (let y = 0; y < childDim; y++) for (let z = 0; z < childDim; z++) add(tx + x, ty + y, tz + z, val);
+    // level sets: the inside counts too (inactive voxels and tiles hold −background there)
+    const levelSet = g.gridClass === 1, background = v.getFloat32(offset(3) + ROOT_BACKGROUND, true);
+    return {
+        name: g.name, gridClass: g.gridClass === 2 ? 'fog volume' : levelSet ? 'level set' : '', levelSet, background, matrix: g.matrix,
+        indexMin: g.indexMin, indexMax: g.indexMax, leafCount: counts[0],
+        forEachLeaf(cb) {
+            const values = new Float32Array(512), mask = new Uint32Array(16);
+            for (let l = 0, base = offset(0); l < counts[0]; l++, base += LEAF_SIZE) {
+                const origin = [v.getInt32(base, true) & ~7, v.getInt32(base + 4, true) & ~7, v.getInt32(base + 8, true) & ~7];
+                for (let w = 0; w < 16; w++) mask[w] = v.getUint32(base + 16 + 4 * w, true);
+                for (let n = 0; n < 512; n++) values[n] = levelSet || (mask[n >>> 5] >>> (n & 31)) & 1 ? v.getFloat32(base + 96 + 4 * n, true) : 0;
+                cb(origin, values, mask);
             }
-        }
+        },
+        forEachTile(cb) {
+            for (const [level, info, childDim] of [[1, LOWER, 8], [2, UPPER, 128]]) {
+                const log = info === LOWER ? 4 : 5, nodeDim = childDim << log;
+                for (let c = 0, base = offset(level); c < counts[level]; c++, base += info.size) {
+                    const o = [0, 1, 2].map(k => Math.floor(v.getInt32(base + 4 * k, true) / nodeDim) * nodeDim);
+                    const valueMask = base + 32, childMask = base + 32 + info.mask;
+                    for (let n = 0; n < info.n; n++) {
+                        const byte = n >> 3, bit = 1 << (n & 7);
+                        if (v.getUint8(childMask + byte) & bit) continue;
+                        const active = v.getUint8(valueMask + byte) & bit, val = v.getFloat32(base + info.table + 8 * n, true);
+                        if ((active && val !== 0) || (levelSet && val < 0)) cb([o[0] + (n >> (2 * log)) * childDim, o[1] + ((n >> log) & ((1 << log) - 1)) * childDim, o[2] + (n & ((1 << log) - 1)) * childDim], childDim, val);
+                    }
+                }
+            }
+        },
     };
-    tiles(1, LOWER, 8);
-    tiles(2, UPPER, 128);
-    let max = 0;
-    for (let i = 0; i < data.length; i++) if (data[i] > max) max = data[i];
-    return { dims, factor, min: lo.slice(), data, max };
-}
-
-/** A dense grid (x fastest) reduced by an integer factor (box average) to at most maxVoxels */
-export function reduceDense(data, dims, maxVoxels) {
-    const factor = Math.max(1, Math.ceil(Math.cbrt(dims[0] * dims[1] * dims[2] / maxVoxels)));
-    if (factor === 1) {
-        let max = 0;
-        for (let i = 0; i < data.length; i++) if (data[i] > max) max = data[i];
-        return { dims: dims.slice(), factor, data, max };
-    }
-    const out = dims.map(d => Math.ceil(d / factor));
-    const res = new Float32Array(out[0] * out[1] * out[2]), w = 1 / factor ** 3;
-    for (let z = 0; z < dims[2]; z++) for (let y = 0; y < dims[1]; y++) for (let x = 0; x < dims[0]; x++) {
-        res[(Math.floor(z / factor) * out[1] + Math.floor(y / factor)) * out[0] + Math.floor(x / factor)] += data[(z * dims[1] + y) * dims[0] + x] * w;
-    }
-    let max = 0;
-    for (let i = 0; i < res.length; i++) if (res[i] > max) max = res[i];
-    return { dims: out, factor, data: res, max };
-}
-
-/**
- * For the GPU: values / max as bytes (rounded up where the value is not 0 – thin smoke stays) and per block of
- * BLOCK³ samples its largest byte (the majorant the volume walk jumps empty space with).
- */
-export const BLOCK = 8;
-export function quantize(dense) {
-    const { dims, data, max } = dense;
-    const bytes = new Uint8Array(data.length);
-    const k = max > 0 ? 255 / max : 0;
-    for (let i = 0; i < data.length; i++) bytes[i] = data[i] > 0 ? Math.min(255, Math.max(1, Math.round(data[i] * k))) : 0;
-    const bd = dims.map(d => Math.ceil(d / BLOCK));
-    const blocks = new Uint8Array(bd[0] * bd[1] * bd[2]);
-    for (let z = 0; z < dims[2]; z++) for (let y = 0; y < dims[1]; y++) {
-        const row = (z * dims[1] + y) * dims[0], brow = (Math.floor(z / BLOCK) * bd[1] + Math.floor(y / BLOCK)) * bd[0];
-        for (let x = 0; x < dims[0]; x++) {
-            const b = brow + Math.floor(x / BLOCK), val = bytes[row + x];
-            if (val > blocks[b]) blocks[b] = val;
-        }
-    }
-    // trilinear filtering reaches one sample into the neighbour block: a block's majorant covers its neighbours' edges
-    const grown = blocks.slice();
-    for (let z = 0; z < bd[2]; z++) for (let y = 0; y < bd[1]; y++) for (let x = 0; x < bd[0]; x++) {
-        let m = 0;
-        for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-            const X = x + dx, Y = y + dy, Z = z + dz;
-            if (X < 0 || Y < 0 || Z < 0 || X >= bd[0] || Y >= bd[1] || Z >= bd[2]) continue;
-            const b = blocks[(Z * bd[1] + Y) * bd[0] + X];
-            if (b > m) m = b;
-        }
-        grown[(z * bd[1] + y) * bd[0] + x] = m;
-    }
-    return { bytes, blocks: grown, blockDims: bd };
 }

@@ -16,11 +16,16 @@ import { Fn, uniform, texture, texture3D, vec2, vec3, vec4, float, If, Loop, Bre
 import { MeshBVH } from 'three-mesh-bvh';
 import { DataUtils } from 'three/webgpu';
 import { hideInOverridePasses } from '../materials/override-hide.js';
+import { memoryBudget } from '../memory-budget.js';
 
 export const GRID_SLOTS = 2;                 // grid volumes at the same time
-export const GRID_BLOCK = 8;                 // samples per majorant block (volumes/nanovdb.js BLOCK)
+export const GRID_BLOCK = 8;                 // samples per majorant block (vdb-import.js BLOCK)
 export const GRID_EMISSION_STEPS = 32;       // entries of the emission table over the stored temperature
 const RASTER_STEPS = 96, RASTER_LIGHT_STEPS = 4;
+
+/** samples a grid volume may have on this device (vdb-import.js reduces finer grids): 4 % of the memory budget at 2
+ *  bytes per sample, 8–64 million */
+export const gridVoxelBudget = () => Math.min(Math.max(memoryBudget() * 0.04 / 2, 8e6), 64e6);
 
 function texture3DOf(data, w, h, d, format) {
     const t = new THREE.Data3DTexture(data, w, h, d);
@@ -64,7 +69,8 @@ function sampleGrid(m, local) {
     const u = local.x.add(0.5).mul(m.dims.x).div(GRID_ATLAS.x);
     const v = local.y.add(0.5).mul(m.dims.y).div(GRID_ATLAS.y);
     const w = clamp(local.z.add(0.5).mul(m.dims.z), 0.5, m.dims.z.sub(0.5)).add(m.offset.x).div(GRID_ATLAS.z);
-    return texture3D(GRID_TEXTURES.atlas, vec3(u, v, w)).rg;
+    const s = texture3D(GRID_TEXTURES.atlas, vec3(u, v, w)).rg;
+    return vec2(s.x.mul(s.x), s.y);   // density stored as its square root (vdb-import.js quantize)
 }
 function emissionAt(slot, t) {
     const x = t.mul(GRID_EMISSION_STEPS - 1);
@@ -152,8 +158,9 @@ function gridMaterial(slot) {
 }
 
 /**
- * The grid volumes of the loaded models. set(volumes, root): volumes as the importer delivers them (see pbrt-import.js
- * `result.volumes`), placed in `root`'s space.
+ * The grid volumes of the loaded models. set(volumes, root, holders): volumes as the importer delivers them (see
+ * pbrt-import.js `result.volumes`), each placed in its holder's space – its own Scene Graph node (`volume.node`, the
+ * model's node groups), else the model root. The holder moves, hides and explodes it like any object.
  */
 export class GridVolumeSystem {
     constructor(scene, renderer) {
@@ -170,22 +177,63 @@ export class GridVolumeSystem {
             mesh.matrixAutoUpdate = false;
             mesh.userData.gridVolumeProxy = true;
             this.group.add(mesh);
-            return { mesh, volume: null, root: null, local: new THREE.Matrix4() };
+            return { mesh, volume: null, root: null, holder: null, local: new THREE.Matrix4() };
         });
+        // outline of a volume box when its Scene Graph entry is hovered or selected (the highlighter outlines meshes only)
+        const edges = new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1));
+        this.outlines = this.slots.map(() => {
+            const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: OUTLINE_SELECT, depthTest: false, transparent: true }));
+            line.visible = false;
+            line.renderOrder = 11;
+            line.matrixAutoUpdate = false;
+            line.frustumCulled = false;
+            line.userData.gridVolumeProxy = true;
+            this.group.add(line);
+            return line;
+        });
+        this._outlined = [null, null];   // selected, hovered object
         hideInOverridePasses(renderer, this.group, { keepPlain: true });
         this.onChange = null;   // proxies appeared/disappeared (path tracer: scene, materials)
     }
 
     get active() { return this.slots.some(s => s.volume); }
 
+    /** the volumes placed in an object (a model root, a node – its own or one above it) */
+    volumesOf(object) { return object ? this.slots.filter(s => s.volume && within(s.holder, object)).map(s => s.volume) : []; }
+
+    /** outline the boxes of the volumes in the selected / hovered object (highlight.js colours) */
+    outline(selected, hovered) {
+        this._outlined = [selected || null, hovered || null];
+    }
+
+    /** the media (σt, albedo, g, emission) again from the volumes – after their look changed (volume-look.js) */
+    restyle() {
+        const emission = GRID_TEXTURES.emission.image.data;
+        emission.fill(0);
+        this.slots.forEach((s, k) => { if (s.volume) this._style(k, s.volume, emission); });
+        GRID_TEXTURES.emission.needsUpdate = true;
+    }
+
+    _style(k, v, emission) {
+        const m = GRID_MEDIA[k];
+        m.params.value.x = v.sigma;
+        m.params.value.y = v.g;
+        m.params.value.z = v.emission ? 1 : 0;
+        m.albedo.value.x = v.albedo[0];
+        m.albedo.value.y = v.albedo[1];
+        m.albedo.value.z = v.albedo[2];
+        if (v.emission) for (let i = 0; i < GRID_EMISSION_STEPS; i++) for (let c = 0; c < 3; c++) emission[(k * GRID_EMISSION_STEPS + i) * 4 + c] = DataUtils.toHalfFloat(v.emission[3 * i + c]);
+    }
+
     /** the volumes of a model (replaces those of the same root; null/[] removes them) */
-    set(volumes, root) {
-        for (const s of this.slots) if (s.root === root || !root) { s.volume = null; s.root = null; }
+    set(volumes, root, holders = null) {
+        for (const s of this.slots) if (s.root === root || !root) { s.volume = null; s.root = null; s.holder = null; }
         for (const v of volumes || []) {
             const s = this.slots.find(x => !x.volume);
             if (!s) { console.warn(`Grid volumes: only ${GRID_SLOTS} at a time`); break; }
             s.volume = v;
             s.root = root;
+            s.holder = holders?.[v.node] || root;
             s.local.fromArray(v.matrix);
         }
         this._upload();
@@ -220,9 +268,9 @@ export class GridVolumeSystem {
             m.dims.value.set(nx, ny, nz);
             m.blockDims.value.set(bx, by, bzn);
             m.offset.value.set(z, bz, 0, 0);
-            m.params.value.set(v.sigma, v.g, v.emission ? 1 : 0, 1);
-            m.albedo.value.set(v.albedo[0], v.albedo[1], v.albedo[2], 1);
-            if (v.emission) for (let i = 0; i < GRID_EMISSION_STEPS; i++) for (let c = 0; c < 3; c++) emission[(k * GRID_EMISSION_STEPS + i) * 4 + c] = DataUtils.toHalfFloat(v.emission[3 * i + c]);
+            m.params.value.w = 1;
+            m.albedo.value.w = 1;
+            this._style(k, v, emission);
             z += nz;
             bz += bzn;
             s.mesh.visible = true;
@@ -242,16 +290,25 @@ export class GridVolumeSystem {
         }
         this.slots.forEach((s, k) => {
             const m = GRID_MEDIA[k];
+            const line = this.outlines[k];
+            line.visible = false;
             if (!s.volume) return;
-            let shown = !!s.root?.parent;
-            for (let o = s.root; o && shown; o = o.parent) shown = o.visible;
+            let shown = !!s.holder?.parent;
+            for (let o = s.holder; o && shown; o = o.parent) shown = o.visible;
             if (shown !== s.mesh.visible) { s.mesh.visible = shown; this.onChange?.(); }
             m.params.value.w = shown ? 1 : 0;
             m.albedo.value.w = shown ? 1 : 0;
             if (!shown) return;
-            s.root.updateWorldMatrix(true, false);
-            s.mesh.matrix.multiplyMatrices(s.root.matrixWorld, s.local);
+            s.holder.updateWorldMatrix(true, false);
+            s.mesh.matrix.multiplyMatrices(s.holder.matrixWorld, s.local);
             s.mesh.matrixWorld.copy(s.mesh.matrix);
+            const [selected, hovered] = this._outlined;
+            if (within(s.holder, hovered) || within(s.holder, selected)) {
+                line.material.color.setHex(within(s.holder, hovered) ? OUTLINE_HOVER : OUTLINE_SELECT);
+                line.matrix.copy(s.mesh.matrix);
+                line.matrixWorld.copy(s.mesh.matrix);
+                line.visible = true;
+            }
             m.inverse.value.copy(s.mesh.matrixWorld).invert();
             // camera inside the box: back faces (the front ones are behind it)
             if (light?.camera) {
@@ -264,3 +321,17 @@ export class GridVolumeSystem {
     }
 }
 const _p = new THREE.Vector3();
+const OUTLINE_SELECT = 0x38bdf8, OUTLINE_HOVER = 0xffab33;   // as highlight.js: sky-400, amber
+// object at or below `ancestor`
+function within(object, ancestor) {
+    if (!ancestor) return false;
+    for (let o = object; o; o = o.parent) if (o === ancestor) return true;
+    return false;
+}
+
+/** bounds of volumes in their model's space (their unit boxes through their matrices) */
+export function volumeBounds(volumes) {
+    const box = new THREE.Box3(), m = new THREE.Matrix4();
+    for (const v of volumes || []) box.union(new THREE.Box3(new THREE.Vector3(-0.5, -0.5, -0.5), new THREE.Vector3(0.5, 0.5, 0.5)).applyMatrix4(m.fromArray(v.matrix)));
+    return box;
+}

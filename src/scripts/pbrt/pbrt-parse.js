@@ -245,6 +245,10 @@ export async function parsePbrt(mainPath, read, { onProgress } = {}) {
     scene.materials.push({ type: 'diffuse', params: {}, name: '' });
     gs.material = 0;
     let pendingName = null;   // a name comment right before AttributeBegin
+    // parameters of the last directive read (the stored object): pbrt reads an included file as part of the token
+    // stream, so parameters right after `Include "file"` continue the included file's last directive (a scene sets a
+    // medium's σa/σs this way after including its grid)
+    let lastParams = null;
 
     const applyTransform = m => { if (activeStart) gs.ctm = mul(gs.ctm, m); };
     const withDefaults = (kind, params) => {
@@ -287,6 +291,7 @@ export async function parsePbrt(mainPath, read, { onProgress } = {}) {
             if (t === T_EOF) break;
             if (t !== T_WORD) { warn('unexpected token'); continue; }
             const d = tk.text();
+            lastParams = null;
             switch (d) {
                 case 'AttributeBegin': {
                     stack.push(gs);
@@ -343,7 +348,7 @@ export async function parsePbrt(mainPath, read, { onProgress } = {}) {
                 }
                 case 'Material': {
                     const type = str();
-                    scene.materials.push({ type, params: withDefaults('material', readParams(tk, warn)), name: '' });
+                    scene.materials.push({ type, params: lastParams = withDefaults('material', readParams(tk, warn)), name: '' });
                     gs.material = scene.materials.length - 1;
                     break;
                 }
@@ -355,6 +360,7 @@ export async function parsePbrt(mainPath, read, { onProgress } = {}) {
                     if (scene.namedMaterials.has(name)) warn(`material "${name}" defined twice`);
                     scene.materials.push({ type, params, name });
                     scene.namedMaterials.set(name, scene.materials.length - 1);
+                    lastParams = params;
                     break;
                 }
                 case 'NamedMaterial': gs.material = 'n:' + str(); break;
@@ -365,16 +371,17 @@ export async function parsePbrt(mainPath, read, { onProgress } = {}) {
                     if (!scene.textureByName[k]) { warn(`texture kind ${kind}`); break; }
                     scene.textures.push({ name, kind: k, type, params, ctm: gs.ctm });
                     scene.textureByName[k].set(name, scene.textures.length - 1);
+                    lastParams = params;
                     break;
                 }
                 case 'LightSource': {
                     const type = str();
-                    scene.lights.push({ type, params: withDefaults('light', readParams(tk, warn)), ctm: gs.ctm, name: gs.name });
+                    scene.lights.push({ type, params: lastParams = withDefaults('light', readParams(tk, warn)), ctm: gs.ctm, name: gs.name });
                     break;
                 }
                 case 'AreaLightSource': {
                     const type = str();
-                    gs.areaLight = { type, params: withDefaults('light', readParams(tk, warn)) };
+                    gs.areaLight = { type, params: lastParams = withDefaults('light', readParams(tk, warn)) };
                     break;
                 }
                 case 'Shape': {
@@ -383,6 +390,7 @@ export async function parsePbrt(mainPath, read, { onProgress } = {}) {
                     const shape = { type, params, ctm: gs.ctm, reverse: gs.reverse, material: gs.material, areaLight: gs.areaLight, name: gs.name, file: path, object: object ? object.index : -1, media: gs.media };
                     scene.shapes.push(shape);
                     if (object) object.shapes.push(scene.shapes.length - 1);
+                    lastParams = params;
                     break;
                 }
                 case 'ObjectBegin': {
@@ -417,12 +425,14 @@ export async function parsePbrt(mainPath, read, { onProgress } = {}) {
                     const name = str();
                     const params = withDefaults('medium', readParams(tk, warn));
                     scene.media[name] = { type: params.type?.v?.[0] ?? '', params, ctm: gs.ctm };   // medium space = the transform here
+                    lastParams = params;
                     break;
                 }
                 case 'Include':
                 case 'Import': {
                     const file = str();
                     await parseFile(resolvePath(path, file, mainPath), depth + 1);
+                    if (tk.peek() === T_STRING && lastParams) Object.assign(lastParams, readParams(tk, warn));   // continues its last directive
                     break;
                 }
                 default:

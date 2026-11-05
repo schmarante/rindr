@@ -10,7 +10,8 @@ const atlasNode = texture3D(GRID_TEXTURES.atlas);
 const blocksNode = texture3D(GRID_TEXTURES.blocks);
 const emissionNode = texture(GRID_TEXTURES.emission);
 
-// density / maximum (x) and temperature / maximum (y) at lo; dims = sample counts, z0 = the volume's first atlas layer
+// density / maximum (x – stored as its square root, vdb-import.js quantize) and temperature / maximum (y) at lo;
+// dims = sample counts, z0 = the volume's first atlas layer
 const SAMPLE = wgslTagFn/* wgsl */`
     fn rindrGridSample( lo: vec3f, dims: vec3f, z0: f32 ) -> vec2f {
 
@@ -18,7 +19,8 @@ const SAMPLE = wgslTagFn/* wgsl */`
         let u = ( lo.x + 0.5 ) * dims.x / atlas.x;
         let v = ( lo.y + 0.5 ) * dims.y / atlas.y;
         let w = ( clamp( ( lo.z + 0.5 ) * dims.z, 0.5, dims.z - 0.5 ) + z0 ) / atlas.z;
-        return textureSampleLevel( ${ atlasNode }, ${ sampler(atlasNode) }, vec3f( u, v, w ), 0.0 ).rg;
+        let s = textureSampleLevel( ${ atlasNode }, ${ sampler(atlasNode) }, vec3f( u, v, w ), 0.0 ).rg;
+        return vec2f( s.x * s.x, s.y );
 
     }
 `;
@@ -28,7 +30,8 @@ const BLOCK = wgslTagFn/* wgsl */`
     fn rindrGridBlock( lo: vec3f, dims: vec3f, blockDims: vec3f, bz0: f32 ) -> f32 {
 
         let b = clamp( floor( ( lo + vec3f( 0.5 ) ) * dims / ${ f(GRID_BLOCK) } ), vec3f( 0.0 ), blockDims - vec3f( 1.0 ) );
-        return textureLoad( ${ blocksNode }, vec3i( i32( b.x ), i32( b.y ), i32( b.z + bz0 ) ), 0 ).r;
+        let m = textureLoad( ${ blocksNode }, vec3i( i32( b.x ), i32( b.y ), i32( b.z + bz0 ) ), 0 ).r;
+        return m * m;
 
     }
 `;

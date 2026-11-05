@@ -179,6 +179,40 @@ export class MaterialManager extends EventTarget {
         return entry;
     }
 
+    /**
+     * Material creation for one import: identical materials whose names differ only in a copy suffix (".10", ".001",
+     * " (2)" – exporters number every copy of a material) become one, named without the suffix. Identical = same
+     * parameters, graph, render settings and textures (the same picture with the same mapping). Different names stay
+     * apart even when identical (they may mean different things – the panel's "merge duplicates" asks).
+     * @returns {(def: object) => string} create(def) → material id (silent, like create(def, { silent: true }))
+     */
+    importMaterials() {
+        const bySignature = new Map();
+        const pictures = new Map();   // picture (three Source / image) → number within this import
+        const textureKey = tex => {
+            if (!tex?.isTexture) return tex ?? null;
+            const picture = tex.source ?? tex.image ?? tex;
+            if (!pictures.has(picture)) pictures.set(picture, pictures.size);
+            return [pictures.get(picture), tex.channel, tex.flipY, tex.colorSpace, tex.wrapS, tex.wrapT, tex.offset?.toArray(), tex.repeat?.toArray(), tex.rotation, tex.center?.toArray()];
+        };
+        return def => {
+            const base = baseMaterialName(def.name);
+            const { maps, ...renderRest } = def.render || {};
+            const textures = {};
+            for (const [key, tex] of Object.entries(maps || {})) textures[key] = textureKey(tex);
+            const signature = stableJson({ name: base, params: def.params, graph: def.graph || null, render: renderRest, textures });
+            const known = bySignature.get(signature);
+            if (known) {
+                const entry = this.get(known);
+                if (entry && entry.def.name !== base) { entry.def.name = base; entry.material.name = base; }
+                return known;
+            }
+            const id = this.create(def, { silent: true }).def.id;
+            bySignature.set(signature, id);
+            return id;
+        };
+    }
+
     /** Dummy material for a STEP color (rgb 0..1) – only once per color */
     forStepColor(rgb) {
         const hex = rgb ? '#' + new THREE.Color().setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace).getHexString() : '#7a7a7a';
@@ -681,6 +715,12 @@ function defaults() {
 export { PARAM_BY_KEY };
 
 // JSON with sorted keys (parameter order must not matter)
+// name without an exporter's copy suffix: "Wood.001", "Wood.10", "Wood (2)" → "Wood" (a name of digits only stays)
+export function baseMaterialName(name) {
+    const base = String(name ?? '').replace(/(?:\.\d+| \(\d+\))$/, '');
+    return base.trim() ? base : String(name ?? '');
+}
+
 function stableJson(v) {
     if (Array.isArray(v)) return '[' + v.map(stableJson).join(',') + ']';
     if (v && typeof v === 'object') return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + stableJson(v[k])).join(',') + '}';

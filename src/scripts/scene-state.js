@@ -80,6 +80,7 @@ function modelState(rm, sceneGraph) {
         ...(rm.pose ? { pose: rm.pose } : {}),   // skeleton: bones posed by hand (an empty object = pose at import)
         ...(rm.poses ? { poses: rm.poses } : {}),   // skeleton: own poses of the pose list [{ name, values }]
         ...(rm.splatLook ? { splatLook: rm.splatLook } : {}),   // Gaussian splats: light (baked/surface/volume), override material
+        ...(rm.volumeLooks ? { volumes: rm.volumeLooks } : {}),   // grid volumes: density, colour, anisotropy, glow (volume-look.js)
     };
 }
 
@@ -119,6 +120,8 @@ export function applyModelState(ctx, rm, chunk, idMap, warnings) {
     ctx.setModelPoses?.(rm, chunk.poses || []);   // own poses (pose list)
     // Gaussian splats: their look (older scenes: the default of the loaded splats stays)
     if (chunk.splatLook) ctx.setSplatLook?.(chunk.splatLook);
+    // grid volumes (VDB, pbrt media): their look per volume
+    if (chunk.volumes) ctx.setVolumeLooks?.(rm, chunk.volumes);
     // placement (additional models)
     if (rm.holder && chunk.placement) { rm.holder.position.fromArray(chunk.placement); rm.holder.updateMatrixWorld(true); }
     // transforms

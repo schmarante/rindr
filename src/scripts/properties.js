@@ -80,8 +80,10 @@ export class PropertiesPanel {
         // Gaussian splats: no explosion – one cloud without parts (models added to a splat scene have it)
         const splats = !!this.ctx.splats?.(entry);
         if (entry.kind === 'node' || entry.kind === 'model') parts.push(...this._transformSection(true, true));
-        if (entry.kind === 'model' && this.ctx.exploder && !splats) parts.push(this._explodeRow());
+        // no explosion for a model of volumes only (VDB file)
+        if (entry.kind === 'model' && this.ctx.exploder && !splats && !this.ctx.volumes?.only(entry)) parts.push(this._explodeRow());
         if (splats && (entry.kind === 'model' || entry.kind === 'node')) parts.push(...this._splatLookSection());
+        if (this.ctx.volumes?.list(entry).length) parts.push(this._volumeSection(entry));
         if ((entry.kind === 'model' || entry.kind === 'node') && this.ctx.morphs?.list(entry).length) parts.push(...this._morphSection(entry));
         if (this.ctx.skeleton?.available(entry)) parts.push(...this._skeletonSection(entry));
         const instance = entry.kind === 'node' && this.ctx.instances?.info(entry);
@@ -367,6 +369,48 @@ export class PropertiesPanel {
         rows.push(this._row(t('properties.splatLook.emissive'), colorField(mat.emissive, { onInput: v => update('emissive', v) })));
         rows.push(this._rangeRow(t('properties.splatLook.emissiveIntensity'), mat.emissiveIntensity ?? 1, 0, 20, 0.05, v => update('emissiveIntensity', v)));
         return rows;
+    }
+
+    // grid volumes of a model (smoke, clouds, fire – VDB files, pbrt media): density, colour, anisotropy, glow; the look
+    // module loads with the first such panel (the rows appear then)
+    _volumeSection(entry) {
+        const api = this.ctx.volumes;
+        const box = el('div');
+        const fill = () => {
+            const volumes = api.list(entry);
+            const rows = [];
+            for (const [i, volume] of volumes.entries()) {
+                const look = api.effective(volume);
+                if (!look) continue;
+                const key = name => `volume-${name}-${i}-${entry.key}`;
+                const set = name => v => api.set(volume, { [name]: v }, { mergeKey: key(name) });
+                const title = volumes.length > 1 ? t('properties.volume.titleNamed', { name: volume.name }) : t('properties.volume.title');
+                rows.push(el('div', 'mt-2 mb-0.5 text-white/50', title));
+                const density = this._rangeRow(t('properties.volume.density'), look.density, 0, 10, 0.01, set('density'), this._dragHooks());
+                density.title = t('properties.volume.densityTitle');
+                rows.push(density);
+                const color = this._row(t('properties.volume.color'), colorField(look.color, { onInput: set('color') }));
+                color.title = t('properties.volume.colorTitle');
+                rows.push(color);
+                const g = this._rangeRow(t('properties.volume.anisotropy'), look.anisotropy, -0.95, 0.95, 0.01, set('anisotropy'), this._dragHooks());
+                g.title = t('properties.volume.anisotropyTitle');
+                rows.push(g);
+                if (look.emissive) {
+                    const glow = this._rangeRow(t('properties.volume.emission'), look.emission, 0, 10, 0.05, set('emission'), this._dragHooks());
+                    glow.title = t('properties.volume.emissionTitle');
+                    rows.push(glow);
+                }
+                if (look.blackbody) {
+                    const temperature = this._rangeRow(t('properties.volume.temperature'), look.temperature, 800, 6000, 10, set('temperature'), this._dragHooks());
+                    temperature.title = t('properties.volume.temperatureTitle');
+                    rows.push(temperature);
+                }
+            }
+            box.replaceChildren(...rows);
+        };
+        if (api.list(entry).every(v => api.effective(v))) fill();
+        else api.load().then(() => { if (this.entry === entry) fill(); }).catch(err => console.warn('[Volumes] panel', err));
+        return box;
     }
 
     // Tessellation quality of the part (STEP); empty = as parent or global
@@ -1236,6 +1280,7 @@ function partSize(object) {
     _box.makeEmpty();
     for (const all of [false, true]) {
         object.traverse(c => {
+            if (c.userData.volumeBox) _box.union(_meshBox.copy(c.userData.volumeBox).applyMatrix4(_m.multiplyMatrices(_frame, c.matrixWorld)));   // grid volumes
             if (!c.isMesh || !c.geometry || (c.userData.stray && !all)) return;
             _box.union(_meshBox.copy(localBox(c)).applyMatrix4(_m.multiplyMatrices(_frame, c.matrixWorld)));
         });

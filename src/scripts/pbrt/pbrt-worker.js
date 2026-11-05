@@ -13,7 +13,7 @@ import { parsePbrt, mul, inverse, det3, normalizePath } from './pbrt-parse.js';
 import { buildShape, emitterShape } from './pbrt-shapes.js';
 import { octahedralToEquirect, octahedralIlluminance, encodeRgbe, readPfm } from './pbrt-env.js';
 import { unzlibSync } from 'three/addons/libs/fflate.module.js';
-import { readNanoVdb, denseGrid, reduceDense, quantize } from '../volumes/nanovdb.js';
+import { readVdbGrids, vdbVolume, reduceDense, packVolume } from '../volumes/vdb-import.js';
 
 const MM = 1000;   // file unit (m) → mm
 
@@ -82,49 +82,34 @@ const MMS = Float64Array.from([MM, 0, 0, 0, 0, MM, 0, 0, 0, 0, MM, 0, 0, 0, 0, 1
 
 // A grid medium as a dense grid over its box: density (+ temperature for fire) as bytes of their maximum, majorant
 // blocks, the unit box (−0.5…0.5) → RINDR (mm) matrix (column-major) and mm per medium unit (σ conversion).
-// nanovdb: density and temperature grids resampled onto their common index box; uniformgrid: nx·ny·nz samples over
-// p0…p1 (cell centred, as pbrt samples them)
+// nanovdb: the file's density and temperature grids through the shared VDB importer (vdb-import.js – an OpenVDB file
+// would do as well); uniformgrid: nx·ny·nz samples over p0…p1 (cell centred, as pbrt samples them)
 async function gridVolume(name, medium, read, toRindr, maxVoxels) {
     const p = medium.params;
-    let density, temperature = null, boxToMedium;
+    let packed, boxToMedium;
     if (medium.type === 'nanovdb') {
         const file = p.filename?.v?.[0];
         if (!file) throw new Error('no filename');
-        const grids = readNanoVdb(await read(file), unzlibSync);
-        const dg = grids.find(g => g.name === 'density') || grids[0];
-        const tg = grids.find(g => g.name === 'temperature' && g !== dg && g.matrix.every((x, i) => Math.abs(x - dg.matrix[i]) < 1e-9));
-        const box = { min: dg.indexMin.slice(), max: dg.indexMax.slice() };
-        if (tg) for (let i = 0; i < 3; i++) { box.min[i] = Math.min(box.min[i], tg.indexMin[i]); box.max[i] = Math.max(box.max[i], tg.indexMax[i]); }
-        density = denseGrid(dg, maxVoxels, box);
-        if (tg) temperature = denseGrid(tg, maxVoxels, box);
-        // unit box → index space (samples at integer index, the box spans whole voxels) → the grid's world = medium space
-        const size = density.dims.map(d => d * density.factor), centre = box.min.map((m, i) => m - 0.5 + size[i] / 2);
-        const boxToIndex = [size[0], 0, 0, centre[0], 0, size[1], 0, centre[1], 0, 0, size[2], centre[2], 0, 0, 0, 1];
-        const g = dg.matrix;   // column-major → row-major
-        const indexToMedium = [g[0], g[4], g[8], g[12], g[1], g[5], g[9], g[13], g[2], g[6], g[10], g[14], 0, 0, 0, 1];
-        boxToMedium = mul(Float64Array.from(indexToMedium), Float64Array.from(boxToIndex));
+        const v = vdbVolume(readVdbGrids(await read(file), unzlibSync), maxVoxels, { density: 'density', temperature: 'temperature' });
+        packed = v;
+        boxToMedium = Float64Array.from(v.boxToWorld);
     } else {
         const n = ['nx', 'ny', 'nz'].map(k => p[k]?.v?.[0] ?? 1), values = p.density?.v;
         if (!values || values.length < n[0] * n[1] * n[2]) throw new Error('density grid incomplete');
-        density = reduceDense(Float32Array.from(values.slice(0, n[0] * n[1] * n[2])), n, maxVoxels);
+        const density = reduceDense(Float32Array.from(values.slice(0, n[0] * n[1] * n[2])), n, maxVoxels);
         const tv = p.temperature?.v;
-        if (tv?.length >= n[0] * n[1] * n[2]) temperature = reduceDense(Float32Array.from(tv.slice(0, n[0] * n[1] * n[2])), n, maxVoxels);
+        const temperature = tv?.length >= n[0] * n[1] * n[2] ? reduceDense(Float32Array.from(tv.slice(0, n[0] * n[1] * n[2])), n, maxVoxels) : null;
+        packed = packVolume(density, temperature);
         const p0 = p.p0?.v ?? [0, 0, 0], p1 = p.p1?.v ?? [1, 1, 1];
         boxToMedium = Float64Array.from([p1[0] - p0[0], 0, 0, (p0[0] + p1[0]) / 2, 0, p1[1] - p0[1], 0, (p0[1] + p1[1]) / 2, 0, 0, p1[2] - p0[2], (p0[2] + p1[2]) / 2, 0, 0, 0, 1]);
     }
     const mediumToRindr = mul(toRindr, medium.ctm);
-    const q = quantize(density);
     const matrix = new Float32Array(16);
     colMajor(mul(mediumToRindr, boxToMedium), matrix, 0);
-    let tBytes = null;
-    if (temperature) {
-        tBytes = new Uint8Array(temperature.data.length);
-        const k = temperature.max > 0 ? 255 / temperature.max : 0;
-        for (let i = 0; i < tBytes.length; i++) tBytes[i] = Math.min(255, Math.round(Math.max(temperature.data[i], 0) * k));
-    }
+    const { dims, factor, density, densityMax, blocks, blockDims, temperature, temperatureMax } = packed;
     return {
-        name, type: medium.type, dims: density.dims, factor: density.factor, density: q.bytes, densityMax: density.max, blocks: q.blocks, blockDims: q.blockDims,
-        temperature: tBytes, temperatureMax: temperature?.max ?? 0, matrix, unitScale: Math.cbrt(Math.abs(det3(mediumToRindr))),
+        name, type: medium.type, dims, factor, density, densityMax, blocks, blockDims, temperature, temperatureMax,
+        matrix, unitScale: Math.cbrt(Math.abs(det3(mediumToRindr))),
     };
 }
 

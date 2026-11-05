@@ -11,9 +11,11 @@ import { kelvinRgb } from '../kelvin.js';
 import { normalizePath } from './pbrt-parse.js';
 import { uniformHdr } from './pbrt-env.js';
 import { spectrumToRgb, pairsFunction, readMeasured, blackbodyRgb } from './pbrt-spectrum.js';
-import { textureMaxSide, memoryBudget } from '../memory-budget.js';
+import { textureMaxSide } from '../memory-budget.js';
 import { colorFromAlbedo } from '../materials/medium.js';
 import { minCopies } from '../model-instances.js';
+import { gridVoxelBudget } from '../volumes/grid-volumes.js';
+import { withLook } from '../volumes/volume-look.js';
 import { t, getLocale } from '../i18n.js';
 import { debugLog } from '../log.js';
 
@@ -125,7 +127,8 @@ export async function importPbrt(source, { materialManager, onStatus = () => {} 
     conv.mirror = !!scene.mirror;
     await conv.loadTextures(plans, onStatus);
     let origin = 0;
-    const defIds = plans.map(plan => materialManager.create({ ...conv.def(plan), source: 'import', origin: `import:${source.name}:${origin++}` }, { silent: true }).def.id);
+    const create = materialManager.importMaterials();   // copies of one material ("Wood.3", "Wood.4" …) become one
+    const defIds = plans.map(plan => create({ ...conv.def(plan), source: 'import', origin: `import:${source.name}:${origin++}` }));
 
     // --- meshes. An object placed at least minCopies() times (vegetation: thousands of plants of 7–21 parts) –
     // one InstancedMesh per part for all its copies (model-instances.js), one Scene Graph row "name (n×)" ---
@@ -182,7 +185,11 @@ export async function importPbrt(source, { materialManager, onStatus = () => {} 
     const cameras = scene.camera ? [convertCamera(scene, stem)] : [];
     const environment = convertEnvironment(scene, spectra, stem);
     const volumes = (gridVolumes || []).map(v => gridMedium(v, scene, spectra)).filter(Boolean);
-    for (const v of volumes) conv.usedMedia.add(v.name);
+    for (const v of volumes) {
+        conv.usedMedia.add(v.name);
+        v.node = nodes.length;   // an object of its own in the Scene Graph (its shape – Material "interface" – is not drawn)
+        nodes.push({ name: t('import.volume.node', { name: v.name }), parent: 0 });
+    }
     if (Object.keys(scene.media || {}).some(n => !conv.usedMedia.has(n))) scene.warnings.push(['media left out', 1]);
     const what = skippedWhat(scene);
     const render = renderSettings(plans, lights, environment);
@@ -191,10 +198,6 @@ export async function importPbrt(source, { materialManager, onStatus = () => {} 
     debugLog('[pbrt] converted', { materials: plans.length, lights: lights.length, environment: environment && (environment.file ? 'map' : environment.off ? 'off' : 'uniform'), mirror: scene.mirror, up: scene.upAxis, render });
     return { result, missing };
 }
-
-// samples a grid volume may have on this device (volumes/nanovdb.js reduces finer grids): 4 % of the memory budget at
-// 2 bytes per sample, 8–64 million
-const VOLUME_VOXELS = () => Math.min(Math.max(memoryBudget() * 0.04 / 2, 8e6), 64e6);
 
 /**
  * A grid medium for the volume walk (volumes/grid-volumes.js): grey extinction σt (luminance of σa + σs, × scale, at
@@ -221,7 +224,8 @@ function gridMedium(v, scene, spectra) {
         }
     }
     debugLog('[pbrt] volume', { name: v.name, type: v.type, dims: v.dims, factor: v.factor, densityMax: +v.densityMax.toFixed(3), sigmaT, albedo, g: p.g?.v?.[0] ?? 0, emission: !!emission });
-    return { ...v, sigma: sigmaT * v.densityMax / v.unitScale, albedo, g: Math.min(Math.max(p.g?.v?.[0] ?? 0, -0.95), 0.95), emission };
+    // base = as pbrt describes it; the Properties panel edits a look on top (volume-look.js)
+    return withLook({ ...v }, { sigma: sigmaT * v.densityMax / v.unitScale, albedo, g: Math.min(Math.max(p.g?.v?.[0] ?? 0, -0.95), 0.95), emission });
 }
 
 /**
@@ -256,7 +260,7 @@ function runWorker(source, onStatus) {
         };
         worker.onerror = e => { worker.terminate(); reject(new Error(e.message || 'pbrt worker failed')); };
         worker.postMessage({ mainPath: source.name.split(/[\\/]/).pop(), main: source.main || null, files: source.files || [], baseUrl: source.baseUrl ? new URL(source.baseUrl, location.href).href : null,
-            volumeVoxels: VOLUME_VOXELS() });
+            volumeVoxels: gridVoxelBudget() });
     });
 }
 

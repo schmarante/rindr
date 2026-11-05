@@ -22,7 +22,7 @@ import { debugLog } from './log.js';
 import { uvLengthHistogram, UvMetric } from './uv-metric.js';
 
 // IFC (BIM) goes the same way but has its own importer (ifc/ifc-importer.js, web-ifc – loaded on demand)
-export const MESH_EXTENSIONS = ['glb', 'gltf', 'fbx', 'max', 'c4d', 'blend', 'obj', '3mf', 'usd', 'usda', 'usdc', 'usdz', 'stl', 'pbrt', 'ifc', 'ifczip'];
+export const MESH_EXTENSIONS = ['glb', 'gltf', 'fbx', 'max', 'c4d', 'blend', 'obj', '3mf', 'usd', 'usda', 'usdc', 'usdz', 'stl', 'pbrt', 'ifc', 'ifczip', 'vdb', 'nvdb'];
 const USD_FORMATS = ['usd', 'usda', 'usdc', 'usdz'];   // usd-importer.js (loaded on demand)
 
 // The loaders are loaded only with the first glTF/FBX (~170 KB that a STEP-only session never needs).
@@ -107,6 +107,8 @@ export async function importMeshFile(source, { renderer, materialManager, onStat
     }
     // pbrt-v4 scene: own reader in a worker (pbrt/) – shapes, materials, lights, camera, environment
     if (ext === 'pbrt') ({ result, missing } = await (await import('./pbrt/pbrt-import.js')).importPbrt(source, { materialManager, onStatus }));
+    // VDB volume (smoke, clouds, fire – OpenVDB / NanoVDB): no meshes, one grid volume (volumes/vdb-file.js)
+    if (ext === 'vdb' || ext === 'nvdb') ({ result, missing } = await (await import('./volumes/vdb-file.js')).importVdb(source, { onStatus }));
     // STL: in parts on all workers (stl/) – size check, BVHs and tangents done there
     if (ext === 'stl') ({ result, missing } = await importStl(source, { materialManager, onStatus, bvh, checkSize, limit, onLarge, largeAbove, onNodes, onSolid }));
     if (!result) {
@@ -146,7 +148,7 @@ export async function importMeshFile(source, { renderer, materialManager, onStat
         delete result.links;
     }
     if (missing.size) console.warn('[Import] Files not found:', [...missing]);
-    if (!result.meshes.length) throw new Error(t('import.mesh.noFaces'));
+    if (!result.meshes.length && !result.volumes?.length) throw new Error(t('import.mesh.noFaces'));
     fitImportRelief(result, materialManager);
     if (checkSize && !result.prepared) {
         let triangles = 0;
@@ -778,6 +780,7 @@ function glowsAsLamp(object) {
 // Source material → id of an import material in the MaterialManager (once per source material)
 function materialIdFactory(materialManager, scale, fileName) {
     const materialIds = new Map();     // source material -> material id
+    const create = materialManager.importMaterials();   // copies of one material ("Wood", "Wood.001" …) become one
     let unnamed = 0;
     return src => {
         if (!src) src = DEFAULT_MATERIAL;
@@ -789,7 +792,7 @@ function materialIdFactory(materialManager, scale, fileName) {
             if (!def.name) def.name = t('import.mesh.unnamedMaterial', { number: ++unnamed });
             // origin: file + order in the file – stable, so scene states find the material again; with the file
             // name, materials of different models no longer collide (previously all were import:0, import:1 …)
-            id = materialManager.create({ ...def, source: 'import', origin: `import:${fileName}:${materialIds.size}` }, { silent: true }).def.id;
+            id = create({ ...def, source: 'import', origin: `import:${fileName}:${materialIds.size}` });
             materialIds.set(src, id);
         }
         return id;

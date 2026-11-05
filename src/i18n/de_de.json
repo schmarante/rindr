@@ -94,6 +94,13 @@
             "unnamedMesh": "Mesh",
             "instancedObject": "{name} ({count}×)"
         },
+        "volume": {
+            "node": "Volumen „{name}“"
+        },
+        "vdb": {
+            "volume": "Lese Volumen...",
+            "failed": "VDB-Datei nicht lesbar: {message}"
+        },
         "pbrt": {
             "reading": "Lese pbrt-Szene: {name}...",
             "materials": "Übernehme Materialien und Texturen...",
@@ -1968,6 +1975,21 @@
             "emissiveIntensity": "Leuchten",
             "undo": "Splat-Darstellung ändern"
         },
+        "volume": {
+            "title": "Volumen",
+            "titleNamed": "Volumen „{name}“",
+            "density": "Dichte",
+            "densityTitle": "Faktor auf die Dichte aus der Datei – dichter = undurchsichtiger (Rauch, Wolke)",
+            "color": "Farbe",
+            "colorTitle": "Farbe des gestreuten Lichts – hell: Wolke, dunkel: Ruß",
+            "anisotropy": "Richtung",
+            "anisotropyTitle": "Streurichtung (Anisotropie): 0 = in alle Richtungen, positiv = nach vorn (Wolken leuchten gegen die Sonne), negativ = zurück",
+            "emission": "Leuchten",
+            "emissionTitle": "Faktor auf das Leuchten der Flammen",
+            "temperature": "Temperatur",
+            "temperatureTitle": "Temperatur der heißesten Stelle in Kelvin – bestimmt die Flammenfarbe (niedrig: rot, hoch: gelb-weiß)",
+            "undo": "Volumen ändern"
+        },
         "quality": {
             "label": "Qualität",
             "title": "Nur dieses Bauteil (mit Unterteilen) neu tessellieren",
@@ -2629,7 +2651,7 @@
         "unsupportedFormat": "Format nicht unterstützt ({extensions})",
         "dropHint": "Datei ins Fenster ziehen",
         "openFile": "Datei öffnen",
-        "dropFormats": "STEP (.stp/.step) · IGES (.igs/.iges) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · pbrt (.pbrt) · BIM (.ifc/.ifczip) · MaterialX (.mtlx) · BCF-Tickets (.bcfzip) · Gaussian Splats (.ply/.sog) · HDRI (.hdr/.exr) · IES-Lichtprofile (.ies)",
+        "dropFormats": "STEP (.stp/.step) · IGES (.igs/.iges) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · pbrt (.pbrt) · VDB-Volumen (.vdb/.nvdb) · BIM (.ifc/.ifczip) · MaterialX (.mtlx) · BCF-Tickets (.bcfzip) · Gaussian Splats (.ply/.sog) · HDRI (.hdr/.exr) · IES-Lichtprofile (.ies)",
         "hdriDropped": "HDRI „{name}“ als Umgebung",
         "hdriOne": "Mehrere HDRIs – „{name}“ als Umgebung gewählt",
         "qualityReduced": "Großes Modell (≈ {triangles} Dreiecke bei „{from}“) – Qualität automatisch auf „{to}“ gesenkt",
@@ -3014,7 +3036,7 @@
         "sceneGraph": "Scene Graph",
         "drop": {
             "title": "Datei hier ablegen",
-            "hint": "STEP (.stp/.step), IGES (.igs/.iges), glTF/GLB, FBX, MAX (.max), C4D (.c4d), Blender (.blend), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, pbrt (.pbrt), BIM (.ifc/.ifczip), MaterialX (.mtlx), BCF-Tickets (.bcfzip), Gaussian Splats (.ply/.sog), HDRI (.hdr/.exr), IES-Lichtprofile (.ies) – Texturen und .bin-Dateien einfach mit hineinziehen",
+            "hint": "STEP (.stp/.step), IGES (.igs/.iges), glTF/GLB, FBX, MAX (.max), C4D (.c4d), Blender (.blend), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, pbrt (.pbrt), VDB-Volumen (.vdb/.nvdb), BIM (.ifc/.ifczip), MaterialX (.mtlx), BCF-Tickets (.bcfzip), Gaussian Splats (.ply/.sog), HDRI (.hdr/.exr), IES-Lichtprofile (.ies) – Texturen und .bin-Dateien einfach mit hineinziehen",
             "addHint": "Mehrere Modelle: zusammen oder nacheinander hineinziehen – sie erscheinen nebeneinander",
             "replaceTitle": "Modelle ersetzen",
             "replaceHint": "Die geladenen Modelle werden entfernt und durch die neue Datei ersetzt",
@@ -3031,7 +3053,7 @@
     },
     "about": {
         "title": "Über",
-        "description": "Your Local 3D-File Viewer – STEP, IGES, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, pbrt, MaterialX, BIM (IFC, BCF), Gaussian Splats, HDRIs und IES-Lichtprofile direkt im Browser, mit Pathtracing in Echtzeit.",
+        "description": "Your Local 3D-File Viewer – STEP, IGES, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, pbrt, VDB-Volumen, MaterialX, BIM (IFC, BCF), Gaussian Splats, HDRIs und IES-Lichtprofile direkt im Browser, mit Pathtracing in Echtzeit.",
         "author": "Autor",
         "email": "E-Mail",
         "version": "Version",

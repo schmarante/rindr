@@ -274,10 +274,12 @@ function sameTransform(a, b) {
 }
 
 // World box of the meshes below objects (matrices up to date) – without stray objects (userData.stray, outliers.js:
-// an assembly with kilometres of helper geometry would turn around a point far away); only stray ones: those
+// an assembly with kilometres of helper geometry would turn around a point far away); only stray ones: those. Grid
+// volumes count too (userData.volumeBox of their model root, its own space – a VDB file has nothing else)
 function meshBox(objects, box) {
     for (const all of [false, true]) {
         for (const o of objects) o.traverse(c => {
+            if (c.userData.volumeBox) box.union(new THREE.Box3().copy(c.userData.volumeBox).applyMatrix4(c.matrixWorld));
             if (!c.isMesh || (c.userData.stray && !all)) return;
             box.union(new THREE.Box3().copy(localBox(c)).applyMatrix4(c.matrixWorld));
         });

@@ -31,7 +31,7 @@ import { TAB_ID, initMaterialTransfer, materialFromTransfer } from './material-t
 import { MaterialThumbs } from './material-thumbs.js';
 import { uvCheckerTexture } from './uv-checker.js';
 import { CloudSystem } from './materials/clouds.js';
-import { GridVolumeSystem } from './volumes/grid-volumes.js';
+import { GridVolumeSystem, volumeBounds } from './volumes/grid-volumes.js';
 import { WoolSystem } from './materials/wool.js';
 import { setSoapSceneSize } from './materials/soap.js';
 import { GrassSystem } from './materials/grass.js';
@@ -671,10 +671,46 @@ const clouds = new CloudSystem(scene, () => [rootGroup, ...extraModels.map(x => 
 clouds.onChange = () => { pathTracing.updateTransforms(); pathTracing.updateMaterials(); markShadowsDirty(); };
 // override passes (contour, contact shadow, …) leave the boxes out; Basic keeps them
 clouds.attach(renderer);
-// grid volumes (smoke, clouds, fire from voxel grids – pbrt media; volumes/grid-volumes.js): proxies in the scene,
-// media for the path tracer's volume walk
+// grid volumes (smoke, clouds, fire from voxel grids – VDB files, pbrt media; volumes/grid-volumes.js): proxies in the
+// scene, media for the path tracer's volume walk
 const gridVolumes = new GridVolumeSystem(scene, renderer);
 gridVolumes.onChange = () => { pathTracing.updateTransforms(); pathTracing.updateMaterials(); loadRender.dirty = true; };
+// the volumes of a loaded model: each on its own Scene Graph node (volume.node – shown, hidden, selected, moved like any
+// object; counted as one part there, otherwise the tree leaves the row out), its box for pivot, size and framing
+// (userData.volumeBox – transform.js meshBox, frameFit, modelBox)
+function placeVolumes(volumes, root, groups, partCounts) {
+    gridVolumes.set(volumes, root, groups);
+    for (const v of volumes) {
+        const holder = groups[v.node] || root;
+        holder.userData.volumeBox = (holder.userData.volumeBox || new THREE.Box3()).union(volumeBounds([v]));
+        if (groups[v.node]) partCounts[v.node] = (partCounts[v.node] || 0) + 1;
+    }
+}
+// their look (density, colour, anisotropy, glow – Properties panel): volume-look.js, loaded with the first volume panel
+let volumeLookApi = null;
+const loadVolumeLook = async () => (volumeLookApi ??= await import('./volumes/volume-look.js'));
+function setVolumeLook(volume, patch, { mergeKey, record = true } = {}) {
+    if (!volumeLookApi) return;
+    const before = { ...volume.look }, after = { ...before, ...patch };
+    if (JSON.stringify(after) === JSON.stringify(before)) return;   // nothing changed: no undo step
+    const apply = (look, refresh) => {
+        volume.look = { ...look };
+        volumeLookApi.applyLook(volume);
+        gridVolumes.restyle();
+        pathTracing.reset();
+        loadRender.force = true;
+        if (refresh && selection) properties.show(selection);
+    };
+    apply(after, false);
+    if (record) history.record({ label: t('properties.volume.undo'), mergeKey, undo: () => apply(before, true), redo: () => apply(after, true) });
+}
+// a saved scene: the looks of a model's volumes in their order (volume-look.js loaded on demand)
+async function setVolumeLooks(rm, looks) {
+    const volumes = gridVolumes.volumesOf(rm.root);
+    if (!looks?.length || !volumes.length) return;
+    await loadVolumeLook();
+    volumes.forEach((v, i) => { if (looks[i]) setVolumeLook(v, looks[i], { record: false }); });
+}
 // wool material (wool.js): fibre shells over the meshes that carry it; the path tracer intersects the same fibres
 // (wool-pt.js) from the material's stand-in – a new fibre length = new material data, maybe new BVH bounds
 const wool = new WoolSystem(scene, () => [rootGroup, ...extraModels.map(x => x.root)], () => environment?.modelSize ?? 1);
@@ -1182,6 +1218,15 @@ const properties = new PropertiesPanel(document.getElementById('properties'), {
         info: entry => instanceInfo(entry),
         makeUnique: entry => makeInstanceUnique(entry),
     },
+    // grid volumes of a model (smoke, clouds, fire – VDB files, pbrt media): their look (volumes/volume-look.js)
+    volumes: {
+        list: entry => (entry.kind === 'model' || entry.kind === 'node' ? gridVolumes.volumesOf(entry.object) : []),
+        // nothing but volumes below (a VDB file): no explosion
+        only: entry => { let mesh = false; entry.object?.traverse(o => { mesh ||= !!o.isMesh; }); return !mesh && gridVolumes.volumesOf(entry.object).length > 0; },
+        effective: volume => volumeLookApi?.effectiveLook(volume),
+        load: () => loadVolumeLook(),
+        set: (volume, patch, options) => setVolumeLook(volume, patch, options),
+    },
 });
 // environment changed (HDRI, HDRI editor rendering, intensity, light boost, rotation): preview in the panel
 environment.onChange = () => properties.refreshEnvironmentPreview();
@@ -1295,11 +1340,18 @@ function runtimeModels() {
         file: { name: model.name, type: model.type, size: model.size ?? null }, holder: null, sceneIndex: mainSceneIndex, source: model,
         morphs: animations.find(a => a.owner === 'main')?.anim.morphValues(), animation: animState('main'), pose: poseState('main'), poses: poseListState('main'),
         // Gaussian splats: their look (light, override material) – saved with the scene
-        splatLook: splatMesh ? { mode: splatMesh.look.mode, material: splatMesh.look.material && { ...splatMesh.look.material } } : null });
+        splatLook: splatMesh ? { mode: splatMesh.look.mode, material: splatMesh.look.material && { ...splatMesh.look.material } } : null,
+        volumeLooks: volumeLooksOf(rootGroup) });
     for (const x of extraModels) list.push({ main: false, id: x.id, root: x.root, nodeGroups: x.nodeGroups, meshes: x.meshes, prefix: `x${x.id}:`,
         file: { name: x.source.name, type: x.source.type, size: x.size ?? null }, holder: x.holder, sceneIndex: x.sceneIndex, source: x.source,
-        morphs: animations.find(a => a.owner === x.id)?.anim.morphValues(), animation: animState(x.id), pose: poseState(x.id), poses: poseListState(x.id) });
+        morphs: animations.find(a => a.owner === x.id)?.anim.morphValues(), animation: animState(x.id), pose: poseState(x.id), poses: poseListState(x.id),
+        volumeLooks: volumeLooksOf(x.root) });
     return list;
+}
+// looks of a model's grid volumes (only changed ones count – saved with the scene)
+function volumeLooksOf(root) {
+    const looks = gridVolumes.volumesOf(root).map(v => ({ ...v.look }));
+    return looks.some(l => l.density !== 1 || l.emission !== 1 || l.color != null || l.anisotropy != null || l.temperature != null) ? looks : null;
 }
 const sameFile = (a, b) => !!a && !!b && a.name === b.name && (a.size == null || b.size == null || a.size === b.size);
 const baseName = path => path.split(/[\\/]/).pop().toLowerCase();
@@ -1788,7 +1840,10 @@ document.querySelector('#scene-graph [data-tree-list]').addEventListener('contex
     if (entry !== selection && !sceneGraph.inSelection(entry)) sceneGraph.select(entry, { reveal: false });
     openQuadMenu(e.clientX, e.clientY);
 });
-const updateHighlight = () => highlighter.set(selection?.object, hovered?.object);
+const updateHighlight = () => {
+    highlighter.set(selection?.object, hovered?.object);
+    gridVolumes.outline(selection?.object, hovered?.object);   // volumes have no meshes: their box is outlined
+};
 
 // --- Materials ---
 const materialManager = new MaterialManager();
@@ -3356,6 +3411,7 @@ function frameFit(object, fovDeg = camera.fov) {
     for (const o of object.isMeshSet ? object.members : [object]) {   // multi-selection
         o.updateMatrixWorld(true);
         o.traverseVisible(c => {
+            if (c.userData.volumeBox) box.union(new THREE.Box3().copy(c.userData.volumeBox).applyMatrix4(c.matrixWorld));   // grid volumes
             if (!c.isMesh) return;
             box.union(new THREE.Box3().copy(localBox(c)).applyMatrix4(c.matrixWorld));
         });
@@ -5135,6 +5191,7 @@ function modelBox(object) {
     const box = new THREE.Box3();
     object.updateMatrixWorld(true);
     object.traverse(c => {
+        if (c.userData.volumeBox) box.union(new THREE.Box3().copy(c.userData.volumeBox).applyMatrix4(c.matrixWorld));   // grid volumes
         if (!c.isMesh || c.userData.stray) return;
         box.union(new THREE.Box3().copy(localBox(c)).applyMatrix4(c.matrixWorld));
     });
@@ -5347,10 +5404,11 @@ async function loadModel(reload = false, safe = false) {
                 partCounts[m.node] += m.copies || 1;   // an instanced object: all its copies
             }
         }
+        if (result.volumes?.length) bbox.union(volumeBounds(result.volumes));   // smoke, clouds, fire (a VDB file: only that)
         if (bbox.isEmpty()) throw new Error(t('status.noFaces'));
         // stray objects: out of the bounds (centre, camera, ground, shadows, scene size); hidden after the Scene Graph
         const stray = boundsWithoutStray(meshList);
-        if (stray.stray.size) { bbox.copy(stray.box); console.warn(`[Load] ${stray.stray.size} stray object(s) left out (up to ${Math.round(stray.size)} mm)`); }
+        if (stray.stray.size) { bbox.copy(stray.box).union(volumeBounds(result.volumes)); console.warn(`[Load] ${stray.stray.size} stray object(s) left out (up to ${Math.round(stray.size)} mm)`); }
         const shownMeshes = meshList.filter((_, i) => !stray.stray.has(i));
         // animated glTF/FBX: play bar
         if (result.animation) addAnimation(new ModelAnimation(result.animation, meshList, root), 'main');
@@ -5423,7 +5481,7 @@ async function loadModel(reload = false, safe = false) {
         // a render scene (pbrt): its environment (or none) and its camera with the film's exposure
         if (!reload && result.environment) await applyImportedEnvironment(result.environment);
         if (!reload && result.render) applyImportedRender(result.render);
-        if (!reload && result.volumes?.length) gridVolumes.set(result.volumes, root);   // smoke, clouds, fire of the scene
+        if (!reload && result.volumes?.length) placeVolumes(result.volumes, root, nodeGroups, partCounts);   // smoke, clouds, fire
         if (!reload && result.activateCamera && importedViews.length) activateCamera(importedViews[0], { record: false });
 
         // before the Scene Graph: its model row shows ⚠ for missing textures
@@ -5870,9 +5928,10 @@ async function loadExtraModel(source, { sceneIndex, placement: savedPlacement } 
             if (m.node >= 0 && !counted.has(m.countId ?? m.instance)) { counted.add(m.countId ?? m.instance); partCounts[m.node] += m.copies || 1; }
             startFade(mesh);
         }
+        if (result.volumes?.length) bbox.union(volumeBounds(result.volumes));
         if (bbox.isEmpty()) throw new Error(t('status.noFaces'));
         const stray = boundsWithoutStray(meshList);   // stray objects: out of the bounds, hidden (see loadModel)
-        if (stray.stray.size) bbox.copy(stray.box);
+        if (stray.stray.size) bbox.copy(stray.box).union(volumeBounds(result.volumes));
         if (result.animation) addAnimation(new ModelAnimation(result.animation, meshList, root), id);
         // the model itself is centred on its own bounding box like the main model (as if loaded alone – its
         // zero point and position fields stay untouched); a placement group around it puts it to the right of
@@ -5919,6 +5978,7 @@ async function loadExtraModel(source, { sceneIndex, placement: savedPlacement } 
         holder.updateMatrixWorld(true);
         addImportedViews(result.cameras, root, bbox.getCenter(new THREE.Vector3()));
         addImportedLights(result.lights, root, bbox.getCenter(new THREE.Vector3()), bbox.getSize(new THREE.Vector3()).length() * new THREE.Vector3().setFromMatrixScale(root.matrixWorld).x).catch(err => console.warn('[Lights] import failed', err));
+        if (result.volumes?.length) placeVolumes(result.volumes, root, groups, partCounts);   // smoke, clouds, fire of the model
         const size = source.file?.size ?? source.main?.size ?? null;
         extraModels.push({ id, name, source, size, sceneIndex, missingTextures: result.missing || [], root, holder, unmovedBox, meshes: meshList, nodeGroups: groups,
             content: { name, importNodes: nodes, groups, partCounts, root, id, warn: (result.missing || []).length } });
@@ -5954,6 +6014,7 @@ function removeExtraModels(id) {
     if (!remove.length) return;
     for (const x of remove) {
         removeAnimations(x.id);
+        if (gridVolumes.volumesOf(x.root).length) gridVolumes.set([], x.root);
         disposeRoot(x.root);
         x.holder?.removeFromParent();
         extraModels.splice(extraModels.indexOf(x), 1);
@@ -6021,6 +6082,7 @@ const sceneStateContext = {
     setModelMorphs,
     // Gaussian splats of a restored scene: their saved look (scene-state.js applyModelState)
     setSplatLook: look => { if (splatMesh && look) setSplatLook({ mode: look.mode, material: look.material ?? null }, { record: false }); },
+    setVolumeLooks: (rm, looks) => setVolumeLooks(rm, looks).catch(err => console.warn('[Volumes] look not restored', err)),
     setModelAnimation,
     setModelPose,
     setModelPoses,

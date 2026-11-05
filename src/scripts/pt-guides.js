@@ -48,6 +48,8 @@ import { EDGE_WGSL } from './materials/edges.js';
 import { WOOL_PT } from './materials/wool-pt.js';
 import { SPLAT_PT } from './splat/splat-pt.js';
 import { GAUSS_PT } from './splat/gaussian-pt.js';
+import { GRID_MEDIA, GRID_SLOTS } from './volumes/grid-volumes.js';
+import { GRID_PT } from './volumes/grid-pt.js';
 
 const S = SPLAT_PT;
 const _rotation = new Matrix4();   // camera rotation without its position (camera rays, see the guide kernel)
@@ -114,6 +116,92 @@ const splatAlbedo = wgslTagFn/* wgsl */`
 
         }
         return c;
+
+    }
+`;
+
+// grid volumes (volumes/grid-volumes.js – smoke, clouds, fire): per slot a march along a stretch of the ray, one sample
+// per voxel, empty 8³ blocks jumped – x = distance where the optical depth reaches ln 2 (−1: not on this stretch), y =
+// optical depth at the end. There the guides see the medium: its albedo, a normal facing the viewer. Before, they looked
+// through the box: a dense plume got the albedo and edges of what lies behind it (dark floor, a sphere's outline) – the
+// denoiser smeared it grey and drew that outline through it.
+const gridSlot = GRID_MEDIA.map((m, k) => wgslTagFn/* wgsl */`
+    fn guideGridSlot${ k }( o: vec3f, d: vec3f, segment: f32, tau: f32, jitter: f32 ) -> vec2f {
+
+        let params = ${ m.params };
+        if ( params.w < 0.5 ) {
+
+            return vec2f( - 1.0, tau );
+
+        }
+        let lo = ( ${ m.inverse } * vec4f( o, 1.0 ) ).xyz;
+        let ld = ( ${ m.inverse } * vec4f( d, 0.0 ) ).xyz;
+        let inv = 1.0 / ( ld + vec3f( 1e-12 ) );
+        let a = ( vec3f( - 0.5 ) - lo ) * inv;
+        let b = ( vec3f( 0.5 ) - lo ) * inv;
+        let t0 = max( max( max( min( a.x, b.x ), min( a.y, b.y ) ), min( a.z, b.z ) ), 0.0 );
+        let t1 = min( min( min( max( a.x, b.x ), max( a.y, b.y ) ), max( a.z, b.z ) ), segment );
+        if ( t1 <= t0 ) {
+
+            return vec2f( - 1.0, tau );
+
+        }
+        let dims = ${ m.dims };
+        let offset = ${ m.offset };
+        let step = 1.0 / max( length( ld * dims ), 1e-12 );
+        var t = t0 + jitter * step;
+        var depth = tau;
+        for ( var i = 0u; i < 4096u; i ++ ) {
+
+            if ( t >= t1 ) {
+
+                break;
+
+            }
+            let p = lo + ld * t;
+            if ( ${ GRID_PT.block }( p, dims, ${ m.blockDims }, offset.y ) <= 0.0 ) {
+
+                t += ${ GRID_PT.blockExit }( p, ld, dims ) + 0.5 * step;
+                continue;
+
+            }
+            depth += ${ GRID_PT.sample }( p, dims, offset.x ).x * params.x * step;
+            if ( depth >= 0.6931472 ) {
+
+                return vec2f( t, depth );
+
+            }
+            t += step;
+
+        }
+        return vec2f( - 1.0, depth );
+
+    }
+`);
+if (GRID_SLOTS !== 2) throw new Error('pt-guides: the grid march is written for 2 grid volume slots');
+// both slots along a stretch: x = distance of the nearest crossing (−1: none), y/z = optical depths, w = its slot
+const gridMarch = wgslTagFn/* wgsl */`
+    fn guideGridMarch( o: vec3f, d: vec3f, segment: f32, taus: vec2f, jitter: f32 ) -> vec4f {
+
+        let a = ${ gridSlot[0] }( o, d, segment, taus.x, jitter );
+        let b = ${ gridSlot[1] }( o, d, segment, taus.y, jitter );
+        var best = a.x;
+        var slot = 0.0;
+        if ( b.x >= 0.0 && ( best < 0.0 || b.x < best ) ) {
+
+            best = b.x;
+            slot = 1.0;
+
+        }
+        return vec4f( best, a.y, b.y, slot );
+
+    }
+`;
+// albedo of grid volume slot (the medium's single-scattering albedo)
+const gridAlbedo = wgslTagFn/* wgsl */`
+    fn guideGridAlbedo( slot: f32 ) -> vec3f {
+
+        return select( ${ GRID_MEDIA[1].albedo }.xyz, ${ GRID_MEDIA[0].albedo }.xyz, slot < 0.5 );
 
     }
 `;
@@ -291,6 +379,7 @@ export class GuideKernel {
                     var ids = vec2f( 0.0 );   // object, material index + 1 (0: the splats)
                     var chain = 0u;
                     var splatTau = 0.0;       // helper passes: optical depth of the splats so far (grid)
+                    var gridTau = vec2f( 0.0 );   // optical depth of the grid volumes so far (per slot)
                     var gxTrans = 1.0;        // light passing the traced Gaussians so far
 
                     for ( var i = 0u; i < 16u; i ++ ) {
@@ -353,6 +442,28 @@ export class GuideKernel {
                                 break;
 
                             }
+
+                        }
+
+                        // grid volumes (smoke, clouds, fire) up to this hit – half the light gone = their surface, for every guide
+                        let gridHit = ${ gridMarch }( ray.origin, ray.direction, hit.dist, gridTau, jitter.w );
+                        gridTau = gridHit.yz;
+                        if ( gridHit.x >= 0.0 ) {
+
+                            travelled += gridHit.x;
+                            let sp = ray.origin + ray.direction * gridHit.x;
+                            position = vec4f( camPos + primaryDir * travelled, 1.0 );
+                            // normal: facing the viewer (a medium has none – the density gradient at the half-light depth is
+                            // noise, the denoiser painted brush strokes along it)
+                            normal = vec4f( normalize( mirror * - ray.direction ), 0.0 );
+                            albedo = vec4f( tint * ${ gridAlbedo }( gridHit.w ), 1.0 );
+                            surfaceDepth = select( dot( sp - camPos, forward ), travelled, isFisheye );
+                            if ( firstDepth < 0.0 ) {
+
+                                firstDepth = surfaceDepth;
+
+                            }
+                            break;
 
                         }
 
