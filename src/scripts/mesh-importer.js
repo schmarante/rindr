@@ -15,9 +15,11 @@ import { isC4dFile } from './c4d/c4d-parse.js';
 import { creaseCornerNormals } from './crease-normals.js';
 import { kelvinRgb } from './kelvin.js';
 import { IMPORT } from './config.js';
-import { t } from './i18n.js';
+import { t, getLocale } from './i18n.js';
+import { minCopies } from './model-instances.js';
 import { IMPORT_SLOTS } from './material-graph.js';
 import { debugLog } from './log.js';
+import { uvLengthHistogram, UvMetric } from './uv-metric.js';
 
 // IFC (BIM) goes the same way but has its own importer (ifc/ifc-importer.js, web-ifc – loaded on demand)
 export const MESH_EXTENSIONS = ['glb', 'gltf', 'fbx', 'max', 'c4d', 'blend', 'obj', '3mf', 'usd', 'usda', 'usdc', 'usdz', 'stl', 'pbrt', 'ifc', 'ifczip'];
@@ -145,6 +147,7 @@ export async function importMeshFile(source, { renderer, materialManager, onStat
     }
     if (missing.size) console.warn('[Import] Files not found:', [...missing]);
     if (!result.meshes.length) throw new Error(t('import.mesh.noFaces'));
+    fitImportRelief(result, materialManager);
     if (checkSize && !result.prepared) {
         let triangles = 0;
         for (const g of result.geometries) triangles += g.index.length / 3;
@@ -323,6 +326,40 @@ async function load(source, ext, renderer, onStatus = () => {}, preloaded = null
         return { object, scale, missing };
     } finally {
         release();
+    }
+}
+
+// Bump maps from the file are the relief of the import graph (material-graph.js IMPORT_SLOTS): its height in mm, set
+// once the meshes are known – from the file where the format gives a length (Blender: Distance × Strength), else from
+// its unitless factor (OBJ -bm, FBX BumpFactor, MAX, C4D: 1): factor × one picture's length on the model / 1024 – the
+// slope three.js showed a 1K picture with at one texel per screen pixel, now at any distance and resolution, and it
+// grows with the picture like a normal map's. The picture's length: the meshes' surface length per UV unit / repeat.
+const BUMP_TEXELS = 1024;
+function fitImportRelief(result, materialManager) {
+    const wanted = new Map();   // material id → UvMetric
+    for (const m of result.meshes) {
+        if (wanted.has(m.materialId)) continue;
+        const def = materialManager.get(m.materialId)?.def;
+        if (def?.render?.maps?.bumpMap && def.graph?.links?.some(l => l.to.node === 'out' && l.to.port === 'height')) wanted.set(m.materialId, new UvMetric());
+    }
+    if (!wanted.size) return;
+    const hists = new Map();   // geometry → its lengths per UV unit
+    for (const m of result.meshes) {
+        const metric = wanted.get(m.materialId);
+        if (!metric) continue;
+        if (!hists.has(m.geometry)) { const g = result.geometries[m.geometry]; hists.set(m.geometry, uvLengthHistogram(g.positions, g.uvs, g.index)); }
+        if (m.instances) metric.addCopies(hists.get(m.geometry), m.matrix, m.instances, m.instances.length / 16);   // an instanced part (model-instances.js)
+        else metric.add(hists.get(m.geometry), m.matrix);
+    }
+    for (const [id, metric] of wanted) {
+        const render = materialManager.get(id).def.render;
+        let height = Number.isFinite(render.bumpHeight) ? render.bumpHeight : null;   // negative: sunk (pbrt, Blender's invert)
+        if (height === null) {
+            const tex = render.maps.bumpMap;
+            const repeat = (Math.abs(tex.repeat.x) + Math.abs(tex.repeat.y)) / 2 || 1;
+            height = (Number(render.bumpScale) || 0) * (metric.length ?? UV_TILE) / repeat / BUMP_TEXELS;
+        }
+        materialManager.setImportRelief(id, Math.round(height * 1e4) / 1e4, metric.length);
     }
 }
 
@@ -506,6 +543,72 @@ function checkGltfFiles(buffer, byPath, byName) {
 
 // --- Conversion ---
 
+const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+const isPosed = mesh => mesh.isSkinnedMesh || hasMorphs(mesh) || !!mesh.morphTargetInfluences?.some(v => v !== 0);
+// meshes convert would make of a subtree (copies of an InstancedMesh counted)
+function shownMeshes(o) {
+    if (!o.visible || o.isLight || o.isCamera) return 0;
+    let n = o.isMesh && !o.isBatchedMesh && o.geometry?.getAttribute('position') ? (o.isInstancedMesh ? o.count : 1) : 0;
+    for (const c of o.children) n += shownMeshes(c);
+    return n;
+}
+
+/**
+ * Subtrees placed at least minCopies times: same meshes (geometry, materials) in the same arrangement below them – the
+ * placement of the subtree itself may differ. Topmost ones win (a copied assembly, not each of its screws); skinned,
+ * morphed and instanced meshes are never part of one. → [{ members: Object3D[], parents: [] }]
+ */
+function findCopies(root, minCopies) {
+    const ids = new Map(), sigOf = new Map(), withMesh = new Set();
+    const intern = s => { let id = ids.get(s); if (id === undefined) ids.set(s, id = ids.size); return id; };
+    const sig = o => {
+        if (!o.visible || o.isLight || o.isCamera) return -1;   // no node of its own (convert skips it)
+        let own = 'G', ok = true, mesh = false;
+        if (o.isMesh && o.geometry?.getAttribute('position')) {
+            if (o.isInstancedMesh || o.isBatchedMesh || isPosed(o)) ok = false;
+            own = 'M' + o.geometry.uuid + '|' + (Array.isArray(o.material) ? o.material : [o.material]).map(x => x?.uuid).join(',');
+            mesh = true;
+        }
+        const parts = [];
+        for (const c of o.children) {
+            const cs = sig(c);
+            if (cs === -1) continue;
+            if (cs === null) { ok = false; continue; }
+            if (withMesh.has(cs)) mesh = true;
+            parts.push(cs + '@' + c.matrix.elements.join(','));
+        }
+        const id = ok ? intern(own + '[' + parts.join(';') + ']') : null;
+        if (id !== null && mesh) withMesh.add(id);
+        sigOf.set(o, id);
+        return id;
+    };
+    sig(root);
+    const count = new Map();
+    for (const id of sigOf.values()) if (id !== null) count.set(id, (count.get(id) || 0) + 1);
+    const chosen = new Set([...count].filter(([id, n]) => n >= minCopies && withMesh.has(id)).map(([id]) => id));
+    if (!chosen.size) return [];
+    // members = copies not inside another copy; a choice left with too few of them is dropped and the walk repeated
+    for (let round = 0; round < 8; round++) {
+        const members = new Map();
+        const walk = o => {
+            const id = sigOf.get(o);
+            if (id === undefined || id === -1) return;
+            if (o !== root && id !== null && chosen.has(id)) {
+                if (!members.has(id)) members.set(id, []);
+                members.get(id).push(o);
+                return;
+            }
+            for (const c of o.children) walk(c);
+        };
+        walk(root);
+        const few = [...chosen].filter(id => (members.get(id)?.length || 0) < minCopies);
+        if (!few.length) return [...members.values()].map(list => ({ members: list, parents: [] }));
+        for (const id of few) chosen.delete(id);
+        if (!chosen.size) return [];
+    }
+    return [];
+}
+
 function convert(object, scale, materialManager, fileName = '') {
     // Apply the scale only to the final matrices – skinning computes in the space of the bind matrices
     object.updateMatrixWorld(true);
@@ -519,15 +622,43 @@ function convert(object, scale, materialManager, fileName = '') {
     let instance = 0;
     const materialId = materialIdFactory(materialManager, scale, fileName);
 
+    // Copies as InstancedMeshes (model-instances.js) – glTF and USD, not in animated files (clips may move every copy on
+    // its own): the file's own instancing (glTF EXT_mesh_gpu_instancing → InstancedMesh) from minCopies() on, and copies
+    // of one subtree (USD: an asset referenced many times, composed once and cloned; glTF: nodes using the same meshes)
+    // – one Scene Graph row "name (n×)" each
+    const animated = (object.animations || []).some(c => c.duration > 0 && c.tracks.length);
+    const copiesFrom = /\.(gltf|glb|usd[acz]?)$/i.test(fileName) && !animated ? minCopies() : Infinity;
+    const copyGroups = Number.isFinite(copiesFrom) ? findCopies(object, copiesFrom) : [];
+    const groupOf = new Map();
+    for (const g of copyGroups) for (const o of g.members) groupOf.set(o, g);
+    const im = new THREE.Matrix4(), m = new THREE.Matrix4();
+
     const visit = (o, parent) => {
         if (!o.visible || o.isLight || o.isCamera) return;
+        const group = groupOf.get(o);
+        if (group) {
+            // a copy: its meshes come with the group after the walk; the numbers stay reserved (keys of later meshes
+            // are the same as without instancing – scene states)
+            group.parents.push(parent);
+            instance += shownMeshes(o);
+            return;
+        }
         const node = nodes.length;
         nodes.push({ name: o.name || (o.isMesh ? t('import.mesh.unnamedMesh') : ''), parent });
-        if (o.isMesh && !o.isBatchedMesh && o.geometry?.getAttribute('position')) addMesh(o, node);
+        if (o.isMesh && !o.isBatchedMesh && o.geometry?.getAttribute('position')) {
+            if (o.isInstancedMesh && o.count >= copiesFrom && !isPosed(o)) {
+                const copies = new Float32Array(o.count * 16);
+                for (let k = 0; k < o.count; k++) m.multiplyMatrices(toMm, o.matrixWorld).multiply((o.getMatrixAt(k, im), im)).toArray(copies, 16 * k);
+                nodes[node].name = t('import.mesh.instancedObject', { name: nodes[node].name || t('import.mesh.unnamedMesh'), count: o.count.toLocaleString(getLocale()) });
+                addMesh(o, node, { copies, id: instance, key: `${instance}i` });
+                instance += o.count;
+            } else addMesh(o, node);
+        }
         for (const c of o.children) visit(c, node);
     };
 
-    const addMesh = (mesh, node) => {
+    // copies: { copies: Float32Array (16 per copy, mm), id, key } – one entry per material bucket for all of them
+    const addMesh = (mesh, node, copies = null) => {
         const geometry = mesh.geometry;
         const multi = Array.isArray(mesh.material);
         // groups with the same material → one mesh of ours (FBX often has thousands of groups for a few
@@ -543,10 +674,9 @@ function convert(object, scale, materialManager, fileName = '') {
         const list = [...buckets.values()];
         // Skinning/morph targets: bake the current pose into a separate geometry (morph targets always –
         // their sliders deform it later)
-        const posed = mesh.isSkinnedMesh || hasMorphs(mesh) || mesh.morphTargetInfluences?.some(v => v !== 0);
+        const posed = isPosed(mesh);
         const worldScale = mesh.matrixWorld.getMaxScaleOnAxis() * scale;
         const instances = mesh.isInstancedMesh ? mesh.count : 1;
-        const im = new THREE.Matrix4(), m = new THREE.Matrix4();
         let gis = posed ? undefined : geometryCache.get(geometry.uuid);
         if (!gis) {
             gis = extractGeometries(mesh, list, posed, worldScale).map(g => {
@@ -562,6 +692,12 @@ function convert(object, scale, materialManager, fileName = '') {
             const gi = gis[j];
             if (gi < 0) return;
             const mat = materialId(multi ? mesh.material[bucket.materialIndex] : mesh.material);
+            if (copies) {
+                links.push({ mesh, instance: -1, posed, geometry: gi, sourceVertex: null, materialIndex: multi ? bucket.materialIndex : -1 });
+                meshes.push({ geometry: gi, matrix: IDENTITY.slice(), instances: copies.copies, copies: copies.copies.length / 16, materialId: mat, name: mesh.name,
+                    node, instance: copies.id, key: `${copies.key}/${bucket.key}` });
+                return;
+            }
             for (let k = 0; k < instances; k++) {
                 m.multiplyMatrices(toMm, mesh.matrixWorld);
                 if (mesh.isInstancedMesh) m.multiply((mesh.getMatrixAt(k, im), im));
@@ -570,11 +706,35 @@ function convert(object, scale, materialManager, fileName = '') {
                 meshes.push({ geometry: gi, matrix: m.toArray(), materialId: mat, name: mesh.name, node, instance: instance + k, key: `${instance + k}/${bucket.key}` });
             }
         });
-        instance += instances;
+        if (!copies) instance += instances;
     };
 
     const posedSource = new Map();   // posed geometry -> our vertex → source vertex
     visit(object, -1);
+    // the copy groups: one node below the deepest node holding all copies, an InstancedMesh per mesh of the first copy
+    const ancestors = n => { const out = []; for (; n >= 0; n = nodes[n].parent) out.push(n); return out; };
+    const base = instance;
+    copyGroups.forEach((group, gi) => {
+        let chain = null;
+        for (const p of new Set(group.parents)) { const up = ancestors(p); chain = chain ? chain.filter(n => up.includes(n)) : up; }
+        const first = group.members[0], count = group.members.length;
+        const node = nodes.length;
+        nodes.push({ name: t('import.mesh.instancedObject', { name: first.name || t('import.mesh.unnamedMesh'), count: count.toLocaleString(getLocale()) }), parent: chain?.[0] ?? -1 });
+        const inverse = first.matrixWorld.clone().invert(), local = new THREE.Matrix4();
+        let mi = 0;
+        const walk = o => {
+            if (!o.visible || o.isLight || o.isCamera) return;
+            if (o.isMesh && !o.isBatchedMesh && o.geometry?.getAttribute('position')) {
+                local.multiplyMatrices(inverse, o.matrixWorld);   // the mesh in its copy
+                const copies = new Float32Array(count * 16);
+                group.members.forEach((c, k) => m.multiplyMatrices(toMm, c.matrixWorld).multiply(local).toArray(copies, 16 * k));
+                addMesh(o, node, { copies, id: base + gi, key: `c${gi}.${mi++}` });
+            }
+            for (const c of o.children) walk(c);
+        };
+        walk(first);
+    });
+    if (copyGroups.length) debugLog('[Import] copies as instances', { groups: copyGroups.length, copies: copyGroups.reduce((a, g) => a + g.members.length, 0) });
     for (const g of geometries) delete g.sourceVertex;   // not to the BVH worker
     // glTF cameras: look along −Z, vertical field of view, no target (FBX cameras: fbxCameras, from the own reader for
     // both ways of loading)
@@ -592,7 +752,27 @@ function convert(object, scale, materialManager, fileName = '') {
     });
     // UsdLux lights (usd-importer.js keeps their values in userData.usdLight)
     if (/\.usd[acz]?$/i.test(fileName)) object.traverseVisible(o => { if (o.isLight && o.userData.usdLight) lights.push(usdLight(o, scale)); });
-    return { nodes, geometries, meshes, links, cameras, lights };
+    // glTF that brings its own light (user: "dann würden wir natürlich unsere lichter/kameras ausschmeißen und nur das aus
+    // dem gltf übernehmen"): lamps (KHR_lights_punctual) or glowing surfaces meant as light sources – emissive strength
+    // from LAMP_STRENGTH on (KHR_materials_emissive_strength; screens and LEDs stay at 1) → the viewer switches all its
+    // default lights off; the file's first camera becomes the active view
+    const gltf = /\.(gltf|glb)$/i.test(fileName);
+    const ownLight = gltf && (lights.length > 0 || glowsAsLamp(object));
+    return { nodes, geometries, meshes, links, cameras, lights, ownLight, activateCamera: gltf && cameras.length > 0 };
+}
+
+// emissive strength from which a glowing surface counts as a lamp of the scene (a glTF lit by a small emitter of strength
+// 15 000 kept RINDR's studio lights on top of it)
+const LAMP_STRENGTH = 10;
+function glowsAsLamp(object) {
+    let found = false;
+    object.traverseVisible(o => {
+        if (found || !o.isMesh) return;
+        for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+            if (m?.emissive && m.emissiveIntensity >= LAMP_STRENGTH && Math.max(m.emissive.r, m.emissive.g, m.emissive.b) > 0) { found = true; return; }
+        }
+    });
+    return found;
 }
 
 // Source material → id of an import material in the MaterialManager (once per source material)
@@ -1547,6 +1727,10 @@ function convertMaterial(m, scale) {
             sheen: m.sheen, sheenColor: hex(m.sheenColor), sheenRoughness: m.sheenRoughness,
             iridescence: m.iridescence,
         });
+        // thin film (KHR_materials_iridescence): one thickness – without a thickness picture glTF takes the maximum
+        if (m.iridescence > 0) Object.assign(params, { iridescenceIOR: m.iridescenceIOR, iridescenceThickness: m.iridescenceThicknessMaximum ?? 400 });
+        // anisotropy (KHR_materials_anisotropy: strength + direction, three.js keeps both – radians → degrees)
+        if (m.anisotropy > 0) Object.assign(params, { anisotropy: m.anisotropy, anisotropyRotation: THREE.MathUtils.radToDeg(m.anisotropyRotation || 0) });
     }
     const maps = {};
     // only textures with a loaded image (missing files yield image = null -> path tracer crashes); a missing one is
@@ -1575,7 +1759,8 @@ function convertMaterial(m, scale) {
         delete maps.map;
         if (emissiveMap) maps.emissiveMap = emissiveMap;
     }
-    // Phong specular maps have no counterpart; bump maps stay bump maps
+    // Phong specular maps have no counterpart; bump maps become the relief (material-graph.js IMPORT_SLOTS) – its height
+    // from the file where the format has one (Blender: in scene units → mm), else from the factor (fitImportRelief)
     const render = {
         maps,
         side: m.side,
@@ -1583,6 +1768,7 @@ function convertMaterial(m, scale) {
         transparent: !!m.transparent,
         normalScale: m.normalScale ? m.normalScale.toArray() : null,
         bumpScale: m.bumpScale ?? 1,
+        bumpHeight: Number.isFinite(m.userData?.bumpHeight) ? m.userData.bumpHeight * scale : null,
         aoMapIntensity: m.aoMapIntensity ?? 1,
         // colours per vertex (glTF COLOR_0, PLY, OBJ, FBX …): × the material's colour, raster and path tracer
         vertexColors: !!m.vertexColors,

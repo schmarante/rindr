@@ -12,7 +12,8 @@ import { normalizePath } from './pbrt-parse.js';
 import { uniformHdr } from './pbrt-env.js';
 import { spectrumToRgb, pairsFunction, readMeasured } from './pbrt-spectrum.js';
 import { textureMaxSide } from '../memory-budget.js';
-import { t } from '../i18n.js';
+import { minCopies } from '../model-instances.js';
+import { t, getLocale } from '../i18n.js';
 import { debugLog } from '../log.js';
 
 // --- spectra → RGB (own tables: published optical constants, rounded) ---
@@ -38,6 +39,7 @@ const luminance = c => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
 const unitY = c => { const y = luminance(c); return y > 0 ? c.map(x => x / y) : [1, 1, 1]; };
 const fresnelF0 = (n, k) => ((n - 1) ** 2 + k * k) / ((n + 1) ** 2 + k * k);
 const MAX_IOR = 3.5;
+const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 // diffuse reflectance of a dielectric boundary for light from inside (relative index η > 1; Egan & Hilgeman's fit)
 const coatingFdr = eta => Math.min(Math.max(-1.440 / (eta * eta) + 0.710 / eta + 0.668 + 0.0636 * eta, 0), 0.99);   // RINDR's IOR range (material-manager.js) – a scene's diamonds at 3.39 keep their sparkle
 const hex = c => '#' + new THREE.Color(Math.min(Math.max(c[0], 0), 1), Math.min(Math.max(c[1], 0), 1), Math.min(Math.max(c[2], 0), 1)).getHexString();
@@ -100,22 +102,44 @@ export async function importPbrt(source, { materialManager, onStatus = () => {} 
         return { positions: g.positions, normals: g.normals, index: g.index, uvs: g.uvs, name: '' };
     });
 
-    // --- material definitions: bump maps need the surface length of a texture unit on their meshes ---
-    const lengths = uvLengths(outGeometries, meshes, meshPlan, plans.map(plan => plan.maps.normalMap?.use === 'height'));
-    plans.forEach((plan, i) => { if (lengths[i]) plan.maps.normalMap = { ...plan.maps.normalMap, length: lengths[i] }; });
+    // --- material definitions (bump maps: their relief height is set with the other importers' – mesh-importer.js
+    // fitImportRelief, once the meshes are known) ---
     conv.mirror = !!scene.mirror;
     await conv.loadTextures(plans, onStatus);
     let origin = 0;
     const defIds = plans.map(plan => materialManager.create({ ...conv.def(plan), source: 'import', origin: `import:${source.name}:${origin++}` }, { silent: true }).def.id);
 
-    // --- meshes ---
+    // --- meshes. An object placed at least minCopies() times (vegetation: thousands of plants of 7–21 parts) –
+    // one InstancedMesh per part for all its copies (model-instances.js), one Scene Graph row "name (n×)" ---
     const outMeshes = [];
     let instance = 0;
     const instanceId = new Map();
+    const fromCopies = minCopies();
+    const uses = new Int32Array(scene.objects.length);
+    for (const ins of scene.instances) uses[ins.object]++;
+    const objectNode = new Map(), objectId = new Map(), copied = new Map();   // object → node, instance id; shape → part
     for (let m = 0; m < meshes.count; m++) {
         if (meshPlan[m] < 0) continue;
         const si = meshes.shape[m], ii = meshes.instance[m];
         const shape = scene.shapes[si];
+        const object = ii >= 0 ? scene.instances[ii].object : -1;
+        if (object >= 0 && uses[object] >= fromCopies) {
+            let part = copied.get(si);
+            if (!part) {
+                const name = scene.objects[object].name || t('import.mesh.unnamedMesh');
+                if (!objectNode.has(object)) {
+                    objectNode.set(object, nodes.length);
+                    nodes.push({ name: t('import.mesh.instancedObject', { name, count: uses[object].toLocaleString(getLocale()) }), parent: 0 });
+                    objectId.set(object, instance++);
+                }
+                part = { geometry: meshes.geometry[m], matrix: IDENTITY.slice(), instances: new Float32Array(uses[object] * 16), materialId: defIds[meshPlan[m]],
+                    name, node: objectNode.get(object), instance: objectId.get(object), key: `o${object}/${si}`, copies: uses[object], filled: 0 };
+                copied.set(si, part);
+                outMeshes.push(part);
+            }
+            part.instances.set(meshes.matrices.subarray(16 * m, 16 * m + 16), 16 * part.filled++);
+            continue;
+        }
         let node, inst;
         if (ii < 0) { node = looseNode(shape); inst = instance++; } else {
             if (!instanceNode.has(ii)) {
@@ -130,6 +154,11 @@ export async function importPbrt(source, { materialManager, onStatus = () => {} 
         outMeshes.push({ geometry: meshes.geometry[m], matrix: Array.from(meshes.matrices.subarray(16 * m, 16 * m + 16)), materialId: defIds[meshPlan[m]],
             name: nodes[node].name, node, instance: inst, key: String(m) });
     }
+    for (const part of copied.values()) {
+        if (part.filled * 16 < part.instances.length) part.instances = part.instances.slice(0, part.filled * 16);
+        delete part.filled;
+    }
+    if (copied.size) debugLog('[pbrt] instanced objects', { objects: objectNode.size, parts: copied.size, copies: [...objectNode.keys()].reduce((a, o) => a + uses[o], 0), meshes: outMeshes.length });
 
     const lights = convertLights(scene, spectra);
     const cameras = scene.camera ? [convertCamera(scene, stem)] : [];
@@ -156,42 +185,6 @@ function renderSettings(plans, lights, environment) {
     if (!lit) return null;
     const gem = solid.some(p => p.params.ior >= 2);
     return { glassShadow: 'caustics', refractionBounces: gem ? 16 : 8 };
-}
-
-/**
- * Surface length (mm) of one unit of the texture coordinates on the meshes of each wanted plan – for a bump map's
- * slopes (pbrt divides the height change per unit of u by |dp/du|). Robust over slivers and seams: √(world area / UV
- * area) summed over the meshes, each geometry's own sums scaled by its placement.
- */
-function uvLengths(geometries, meshes, meshPlan, wanted) {
-    if (!wanted.some(Boolean)) return wanted.map(() => null);
-    const sums = new Map();   // geometry → [world area, UV area] in its own units
-    const of = gi => {
-        if (sums.has(gi)) return sums.get(gi);
-        const { positions: P, uvs: T, index: I } = geometries[gi];
-        let A = 0, B = 0;
-        const n = I ? I.length : P.length / 3;
-        for (let t = 0; T && t + 2 < n; t += 3) {
-            const a = I ? I[t] : t, b = I ? I[t + 1] : t + 1, c = I ? I[t + 2] : t + 2;
-            const e1x = P[3 * b] - P[3 * a], e1y = P[3 * b + 1] - P[3 * a + 1], e1z = P[3 * b + 2] - P[3 * a + 2];
-            const e2x = P[3 * c] - P[3 * a], e2y = P[3 * c + 1] - P[3 * a + 1], e2z = P[3 * c + 2] - P[3 * a + 2];
-            A += Math.hypot(e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x);
-            B += Math.abs((T[2 * b] - T[2 * a]) * (T[2 * c + 1] - T[2 * a + 1]) - (T[2 * c] - T[2 * a]) * (T[2 * b + 1] - T[2 * a + 1]));
-        }
-        const r = [A / 2, B / 2];
-        sums.set(gi, r);
-        return r;
-    };
-    const acc = wanted.map(() => [0, 0]);
-    const M = new THREE.Matrix4();
-    for (let m = 0; m < meshes.count; m++) {
-        const p = meshPlan[m];
-        if (p < 0 || !wanted[p]) continue;
-        const [A, B] = of(meshes.geometry[m]);
-        const s2 = Math.abs(M.fromArray(meshes.matrices, 16 * m).determinant()) ** (2 / 3);
-        acc[p][0] += A * s2; acc[p][1] += B;
-    }
-    return acc.map(([A, B]) => (A > 0 && B > 0 ? Math.sqrt(A / B) : null));
 }
 
 function runWorker(source, onStatus) {
@@ -438,16 +431,18 @@ class MaterialConverter {
                 params.anisotropyRotation = au > av ? 0 : 90;
             }
         };
-        // normal map, else bump (displacement texture, scene units) – as pbrt: the normal map wins. The bump becomes a
-        // normal map too (the path tracer has no bump mapping – a mirror-smooth metal with an embossed pattern showed
-        // only a plain reflection in HQ); its slopes need the meshes' surface length per texture unit (importPbrt)
+        // normal map, else bump (displacement texture) – as pbrt: the normal map wins. The bump is the import graph's
+        // relief like any importer's bump map (material-graph.js IMPORT_SLOTS): baked into a normal map – the path
+        // tracer has no bump mapping (a mirror-smooth metal with an embossed pattern showed only a plain reflection in
+        // HQ) – with pbrt's own height: the texture's value is a displacement in scene units (→ mm), its slopes over the
+        // meshes' surface length per texture unit (graph-apply.js reliefSlopes); editable as "Relief (mm)"
         const surface = () => {
             const nm = p.normalmap?.v?.[0];
             if (nm) { maps.normalMap = { image: { file: nm, encoding: 'linear', wrap: 'repeat', uscale: 1, vscale: 1, udelta: 0, vdelta: 0 }, use: 'data' }; render.normalScale = [1, 1]; return; }
             const d = p.displacement;
             if (d?.type === 'texture') {
                 const tx = this.texture(d.v[0], 'float');
-                if (tx.image) { maps.normalMap = { image: tx.image, use: 'height', scale: typeof tx.value === 'number' ? tx.value : 1 }; render.normalScale = [1, 1]; }
+                if (tx.image) { maps.bumpMap = { image: tx.image, use: 'height' }; render.bumpHeight = (typeof tx.value === 'number' ? tx.value : 1) * 1000; }
             }
         };
         switch (mat.type) {
@@ -641,15 +636,20 @@ class MaterialConverter {
         for (const [slot, m] of Object.entries(plan.maps)) {
             const tex = this._threeTexture(m);
             if (tex) maps[slot] = tex;
-            else if (slot === 'map' || (slot === 'normalMap' && m.use === 'data')) missing[slot] = { url: m.image.file, srgb: m.use === 'color', flipY: true, repeat: [m.image.uscale, m.image.vscale], offset: [m.image.udelta, m.image.vdelta], rotation: 0 };
+            else if (slot === 'map' || slot === 'bumpMap' || (slot === 'normalMap' && m.use === 'data')) {
+                const srgb = m.use === 'color' || (m.use === 'height' && /^srgb$/i.test(m.image.encoding || 'sRGB'));
+                missing[slot] = { url: m.image.file, srgb, flipY: true, repeat: [m.image.uscale, m.image.vscale], offset: [m.image.udelta, m.image.vdelta], rotation: 0 };
+            }
         }
-        return { name: plan.name, params: plan.params, render: { ...plan.render, alphaTest: maps.alphaMap ? plan.render.alphaTest : 0, maps, missing: Object.keys(missing).length ? missing : null } };
+        // mirrored world: the relief baked for the bump map turns its v slope (see the 'data' normal maps below)
+        return { name: plan.name, params: plan.params, render: { ...plan.render, alphaTest: maps.alphaMap ? plan.render.alphaTest : 0, maps, missing: Object.keys(missing).length ? missing : null,
+            ...(this.mirror && plan.maps.bumpMap ? { mirrored: true } : {}) } };
     }
     _threeTexture(m) {
         const img = this.images.get(m.image.file);
         if (!img) return null;
         const { encoding, wrap, uscale, vscale, udelta, vdelta, invert } = m.image;
-        const key = JSON.stringify([m.image, m.use, m.scale ?? 1, m.curve ?? 1, m.length ?? 0]);
+        const key = JSON.stringify([m.image, m.use, m.scale ?? 1, m.curve ?? 1]);
         if (this.textures.has(key)) return this.textures.get(key);
         let tex;
         const gamma = /^gamma\s+([\d.]+)/i.exec(encoding)?.[1];
@@ -684,27 +684,11 @@ class MaterialConverter {
             for (let i = 1; i < px.length; i += 4) px[i] = 255 - px[i];
             tex = c.done();
             tex.colorSpace = THREE.NoColorSpace;
-        } else if (m.use === 'height') {
-            // bump → tangent-space normal map as pbrt bends the normal: n − dD/du / |dp/du| · t − dD/dv / |dp/dv| · b,
-            // D = the displacement in scene units (→ mm), |dp/du| = the surface length of one texture unit on the meshes
-            if (!m.length) return null;
-            const c = canvasOf(), px = c.data.data, w = img.width, h = img.height;
-            const lut = new Float32Array(256).map((_, i) => decode(i));
-            const H = new Float32Array(w * h);
-            for (let i = 0; i < H.length; i++) H[i] = lut[px[4 * i]];
-            const clamp = wrap === 'clamp' || wrap === 'black';
-            const at = (x, y) => (clamp ? H[Math.min(Math.max(y, 0), h - 1) * w + Math.min(Math.max(x, 0), w - 1)] : H[((y + h) % h) * w + ((x + w) % w)]);
-            // central differences over two texels: ΔD × texels per texture unit / 2, the texture unit = 1 / uscale of the UVs
-            const ku = 1000 * uscale * w / (2 * m.length), kv = (this.mirror ? -1 : 1) * 1000 * vscale * h / (2 * m.length);
-            for (let y = 0; y < h; y++) {
-                for (let x = 0; x < w; x++) {
-                    const sx = -(at(x + 1, y) - at(x - 1, y)) * ku, sy = -(at(x, y + 1) - at(x, y - 1)) * kv;
-                    const l = Math.hypot(sx, sy, 1), i = 4 * (y * w + x);
-                    px[i] = (sx / l * 0.5 + 0.5) * 255; px[i + 1] = (sy / l * 0.5 + 0.5) * 255; px[i + 2] = (0.5 / l + 0.5) * 255; px[i + 3] = 255;
-                }
-            }
-            tex = c.done();
-            tex.colorSpace = THREE.NoColorSpace;
+        } else if (m.use === 'height' && !invert && (!gamma || srgb)) {
+            // bump height: the picture as it is, sRGB decoded on the GPU (full precision – a decoded 8-bit copy lost the
+            // dark steps); the relief bake reads its first channel
+            tex = new THREE.Texture(img);
+            tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
         } else {
             // values (roughness, alpha): baked into a grey image (three reads roughness from G, the path tracer too)
             const c = canvasOf(), px = c.data.data;

@@ -50,6 +50,7 @@
 import * as THREE from 'three/webgpu';
 import { uniform } from 'three/tsl';
 import { compileAsync } from './shader-compile.js';
+import { instanceMatrixAttribute } from './model-instances.js';
 import { LOD, OCCLUSION } from './config.js';
 
 const TINT_STEPS = 8;   // debug colours: share of triangles kept, one colour per halving (lod-debug.js)
@@ -83,6 +84,10 @@ export class RenderBatcher {
         this._changedAt = null;          // last change of the grouping (null = none pending)
         this._pendingSince = null;       // first change since the last (re)grouping
         this.maxWait = 0;                // > 0 (viewer, during an import): regroup at the latest after this many ms
+        // true (viewer, an import of very many meshes): the models are not drawn until the first grouping is in – drawn
+        // one by one, three.js builds a render object per mesh (~10 KB each, plus churn when they join a batch); a scene
+        // of 400 000 instance parts took 6 GB and hung the tab for minutes before its batches came
+        this.holdUngrouped = false;
         this._depth = 0;
         this.generation = 0;             // +1 per rebuild that created batches (new shader variants possible)
         this.stats = { batches: 0, instances: 0, rebuilds: 0, rebuildMs: 0 };
@@ -124,10 +129,14 @@ export class RenderBatcher {
             const auto = s.matrixWorldAutoUpdate;
             let swapped = null, tinted = null, culled = null;
             const main = outer && this.enabled && camera === (this.lodCamera?.() ?? camera);
+            let held = null;
             if (outer && this.enabled) {
                 // world matrices once per frame (sync does it), all renders of this frame use them
                 if (this._matrixFrame !== this.frame) { this._matrixFrame = this.frame; s.updateMatrixWorld(); }
-                this._attach(camera);
+                this._attach(camera);   // syncs: sees the models before a hold hides them
+                // hold (huge import): the models stay out of this render until their first grouping – the batches hang
+                // outside the model roots
+                if (this.holdUngrouped) { held = this.roots().filter(r => r?.visible); for (const r of held) r.visible = false; }
                 s.matrixWorldAutoUpdate = false;
                 swapped = this._swapSingles();
                 if (this.lod.tint) tinted = this._tint();
@@ -142,6 +151,7 @@ export class RenderBatcher {
                 if (main && occ?.valid && occ.due(camera, this.frame)) occ.capture({ scene: s, camera, keep: this.parent, frame: this.frame });
                 return render(s, camera);
             } finally {
+                if (held) for (const r of held) r.visible = true;
                 if (culled) for (const m of culled) m.layers.enable(0);
                 if (tinted) for (const [o, m] of tinted) o.material = m;
                 if (swapped) this._restoreSingles(swapped);
@@ -405,7 +415,7 @@ export class RenderBatcher {
         const t0 = performance.now();
         this._changedAt = null;
         this._pendingSince = null;
-        const byKey = new Map();
+        const byKey = new Map(), instanced = [];
         const visit = o => {
             if (o.isMesh) {
                 let st = this._state(o);
@@ -415,18 +425,16 @@ export class RenderBatcher {
                 if (key !== null) {
                     if (!byKey.has(key)) byKey.set(key, []);
                     byKey.get(key).push(o);
-                }
+                } else if (modelInstanced(o)) instanced.push(o);
             }
             for (const c of o.children) visit(c);
         };
         for (const root of this.roots()) if (root) visit(root);
-        this._lodPlan(byKey, true);
+        this._lodPlan(byKey, true, instanced);
         // occlusion culling only for large models (triangles counted per instance, like the LOD)
         let total = 0;
-        for (const members of byKey.values()) {
-            const g = members[0].geometry;
-            total += members.length * (g.index ? g.index.count : g.getAttribute('position')?.count || 0) / 3;
-        }
+        for (const members of byKey.values()) total += members.length * trianglesOf(members[0].geometry);
+        for (const im of instanced) total += im.count * trianglesOf(im.geometry);
         this.occModel = total >= OCCLUSION.minTriangles;
 
         const old = new Map(this.batches.map(b => [b.key, b]));
@@ -457,6 +465,7 @@ export class RenderBatcher {
         if (created) this.generation++;
         const ms = performance.now() - t0;
         this.stats = { batches: batches.length, instances, rebuilds: this.stats.rebuilds + 1, rebuildMs: ms, commits: this.stats.commits || 0 };
+        this.holdUngrouped = false;   // the grouping is in: draw (the rest one by one)
     }
 
     // Compile the shaders of the next grouping before switching to it: its new InstancedMeshes (filled, not drawn
@@ -522,19 +531,19 @@ export class RenderBatcher {
 
     // grouping as rebuild() would do it – without touching the mesh states
     _plan() {
-        const byKey = new Map();
+        const byKey = new Map(), instanced = [];
         const visit = o => {
             if (o.isMesh) {
                 const key = this._keyOf(o);
                 if (key !== null) {
                     if (!byKey.has(key)) byKey.set(key, []);
                     byKey.get(key).push(o);
-                }
+                } else if (modelInstanced(o)) instanced.push(o);
             }
             for (const c of o.children) visit(c);
         };
         for (const root of this.roots()) if (root) visit(root);
-        this._lodPlan(byKey, false);
+        this._lodPlan(byKey, false, instanced);
         return byKey;
     }
 
@@ -584,6 +593,7 @@ export class RenderBatcher {
         let instances = 0;
         for (const b of this.batches) instances += b.members.length;
         this.stats = { batches: this.batches.length, instances, rebuilds: this.stats.rebuilds, rebuildMs: performance.now() - t0, commits: (this.stats.commits || 0) + 1 };
+        this.holdUngrouped = false;
     }
 
     _dropStaged() {
@@ -606,17 +616,10 @@ export class RenderBatcher {
         // section caps ask whether the body is closed (same geometry = same solid)
         if (first.userData.instance !== undefined) im.userData.instance = first.userData.instance;
         if (first.userData.closedSolid !== undefined) im.userData.closedSolid = first.userData.closedSolid;
-        // Instance matrices as a storage buffer: runtime-sized array in the shader → one shader per material.
-        // The default (uniform buffer up to maxUniformBufferBindingSize – we request the adapter maximum)
-        // writes the instance count into the shader (array<mat4x4f, N>) → every batch size was its own
-        // shader, compiled synchronously on first use (freeze after loading and on the first view mode switch).
-        // WebGL2 has no storage buffers: capacity rounded up to a power of two → few sizes.
-        if (this.renderer.backend?.isWebGPUBackend) {
-            im.instanceMatrix = new THREE.StorageInstancedBufferAttribute(new Float32Array(members.length * 16), 16);
-        } else {
-            im.instanceMatrix = new THREE.InstancedBufferAttribute(new Float32Array(2 ** Math.ceil(Math.log2(members.length)) * 16), 16);
-            im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-        }
+        // Instance matrices as a storage buffer (model-instances.js): with three's default uniform array every batch
+        // size was its own shader, compiled synchronously on first use (freeze after loading and on the first view
+        // mode switch)
+        im.instanceMatrix = instanceMatrixAttribute(!!this.renderer.backend?.isWebGPUBackend, members.length);
         parent.add(im);
         return { key, mesh: im, members, slots: [], alive: true, source: first.geometry };
     }
@@ -645,22 +648,21 @@ export class RenderBatcher {
         return members.length >= this.minInstances;
     }
 
-    // Large enough for the cluster LOD? (drawn triangles of all batchable meshes ≥ LOD.minTriangles) → eligible =
-    // geometries big enough, within the memory share; request = queue their builds (rebuild, not the staging plan)
-    _lodPlan(byKey, request) {
+    // Large enough for the cluster LOD? (drawn triangles of all batchable meshes and model InstancedMeshes ≥
+    // LOD.minTriangles) → eligible = geometries big enough, within the memory share; request = queue their builds
+    // (rebuild, not the staging plan)
+    _lodPlan(byKey, request, instanced = []) {
         const lod = this.lod;
         lod.eligible = new Set();
         if (!this.lods || !lod.enabled) { lod.model = false; return; }
         let total = 0;
-        for (const members of byKey.values()) {
-            const g = members[0].geometry;
-            total += members.length * (g.index ? g.index.count : g.getAttribute('position')?.count || 0) / 3;
-        }
+        for (const members of byKey.values()) total += members.length * trianglesOf(members[0].geometry);
+        for (const im of instanced) total += im.count * trianglesOf(im.geometry);
         lod.model = total >= LOD.minTriangles;
         if (!lod.model) return;
         let wanted = 0;
-        for (const members of byKey.values()) {
-            const g = members[0].geometry;
+        const sources = new Set([...[...byKey.values()].map(members => members[0].geometry), ...instanced.map(im => im.geometry)]);
+        for (const g of sources) {
             if (!g.index || g.index.count / 3 < LOD.minPartTriangles) continue;
             if (!this.lods.get(g) && !this.lods.queued.has(g)) {
                 if (!this.lods.fits(wanted + g.index.count / 3)) continue;   // over the memory share: stays full
@@ -675,6 +677,9 @@ export class RenderBatcher {
             if (members.length < this.minInstances && lod.eligible.has(members[0].geometry)) {
                 for (const mesh of members) this.singles.push({ mesh, source: mesh.geometry, bucket: undefined, cut: null, viewKey: null });
             }
+        }
+        for (const mesh of instanced) {
+            if (lod.eligible.has(mesh.geometry)) this.singles.push({ mesh, source: mesh.geometry, bucket: undefined, cut: null, viewKey: null, best: 0 });
         }
     }
 
@@ -703,12 +708,26 @@ export class RenderBatcher {
         }
         const t0 = performance.now();
         single.viewKey = this._view.key;
-        let b = this._bucketOf(entry, st.matrix);
+        let b = single.mesh.isInstancedMesh ? this._bucketOfCopies(entry, single, st.matrix) : this._bucketOf(entry, st.matrix);
         if (single.bucket !== undefined && b === single.bucket + 1) b = single.bucket;
         single.bucket = b;
         const g = this.lods.cut(entry, b, frame);
         single.cut = g === single.source ? null : g;
         this.lod.selectMs += performance.now() - t0;
+    }
+
+    // model InstancedMesh: the finest cut any of its copies needs (like a batch) – starting with the copy that decided
+    // it last time, which mostly does again (the scan stops once the source's own bucket is reached)
+    _bucketOfCopies(entry, single, world) {
+        const im = single.mesh, a = im.instanceMatrix.array, n = im.count, e = _copyWorld;
+        let b = Infinity;
+        for (let j = 0; j < n && b > entry.sourceBucket; j++) {
+            const k = (single.best + j) % n;
+            multiplyInto(world, a, k * 16, e);
+            const bk = this._bucketOf(entry, e);
+            if (bk < b) { b = bk; single.best = k; }
+        }
+        return b;
     }
 
     // during the raster render: the chosen cuts in place of the source geometries
@@ -870,6 +889,19 @@ const STATE = Symbol('renderBatch');
 // around it (glowing marble and toon contours are never batched – noBatch – and never get here as batches)
 // occlusion culling: parts whose look ends at their surface (special materials grow beyond it, splats are no meshes
 // here; several materials on one mesh are drawn individually anyway)
+// model InstancedMeshes (model-instances.js: one per part of an object placed very often) – drawn as they are, LOD
+// like a batch
+const modelInstanced = o => o.isInstancedMesh && !o.userData.batch;
+const trianglesOf = g => (g.index ? g.index.count : g.getAttribute('position')?.count || 0) / 3;
+const _copyWorld = new Float64Array(16);
+// out = A × (B at offset o), column-major 4×4
+function multiplyInto(A, B, o, out) {
+    for (let c = 0; c < 4; c++) {
+        const b0 = B[o + 4 * c], b1 = B[o + 4 * c + 1], b2 = B[o + 4 * c + 2], b3 = B[o + 4 * c + 3];
+        for (let r = 0; r < 4; r++) out[4 * c + r] = A[r] * b0 + A[4 + r] * b1 + A[8 + r] * b2 + A[12 + r] * b3;
+    }
+}
+
 function occludable(mesh) {
     return !mesh.isSplat && !Array.isArray(mesh.material) && lodAllowed(mesh.material);
 }

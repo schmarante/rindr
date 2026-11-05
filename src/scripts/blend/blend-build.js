@@ -64,7 +64,8 @@ export function buildBlend(scene, manager, name = '') {
         const normal = texture(m.maps.normal, false);
         if (normal) mat.normalMap = normal;
         const bump = texture(m.maps.bump, false);
-        if (bump) { mat.bumpMap = bump; mat.bumpScale = m.bumpStrength ?? 1; }
+        // the relief as a height in scene units (mesh-importer.js → mm): Distance × Strength
+        if (bump) { mat.bumpMap = bump; mat.bumpScale = m.bumpStrength ?? 1; mat.userData.bumpHeight = (m.bumpDistance ?? 1) * (m.bumpStrength ?? 1); }
         if (m.emissionStrength > 0 && Math.max(...m.emission) > 0) {
             mat.emissive.setRGB(...m.emission.map(v => v * Math.min(m.emissionStrength, 10)));
             const glow = texture(m.maps.emission, true);

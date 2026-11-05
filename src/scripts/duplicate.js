@@ -11,6 +11,7 @@
 // (scene state `duplicates`, root.userData.duplicates).
 import * as THREE from 'three/webgpu';
 import { applyTransform } from './transform.js';
+import { cloneInstanced } from './model-instances.js';
 
 /** first object of an instance family (the original) */
 export const familyOf = o => o.userData.instanceOf ?? o;
@@ -66,7 +67,7 @@ export function duplicateNode(model, index, tag) {
     for (const m of model.meshes.slice(0, meshStart)) {
         const gi = groupIndex.get(m.parent);
         if (gi === undefined || !map.has(gi)) continue;
-        const c = new THREE.Mesh(m.userData.uvBase ?? m.geometry, m.material);
+        const c = m.isInstancedMesh ? cloneInstanced(m, m.userData.uvBase ?? m.geometry) : new THREE.Mesh(m.userData.uvBase ?? m.geometry, m.material);
         c.name = m.name;
         c.matrixAutoUpdate = false;
         c.matrix.copy(m.matrix);

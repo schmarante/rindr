@@ -34,6 +34,8 @@ export const BAKE_RESOLUTIONS = ['auto', '512', '1024', '2048', '4096'];
 /** bake edge length of a resolution setting ('auto' or a number as string); null = auto */
 export const bakeResolution = res => (res && res !== 'auto' ? Math.min(MAX_BAKE_SIZE, Math.max(64, Number(res) || BAKE_SIZE)) : null);
 const MAX_BAKE_SIZE = 4096;
+// relief height (mm) of a new graph – about the old default strength 1 on a 100 mm tile
+export const RELIEF_DEFAULT = 1.5;
 
 // --- Node types ---
 // inputs/outputs: { key, type: 'float'|'color'|'vector', default? }  ('vector' = texture coordinate, see node-lib.js)
@@ -95,7 +97,11 @@ export const NODE_TYPES = {
         ],
         outputs: [],
         params: [
-            { key: 'reliefStrength', kind: 'number', min: 0, max: 5, step: 0.05, default: 1 },
+            // relief: height in mm of the full range of the relief input (0 → 1) – the normal map's slopes are that height
+            // over the true texel size (graph-apply.js), whatever the bake resolution (Nov. 2026, before: a strength per
+            // texel – a material baked at 4096 showed a quarter of the relief it had at 1024); negative = sunk (pbrt's
+            // negative displacement scale, Blender's inverted bump)
+            { key: 'reliefHeight', kind: 'number', min: -50, max: 50, step: 0.01, default: RELIEF_DEFAULT },
             // edge length of the baked tile on the model in mm (UV_TILE = one UV unit of the box UVs)
             { key: 'size', kind: 'number', min: 10, max: 10000, step: 10, default: 100 },
             // resolution of the baked maps of this material (wish of the user: per material); auto = BAKE_SIZE, imported
@@ -294,12 +300,16 @@ export function shadingGraph(graph) {
 
 /** Empty graph with output */
 export function createGraph() {
-    return { version: GRAPH_VERSION, nodes: [{ id: 'out', type: 'output', x: 520, y: 40, params: { reliefStrength: 1 } }], links: [] };
+    return { version: GRAPH_VERSION, nodes: [{ id: 'out', type: 'output', x: 520, y: 40, params: { reliefHeight: RELIEF_DEFAULT } }], links: [] };
 }
 
 // Graph format. 1 (no version): the relief input drove the bump and – with displacement > 0 – the displacement too.
 // 2 (Nov. 2026, aligned with MaterialX: normal vs. displacementshader): the displacement has its own input.
-export const GRAPH_VERSION = 2;
+// 3 (Nov. 2026): the relief as a height in mm (reliefHeight) instead of a strength per baked texel (reliefStrength).
+export const GRAPH_VERSION = 3;
+// relief height for a strength of the old kind: same slopes at the old default resolution (1024): slope per texel step =
+// strength × 8 = height / (2 × texel size), texel size = tile (mm) / 1024 → height = strength × tile / 64
+export const reliefFromStrength = (strength, tile = 100) => (Number.isFinite(+strength) ? +strength : 1) * (+tile || 100) / 64;
 /**
  * Bring an older graph up to GRAPH_VERSION (in place; returns it): with displacement > 0 the relief's source is linked
  * to the displacement input as well – it looks the same. Idempotent; a graph of the current version stays untouched
@@ -308,7 +318,12 @@ export const GRAPH_VERSION = 2;
 export function migrateGraph(graph) {
     if (!graph?.nodes || (graph.version ?? 1) >= GRAPH_VERSION) return graph;
     const out = graph.nodes.find(n => n.type === 'output');
-    if (out && Number(out.params?.displacement) > 0) {
+    // version 3: the relief strength becomes a height (the look at 1024 stays)
+    if (out && out.params?.reliefHeight === undefined) {
+        out.params = { ...out.params, reliefHeight: reliefFromStrength(out.params?.reliefStrength ?? 1, out.params?.size) };
+        delete out.params.reliefStrength;
+    }
+    if ((graph.version ?? 1) < 2 && out && Number(out.params?.displacement) > 0) {
         graph.links ||= [];
         const relief = graph.links.find(l => l.to.node === out.id && l.to.port === 'height');
         if (relief && !graph.links.some(l => l.to.node === out.id && l.to.port === 'displacementHeight')) {
@@ -342,6 +357,9 @@ export const IMPORT_SLOTS = {
     // displacement height (MaterialX import: displacementshader) – not three's displacementMap (that would move the
     // raster vertices a second time)
     displacementHeightMap: ['displacementHeight', 'r'],
+    // bump picture (OBJ, FBX, MAX, C4D, Blender): the relief – baked into a normal map like any relief (three's bump
+    // mapping counts the height per screen pixel, the path tracer has none)
+    bumpMap: ['height', 'r'],
 };
 // input -> channel that can be passed through
 const PASS_PORT = Object.fromEntries(Object.values(IMPORT_SLOTS));
@@ -389,13 +407,16 @@ export function graphDrivenParams(graph, importMaps = {}) {
  * @param {{ [mapKey]: THREE.Texture }} maps
  * @param {{ [mapKey]: { url: string } }} [missing]
  */
-export function createImportGraph(maps, missing = null) {
+export function createImportGraph(maps, missing = null, { reliefHeight = null } = {}) {
     const graph = createGraph();
+    if (reliefHeight != null) graph.nodes[0].params.reliefHeight = reliefHeight;
     const byTexture = new Map();   // texture (or address of a missing image) -> node
     let row = 0;
+    const hasNormal = !!(maps?.normalMap || missing?.normalMap);
     for (const [key, [input, port]] of Object.entries(IMPORT_SLOTS)) {
         const tex = maps?.[key] || (missing?.[key] ? 'missing:' + missing[key].url : null);
         if (!tex) continue;
+        if (key === 'bumpMap' && hasNormal) continue;   // a normal map from the file wins (the relief would replace it)
         let node = byTexture.get(tex);
         if (!node) {
             node = { id: 'import-' + key, type: 'importMap', x: 40, y: 20 + row++ * 190, params: { map: key } };
@@ -460,9 +481,9 @@ export function evaluateGraph(graph, textures, importMaps = {}, { domain = null 
         // image from the file still missing: the material's own value (not a grey stand-in)
         if (src.type === 'importMap' && !importMaps[src.params?.map]) continue;
         const tex = src.type === 'importMap' && importMaps[src.params?.map];
-        if (tex && input.key === 'displacementHeight' && PASS_PORT[input.key] === from.port) {
-            // a height picture straight from the file (MaterialX import): one copy baked, placed like the picture lies
-            // on the model (its own repeat/offset – the material's tile size does not apply)
+        if (tex && (input.key === 'displacementHeight' || input.key === 'height') && PASS_PORT[input.key] === from.port) {
+            // a height picture straight from the file (MaterialX import, bump maps): one copy baked, placed like the
+            // picture lies on the model (its own repeat/offset – the material's tile size does not apply)
             const n = Math.min(MAX_BAKE_SIZE, tex.image?.width || BAKE_SIZE);
             result[input.key] = { kind: 'tsl', node: texture(tex, uv()).r, type: 'float', sig: signature(from.node, from.port) + '|placed', size: n,
                 placement: { repeat: [tex.repeat.x, tex.repeat.y], offset: [tex.offset.x, tex.offset.y] } };
@@ -493,7 +514,8 @@ export function evaluateGraph(graph, textures, importMaps = {}, { domain = null 
     };
     anisotropy(result.anisotropy, result.anisotropyDirection, 'anisotropy');
     anisotropy(result.coatAnisotropy, result.coatAnisotropyDirection, 'coatAnisotropy');
-    result.reliefStrength = out.params?.reliefStrength ?? 1;
+    // relief height in mm (an older graph not migrated: from its strength)
+    result.reliefHeight = out.params?.reliefHeight ?? reliefFromStrength(out.params?.reliefStrength ?? 1, out.params?.size);
     result.displacement = Math.max(0, Number(out.params?.displacement) || 0) * 10;   // cm → mm
     // an older graph not migrated (e.g. a library thumbnail straight from a file): the relief displaces, as it did
     if (!result.displacementHeight && (graph.version ?? 1) < GRAPH_VERSION && result.displacement > 0) result.displacementHeight = result.height;
@@ -768,8 +790,9 @@ export class GraphBaker {
     }
 
     /** Height (TSL) -> normal map (tangent space). The height is baked as float – in 8 bit gentle slopes showed
-     *  steps in the normals */
-    async bakeNormal(heightNode, strength, size = BAKE_SIZE) {
+     *  steps in the normals. kx / ky: slope per height difference over two texels (central differences) along u / v –
+     *  height (mm) / (2 × texel size in mm), reliefSlopes in graph-apply.js */
+    async bakeNormal(heightNode, kx, ky = kx, size = BAKE_SIZE) {
         const { renderer } = this;
         const target = this.heightTarget ??= new THREE.RenderTarget(size, size, { depthBuffer: false, type: THREE.FloatType });
         if (target.width !== size) target.setSize(size, size);
@@ -784,11 +807,10 @@ export class GraphBaker {
         if (renderer.backend.isWebGLBackend) src = flipRows(src, n, 4);   // rows the other way round (see bakePixels)
         const out = new Uint8Array(n * n * 4);
         const at = (x, y) => src[(((y + n) % n) * n + ((x + n) % n)) * 4];
-        const k = strength * 8;
         for (let y = 0; y < n; y++) {
             for (let x = 0; x < n; x++) {
-                const dx = (at(x + 1, y) - at(x - 1, y)) * k;
-                const dy = (at(x, y + 1) - at(x, y - 1)) * k;
+                const dx = (at(x + 1, y) - at(x - 1, y)) * kx;
+                const dy = (at(x, y + 1) - at(x, y - 1)) * ky;
                 const l = Math.hypot(dx, dy, 1);
                 const i = (y * n + x) * 4;
                 out[i] = (-dx / l * 0.5 + 0.5) * 255;

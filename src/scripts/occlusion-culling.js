@@ -20,6 +20,7 @@ import * as THREE from 'three/webgpu';
 import { Fn, If, Loop, Return, float, int, uint, vec2, vec4, uniform, storage, instanceIndex, textureLoad, ivec2, positionView,
     Discard, min, max, floor, select } from 'three/tsl';
 import { OCCLUSION } from './config.js';
+import { localBox } from './model-instances.js';
 
 const BLOCK = 8;               // level 1: minimum of BLOCK × BLOCK texels
 const DIRECT_TEXELS = 1024;    // rectangles up to this many texels are tested texel by texel, larger ones on level 1
@@ -88,10 +89,9 @@ export class OcclusionCuller {
         const a = this.boxes.array, c = new THREE.Vector3(), h = new THREE.Vector3(), axis = new THREE.Vector3();
         meshes.forEach((m, i) => {
             this.index.set(m, i);
-            const g = m.geometry;
-            if (!g.boundingBox) g.computeBoundingBox();
-            g.boundingBox.getCenter(c).applyMatrix4(m.matrixWorld);
-            g.boundingBox.getSize(h).multiplyScalar(0.5 * 1.002).addScalar(1e-6);
+            const box = localBox(m);   // an InstancedMesh: around all its copies
+            box.getCenter(c).applyMatrix4(m.matrixWorld);
+            box.getSize(h).multiplyScalar(0.5 * 1.002).addScalar(1e-6);
             const e = m.matrixWorld.elements, o = i * 16;
             a[o] = c.x; a[o + 1] = c.y; a[o + 2] = c.z; a[o + 3] = 0;
             for (let k = 0; k < 3; k++) {

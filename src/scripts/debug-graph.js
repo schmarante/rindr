@@ -1,6 +1,7 @@
 // Debug helpers for material node graphs (only with ?debug, globalThis.__viewer): bake one input of a graph into
 // a PNG and render a material description on the thumbnail sphere – for checking node types without the UI.
 import { evaluateGraph } from './material-graph.js';
+import { reliefSlopes } from './graph-apply.js';
 import { buildMaterial } from './material-manager.js';
 import { thumbKey } from './material-thumbs.js';
 
@@ -14,7 +15,7 @@ export async function bakeGraphImage(applier, graph, { input = 'color', size = 5
     const r = result[input];
     if (!r || r.kind !== 'tsl') return null;
     const tex = input === 'height'
-        ? await applier.baker.bakeNormal(r.node, result.reliefStrength, size)
+        ? await applier.baker.bakeNormal(r.node, ...Object.values(reliefSlopes(result, { ...r, size })), size)
         : await applier.baker.bake(r.node, r.type, { srgb: r.type === 'color', size });
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = size * tiles;

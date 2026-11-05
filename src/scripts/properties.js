@@ -13,6 +13,7 @@ import { MAPPING_TYPES, MAPPING_AXES, DEFAULT_MAPPING, isPlain } from './uv-mapp
 import { draggable, fmt, INPUT, SELECT, colorField } from './ui-controls.js';
 import { icon } from './icons.js';
 import { DOF_RAMP } from './dof.js';
+import { localBox } from './model-instances.js';
 
 let checkId = 0;   // ids for <label for>
 
@@ -556,6 +557,10 @@ export class PropertiesPanel {
                     scene.environmentRotation.y = v * Math.PI / 180;
                     this.ctx.onEnvironmentChange({ params: true });
                 }), this._dragHooks()),
+            // mirrored panorama (a scene from a renderer that reads it the other way round) – not for the procedural studio
+            env.hdri && env.setMirror && this._checkRow(t('properties.environment.mirror'), t('properties.environment.mirrorTitle'), env.mirror, v => {
+                this._tracked(t('properties.environment.undo.mirror'), null, () => env.mirror, m => env.setMirror(m))(v);
+            }),
             this._checkRow(t('properties.environment.background'), t('properties.environment.backgroundTitle'), env.background, v => {
                 this._tracked(t('properties.environment.undo.background'), null, () => env.background, bg => { env.background = bg; this.ctx.onEnvironmentChange(); })(v);
                 this.show(this.entry);
@@ -591,7 +596,7 @@ export class PropertiesPanel {
             range('puddles', 'properties.environment.puddles', 'properties.environment.undo.puddles', 'env-puddles', 0, 1, 0.01),
             range('puddleSize', 'properties.environment.puddleSize', 'properties.environment.undo.puddleSize', 'env-puddle-size', 0.05, 3, 0.01),
         ]);
-        return rows;
+        return rows.filter(Boolean);
     }
 
     // Volumetric light shafts (volume-shafts.js, all view modes): strength/reach/focus; source = brightest point
@@ -1232,8 +1237,7 @@ function partSize(object) {
     for (const all of [false, true]) {
         object.traverse(c => {
             if (!c.isMesh || !c.geometry || (c.userData.stray && !all)) return;
-            if (!c.geometry.boundingBox) c.geometry.computeBoundingBox();
-            _box.union(_meshBox.copy(c.geometry.boundingBox).applyMatrix4(_m.multiplyMatrices(_frame, c.matrixWorld)));
+            _box.union(_meshBox.copy(localBox(c)).applyMatrix4(_m.multiplyMatrices(_frame, c.matrixWorld)));
         });
         if (!_box.isEmpty()) break;
     }

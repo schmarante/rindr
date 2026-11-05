@@ -23,6 +23,7 @@
 import { t } from './i18n.js';
 import { workerRecords, busyTime, attributeWorkerMemory } from './worker-monitor.js';
 import { gpuLabel, looksIntegrated } from './gpu-info.js';
+import { copiesOf } from './model-instances.js';
 
 const MB = 1024 * 1024;
 const WORKER_TILES = 16;   // workers shown at most (a STEP import starts one per core)
@@ -125,9 +126,9 @@ export class DebugStats {
             if (o.isMesh && o.geometry) {
                 const g = o.geometry;
                 const n = (g.index ? g.index.count : g.getAttribute('position')?.count || 0) / 3;
-                total += n;
+                total += n * copiesOf(o);   // an InstancedMesh of the model: all its copies
                 meshes++;
-                if (shown) visible += n;
+                if (shown) visible += n * copiesOf(o);
                 if (!seen.has(g)) { seen.add(g); unique += n; }
             }
             for (const c of o.children) walk(c, shown);

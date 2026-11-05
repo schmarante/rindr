@@ -5,8 +5,10 @@
 //   … graph: g.done()
 // Nodes are laid out in a grid left of the output (readable in the node editor). Pure – no three.js.
 
+// relief: the strength the presets were tuned with (per texel at 1024) → the output's height in mm
+// (material-graph.js reliefFromStrength: strength × tile / 64 – same look at 1024, now at every resolution)
 export function graph({ size = 100, relief = 1 } = {}) {
-    const nodes = [{ id: 'out', type: 'output', x: 900, y: 40, params: { reliefStrength: relief, size } }];
+    const nodes = [{ id: 'out', type: 'output', x: 900, y: 40, params: { reliefHeight: Math.round(relief * size / 64 * 1000) / 1000, size } }];
     const links = [];
     let n = 0;
     const api = {

@@ -195,7 +195,7 @@ export function captureState(ctx) {
         },
         environment: {
             on: env.on, hdri: env.hdri || null,
-            intensity: env.intensity, lightBoost: env.lightBoost, rotation: +THREE.MathUtils.radToDeg(scene.environmentRotation.y).toFixed(3),
+            intensity: env.intensity, lightBoost: env.lightBoost, rotation: +THREE.MathUtils.radToDeg(scene.environmentRotation.y).toFixed(3), mirror: env.mirror || undefined,
             background: env.background, ground: env.ground, groundRadius: env.groundRadius, groundSoftness: env.groundSoftness, groundBounce: env.groundBounce, dome: env.dome, domeShift: env.domeShift, groundHeight: env.groundHeight, domeRadius: env.domeRadius,
             // ground reflection + bad weather (ground-reflection.js)
             reflection: env.reflection, reflectionStrength: env.reflectionStrength, reflectionBlur: env.reflectionBlur,
@@ -370,11 +370,13 @@ export async function applyState(ctx, state) {
         if (env.custom) env.custom = new Map((Array.isArray(e.custom) ? e.custom : []).map(d => normalizeHdri(d)).map(d => [d.id, d]));
         const hdri = e.hdri || '';
         const own = !!env.customName?.(hdri);
+        env.mirror = !!e.mirror;   // a newly loaded HDRI comes mirrored, the current one is mirrored below
         if (hdri !== env.hdri || own) {
             if (hdri && !env.hdris.includes(hdri) && !own) warnings.push(t('sceneState.hdriMissing', { name: hdri }));
             try { await env.select(env.hdris.includes(hdri) || own ? hdri : ''); }   // progress: status monitor
             catch (err) { warnings.push(t('sceneState.hdriError', { name: env.customName?.(hdri) ?? hdri, message: err.message })); }
         }
+        await env.setMirror?.(env.mirror);
         env.apply({ geometry: true });
     }
 

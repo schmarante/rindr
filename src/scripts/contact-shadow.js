@@ -10,6 +10,7 @@
 // Only re-rendered when something changed (markDirty: model, transforms, visibility).
 import * as THREE from 'three/webgpu';
 import { Fn, float, positionWorld, texture, uniform, uv, vec2, vec4 } from 'three/tsl';
+import { localBox } from './model-instances.js';
 
 const SIZE = 512;
 const _meshBox = new THREE.Box3();
@@ -76,8 +77,7 @@ export class ContactShadow {
         const box = this._box.makeEmpty();
         root.traverse(c => {
             if (!c.isMesh || c.userData.stray) return;
-            if (!c.geometry.boundingBox) c.geometry.computeBoundingBox();
-            box.union(_meshBox.copy(c.geometry.boundingBox).applyMatrix4(c.matrixWorld));
+            box.union(_meshBox.copy(localBox(c)).applyMatrix4(c.matrixWorld));
         });
         if (box.isEmpty()) return;
         const size = box.getSize(new THREE.Vector3());

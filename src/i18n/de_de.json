@@ -91,7 +91,8 @@
             "defaultMaterial": "Standard",
             "vertexColorMaterial": "Vertex-Farben",
             "colorMaterial": "Farbe {color}",
-            "unnamedMesh": "Mesh"
+            "unnamedMesh": "Mesh",
+            "instancedObject": "{name} ({count}×)"
         },
         "pbrt": {
             "reading": "Lese pbrt-Szene: {name}...",
@@ -583,7 +584,7 @@
         "graphParams": {
             "size": "Kachelgröße: so viele mm deckt eine gebackene Texturkachel auf dem Modell ab",
             "resolution": "Auflösung der gebackenen Texturen dieses Materials",
-            "reliefStrength": "Stärke des Reliefs (Eingang Relief → Normal-Map)",
+            "reliefHeight": "Höhe des Reliefs in mm: so hoch ist der ganze Bereich des Eingangs Relief (0 → 1) auf dem Modell – daraus die Neigung der Normal-Map, unabhängig von der Auflösung; negativ = vertieft",
             "displacement": "Displacement in cm: verschiebt die Fläche um (Höhe − Mitte) × Wert (Eingang Displacement (Höhe))",
             "displacementMid": "Höhe, bei der das Displacement die Fläche nicht verschiebt (0–1)"
         }
@@ -661,7 +662,7 @@
                     "grassDry": "Trockenanteil (Faktor)"
                 },
                 "params": {
-                    "reliefStrength": "Relief-Stärke",
+                    "reliefHeight": "Relief (mm)",
                     "size": "Kachel (mm)",
                     "resolution": "Auflösung",
                     "displacement": "Displ. (cm)",
@@ -2032,6 +2033,8 @@
             "intensity": "Intensität",
             "lightBoost": "Licht-Boost",
             "rotation": "Drehung °",
+            "mirror": "Spiegeln",
+            "mirrorTitle": "HDRI seitenverkehrt – für Szenen aus Renderern, die Panoramen gespiegelt lesen",
             "background": "Hintergrund anzeigen",
             "backgroundTitle": "HDRI als Hintergrund",
             "reflection": "Spiegelung",
@@ -2050,6 +2053,7 @@
             "undo": {
                 "intensity": "Umgebungs-Intensität",
                 "rotation": "Umgebung drehen",
+                "mirror": "HDRI spiegeln",
                 "background": "HDRI-Hintergrund",
                 "reflection": "Bodenspiegelung",
                 "reflectionStrength": "Spiegelung",
@@ -2645,6 +2649,7 @@
             "one": "{count} Kamera aus der Datei übernommen (unter „Kamera“)",
             "other": "{count} Kameras aus der Datei übernommen (unter „Kamera“)"
         },
+        "ownLight": "Die Datei bringt ihr eigenes Licht mit – Standardlichter ausgeschaltet (unter „Lichter“ wieder einschaltbar)",
         "lightsImportedKeep": {
             "one": "{count} Licht aus der Datei übernommen (unter „Lichter“)",
             "other": "{count} Lichter aus der Datei übernommen (unter „Lichter“)"

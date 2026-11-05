@@ -25,6 +25,8 @@ import { wgslTagFn } from 'three-mesh-bvh/webgpu';
 import { DataUtils } from 'three/webgpu';
 
 export const MAX_EMITTERS = 65536;
+// test: ?emitterNee=0 – glowing meshes found by the paths only (the reference of the next event estimation)
+const NEE_OFF = new URLSearchParams(globalThis.location?.search).get('emitterNee') === '0';
 // the table – one buffer for the whole page (fixed, on the GPU only once a kernel uses it); the photon kernel binds it
 // through a storage node of its own
 export const EMITTER_TABLE = new THREE.StorageBufferAttribute(new Float32Array(MAX_EMITTERS * 16), 4);
@@ -199,7 +201,7 @@ export class EmitterTable {
         this.info = { count, total, sampled, meshes };
         EMITTERS.count.value = count;
         EMITTERS.total.value = total;
-        EMITTERS.nee.value = sampled ? 0 : 1;
+        EMITTERS.nee.value = sampled || NEE_OFF ? 0 : 1;
         return this.info;
     }
 

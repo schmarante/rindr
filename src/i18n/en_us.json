@@ -91,7 +91,8 @@
             "defaultMaterial": "Default",
             "vertexColorMaterial": "Vertex colours",
             "colorMaterial": "Colour {color}",
-            "unnamedMesh": "Mesh"
+            "unnamedMesh": "Mesh",
+            "instancedObject": "{name} ({count}×)"
         },
         "pbrt": {
             "reading": "Reading pbrt scene: {name}...",
@@ -583,7 +584,7 @@
         "graphParams": {
             "size": "Tile size: how many mm one baked texture tile covers on the model",
             "resolution": "Resolution of this material's baked textures",
-            "reliefStrength": "Strength of the relief (input Relief → normal map)",
+            "reliefHeight": "Relief height in mm: the full range of the Relief input (0 → 1) on the model – it sets the slope of the normal map, independent of the resolution; negative = sunk",
             "displacement": "Displacement in cm: moves the surface by (height − mid) × value (input Displacement (height))",
             "displacementMid": "Height at which the displacement does not move the surface (0–1)"
         }
@@ -661,7 +662,7 @@
                     "grassDry": "Dry share (factor)"
                 },
                 "params": {
-                    "reliefStrength": "Bump strength",
+                    "reliefHeight": "Relief (mm)",
                     "size": "Tile (mm)",
                     "resolution": "Resolution",
                     "displacement": "Displ. (cm)",
@@ -2032,6 +2033,8 @@
             "intensity": "Intensity",
             "lightBoost": "Light boost",
             "rotation": "Rotation °",
+            "mirror": "Mirror",
+            "mirrorTitle": "HDRI flipped horizontally – for scenes from renderers that read panoramas mirrored",
             "background": "Show background",
             "backgroundTitle": "Show the HDRI as background",
             "reflection": "Reflection",
@@ -2050,6 +2053,7 @@
             "undo": {
                 "intensity": "Environment intensity",
                 "rotation": "Rotate environment",
+                "mirror": "Mirror HDRI",
                 "background": "HDRI background",
                 "reflection": "Ground reflection",
                 "reflectionStrength": "Reflection",
@@ -2645,6 +2649,7 @@
             "one": "{count} camera taken over from the file (under \"Camera\")",
             "other": "{count} cameras taken over from the file (under \"Camera\")"
         },
+        "ownLight": "The file brings its own light – default lights switched off (can be switched on again under “Lights”)",
         "lightsImportedKeep": {
             "one": "{count} light taken from the file (under “Lights”)",
             "other": "{count} lights taken from the file (under “Lights”)"

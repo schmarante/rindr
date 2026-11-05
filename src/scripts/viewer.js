@@ -36,8 +36,9 @@ import { setSoapSceneSize } from './materials/soap.js';
 import { GrassSystem } from './materials/grass.js';
 import { EdgeSystem } from './materials/edges.js';
 import { GraphApplier } from './graph-apply.js';
+import { uvLengthHistogram, UvMetric } from './uv-metric.js';
 import { isUvMode } from './material-graph.js';
-import { createStudioEnvironment, renderStudioEnvironment, loadHdri, listHdris, VignetteBackground } from './environment.js';
+import { createStudioEnvironment, renderStudioEnvironment, loadHdri, listHdris, VignetteBackground, mirroredHdri } from './environment.js';
 import { PathTracingView } from './pathtracer.js';
 import { SceneGraph } from './scene-graph.js';
 import { Highlighter } from './highlight.js';
@@ -86,6 +87,7 @@ import { isRemoteTexture } from './remote-textures.js';
 import { textureMaxSide } from './memory-budget.js';
 import { RasterAO } from './ambient-occlusion.js';
 import { OcclusionCuller } from './occlusion-culling.js';
+import { instancedModelMesh, localBox, lowestInstanced } from './model-instances.js';
 import { icon } from './icons.js';
 
 // static page texts (data-i18n in index.astro) in the current language
@@ -727,6 +729,7 @@ const environment = {
     centerX: 0,          // middle of the scene's footprint (several models side by side)
     centerZ: 0,
     texture: studioTexture,
+    mirror: false,       // HDRI mirrored left ↔ right (setMirror – panoramas of renderers that read them the other way round)
     hdris: listHdris(),  // files in public/hdr
     hdri: '',            // '' = procedural studio, 'editor:<id>' = own HDRI of the HDRI editor
     custom: new Map(),   // HDRI editor (hdri/): id -> description (hdri-model.js), rendered in a worker
@@ -783,12 +786,14 @@ const environment = {
                 if (!doc) throw new Error(t('hdriEditor.missing'));
                 showProgress(t('status.renderingHdri'));
                 texture = await hdriService.texture(doc);
+                if (this.mirror) { const rendered = texture; texture = mirroredHdri(rendered); rendered.dispose(); }
                 if (id === this._loadId) await pathTracing.prepareEnvironment(texture);
                 if (id !== this._loadId) { texture.dispose(); return false; }
             } else if (name) {
                 // relinked HDRI (asset window): blob URL of the dropped file, otherwise public/hdr
                 progress({});
                 texture = await loadHdri(this.hdriUrls[name] || `${import.meta.env.BASE_URL}hdr/${encodeURIComponent(name)}`, progress);
+                if (this.mirror) { const loaded = texture; texture = mirroredHdri(loaded); loaded.dispose(); }
                 // path tracer's importance-sampling table in a worker first: raster and HQ switch together
                 if (id === this._loadId) await pathTracing.prepareEnvironment(texture);
                 if (id !== this._loadId) { texture.dispose(); return false; }
@@ -805,6 +810,21 @@ const environment = {
         this.apply();
         if (previous !== studioTexture && previous !== texture) previous.dispose();
         return true;
+    },
+    /** mirror the HDRI left ↔ right (not the procedural studio – it follows the camera); the choice stays for later HDRIs */
+    async setMirror(on) {
+        this.mirror = !!on;
+        const texture = this.texture;
+        if (!this.hdri || texture === studioTexture || !texture?.image?.data || !!texture.userData.mirrored === this.mirror) return;
+        const id = ++this._loadId;   // a selection meanwhile wins
+        const copy = mirroredHdri(texture);
+        await pathTracing.prepareEnvironment(copy);
+        if (id !== this._loadId || this.texture !== texture) { copy.dispose(); return; }
+        smoothChange();
+        this.texture = copy;
+        ground.setEnvironment(copy);
+        this.apply();
+        texture.dispose();
     },
     // Transfer state to scene + path tracer. params: only intensity/rotation changed (fast)
     matte: null,         // image export: plain background colour instead of HDRI/vignette (light unchanged)
@@ -1780,7 +1800,31 @@ const graphApplier = new GraphApplier(renderer, {
         grass?.invalidate?.();   // grass reads the colour and its masks at the blades' roots
     },
     uvDomain: material => uvDomainOf(material),
+    uvMetric: material => uvMetricOf(material),
 });
+// surface length (mm) of one UV unit on the meshes using a material – the relief of a picture from the file (bump map)
+// gets its slopes from it (graph-apply.js reliefSlopes); the lengths per geometry are cached
+function uvMetricOf(material) {
+    const metric = new UvMetric();
+    for (const root of [rootGroup, ...extraModels.map(x => x.root)]) {
+        root?.traverse(o => {
+            if (!o.isMesh || o.material !== material) return;
+            const g = o.geometry;
+            const hist = g.userData.uvLengths ??= uvLengthHistogram(flatAttribute(g.getAttribute('position'), 3), flatAttribute(g.getAttribute('uv'), 2), g.index?.array ?? null);
+            if (o.isInstancedMesh) metric.addCopies(hist, o.matrixWorld.elements, o.instanceMatrix.array, o.count);
+            else metric.add(hist, o.matrixWorld.elements);
+        });
+    }
+    return metric.length;
+}
+// attribute values as a plain array (interleaved or normalised attributes copied)
+function flatAttribute(a, size) {
+    if (!a) return null;
+    if (!a.isInterleavedBufferAttribute && !a.normalized && a.itemSize === size && a.array.length === a.count * size) return a.array;
+    const out = new Float32Array(a.count * size);
+    for (let i = 0; i < a.count; i++) for (let k = 0; k < size; k++) out[i * size + k] = a.getComponent(i, k);
+    return out;
+}
 // UV range of the meshes using a material – a material with a decal (non-repeating picture) is baked over it once
 // (graph-apply.js); the box per geometry is cached
 function uvDomainOf(material) {
@@ -2378,7 +2422,7 @@ function addImportedViews(cameras, root, boxCenter) {
             view.dof = { enabled: true, fStop: Math.min(Math.max(focal / (2 * c.aperture * scaleM), 0.1), 64), focusDistance: c.focusDistance * scaleM, blades: 0, autoFocus: false, showPlane: false };
         }
         if (cameraViews.some(v => v.name === view.name && new THREE.Vector3().fromArray(v.position).distanceTo(position) < 1e-3)) continue;
-        added.push({ id: ++cameraViewSeq, ...view });
+        added.push({ id: ++cameraViewSeq, ...view, fromFile: true });   // fromFile: leaves with the next main model
     }
     if (!added.length) return added;
     setCameraViews([...cameraViews, ...added]);
@@ -2455,13 +2499,36 @@ async function addImportedLights(lights, root, boxCenter, modelSize) {
         created.push(light);
     }
     if (!created.length) return;
-    for (const l of defaults) l.visible = false;
+    for (const l of defaults) { l.visible = false; switchedOffByFile.add(l); }
     // a render scene's light is complete – no fill from the ambient light either (still in the Scene Graph)
-    if (absolute) ambientLight.visible = false;
+    if (absolute && ambientLight.visible) { ambientLight.visible = false; switchedOffByFile.add(ambientLight); }
     setSceneLights([...sceneLights(), ...created]);
     fitShadows(lightSize, lightCenter.clone());
     flashStatus(t(defaults.length ? 'status.lightsImported' : 'status.lightsImportedKeep', { count: created.length }), 4000);
     debugLog(`[Lights] imported ${created.length}: k ${k.toExponential(2)}, ${created.map(l => `${l.name} ${lightKind(l)} ${l.intensity.toExponential(2)}`).join(', ')}`);
+}
+// The main model brings its own light (glTF: lamps or glowing surfaces meant as lamps, mesh-importer.js `ownLight`): all
+// default lights off, the ambient light too (still in the Scene Graph, can be switched on again); the HDRI stays – glTF
+// has no environment. notice: say so (with lamps, addImportedLights' status says it already)
+function ownLightOnly(notice) {
+    let changed = false;
+    for (const l of [dirLight1, dirLight2, ambientLight]) if (l.parent === lightsGroup && l.visible) { l.visible = false; switchedOffByFile.add(l); changed = true; }
+    if (!changed) return;
+    lightsChanged();
+    if (notice) flashStatus(t('status.ownLight'), 4000);
+}
+// Lights a file switched off (default lights, ambient light), the lamps it brought (`fixed`) and its cameras (`fromFile`)
+// belong to that file: a new main model drops lamps and cameras and switches those lights on again (user: "wenn wir ein
+// gltf reinziehen und die szene ersetzen …") – lights and cameras the user made or switched stay as they are
+const switchedOffByFile = new Set();
+function resetFromFile() {
+    if (cameraViews.some(v => v.fromFile)) setCameraViews(cameraViews.filter(v => !v.fromFile));   // the active one → free camera
+    const lamps = sceneLights().filter(l => l.userData.rindr?.fixed);
+    let changed = false;
+    for (const l of switchedOffByFile) if (!l.visible && l.parent === lightsGroup) { l.visible = true; changed = true; }
+    switchedOffByFile.clear();
+    if (lamps.length) setSceneLights(sceneLights().filter(l => !lamps.includes(l)));   // also refreshes everything
+    else if (changed) lightsChanged();
 }
 // A different view angle (e.g. a nearly orthographic side view ↔ perspective, user: "switching between the two jumps
 // quite a bit" – the angle was set at once, the camera then flew straight from ~16× the distance): the angle blends like
@@ -3278,8 +3345,7 @@ function frameFit(object, fovDeg = camera.fov) {
         o.updateMatrixWorld(true);
         o.traverseVisible(c => {
             if (!c.isMesh) return;
-            if (!c.geometry.boundingBox) c.geometry.computeBoundingBox();
-            box.union(new THREE.Box3().copy(c.geometry.boundingBox).applyMatrix4(c.matrixWorld));
+            box.union(new THREE.Box3().copy(localBox(c)).applyMatrix4(c.matrixWorld));
         });
     }
     if (box.isEmpty()) return null;
@@ -4868,12 +4934,19 @@ function makeGeometry(g) {
     return geometry;
 }
 
+// A mesh of an import: one part, or one InstancedMesh for all copies of a part the file places very often
+// (`instances`, model-instances.js)
+function importMesh(m, geometry, material) {
+    return m.instances ? instancedModelMesh(geometry, material, m.instances, !!renderer.backend?.isWebGPUBackend) : new THREE.Mesh(geometry, material);
+}
+
 // Lowest y of all vertices (mesh.matrix = position in the model root), fallback if there are none
 function lowestPoint(meshes, fallback) {
     let min = Infinity;
     for (const mesh of meshes) {
         const p = mesh.geometry.getAttribute('position'), e = mesh.matrix.elements;
         if (!p) continue;
+        if (mesh.isInstancedMesh) { min = Math.min(min, lowestInstanced(mesh, e)); continue; }   // all its copies
         const a = p.array;
         // fast path for plain float positions, otherwise getX/Y/Z (normalised/interleaved)
         if (!p.isInterleavedBufferAttribute && !p.normalized && a instanceof Float32Array) {
@@ -4919,6 +4992,11 @@ function fitCamera(box, { animate = true, direction = null } = {}) {
 
 // Fade in new parts during import (mask in material-manager.js, userData.fade 0..1)
 const FADE_MS = 400;
+// meshes of one import that fade in at most – a scene of 400 000 instance parts (vegetation) hung for over ten minutes
+// in three.js' render-object churn (removing each mesh's material listener walks one long list: quadratic)
+const FADE_MAX_MESHES = 5000;
+// an import with more meshes than this is not drawn mesh by mesh before its first grouping (render-batcher.js holdUngrouped)
+const HOLD_MESHES = 20000;
 const fading = new Map();   // mesh -> start time
 function startFade(mesh) {
     mesh.userData.fade = 0;
@@ -4991,7 +5069,7 @@ function importNotices(result, name) {
 // Stray objects of a model (outliers.js: far outside or far larger than the model – helper geometry, export errors):
 // box of the others, and the stray meshes hidden through the Scene Graph (checkbox off, can be shown again).
 function boundsWithoutStray(meshes) {
-    const boxes = meshes.map(m => new THREE.Box3().copy(m.geometry.boundingBox).applyMatrix4(m.matrix));
+    const boxes = meshes.map(m => new THREE.Box3().copy(localBox(m)).applyMatrix4(m.matrix));
     const stray = findOutliers(boxes).outliers;
     // marked for everything else sized on the model (explode centres, contact shadow, clipping – modelBox)
     meshes.forEach((m, i) => { if (stray.has(i)) m.userData.stray = true; else delete m.userData.stray; });
@@ -5006,8 +5084,7 @@ function modelBox(object) {
     object.updateMatrixWorld(true);
     object.traverse(c => {
         if (!c.isMesh || c.userData.stray) return;
-        if (!c.geometry.boundingBox) c.geometry.computeBoundingBox();
-        box.union(new THREE.Box3().copy(c.geometry.boundingBox).applyMatrix4(c.matrixWorld));
+        box.union(new THREE.Box3().copy(localBox(c)).applyMatrix4(c.matrixWorld));
     });
     return box;
 }
@@ -5070,6 +5147,7 @@ async function loadModel(reload = false, safe = false) {
         if (!reload) {
             sceneGraph.select(null);
             clearModel();
+            resetFromFile();   // the previous file's lamps and cameras out, the lights it switched off on again
             history.clear();   // steps refer to the old model
             exploder.reset();
             // show the new model immediately (grows while loading)
@@ -5097,19 +5175,21 @@ async function loadModel(reload = false, safe = false) {
         const addMesh = (m, geometries) => {
             const geometry = threeGeometries[m.geometry] ??= makeGeometry(geometries[m.geometry]);
             const entry = materialFor(m);
-            const mesh = new THREE.Mesh(geometry, entry.material);
+            const mesh = importMesh(m, geometry, entry.material);
             mesh.userData.key = m.key;                        // stable across reloads (scene state)
             mesh.userData.instance = m.instance;              // STEP: instance in the plan (part quality)
             mesh.userData.defaultMaterialId = entry.def.id;   // default from the file
             mesh.matrixAutoUpdate = false;
             mesh.matrix.fromArray(m.matrix);
             mesh.castShadow = true;
-            if (!reload) startFade(mesh);   // fade in softly when opening (re-tessellation swaps invisibly)
+            // fade in softly when opening (re-tessellation swaps invisibly) – not beyond FADE_MAX_MESHES: a fading mesh is
+            // drawn on its own (render-batcher.js), three.js builds and drops a render object per mesh and frame
+            if (!reload && streamed.length < FADE_MAX_MESHES) startFade(mesh);
             mesh.receiveShadow = true;
             if (m.name) mesh.name = m.name;
             (nodeGroups[m.node] || root).add(mesh);
             mesh.updateMatrixWorld();
-            bbox.union(meshBox.copy(geometry.boundingBox).applyMatrix4(mesh.matrix));
+            bbox.union(meshBox.copy(localBox(mesh)).applyMatrix4(mesh.matrix));
             streamed.push(mesh);
             meshByKey.set(m.key, mesh);
             return mesh;
@@ -5194,6 +5274,9 @@ async function loadModel(reload = false, safe = false) {
         root.userData.bim = result.bim || null;   // IFC: property lookups (worker stays open, closed in disposeRoot)
         root.userData.ifcOrigin = result.bim?.origin || null;   // IFC: shift to the origin (metres) – alignment, BCF
         if (!nodeGroups.length) setupNodes(nodes);
+        // very many meshes (instanced vegetation): the raster draws the model only once the batcher has grouped it
+        // (not after streaming – those parts are on screen already)
+        if (!reload && meshes.length > HOLD_MESHES && !streamed.length) batcher.holdUngrouped = true;
         showProgress(t('status.buildingScene', { count: meshes.length }));
         await afterPaint();
 
@@ -5209,7 +5292,7 @@ async function loadModel(reload = false, safe = false) {
             // counted per instance (STEP solid); IFC: per element (its geometries are separate instances)
             if (m.node >= 0 && !countedInstances.has(m.countId ?? m.instance)) {
                 countedInstances.add(m.countId ?? m.instance);
-                partCounts[m.node]++;
+                partCounts[m.node] += m.copies || 1;   // an instanced object: all its copies
             }
         }
         if (bbox.isEmpty()) throw new Error(t('status.noFaces'));
@@ -5239,7 +5322,11 @@ async function loadModel(reload = false, safe = false) {
         root.userData.unmovedBox = bbox.clone().translate(root.position);   // placement of further models
         root.updateMatrixWorld(true);
         const importedViews = reload ? [] : addImportedViews(result.cameras, root, center) || [];
-        if (!reload) addImportedLights(result.lights, root, center, bbox.getSize(new THREE.Vector3()).length() * new THREE.Vector3().setFromMatrixScale(root.matrixWorld).x).catch(err => console.warn('[Lights] import failed', err));
+        if (!reload) {
+            addImportedLights(result.lights, root, center, bbox.getSize(new THREE.Vector3()).length() * new THREE.Vector3().setFromMatrixScale(root.matrixWorld).x)
+                .catch(err => console.warn('[Lights] import failed', err))
+                .then(() => { if (result.ownLight) ownLightOnly(!result.lights?.length); });
+        }
         if (!reload) {
             camera.position.sub(center);
             controls.target.sub(center);
@@ -5715,7 +5802,7 @@ async function loadExtraModel(source, { sceneIndex, placement: savedPlacement } 
         for (const m of meshes) {
             const geometry = threeGeometries[m.geometry] ??= makeGeometry(geometries[m.geometry]);
             const entry = m.materialId ? materialManager.get(m.materialId) : materialManager.forStepColor(m.color);
-            const mesh = new THREE.Mesh(geometry, entry.material);
+            const mesh = importMesh(m, geometry, entry.material);
             mesh.userData.key = prefix + m.key;
             mesh.userData.defaultMaterialId = entry.def.id;
             mesh.userData.extra = id;
@@ -5725,9 +5812,9 @@ async function loadExtraModel(source, { sceneIndex, placement: savedPlacement } 
             mesh.castShadow = mesh.receiveShadow = true;
             if (m.name) mesh.name = m.name;
             (groups[m.node] || root).add(mesh);
-            bbox.union(box.copy(geometry.boundingBox).applyMatrix4(mesh.matrix));
+            bbox.union(box.copy(localBox(mesh)).applyMatrix4(mesh.matrix));
             meshList.push(mesh);
-            if (m.node >= 0 && !counted.has(m.countId ?? m.instance)) { counted.add(m.countId ?? m.instance); partCounts[m.node]++; }
+            if (m.node >= 0 && !counted.has(m.countId ?? m.instance)) { counted.add(m.countId ?? m.instance); partCounts[m.node] += m.copies || 1; }
             startFade(mesh);
         }
         if (bbox.isEmpty()) throw new Error(t('status.noFaces'));
@@ -6310,11 +6397,11 @@ async function openHdriFile(file) {
 // background, infinitely far (no dome, no ground shadow – the scene brings its floor), with the scene's intensity; a scene
 // without one is lit by its own lights only (pbrt's background is black – the environment off, as in the Scene Graph)
 async function applyImportedEnvironment(env) {
-    Object.assign(environment, { ground: false, reflection: false, wet: false, dome: false, lightBoost: 1 });
+    Object.assign(environment, { ground: false, reflection: false, wet: false, dome: false, lightBoost: 1, mirror: false });
     // the scene's light is complete: RINDR's default lights and the ambient light off (still in the Scene Graph) – also
     // when the file has no lights of its own (lit by its environment only)
     let changed = false;
-    for (const l of [dirLight1, dirLight2, ambientLight]) if (l.parent === lightsGroup && l.visible) { l.visible = false; changed = true; }
+    for (const l of [dirLight1, dirLight2, ambientLight]) if (l.parent === lightsGroup && l.visible) { l.visible = false; switchedOffByFile.add(l); changed = true; }
     if (changed) lightsChanged();
     if (env.off) {
         environment.on = false;

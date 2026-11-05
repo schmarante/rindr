@@ -8,6 +8,9 @@
 // (entry.preview, material thumbnails on a sphere with 0..1 UVs) shows one tile across the visible half instead.
 // UV mode (a picture that does not repeat – decal, isUvMode): the maps are baked once over the UV range of the meshes
 // using the material (uvDomain callback) and placed there (repeat/offset, clamped) – no repetition.
+// Relief: a height in mm (output reliefHeight); the normal map's slope = height difference over the texel's true size –
+// tile mode: tile (mm) / resolution; UV mode: UV range × the meshes' surface length per UV unit (uvMetric callback) /
+// resolution; a height picture from the file (bump map, placed with its own repeat): that length / repeat / resolution.
 import * as THREE from 'three/webgpu';
 import { evaluateGraph, evaluateNode, nodeSignature, GraphBaker, loadImageTexture, isUvMode, bakeResolution, BAKE_SIZE, hasImage } from './material-graph.js';
 import { PARAMS } from './material-manager.js';
@@ -61,13 +64,16 @@ const RELIEF = new Set(['height', 'coatHeight']);
 
 export class GraphApplier {
     /**
-     * @param {{ onBaked?: (entry) => void, uvDomain?: (material) => { min: number[], max: number[] } | null }} opts
+     * @param {{ onBaked?: (entry) => void, uvDomain?: (material) => { min: number[], max: number[] } | null,
+     *   uvMetric?: (material) => number | null }} opts
      *   uvDomain: UV range of the meshes using a material (UV mode); null → 0..1
+     *   uvMetric: surface length (mm) of one UV unit on the meshes using a material (relief of a picture from the file)
      */
-    constructor(renderer, { onBaked, uvDomain } = {}) {
+    constructor(renderer, { onBaked, uvDomain, uvMetric } = {}) {
         this.baker = new GraphBaker(renderer);
         this.onBaked = onBaked || (() => {});
         this.uvDomain = uvDomain || (() => null);
+        this.uvMetric = uvMetric || (() => null);
         this.images = new Map();     // Data-URL -> Promise<Texture>
         this.queue = Promise.resolve();
         this.pending = new Map();    // material ID -> timer
@@ -263,19 +269,27 @@ export class GraphApplier {
         for (const [key, slot] of Object.entries(SLOTS)) {
             const r = result[key];
             if (!r || r.kind !== 'tsl') continue;
-            const sig = (RELIEF.has(key) ? r.sig + '|' + result.reliefStrength : r.sig) + '|' + r.size + (result.domain ? '|' + JSON.stringify(result.domain) : '');
+            // surface length per UV unit: measured on the meshes in the scene – while they are not there yet (an import
+            // bakes before its model is added), as the import measured it
+            const metric = !entry.preview && (r.placement || result.domain) ? this.uvMetric(material) ?? def.render?.uvLength ?? null : null;
+            const slopes = RELIEF.has(key) ? reliefSlopes(result, r, metric) : null;
+            // meshes placed mirrored (pbrt's left-handed scenes): both renderers build the bitangent as normal × tangent,
+            // which the mirror turns against the texture's v – the v slope turned keeps the relief the right way up
+            if (slopes && def.render?.mirrored) slopes.ky = -slopes.ky;
+            const sig = (slopes ? `${r.sig}|${slopes.kx.toPrecision(5)}|${slopes.ky.toPrecision(5)}` : r.sig) + '|' + r.size + (result.domain ? '|' + JSON.stringify(result.domain) : '')
+                + (r.placement ? '|' + JSON.stringify(r.placement) : '');
             if (maps[key] && sigs[key] === sig) {
                 material[slot.map] = maps[key];   // unchanged -> keep the existing texture
                 mean(key, slot, sig);
                 continue;
             }
             if (entry.def.graph !== graph) return;   // changed in the meantime -> a new run follows
-            const tex = RELIEF.has(key)
-                ? await this.baker.bakeNormal(r.node, result.reliefStrength, r.size)
+            const tex = slopes
+                ? await this.baker.bakeNormal(r.node, slopes.kx, slopes.ky, r.size)
                 : await this.baker.bake(r.node, slot.alpha ? 'floatA' : r.type, { srgb: !!slot.srgb, size: r.size });
             if (entry.def.graph !== graph) { tex.dispose(); return; }   // changed in the meantime
             maps[key]?.dispose();
-            place(tex, entry, result);
+            place(tex, entry, result, r.placement);
             maps[key] = tex;
             sigs[key] = sig;
             material[slot.map] = tex;
@@ -429,11 +443,15 @@ export class GraphApplier {
 // placement of a baked map on the model's UVs. Tile mode: repeat = UV_TILE mm per UV unit (box UVs) / mm per baked
 // tile; preview sphere (0..1 UVs around and from pole to pole): one tile across the visible half, square.
 // UV mode: the texture spans the bake domain once (clamped at its edges)
-function place(tex, entry, result) {
-    const d = result.domain;
+function place(tex, entry, result, placement = null) {
+    const d = placement ? null : result.domain;
     const wrap = d ? THREE.ClampToEdgeWrapping : THREE.RepeatWrapping;
     if (tex.wrapS !== wrap || tex.wrapT !== wrap) { tex.wrapS = tex.wrapT = wrap; tex.needsUpdate = true; }
-    if (d) {
+    if (placement) {
+        // a picture from the file (bump map): where the picture itself lies on the model
+        tex.repeat.fromArray(placement.repeat);
+        tex.offset.fromArray(placement.offset);
+    } else if (d) {
         const sx = 1 / (d.max[0] - d.min[0]), sy = 1 / (d.max[1] - d.min[1]);
         tex.repeat.set(sx, sy);
         tex.offset.set(-d.min[0] * sx, -d.min[1] * sy);
@@ -441,6 +459,27 @@ function place(tex, entry, result) {
         tex.repeat.copy(entry.preview ? new THREE.Vector2(2, 1) : new THREE.Vector2(UV_TILE / result.size, UV_TILE / result.size));
         tex.offset.set(0, 0);
     }
+}
+
+/**
+ * Slopes of a relief bake (bakeNormal kx / ky): height (mm) / (2 × texel size in mm) along u and v.
+ * @param result  evaluateGraph's result (reliefHeight, size = tile mm, domain in UV mode)
+ * @param r       the relief input's bake ({ size, placement? })
+ * @param metric  mm per UV unit on the meshes (a placed picture from the file, UV mode); null → UV_TILE mm, as box UVs
+ */
+export function reliefSlopes(result, r, metric = null) {
+    const h = Number(result.reliefHeight) || 0, n = r.size || BAKE_SIZE;   // negative: sunk
+    let tx, ty;   // texel size in mm
+    if (r.placement) {
+        const len = metric > 0 ? metric : UV_TILE;   // without meshes (preview): one UV unit = UV_TILE mm, as the box UVs
+        tx = len / Math.max(Math.abs(r.placement.repeat[0]), 1e-6) / n;
+        ty = len / Math.max(Math.abs(r.placement.repeat[1]), 1e-6) / n;
+    } else if (result.domain) {
+        const d = result.domain, len = metric > 0 ? metric : UV_TILE;
+        tx = (d.max[0] - d.min[0]) * len / n;
+        ty = (d.max[1] - d.min[1]) * len / n;
+    } else tx = ty = (result.size || 100) / n;
+    return { kx: h / (2 * Math.max(tx, 1e-9)), ky: h / (2 * Math.max(ty, 1e-9)) };
 }
 
 // mean of a baked map (DataTexture, 8 bit, every few texels): a colour map as a colour (sRGB-coded → linear), a value

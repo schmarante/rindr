@@ -17,6 +17,7 @@
 // the path tracer nor in picking.
 import * as THREE from 'three/webgpu';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { localBox } from './model-instances.js';
 
 const _m = new THREE.Matrix4();
 const _inv = new THREE.Matrix4();
@@ -278,8 +279,7 @@ function meshBox(objects, box) {
     for (const all of [false, true]) {
         for (const o of objects) o.traverse(c => {
             if (!c.isMesh || (c.userData.stray && !all)) return;
-            if (!c.geometry.boundingBox) c.geometry.computeBoundingBox();
-            box.union(new THREE.Box3().copy(c.geometry.boundingBox).applyMatrix4(c.matrixWorld));
+            box.union(new THREE.Box3().copy(localBox(c)).applyMatrix4(c.matrixWorld));
         });
         if (!box.isEmpty()) break;
     }

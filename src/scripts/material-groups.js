@@ -13,7 +13,7 @@ const PARAM_INPUT = Object.fromEntries(Object.entries(INPUT_PARAMS).map(([input,
 // rows of a group that are no parameter (only with a node graph): its settings and the inputs without a value
 const TEXTURES = [{ setting: 'size' }, { setting: 'resolution' }];
 // a setting goes with its input (`with`): relief strength with the relief, displacement with its height
-const SURFACE = [{ input: 'normal' }, { input: 'height' }, { setting: 'reliefStrength', with: 'height' }, { input: 'ao' },
+const SURFACE = [{ input: 'normal' }, { input: 'height' }, { setting: 'reliefHeight', with: 'height' }, { input: 'ao' },
     { input: 'displacementHeight' }, { setting: 'displacement', with: 'displacementHeight' }, { setting: 'displacementMid', with: 'displacementHeight' }];
 const APPENDED = { clearcoat: [{ input: 'coatNormal' }, { input: 'coatHeight' }], effects: [{ input: 'alpha' }] };
 

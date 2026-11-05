@@ -146,7 +146,9 @@ export function parseBlend(bytes, onProgress = () => {}) {
         if (nn?.string('idname') === 'ShaderNodeNormalMap') { const m = imageFeeding(input(nn, 'Color')); if (m) mat.maps.normal = m; }
         if (nn?.string('idname') === 'ShaderNodeBump') {
             const m = imageFeeding(input(nn, 'Height'));
-            if (m) { mat.maps.bump = m; mat.bumpStrength = socketValue(input(nn, 'Strength')) ?? 1; }
+            // Distance: the height of the picture's full range in scene units (Blender's bump is physical – world-space
+            // derivatives); Strength blends towards the unbumped normal
+            if (m) { mat.maps.bump = m; mat.bumpStrength = socketValue(input(nn, 'Strength')) ?? 1; mat.bumpDistance = socketValue(input(nn, 'Distance')) ?? 1; }
         }
     }
 

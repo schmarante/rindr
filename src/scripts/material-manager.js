@@ -158,7 +158,7 @@ export class MaterialManager extends EventTarget {
             modified: !!def.modified,
         };
         // Import: the file's textures as nodes, so the node editor shows everything
-        if (!full.graph && full.source === 'import' && hasGraphMaps(full.render)) full.graph = createImportGraph(full.render.maps, full.render.missing);
+        if (!full.graph && full.source === 'import' && hasGraphMaps(full.render)) full.graph = createImportGraph(full.render.maps, full.render.missing, importGraphOptions(full.render));
         const material = new RindrMaterial();
         material.maskNode = FADE_MASK;
         material.thicknessNode = WORLD_THICKNESS;
@@ -274,6 +274,23 @@ export class MaterialManager extends EventTarget {
      * Settings of the graph's output node (tile size, resolution, relief, displacement) – edited in the material panel.
      * One undo step per setting while it is dragged; `outside`: the open node editor takes the graph over.
      */
+    /**
+     * Relief height (mm) of an imported material's bump map, measured on its meshes once they are known
+     * (mesh-importer.js fitImportRelief) – kept in render for a rebuilt import graph; uvLength: the meshes' surface length
+     * per UV unit (mm) – the relief's texel size while the meshes are not in the scene yet (graph-apply.js). No undo
+     * step, not marked as edited (like the import itself).
+     */
+    setImportRelief(id, height, uvLength = null) {
+        const entry = this.get(id);
+        if (!entry?.def.render || !Number.isFinite(height)) return;
+        entry.def.render.reliefHeight = height;
+        if (uvLength > 0) entry.def.render.uvLength = uvLength;
+        const out = entry.def.graph?.nodes?.find(n => n.type === 'output');
+        if (!out || entry.def.modified) return;
+        out.params = { ...out.params, reliefHeight: height };
+        this._apply(entry);
+    }
+
     setOutputParams(id, params) {
         const e = this.get(id);
         const out = e?.def.graph?.nodes?.find(n => n.type === 'output');
@@ -303,7 +320,7 @@ export class MaterialManager extends EventTarget {
         def.render = { ...def.render, maps: { ...def.render.maps, ...maps }, missing: { ...def.render.missing } };
         for (const key of Object.keys(maps)) delete def.render.missing[key];
         if (color && auto) def.params = { ...def.params, color };
-        if (auto) def.graph = hasGraphMaps(def.render) ? createImportGraph(def.render.maps, def.render.missing) : null;
+        if (auto) def.graph = hasGraphMaps(def.render) ? createImportGraph(def.render.maps, def.render.missing, importGraphOptions(def.render)) : null;
         this._apply(entry);
         this._emit('update', { id, linked: true });
     }
@@ -483,7 +500,7 @@ export class MaterialManager extends EventTarget {
                 target.def.name = m.name || target.def.name;
                 target.def.params = { ...m.params };
                 target.def.graph = m.graph ? structuredClone(m.graph)
-                    : target.def.source === 'import' && hasGraphMaps(target.def.render) ? createImportGraph(target.def.render.maps, target.def.render.missing) : null;
+                    : target.def.source === 'import' && hasGraphMaps(target.def.render) ? createImportGraph(target.def.render.maps, target.def.render.missing, importGraphOptions(target.def.render)) : null;
                 target.def.modified = !!m.modified;
                 target.material.name = target.def.name;
                 this._apply(target);
@@ -642,6 +659,8 @@ const GRAPH_MAP_SLOTS = {
     transmissionColor: 'attenuationColorMap', transmissionDepth: 'attenuationDistanceMap',
 };
 
+// import graph options from the material's render data: the relief height measured for its bump map
+const importGraphOptions = render => ({ reliefHeight: render?.reliefHeight ?? null });
 const hasGraphMaps = render => [...Object.keys(render?.maps || {}), ...Object.keys(render?.missing || {})].some(k => IMPORT_SLOTS[k]);
 
 // editable part of a material (undo)

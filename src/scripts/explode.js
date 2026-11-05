@@ -9,6 +9,7 @@
 // outliers.js) count for no centre: a part made only of them keeps its place.
 import * as THREE from 'three/webgpu';
 import { applyTransform, ensureTransform } from './transform.js';
+import { localBox } from './model-instances.js';
 
 const _box = new THREE.Box3();
 const _v = new THREE.Vector3();
@@ -99,8 +100,7 @@ export class Exploder extends EventTarget {
             g.updateMatrixWorld(true);
             g.traverse(c => {
                 if (!c.isMesh || c.userData.stray) return;   // stray objects (outliers.js) neither move nor shift the centre
-                if (!c.geometry.boundingBox) c.geometry.computeBoundingBox();
-                _box.union(new THREE.Box3().copy(c.geometry.boundingBox).applyMatrix4(c.matrixWorld));
+                _box.union(new THREE.Box3().copy(localBox(c)).applyMatrix4(c.matrixWorld));
             });
             return _box.isEmpty() ? null : _box.getCenter(new THREE.Vector3());
         };

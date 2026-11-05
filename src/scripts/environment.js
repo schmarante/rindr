@@ -109,6 +109,31 @@ export function loadHdri(url, onProgress) {
     });
 }
 
+/**
+ * The HDRI mirrored left ↔ right (u → 1 − u): some renderers read equirect panoramas the other way round than three.js
+ * and Blender – a scene made there (and its reference pictures) only matches with the panorama mirrored. A new texture
+ * with its own data: the path tracer's importance table and the caustics' sun are cached per data.
+ */
+export function mirroredHdri(texture) {
+    const { data, width, height } = texture.image;
+    const out = new data.constructor(data.length);
+    const row = width * 4;
+    for (let y = 0; y < height; y++) {
+        const o = y * row;
+        for (let x = 0; x < width; x++) {
+            const a = o + x * 4, b = o + (width - 1 - x) * 4;
+            out[a] = data[b]; out[a + 1] = data[b + 1]; out[a + 2] = data[b + 2]; out[a + 3] = data[b + 3];
+        }
+    }
+    const copy = new THREE.DataTexture(out, width, height, texture.format, texture.type, texture.mapping,
+        texture.wrapS, texture.wrapT, texture.magFilter, texture.minFilter);
+    copy.colorSpace = texture.colorSpace;
+    copy.flipY = texture.flipY;
+    copy.userData = { ...texture.userData, mirrored: !texture.userData.mirrored };
+    copy.needsUpdate = true;
+    return copy;
+}
+
 /** File names of the HDRIs in public/hdr (written into the page at build time, see index.astro) */
 export function listHdris() {
     try {

@@ -216,7 +216,7 @@ export class NodeEditor {
         this.materialId = materialId;
         const hasImport = Object.keys(this._importMaps()).length > 0 || Object.keys(this._missingMaps()).length > 0;
         this.graph = entry.def.graph ? structuredClone(entry.def.graph)
-            : hasImport ? createImportGraph(this._importMaps(), this._missingMaps()) : createGraph();
+            : hasImport ? createImportGraph(this._importMaps(), this._missingMaps(), { reliefHeight: entry.def.render?.reliefHeight ?? null }) : createGraph();
         // offer the image from the file only for materials with textures from the file
         this.root.querySelectorAll('[data-import-only]').forEach(b => { b.hidden = !hasImport; });
         this.title.textContent = t('nodeEditor.title', { name: entry.def.name });
