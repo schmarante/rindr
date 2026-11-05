@@ -1,4 +1,5 @@
-// Spectra → linear sRGB, and pbrt's measured materials (tabulated BRDFs) → colour + roughness. Pure functions.
+// Spectra → linear sRGB, and pbrt's measured materials (tabulated BRDFs) → colour + roughness (+ a thin film for
+// colour-shift materials). Pure functions.
 //
 // Colour matching: the multi-lobe Gaussian fits of the CIE 1931 2° functions (Wyman, Sloan & Shirley 2013, "Simple
 // analytic approximations to the CIE XYZ color matching functions"); a reflectance spectrum under an equal-energy light,
@@ -75,8 +76,84 @@ function readTensorFile(buffer) {
     return { fields, read };
 }
 
+// --- colour-shift materials (wrap films, interference paints): the specular colour runs through the spectrum with the
+// angle. Fitted as a thin film on the dielectric specular – the path tracer's own model (three-gpu-pathtracer
+// iridescentFresnel: Belcour & Barla 2017, Airy summation with two orders, Schlick at both interfaces), so the fit is
+// what HQ renders ---
+
+const SENS_VAL = [5.4856e-13, 4.4201e-13, 5.2481e-13], SENS_POS = [1.6810e+06, 1.7953e+06, 2.2084e+06], SENS_VAR = [4.3278e+09, 9.3046e+09, 6.6121e+09];
+function sensitivity(opd, shift) {
+    const phase = 2 * Math.PI * opd * 1e-9;
+    const X = [0, 1, 2].map(k => SENS_VAL[k] * Math.sqrt(2 * Math.PI * SENS_VAR[k]) * Math.cos(SENS_POS[k] * phase + shift) * Math.exp(-phase * phase * SENS_VAR[k]));
+    X[0] += 9.7470e-14 * Math.sqrt(2 * Math.PI * 4.5282e+09) * Math.cos(2.2399e+06 * phase + shift) * Math.exp(-4.5282e+09 * phase * phase);
+    return toRgb(X[0] / 1.0685e-7, X[1] / 1.0685e-7, X[2] / 1.0685e-7);
+}
+const iorF0 = (n, o = 1) => ((n - o) / (n + o)) ** 2;
+const schlick = (c, f0) => f0 + (1 - f0) * (1 - c) ** 5;
+/** reflectance (linear rgb) of a thin film (index `ior`, thickness nm) on a base of reflectance baseF0, seen at cos θ */
+export function thinFilmReflectance(cos1, baseF0, ior, thickness) {
+    const c2sq = 1 - (1 - cos1 * cos1) / (ior * ior);
+    if (c2sq < 0) return [1, 1, 1];
+    const cos2 = Math.sqrt(c2sq);
+    const R12 = schlick(cos1, iorF0(ior)), T121 = 1 - R12;
+    const sq = Math.sqrt(Math.min(baseF0, 0.9999)), baseIor = (1 + sq) / (1 - sq);
+    const R23 = schlick(cos2, iorF0(baseIor, ior));
+    const phi = (ior < 1 ? 0 : Math.PI) + (baseIor < ior ? Math.PI : 0);
+    const opd = 2 * ior * thickness * cos2;
+    const R123 = Math.min(Math.max(R12 * R23, 1e-5), 0.9999), r123 = Math.sqrt(R123);
+    const Rs = T121 * T121 * R23 / (1 - R123);
+    const I = [R12 + Rs, R12 + Rs, R12 + Rs];
+    let Cm = Rs - T121;
+    for (let m = 1; m <= 2; m++) {
+        Cm *= r123;
+        const S = sensitivity(m * opd, m * phi);
+        for (let k = 0; k < 3; k++) I[k] += Cm * 2 * S[k];
+    }
+    return I.map(x => Math.max(x, 0));
+}
+const chromaOf = c => { const s = c[0] + c[1] + c[2]; return s > 0 ? c.map(x => x / s) : [1 / 3, 1 / 3, 1 / 3]; };
+const saturationOf = c => { const q = chromaOf(c); return Math.hypot(q[0] - 1 / 3, q[1] - 1 / 3, q[2] - 1 / 3); };
+const hueOf = ([r, g, b]) => {
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    if (mx - mn < 1e-9) return 0;
+    const h = mx === r ? (g - b) / (mx - mn) : mx === g ? 2 + (b - r) / (mx - mn) : 4 + (r - g) / (mx - mn);
+    return (h * 60 + 360) % 360;
+};
+// the hues of the clearly coloured specular peaks span at least this arc → colour-shift material (wrap films 69° and
+// 200°, a blue silk only gets paler: 14°, white/metal materials 0°)
+const SHIFT_SPAN = 60;
+function hueSpan(colors) {
+    const hs = colors.filter(c => saturationOf(c) > 0.08).map(hueOf).sort((a, b) => a - b);
+    if (hs.length < 3) return 0;
+    let gap = 0;
+    for (let i = 0; i < hs.length; i++) gap = Math.max(gap, (hs[(i + 1) % hs.length] - hs[i] + 360) % 360);
+    return 360 - gap;
+}
+// thickness, film index and base reflectance whose specular colours fit the measured peaks best (chromaticity,
+// weighted by how coloured each peak is – near-grey peaks say little); RINDR's ranges (material-manager.js)
+function fitThinFilm(peaks) {
+    let best = null;
+    for (const baseF0 of [0.04, 0.1, 0.2, 0.3]) {
+        for (let d = 50; d <= 1200; d += 10) {
+            for (let n = 1.05; n <= 2.5; n += 0.025) {
+                let e = 0;
+                for (const { cos, color } of peaks) {
+                    const m = chromaOf(thinFilmReflectance(cos, baseF0, n, d)), q = chromaOf(color);
+                    e += saturationOf(color) * ((m[0] - q[0]) ** 2 + (m[1] - q[1]) ** 2 + (m[2] - q[2]) ** 2);
+                }
+                if (!best || e < best.e) best = { e, thickness: d, ior: n, baseF0 };
+            }
+        }
+    }
+    const sq = Math.sqrt(best.baseF0);
+    return { thickness: best.thickness, ior: Math.round(best.ior * 1000) / 1000, baseIor: Math.round((1 + sq) / (1 - sq) * 100) / 100, error: best.e };
+}
+
 /**
- * Measured BRDF → { color (linear rgb, albedo at normal incidence), roughness (RINDR, α = r²), metal, description }.
+ * Measured BRDF → { color (linear rgb, albedo at normal incidence), roughness (RINDR, α = r²), metal, description,
+ * film? }. Colour-shift materials (see SHIFT_SPAN): `film` = { thickness, ior, baseIor } and `color` = the part
+ * outside the specular peak at normal incidence (the base under the film) – one colour cannot show a paint running
+ * from blue through orange and green to cyan.
  * Albedo: the tabulated values are stored per cell of the VNDF-warped domain – their mean (× cos θo ≈ 1 for glossy
  * materials) is the reflectance at normal incidence. Roughness: GGX α whose NDF falls to half at the same angle as the
  * tabulated NDF (θ on the grid: θ = u² π/2).
@@ -124,5 +201,40 @@ export function readMeasured(buffer, name = '') {
     }
     const text = `${name} ${description}`.toLowerCase();
     const metal = /gold|silver|copper|brass|alumin|chrome|steel/.test(text) && !/paint|lacquer|paper|fabric/.test(text);
+    const shift = !metal && colourShift(tf, lambdas, spectra);
+    if (shift) return { color: shift.base, roughness, metal, description, film: shift.film };
     return { color, roughness, metal, description };
+}
+
+// per incidence angle the colour of the brightest 1/16 of the cells (the specular peak) → a thin film fitted when the
+// peak colours span SHIFT_SPAN (null otherwise); base colour = the rest of the cells at normal incidence
+function colourShift(tf, lambdas, spectra) {
+    if (!lambdas || spectra?.shape.length !== 5) return null;
+    const [nphi, nt, nl, nu, nv] = spectra.shape, cell = nu * nv;
+    const thetas = tf.read('theta_i'), lum = tf.fields.luminance ? tf.read('luminance') : null;
+    if (!thetas || nphi < 1) return null;
+    const rgbOf = vals => spectrumToRgb(pairsFunction(Array.from(lambdas).flatMap((l, i) => [l, vals[i]])));
+    const peaks = [];
+    let base = null;
+    for (let t = 0; t < nt; t++) {
+        if (thetas[t] > 1.5) continue;   // the 90° row repeats the last measured one
+        const slice = tf.read('spectra', t * nl * cell, nl * cell);   // first φi
+        const L = new Float64Array(cell);
+        for (let k = 0; k < cell; k++) {
+            if (lum) L[k] = lum[t * cell + k];
+            else for (let l = 0; l < nl; l++) L[k] += Math.max(slice[l * cell + k], 0);
+        }
+        const order = Array.from({ length: cell }, (_, k) => k).sort((a, b) => L[b] - L[a]);
+        const meanOf = ks => {
+            const m = new Float64Array(nl);
+            for (const k of ks) for (let l = 0; l < nl; l++) m[l] += Math.max(slice[l * cell + k], 0);
+            return rgbOf(m.map(x => x / ks.length));
+        };
+        peaks.push({ cos: Math.cos(thetas[t]), color: meanOf(order.slice(0, Math.max(1, cell >> 4))) });
+        // base under the film: everything outside the peak – a wide azure lobe around the peak holds half of the cells and
+        // makes the colour seen (the darker half alone came out violet)
+        if (base === null) base = meanOf(order.slice(Math.max(1, cell >> 4))).map(c => Math.min(c, 1));
+    }
+    if (peaks.length < 3 || hueSpan(peaks.map(p => p.color)) < SHIFT_SPAN) return null;
+    return { base, film: fitThinFilm(peaks) };
 }

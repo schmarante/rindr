@@ -543,6 +543,9 @@ class MaterialConverter {
                 const r = this.measured.get(p.filename?.v?.[0]);
                 if (r) Object.assign(params, { color: hex(r.color), roughness: r.roughness, metalness: r.metal ? 1 : 0 });
                 else Object.assign(params, { color: '#808080', roughness: 0.4 });
+                // colour-shift material (wrap film, interference paint): the fitted thin film on its specular, the base
+                // index the fit chose (pbrt-spectrum.js readMeasured)
+                if (r?.film) Object.assign(params, { iridescence: 1, iridescenceThickness: r.film.thickness, iridescenceIOR: r.film.ior, ior: r.film.baseIor });
                 break;
             }
             case 'mix': {

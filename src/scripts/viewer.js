@@ -2320,8 +2320,9 @@ function samePose(a, b) {
     if (b.exposure != null && Math.abs((a.exposure ?? 1) - b.exposure) > 1e-4) return false;
     if (b.toneMapping && a.toneMapping !== b.toneMapping) return false;
     if (b.lens && JSON.stringify(a.lens) !== JSON.stringify(b.lens)) return false;
-    if (!a.dof || !b.dof) return true;   // a camera without depth of field (imported): the lens is not part of it
+    if (!a.dof || !b.dof) return true;   // a camera saved without depth of field: the lens is not part of it
     const da = a.dof, db = b.dof;
+    if (!da.enabled && !db.enabled) return true;   // both sharp (a pinhole from a file has no further lens values)
     if (!!da.enabled !== !!db.enabled || !!da.autoFocus !== !!db.autoFocus || da.fStop !== db.fStop || da.blades !== db.blades) return false;
     return !!da.autoFocus || Math.abs((da.focusDistance ?? 0) - (db.focusDistance ?? 0)) <= Math.max(Math.abs(db.focusDistance ?? 0) * 1e-3, eps);
 }
@@ -2420,7 +2421,7 @@ function addImportedViews(cameras, root, boxCenter) {
             const scaleM = new THREE.Vector3().setFromMatrixScale(m).x;
             const focal = 0.5 * (35 / Math.max(windowAspect, 1)) / Math.tan(THREE.MathUtils.degToRad(view.fov) / 2);
             view.dof = { enabled: true, fStop: Math.min(Math.max(focal / (2 * c.aperture * scaleM), 0.1), 64), focusDistance: c.focusDistance * scaleM, blades: 0, autoFocus: false, showPlane: false };
-        }
+        } else view.dof = { enabled: false };   // no lens in the file = a pinhole: depth of field off when it becomes active (it stayed on from the scene before)
         if (cameraViews.some(v => v.name === view.name && new THREE.Vector3().fromArray(v.position).distanceTo(position) < 1e-3)) continue;
         added.push({ id: ++cameraViewSeq, ...view, fromFile: true });   // fromFile: leaves with the next main model
     }
@@ -2522,7 +2523,13 @@ function ownLightOnly(notice) {
 // gltf reinziehen und die szene ersetzen …") – lights and cameras the user made or switched stay as they are
 const switchedOffByFile = new Set();
 function resetFromFile() {
-    if (cameraViews.some(v => v.fromFile)) setCameraViews(cameraViews.filter(v => !v.fromFile));   // the active one → free camera
+    // the file's camera was looked through: the free camera's own picture back (depth of field, exposure, tone curve,
+    // lens effects – kept when that camera became active); then the file's cameras out (the active one → free camera)
+    if (activeView.fromFile && freePose) {
+        if (freePose.dof) { dof.fromJSON(freePose.dof); dof.apply(); }
+        applyViewLook(freePose);
+    }
+    if (cameraViews.some(v => v.fromFile)) setCameraViews(cameraViews.filter(v => !v.fromFile));
     const lamps = sceneLights().filter(l => l.userData.rindr?.fixed);
     let changed = false;
     for (const l of switchedOffByFile) if (!l.visible && l.parent === lightsGroup) { l.visible = true; changed = true; }
