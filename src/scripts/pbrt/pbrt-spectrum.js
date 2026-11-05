@@ -26,6 +26,14 @@ export function spectrumToRgb(value) {
     return toRgb(X / N, Y / N, Z / N).map((c, i) => Math.max(c / WHITE[i], 0));
 }
 
+/** blackbody radiation at temperature T (K), normalised to its peak (as pbrt's BlackbodySpectrum) → linear sRGB */
+export function blackbodyRgb(T) {
+    const h = 6.62606957e-34, c = 299792458, k = 1.3806488e-23;
+    const planck = l => { const m = l * 1e-9; return 2 * h * c * c / (m ** 5 * (Math.exp(h * c / (m * k * T)) - 1)); };
+    const peak = planck(2.8977721e-3 / T * 1e9);
+    return spectrumToRgb(l => planck(l) / peak);
+}
+
 /** piecewise linear pairs (λ, value, λ, value …) → value(λ) */
 export function pairsFunction(pairs) {
     const n = pairs.length >> 1;

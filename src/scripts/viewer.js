@@ -31,6 +31,7 @@ import { TAB_ID, initMaterialTransfer, materialFromTransfer } from './material-t
 import { MaterialThumbs } from './material-thumbs.js';
 import { uvCheckerTexture } from './uv-checker.js';
 import { CloudSystem } from './materials/clouds.js';
+import { GridVolumeSystem } from './volumes/grid-volumes.js';
 import { WoolSystem } from './materials/wool.js';
 import { setSoapSceneSize } from './materials/soap.js';
 import { GrassSystem } from './materials/grass.js';
@@ -670,6 +671,10 @@ const clouds = new CloudSystem(scene, () => [rootGroup, ...extraModels.map(x => 
 clouds.onChange = () => { pathTracing.updateTransforms(); pathTracing.updateMaterials(); markShadowsDirty(); };
 // override passes (contour, contact shadow, …) leave the boxes out; Basic keeps them
 clouds.attach(renderer);
+// grid volumes (smoke, clouds, fire from voxel grids – pbrt media; volumes/grid-volumes.js): proxies in the scene,
+// media for the path tracer's volume walk
+const gridVolumes = new GridVolumeSystem(scene, renderer);
+gridVolumes.onChange = () => { pathTracing.updateTransforms(); pathTracing.updateMaterials(); loadRender.dirty = true; };
 // wool material (wool.js): fibre shells over the meshes that carry it; the path tracer intersects the same fibres
 // (wool-pt.js) from the material's stand-in – a new fibre length = new material data, maybe new BVH bounds
 const wool = new WoolSystem(scene, () => [rootGroup, ...extraModels.map(x => x.root)], () => environment?.modelSize ?? 1);
@@ -3928,6 +3933,45 @@ function brightestDirection(tex) {
     shaftDirections.set(tex, dir);
     return dir;
 }
+// light of the grid volumes' raster preview: ambient from the environment and the ambient light; key light = the first
+// shown directional light, otherwise the environment's brightest direction
+const _gvLight = { ambient: new THREE.Color(), dir: new THREE.Vector3(0, 1, 0), color: new THREE.Color(), camera: null };
+const envMeans = new WeakMap();
+// mean radiance of an environment texture (every 4th texel of every 4th row, rows weighted by their solid angle)
+function environmentMean(tex) {
+    if (envMeans.has(tex)) return envMeans.get(tex);
+    const img = tex?.image, mean = new THREE.Color(0.5, 0.5, 0.5);
+    if (img?.data && img.width && img.height) {
+        const { data, width: w, height: h } = img, ch = Math.round(data.length / (w * h));
+        const value = data instanceof Uint16Array ? i => THREE.DataUtils.fromHalfFloat(data[i]) : i => data[i];
+        let r = 0, g = 0, b = 0, wsum = 0;
+        for (let y = 0; y < h; y += 4) {
+            const wy = Math.cos(((y + 0.5) / h - 0.5) * Math.PI);
+            for (let x = 0; x < w; x += 4) { const i = (y * w + x) * ch; r += value(i) * wy; g += value(i + 1) * wy; b += value(i + 2) * wy; wsum += wy; }
+        }
+        if (wsum > 0) mean.setRGB(r / wsum, g / wsum, b / wsum);
+    }
+    envMeans.set(tex, mean);
+    return mean;
+}
+function gridVolumeLight() {
+    const env = environment.on ? environment.intensity * environment.lightBoost : 0;
+    _gvLight.camera = camera;
+    const mean = environment.on ? environmentMean(environment.texture) : null;
+    if (mean) _gvLight.ambient.copy(mean).multiplyScalar(env); else _gvLight.ambient.setScalar(0);
+    if (ambientLight.visible) _gvLight.ambient.r += ambientLight.intensity / Math.PI, _gvLight.ambient.g += ambientLight.intensity / Math.PI, _gvLight.ambient.b += ambientLight.intensity / Math.PI;
+    const key = lightsGroup.children.find(l => l.isDirectionalLight && l.visible);
+    if (key) {
+        _gvLight.dir.copy(key.position).sub(key.target.position).normalize();
+        _gvLight.color.copy(key.color).multiplyScalar(key.intensity);
+    } else {
+        // the environment's brightest direction, carrying about half of its irradiance (π × mean radiance)
+        const d = environment.on ? brightestDirection(environment.texture) : null;
+        if (d && mean) { _gvLight.dir.copy(d).applyEuler(scene.environmentRotation); _gvLight.color.copy(d.color).multiplyScalar(0.5 * Math.PI * env * (0.2126 * mean.r + 0.7152 * mean.g + 0.0722 * mean.b)); }
+        else _gvLight.color.setScalar(0);
+    }
+    return _gvLight;
+}
 // Lens flare visibility: rays from the camera towards the light in a small cone (~1°, the sun's disc plus a
 // little soft edge) against the shown model (BVH) – share that gets through. World space, so independent of
 // fisheye/DOF and of what the image shows there (bright reflections on a covering object no longer count).
@@ -4900,6 +4944,7 @@ function disposeRoot(root) {
 }
 function clearModel() {
     clearFields();   // SSS distance fields belong to the old geometries
+    if (gridVolumes.active) gridVolumes.clear();
     splatSpin.active = false;
     fading.clear();
     removeAnimations();
@@ -5378,6 +5423,7 @@ async function loadModel(reload = false, safe = false) {
         // a render scene (pbrt): its environment (or none) and its camera with the film's exposure
         if (!reload && result.environment) await applyImportedEnvironment(result.environment);
         if (!reload && result.render) applyImportedRender(result.render);
+        if (!reload && result.volumes?.length) gridVolumes.set(result.volumes, root);   // smoke, clouds, fire of the scene
         if (!reload && result.activateCamera && importedViews.length) activateCamera(importedViews[0], { record: false });
 
         // before the Scene Graph: its model row shows ⚠ for missing textures
@@ -6955,6 +7001,7 @@ function renderFrame() {
     updateSplatSpin(frameStart);
     exploder.update(frameStart);
     clouds.update(camera);
+    if (gridVolumes.active) gridVolumes.update(gridVolumeLight());
     wool.update();
     grass.update();
     edges.update();

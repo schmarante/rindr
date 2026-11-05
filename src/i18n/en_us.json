@@ -98,6 +98,7 @@
             "reading": "Reading pbrt scene: {name}...",
             "materials": "Taking over materials and textures...",
             "environment": "Converting the scene's environment...",
+            "volume": "Reading volume “{name}”...",
             "areaLight": "Area light",
             "choose": {
                 "title": "Which pbrt scene?",

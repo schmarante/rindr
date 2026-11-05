@@ -62,7 +62,7 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 | `docs/splats.md` | Gaussian Splats – `src/scripts/splat/`. |
 | `docs/animation.md` | Animation und Morph Targets – `src/scripts/animation.js`. |
 | `docs/rendering.md` | Raster-Darstellung – Darstellungsarten, Batcher (`render-batcher.js`), echte Instanzen oft platzierter Objekte (`model-instances.js`), Cluster-LOD großer Modelle (`lod/`), Schatten, Einblenden, Hervorhebung, Schnittebene, eigene Render-Durchgänge. |
-| `docs/pathtracer.md` | Pathtracer (HQ) – `src/scripts/pathtracer.js` (three-gpu-pathtracer WebGPU, Vite-Patches in astro.config.mjs); Licht-Passes für EXR/PSD (`light-passes.js`, `light-mix*.js`). |
+| `docs/pathtracer.md` | Pathtracer (HQ) – `src/scripts/pathtracer.js` (three-gpu-pathtracer WebGPU, Vite-Patches in astro.config.mjs); Volumen aus Gittern (`volumes/`: NanoVDB-Leser, Gitter-Volumen im Volumen-Weg); Licht-Passes für EXR/PSD (`light-passes.js`, `light-mix*.js`). |
 | `docs/camera-lens.md` | Kamera, Tiefenschärfe, Fisheye, Objektiv-Effekte, Stil-Filter – `dof.js`, `fisheye.js`, `lens-effects.js`, `style-filters.js`, `volume-shafts.js`, Kamera-Teile von `viewer.js`/`properties.js`. |
 | `docs/hdri-editor.md` | HDRI-Editor – eigene prozedurale HDRIs (`src/scripts/hdri/`): Modell, Generator, Pins, Sonne & Himmel, Export, Fenster. |
 | `docs/environment.md` | Umgebung, HDRI, Boden – `environment.js`, `ground.js`, `background-dome.js`, `contact-shadow.js`, `shadow-catcher.js`. |

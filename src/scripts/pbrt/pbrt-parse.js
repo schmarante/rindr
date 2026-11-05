@@ -3,7 +3,8 @@
 // the current transformation matrix (CTM) is post-multiplied (CTM = CTM · T), points go p_world = CTM · p_object.
 // Kept: Camera, Film, shapes (with material, area light, ReverseOrientation, transform), named materials and textures,
 // lights, object instances (ObjectBegin/End/Instance), Attribute defaults, Include/Import (read relative to the main file).
-// Left out: media (MakeNamedMedium, MediumInterface), motion (only the start transform counts), Sampler, Integrator,
+// Media: MakeNamedMedium kept with its transform (grid media → volumes, glass interiors → tint), MediumInterface per shape.
+// Left out: motion (only the start transform counts), Sampler, Integrator,
 // PixelFilter, Accelerator, Option, ColorSpace (scenes use sRGB – other spaces are reported once).
 //
 // Matrices: Float64Array(16), row-major (m[4 * row + col]) like pbrt; Transform / ConcatTransform give the transposed
@@ -415,7 +416,7 @@ export async function parsePbrt(mainPath, read, { onProgress } = {}) {
                 case 'MakeNamedMedium': {
                     const name = str();
                     const params = withDefaults('medium', readParams(tk, warn));
-                    scene.media[name] = { type: params.type?.v?.[0] ?? '', params };
+                    scene.media[name] = { type: params.type?.v?.[0] ?? '', params, ctm: gs.ctm };   // medium space = the transform here
                     break;
                 }
                 case 'Include':

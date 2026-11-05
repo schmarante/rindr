@@ -10,8 +10,9 @@ import { boxProject, UV_TILE } from '../step-importer.js';
 import { kelvinRgb } from '../kelvin.js';
 import { normalizePath } from './pbrt-parse.js';
 import { uniformHdr } from './pbrt-env.js';
-import { spectrumToRgb, pairsFunction, readMeasured } from './pbrt-spectrum.js';
-import { textureMaxSide } from '../memory-budget.js';
+import { spectrumToRgb, pairsFunction, readMeasured, blackbodyRgb } from './pbrt-spectrum.js';
+import { textureMaxSide, memoryBudget } from '../memory-budget.js';
+import { colorFromAlbedo } from '../materials/medium.js';
 import { minCopies } from '../model-instances.js';
 import { t, getLocale } from '../i18n.js';
 import { debugLog } from '../log.js';
@@ -35,6 +36,23 @@ const ILLUMINANT_K = {
     'stdillum-F7': 6500, 'stdillum-F8': 5000, 'stdillum-F9': 4150, 'stdillum-F10': 5000, 'stdillum-F11': 4000, 'stdillum-F12': 3000,
 };
 const luminance = c => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+// pbrt's named subsurface media (Material "subsurface" "string name"): reduced scattering σs' and absorption σa in mm⁻¹,
+// red/green/blue – the published measurements of Jensen, Marschner, Levoy & Hanrahan 2001 (table 2); pbrt multiplies
+// them by "scale" and reads them per scene unit. Without a name and without coefficients pbrt takes whole milk.
+const NAMED_MEDIA = {
+    Apple: [[2.29, 2.39, 1.97], [0.0030, 0.0034, 0.046]],
+    Chicken1: [[0.15, 0.21, 0.38], [0.015, 0.077, 0.19]],
+    Chicken2: [[0.19, 0.25, 0.32], [0.018, 0.088, 0.20]],
+    Cream: [[7.38, 5.47, 3.15], [0.0002, 0.0028, 0.0163]],
+    Ketchup: [[0.18, 0.07, 0.03], [0.061, 0.97, 1.45]],
+    Marble: [[2.19, 2.62, 3.00], [0.0021, 0.0041, 0.0071]],
+    Potato: [[0.68, 0.70, 0.55], [0.0024, 0.0090, 0.12]],
+    Skimmilk: [[0.70, 1.22, 1.90], [0.0014, 0.0025, 0.0142]],
+    Skin1: [[0.74, 0.88, 1.01], [0.032, 0.17, 0.48]],
+    Skin2: [[1.09, 1.59, 1.79], [0.013, 0.070, 0.145]],
+    Spectralon: [[11.6, 20.4, 14.9], [0, 0, 0]],
+    Wholemilk: [[2.55, 3.21, 3.77], [0.0011, 0.0024, 0.014]],
+};
 // a light's colour: Y = 1 (pbrt normalises every emission spectrum photometrically)
 const unitY = c => { const y = luminance(c); return y > 0 ? c.map(x => x / y) : [1, 1, 1]; };
 const fresnelF0 = (n, k) => ((n - 1) ** 2 + k * k) / ((n + 1) ** 2 + k * k);
@@ -50,7 +68,7 @@ const hex = c => '#' + new THREE.Color(Math.min(Math.max(c[0], 0), 1), Math.min(
  */
 export async function importPbrt(source, { materialManager, onStatus = () => {} }) {
     const t0 = performance.now();
-    const { scene, geometries, meshes } = await runWorker(source, onStatus);
+    const { scene, geometries, meshes, volumes: gridVolumes } = await runWorker(source, onStatus);
     debugLog('[pbrt] read', { ms: Math.round(performance.now() - t0), geometries: geometries.length, meshes: meshes.count, warnings: scene.warnings });
     onStatus(t('import.pbrt.materials'));
     const files = fileAccess(source);
@@ -163,13 +181,47 @@ export async function importPbrt(source, { materialManager, onStatus = () => {} 
     const lights = convertLights(scene, spectra);
     const cameras = scene.camera ? [convertCamera(scene, stem)] : [];
     const environment = convertEnvironment(scene, spectra, stem);
+    const volumes = (gridVolumes || []).map(v => gridMedium(v, scene, spectra)).filter(Boolean);
+    for (const v of volumes) conv.usedMedia.add(v.name);
     if (Object.keys(scene.media || {}).some(n => !conv.usedMedia.has(n))) scene.warnings.push(['media left out', 1]);
     const what = skippedWhat(scene);
     const render = renderSettings(plans, lights, environment);
-    const result = { nodes, geometries: outGeometries, meshes: outMeshes, cameras, lights, environment, render, animation: null, activateCamera: true };
+    const result = { nodes, geometries: outGeometries, meshes: outMeshes, cameras, lights, environment, render, animation: null, activateCamera: true, volumes };
     if (what.length) result.pbrtSkipped = { what };
     debugLog('[pbrt] converted', { materials: plans.length, lights: lights.length, environment: environment && (environment.file ? 'map' : environment.off ? 'off' : 'uniform'), mirror: scene.mirror, up: scene.upAxis, render });
     return { result, missing };
+}
+
+// samples a grid volume may have on this device (volumes/nanovdb.js reduces finer grids): 4 % of the memory budget at
+// 2 bytes per sample, 8–64 million
+const VOLUME_VOXELS = () => Math.min(Math.max(memoryBudget() * 0.04 / 2, 8e6), 64e6);
+
+/**
+ * A grid medium for the volume walk (volumes/grid-volumes.js): grey extinction σt (luminance of σa + σs, × scale, at
+ * the grid's maximum density, per mm – the medium's unit through its transform), RGB albedo σs / σt, g; fire: emission
+ * table over the stored temperature – pbrt: T' = (T − offset) · scale, above 100 K Lescale × blackbody (normalised to
+ * its peak), weighted by σa in the walk.
+ */
+function gridMedium(v, scene, spectra) {
+    const p = scene.media?.[v.name]?.params;
+    if (!p) return null;
+    const sa = spectrumRgb(p.sigma_a, spectra) || [1, 1, 1], ss = spectrumRgb(p.sigma_s, spectra) || [1, 1, 1];
+    const scale = p.scale?.v?.[0] ?? 1;
+    const st = sa.map((a, i) => (a + ss[i]) * scale);
+    const sigmaT = luminance(st);
+    const albedo = st.map((x, i) => (x > 0 ? ss[i] * scale / x : 0));
+    let emission = null;
+    if (v.temperature && v.temperatureMax > 0) {
+        const LeScale = p.Lescale?.v?.[0] ?? 1;
+        const offset = p.temperatureoffset?.v?.[0] ?? p.temperaturecutoff?.v?.[0] ?? 0, tScale = p.temperaturescale?.v?.[0] ?? 1;
+        emission = new Float32Array(3 * 32);
+        for (let i = 0; i < 32; i++) {
+            const T = (i / 31 * v.temperatureMax - offset) * tScale;
+            if (T > 100) emission.set(blackbodyRgb(T).map(c => c * LeScale), 3 * i);
+        }
+    }
+    debugLog('[pbrt] volume', { name: v.name, type: v.type, dims: v.dims, factor: v.factor, densityMax: +v.densityMax.toFixed(3), sigmaT, albedo, g: p.g?.v?.[0] ?? 0, emission: !!emission });
+    return { ...v, sigma: sigmaT * v.densityMax / v.unitScale, albedo, g: Math.min(Math.max(p.g?.v?.[0] ?? 0, -0.95), 0.95), emission };
 }
 
 /**
@@ -194,6 +246,7 @@ function runWorker(source, onStatus) {
             if (data.type === 'progress') {
                 if (data.phase === 'parse') onStatus(t('import.pbrt.reading', { name: data.file.split('/').pop() }));
                 else if (data.phase === 'geometry') onStatus(t('import.mesh.buildingGeometries'), data.done / data.total);
+                else if (data.phase === 'volume') onStatus(t('import.pbrt.volume', { name: data.name }));
                 else onStatus(t('import.pbrt.environment'));
                 return;
             }
@@ -202,7 +255,8 @@ function runWorker(source, onStatus) {
             else resolve(data);
         };
         worker.onerror = e => { worker.terminate(); reject(new Error(e.message || 'pbrt worker failed')); };
-        worker.postMessage({ mainPath: source.name.split(/[\\/]/).pop(), main: source.main || null, files: source.files || [], baseUrl: source.baseUrl ? new URL(source.baseUrl, location.href).href : null });
+        worker.postMessage({ mainPath: source.name.split(/[\\/]/).pop(), main: source.main || null, files: source.files || [], baseUrl: source.baseUrl ? new URL(source.baseUrl, location.href).href : null,
+            volumeVoxels: VOLUME_VOXELS() });
     });
 }
 
@@ -510,16 +564,26 @@ class MaterialConverter {
             case 'subsurface': {
                 const refl = this.param(p, 'reflectance', 'spectrum', null);
                 const mfp = this.param(p, 'mfp', 'spectrum', null);
+                const g = this.param(p, 'g', 'float', 0).value;
                 let c = refl.value, radius = 2;
                 if (!c) {
-                    // from the coefficients (mm⁻¹ × scale): albedo σs / (σs + σa), mean free path 1 / (σs + σa)
-                    const sa = spectrumRgb(p.sigma_a, this.spectra) || [0.0011, 0.0024, 0.014], ss = spectrumRgb(p.sigma_s, this.spectra) || [2.55, 3.21, 3.77];
+                    // from the coefficients (named medium, or σa/σs; × scale, per scene unit = m): RINDR's subsurface
+                    // colour is the observed one after many scatterings – the single-scattering albedo σs / (σs + σa)
+                    // through the forward van de Hulst relation (as OpenPBR; materials/medium.js); radius = mean free
+                    // path of red 1 / (σs + σa) in mm. Before: the name was not read (whole milk – white), the albedo
+                    // itself as the colour (far too light) and the path in metres taken as mm (opaque)
+                    const named = NAMED_MEDIA[p.name?.v?.[0]];
+                    if (p.name?.v?.[0] && !named) this.scene.warnings.push([`subsurface medium "${p.name.v[0]}" unknown – whole milk`, 1]);
+                    const [ssDefault, saDefault] = named || NAMED_MEDIA.Wholemilk;
+                    const sa = (!named && spectrumRgb(p.sigma_a, this.spectra)) || saDefault, ss = (!named && spectrumRgb(p.sigma_s, this.spectra)) || ssDefault;
                     const sc = p.scale?.v?.[0] ?? 1;
-                    c = sa.map((a, i) => ss[i] / Math.max(ss[i] + a, 1e-9));
-                    radius = [0, 1, 2].reduce((acc, i) => acc + 1 / Math.max((sa[i] + ss[i]) * sc, 1e-9), 0) / 3;
-                } else if (mfp.value) radius = (Array.isArray(mfp.value) ? luminance(mfp.value) : mfp.value) * 1000;
+                    c = sa.map((a, i) => colorFromAlbedo(ss[i] / Math.max(ss[i] + a, 1e-9), g));
+                    radius = 1000 / Math.max((sa[0] + ss[0]) * sc, 1e-9);
+                } else if (mfp.value) radius = (Array.isArray(mfp.value) ? mfp.value[0] : mfp.value) * 1000;
                 params.color = hex(c);
-                Object.assign(params, { subsurface: 1, subsurfaceColor: hex(c), subsurfaceRadius: Math.min(Math.max(radius, 0.05), 50), ior: this.param(p, 'eta', 'float', 1.33).value });
+                // the accurate (random walk) mode: pbrt traces the medium itself
+                Object.assign(params, { subsurface: 1, subsurfaceColor: hex(c), subsurfaceRadius: Math.min(Math.max(radius, 0.05), 1000), subsurfaceMode: 1,
+                    subsurfaceAnisotropy: Math.min(Math.max(g, -0.9), 0.9), ior: this.param(p, 'eta', 'float', 1.33).value });
                 if (refl.image) maps.map = { image: refl.image, use: 'color' };
                 rough();
                 break;

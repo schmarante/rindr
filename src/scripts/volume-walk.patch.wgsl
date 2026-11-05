@@ -120,7 +120,16 @@
 								// the path ends; relit: albedo = colour or override material, isotropic)
 								vmPos = vmPos + vmDir * vmT;
 								var vmG = ${ __VOL.cloudG };
-								if ( vmKind > 1.5 ) {
+								if ( vmKind > 2.5 ) {
+
+									// grid volume (smoke, cloud, fire): emission of the collision (σa / σt × Le – collision estimator), then
+									// its albedo and anisotropy
+									let vmGs = u32( vmSlot );
+									resultColor += vec4f( ${ clampPathContributionFunc }( throughputColor * ${ __VOL.gridEmit }( vmGs, vmPos ), bounce, clampDirect, clampIndirect ), 0.0 );
+									throughputColor *= ${ __VOL.gridAlbedo }( vmGs );
+									vmG = ${ __VOL.gridG }( vmGs );
+
+								} else if ( vmKind > 1.5 ) {
 
 									let vmSc = ${ __SPLAT.color }( ( ${ __SPLAT.inverse } * vec4f( vmPos, 1.0 ) ).xyz );
 									if ( ${ __SPLAT.relit } < 0.5 ) {

@@ -98,6 +98,7 @@
             "reading": "Lese pbrt-Szene: {name}...",
             "materials": "Übernehme Materialien und Texturen...",
             "environment": "Rechne die Umgebung der Szene um...",
+            "volume": "Lese Volumen „{name}“...",
             "areaLight": "Flächenlicht",
             "choose": {
                 "title": "Welche pbrt-Szene?",

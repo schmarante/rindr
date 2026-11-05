@@ -11,6 +11,8 @@ import { wgslTagFn } from 'three-mesh-bvh/webgpu';
 import { CLOUD_PT } from './materials/cloud-pt.js';
 import { CLOUD_MEDIA, CLOUD_G } from './materials/clouds.js';
 import { SPLAT_PT } from './splat/splat-pt.js';
+import { GRID_MEDIA } from './volumes/grid-volumes.js';
+import { GRID_PT } from './volumes/grid-pt.js';
 
 const f = v => (Number.isInteger(v) ? `${v}.0` : String(v));
 
@@ -43,6 +45,9 @@ const BOX_SPAN = wgslTagFn/* wgsl */`
 `;
 
 const cloudLocal = (k, p) => [`( `, CLOUD_MEDIA[k].inverse, ` * vec4f( ${p}, 1.0 ) ).xyz`];
+// grid volumes (volumes/grid-volumes.js): kind 3, per slot its box, block majorants, density × σt
+const gridLocal = (k, p) => [`( `, GRID_MEDIA[k].inverse, ` * vec4f( ${p}, 1.0 ) ).xyz`];
+const gridDir = (k, d) => [`( `, GRID_MEDIA[k].inverse, ` * vec4f( ${d}, 0.0 ) ).xyz`];
 const cloudDir = (k, d) => [`( `, CLOUD_MEDIA[k].inverse, ` * vec4f( ${d}, 0.0 ) ).xyz`];
 
 // majorant at p (x) and how far it holds along dir (y): per cloud inside its box its σ, or the distance to where its
@@ -71,6 +76,19 @@ const MAJORANT = fn(
             }
         }
 `]),
+    GRID_MEDIA.map((m, k) => [`
+        if ( `, m.params, `.w > 0.5 ) {
+            let lo = `, gridLocal(k, 'p'), `;
+            let ld = `, gridDir(k, 'dir'), `;
+            if ( all( abs( lo ) < vec3f( 0.5 ) ) ) {
+                maj += `, GRID_PT.block, `( lo, `, m.dims, `, `, m.blockDims, `, `, m.offset, `.y ) * `, m.params, `.x;
+                lim = min( lim, min( `, GRID_PT.blockExit, `( lo, ld, `, m.dims, ` ), `, BOX_SPAN, `( lo, ld ).y ) );
+            } else {
+                let span = `, BOX_SPAN, `( lo, ld );
+                if ( span.y > span.x ) { lim = min( lim, span.x ); }
+            }
+        }
+`]),
     `
         if ( splatOn && `, S.active, ` > 0.5 ) {
             let lo = ( `, S.inverse, ` * vec4f( p, 1.0 ) ).xyz;
@@ -86,8 +104,8 @@ const MAJORANT = fn(
     }
 `);
 
-// density of every medium at p; u in [0, majorant): the medium whose share contains u → (kind, cloud index, total
-// density, –); kind 0 = null collision, 1 = cloud, 2 = splat
+// density of every medium at p; u in [0, majorant): the medium whose share contains u → (kind, cloud/grid index, total
+// density, –); kind 0 = null collision, 1 = cloud, 2 = splat, 3 = grid volume
 const PICK = fn(
     `fn rindrMediaPick( p: vec3f, splatOn: bool, u: f32 ) -> vec4f {
         var acc = 0.0;
@@ -101,6 +119,15 @@ const PICK = fn(
                 let prm = `, m.params, `;
                 acc += `, CLOUD_PT.density, `( lo, p, prm.x, prm.y, prm.z ) * prm.w;
                 if ( kind == 0.0 && u < acc ) { kind = 1.0; slot = ${f(k)}; }
+            }
+        }
+`]),
+    GRID_MEDIA.map((m, k) => [`
+        if ( `, m.params, `.w > 0.5 ) {
+            let lo = `, gridLocal(k, 'p'), `;
+            if ( all( abs( lo ) < vec3f( 0.5 ) ) ) {
+                acc += `, GRID_PT.sample, `( lo, `, m.dims, `, `, m.offset, `.x ).x * `, m.params, `.x;
+                if ( kind == 0.0 && u < acc ) { kind = 3.0; slot = ${f(k)}; }
             }
         }
 `]),
@@ -126,6 +153,37 @@ const CLOUD_ALBEDO = fn(
     }
 `);
 
+// albedo, anisotropy and emitted radiance (σa share × emission, fire) of grid volume k
+const GRID_ALBEDO = fn(
+    `fn rindrGridAlbedo( k: u32 ) -> vec3f {
+        var a = vec3f( 1.0 );
+`,
+    GRID_MEDIA.map((m, k) => [`        if ( k == ${k}u ) { a = `, m.albedo, `.xyz; }\n`]),
+    `        return a;
+    }
+`);
+const GRID_G = fn(
+    `fn rindrGridG( k: u32 ) -> f32 {
+        var g = 0.0;
+`,
+    GRID_MEDIA.map((m, k) => [`        if ( k == ${k}u ) { g = `, m.params, `.y; }\n`]),
+    `        return g;
+    }
+`);
+const GRID_EMIT = fn(
+    `fn rindrGridEmit( k: u32, p: vec3f ) -> vec3f {
+        var e = vec3f( 0.0 );
+`,
+    GRID_MEDIA.map((m, k) => [`
+        if ( k == ${k}u && `, m.params, `.z > 0.5 ) {
+            let t = `, GRID_PT.sample, `( `, gridLocal(k, 'p'), `, `, m.dims, `, `, m.offset, `.x ).y;
+            e = `, GRID_PT.emission, `( ${k}u, t ) * ( vec3f( 1.0 ) - `, m.albedo, `.xyz );
+        }
+`]),
+    `        return e;
+    }
+`);
+
 // distance along dir until every active medium's box is left (0: none ahead)
 const EXIT = fn(
     `fn rindrMediaExit( p: vec3f, dir: vec3f, splatOn: bool ) -> f32 {
@@ -134,6 +192,12 @@ const EXIT = fn(
     CLOUD_MEDIA.map((m, k) => [`
         if ( `, m.albedo, `.w > 0.5 ) {
             let span = `, BOX_SPAN, `( `, cloudLocal(k, 'p'), `, `, cloudDir(k, 'dir'), ` );
+            if ( span.y > span.x ) { far = max( far, span.y ); }
+        }
+`]),
+    GRID_MEDIA.map((m, k) => [`
+        if ( `, m.params, `.w > 0.5 ) {
+            let span = `, BOX_SPAN, `( `, gridLocal(k, 'p'), `, `, gridDir(k, 'dir'), ` );
             if ( span.y > span.x ) { far = max( far, span.y ); }
         }
 `]),
@@ -152,6 +216,7 @@ const INSIDE = fn(
         var inside = false;
 `,
     CLOUD_MEDIA.map((m, k) => [`        inside = inside || ( `, m.albedo, `.w > 0.5 && all( abs( `, cloudLocal(k, 'p'), ` ) < vec3f( 0.5 ) ) );\n`]),
+    GRID_MEDIA.map((m, k) => [`        inside = inside || ( `, m.params, `.w > 0.5 && all( abs( `, gridLocal(k, 'p'), ` ) < vec3f( 0.5 ) ) );\n`]),
     `        inside = inside || ( splatOn && `, S.active, ` > 0.5 && all( abs( ( `, S.inverse, ` * vec4f( p, 1.0 ) ).xyz ) < vec3f( 0.5 ) ) );
         return inside;
     }
@@ -181,5 +246,6 @@ const TRANSMITTANCE = fn(
 
 export const VOLUME_PT = {
     majorant: MAJORANT, pick: PICK, cloudAlbedo: CLOUD_ALBEDO, exit: EXIT, inside: INSIDE, transmittance: TRANSMITTANCE,
+    gridAlbedo: GRID_ALBEDO, gridG: GRID_G, gridEmit: GRID_EMIT,
     cloudG: f(CLOUD_G), splatPrimary: S.primary,
 };
