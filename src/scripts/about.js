@@ -1,9 +1,10 @@
-// "About" page of the settings menu: name, description, author, version, a little credit line and the
+// "About" page of the settings menu: name, description, author, version, language choice, a little credit line and the
 // open-source projects RINDR is built on (with link and licence – list in libraries.js, also used for
 // README.md). Author data: ABOUT in config.js, version from the build (astro.config.mjs: package.json
 // major.minor + git commit count). Purpose texts come from the language files (about.libs.<id>).
 import { ABOUT } from './config.js';
-import { t } from './i18n.js';
+import { t, LANGUAGES, getLanguage } from './i18n.js';
+import { SELECT } from './ui-controls.js';
 import logoUrl from '../assets/rindr.svg?url';
 import { RUNTIME, ASSETS, BUILD } from './libraries.js';
 
@@ -22,8 +23,11 @@ const link = (href, text) => {
     return a;
 };
 
-/** @param {{ gpu?: string }} options  gpu = the graphics chip rendering (gpu-info.js gpuLabel) */
-export function buildAbout({ gpu = '' } = {}) {
+/**
+ * @param {{ gpu?: string, onLanguage?: (code: string) => void }} options  gpu = the graphics chip rendering (gpu-info.js
+ *   gpuLabel); onLanguage = a language was chosen (viewer: switch, reload)
+ */
+export function buildAbout({ gpu = '', onLanguage = null } = {}) {
     const root = el('div', 'flex flex-col gap-3 select-text');
 
     const head = el('div');
@@ -36,12 +40,22 @@ export function buildAbout({ gpu = '' } = {}) {
     head.append(title, el('div', 'text-white/60', t('about.description')));
     root.append(head);
 
-    const facts = el('div', 'grid grid-cols-[7rem_1fr] gap-x-3 gap-y-1');
+    const facts = el('div', 'grid grid-cols-[7rem_1fr] items-center gap-x-3 gap-y-1');
     const fact = (label, value) => facts.append(el('span', 'text-white/50', label), typeof value === 'string' ? el('span', '', value) : value);
     fact(t('about.author'), ABOUT.author || '–');
     if (ABOUT.email) fact(t('about.email'), link(`mailto:${ABOUT.email}`, ABOUT.email));
     fact(t('about.version'), version);
     if (gpu) fact(t('about.gpu'), gpu);
+    // language: each one named in itself
+    const language = el('select', SELECT.replace('w-full', 'w-auto') + ' justify-self-start');
+    for (const code of LANGUAGES) {
+        const option = el('option', '', t(`languages.${code}`));
+        option.value = code;
+        option.selected = code === getLanguage();
+        language.append(option);
+    }
+    language.onchange = () => onLanguage?.(language.value);
+    fact(t('about.language'), language);
     root.append(facts, el('div', 'text-white', t('about.madeWith')));
 
     const list = (title, items) => {

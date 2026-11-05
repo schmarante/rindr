@@ -233,7 +233,7 @@ export class RenderBatcher {
     _keyOf(mesh) {
         const { material, geometry } = mesh;
         if (!material || Array.isArray(material) || mesh.isInstancedMesh || mesh.isSkinnedMesh || mesh.isBatchedMesh
-            || mesh.isSplat || mesh.morphTargetInfluences || geometry.morphAttributes?.position) return null;
+            || mesh.isSplat || mesh.morphTargetInfluences || geometry.morphAttributes?.position || mesh.userData.ptCurves) return null;   // hair: the path tracer's pieces
         if (material.transparent || material.transmission > 0 || mesh.renderOrder !== 0) return null;   // sorted per object
         if (material.userData.noBatch) return null;   // shader needs the object's own matrices (glowing marble, toon.js)
         if (mesh.userData.fade !== undefined && mesh.userData.fade < 1) return null;                      // dither fade-in per object
@@ -903,7 +903,7 @@ function multiplyInto(A, B, o, out) {
 }
 
 function occludable(mesh) {
-    return !mesh.isSplat && !Array.isArray(mesh.material) && lodAllowed(mesh.material);
+    return !mesh.isSplat && !mesh.userData.ptCurves && !Array.isArray(mesh.material) && lodAllowed(mesh.material);
 }
 
 function lodAllowed(material) {

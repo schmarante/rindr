@@ -1,11 +1,12 @@
 // pbrt-v4 shapes → triangle geometry in the shape's own space (worker side, no three.js):
 //   plymesh (PLY ascii / binary, polygons as fans), trianglemesh, bilinearmesh (flat patches as two triangles, curved
 //   ones as a grid), loopsubdiv (Loop subdivision, own implementation of the published rules), sphere, disk, cylinder.
-//   curve (hair) is not built.
+//   curves (hair, fur – batches of the parser): straight pieces with a radius (curves/curve-build.js), not triangles.
 // Orientation like pbrt: the surface faces along the right-handed winding normal or the file's normals;
 // ReverseOrientation flips both (index order and normals) – emitters shine on that side, glass is entered from it.
 // Meshes without normals get crease normals (30°, shared with the other importers) with vertices split at hard edges.
 import { creaseCornerNormals } from '../crease-normals.js';
+import { buildCurves } from '../curves/curve-build.js';
 
 const f32 = v => (v instanceof Float32Array ? v : Float32Array.from(v));
 
@@ -41,7 +42,11 @@ export function buildShape(shape, plyBytes, warn) {
         case 'sphere': g = sphere(num('radius', 1), num('zmin', -num('radius', 1)), num('zmax', num('radius', 1)), num('phimax', 360)); break;
         case 'disk': g = disk(num('height', 0), num('radius', 1), num('innerradius', 0), num('phimax', 360)); break;
         case 'cylinder': g = cylinder(num('radius', 1), num('zmin', -1), num('zmax', 1), num('phimax', 360)); break;
-        case 'curve': warn('curves (hair) left out'); return null;
+        case 'curves': {
+            // hair/fur batch (pbrt-parse.js): straight pieces with a radius – the path tracer tests them as cylinders
+            const c = buildCurves(shape.curves, shape.curveThinning || {});
+            return c.pieces ? { positions: c.positions, normals: c.normals, tangents: c.tangents, uvs: c.uvs, index: c.index, curves: { pieces: c.pieces, maxRadius: c.maxRadius } } : null;
+        }
         default: warn(`shape ${shape.type} left out`); return null;
     }
     if (!g || !g.index.length) return null;

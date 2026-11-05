@@ -502,6 +502,13 @@ export class GuideKernel {
                         vertexData.normal = normalize( transpose( objectInfo.inverseMatrixWorld ) * vertexData.normal );
                         vertexData.tangent = vec4f( ( objectInfo.matrixWorld * vec4f( vertexData.tangent.xyz, 0.0 ) ).xyz, vertexData.tangent.w );
                         vertexData.position = objectInfo.matrixWorld * vertexData.position;
+                        // hair (curves/): the hit lies on the cylinder (the triangle gives its axis point)
+                        if ( objectInfo.rindrCurve != 0u ) {
+
+                            vertexData.position = vec4f( ray.origin + ray.direction * hit.dist, 1.0 );
+                            vertexData.normal = vec4f( hit.normal, 0.0 );
+
+                        }
                         // wool (wool-pt.js): fibre hits at the fibre, coloured like the path tracer shades them – the
                         // denoiser keeps the fibres (with the surface's normal and colour it smeared them)
                         if ( materialInfo.fogVolume == 4 ) {

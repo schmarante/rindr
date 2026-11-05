@@ -1851,6 +1851,232 @@ function edgesPatch() {
   };
 }
 
+// Hair and fur (src/scripts/curves/ – fails loudly if the library changed, check on every update): a mesh of curve
+// pieces (curve-mesh.js, userData.ptCurves) carries the object flag rindrCurve (the edges patch's spare transform field
+// _rindrPad0, slot 42); its triangles (a, b, a) are straight pieces of hair – the ray test hits a cylinder from a to b
+// with the radius in uv.x (mean of both ends), its normal from the axis; the piece a ray leaves and its neighbours on the
+// same hair pass (curve-pt.js – the megakernel notes the piece at every hit), other fibres are hit, from inside too.
+// The megakernel shades the hit on the cylinder (the triangle gives the axis point). The BVH boxes are grown by the
+// radius on the main thread (growCurveBounds). Kernel feature 'curves' (kernel-features.js).
+const CURVE_HIT = `
+						// RINDR hair (curves/): a piece of hair – cylinder from a to b, radius uv.x; the piece the ray leaves and
+						// its neighbours on the same hair are passed (curve-pt.js), every other fibre is hit, from inside too
+						if ( \${ curveObject } != 0u ) {
+
+							if ( \${ skipShadowObject } ) {
+
+								continue;
+
+							}
+							let cvSkip = \${ __curveSkip };
+							if ( cvSkip.x == \${ __curveObjectIndex } + 1u && ( i0 == cvSkip.y || i0 == cvSkip.z || i1 == cvSkip.y || i1 == cvSkip.z ) ) {
+
+								continue;
+
+							}
+							let cvR = 0.5 * ( \${ storage.attributes }[ i0 ].uv.x + \${ storage.attributes }[ i1 ].uv.x );
+							let cvAxis = b - a;
+							let cvLen = length( cvAxis );
+							if ( cvLen > 0.0 && cvR > 0.0 ) {
+
+								let cvD = cvAxis / cvLen;
+								let cvW = ray.origin - a;
+								let cvDd = dot( ray.direction, cvD );
+								let cvWd = dot( cvW, cvD );
+								let cvDp = ray.direction - cvD * cvDd;
+								let cvWp = cvW - cvD * cvWd;
+								let cvA = dot( cvDp, cvDp );
+								let cvB = dot( cvWp, cvDp );
+								let cvC = dot( cvWp, cvWp ) - cvR * cvR;
+								let cvDisc = cvB * cvB - cvA * cvC;
+								let cvInside = cvC < 0.0;
+								var cvT = - 1.0;
+								var cvN = vec3f( 0.0 );
+								if ( cvA > 1e-8 && cvDisc >= 0.0 ) {
+
+									// from outside the near wall, from inside the far one; the normal across the fibre, from outside
+									// always towards the ray (rays almost along the fibre made it point away – black dots)
+									cvT = ( - cvB + select( - 1.0, 1.0, cvInside ) * sqrt( cvDisc ) ) / cvA;
+									let cvS = cvWd + cvT * cvDd;
+									cvT = select( - 1.0, cvT, cvS >= 0.0 && cvS <= cvLen );
+									cvN = cvWp + cvDp * cvT;
+									let cvFacing = - normalize( cvDp );
+									cvN = select( cvFacing, normalize( cvN ), dot( cvN, cvN ) > cvR * cvR * 1e-4 && ( cvInside || dot( cvN, ray.direction ) < 0.0 ) );
+
+								} else if ( cvA <= 1e-8 && ! cvInside ) {
+
+									// along the fibre (a hair pointing at the camera): its end disc
+									let cvEnd = select( cvLen, 0.0, cvDd > 0.0 );
+									let cvTe = ( cvEnd - cvWd ) / cvDd;
+									let cvPe = cvWp + cvDp * cvTe;
+									if ( abs( cvDd ) > 1e-6 && dot( cvPe, cvPe ) <= cvR * cvR ) {
+
+										cvT = cvTe;
+										cvN = cvD * select( 1.0, - 1.0, cvDd > 0.0 );
+
+									}
+
+								}
+								let cvDist = cvT * \${ scratchRayScalar };
+								if ( cvT > 0.0 && ( ray.maxDist <= 0.0 || cvDist < ray.maxDist ) && ( ! result.didHit || cvDist < result.dist ) ) {
+
+									let cvU = clamp( ( cvWd + cvT * cvDd ) / cvLen, 0.0, 1.0 );
+									result.didHit = true;
+									result.dist = cvDist;
+									result.normal = cvN;
+									result.side = select( 1.0, - 1.0, cvInside );
+									result.barycoord = vec3f( 1.0 - cvU, cvU, 0.0 );
+									result.indices = vec4u( i0, i1, i2, ti );
+									didHit = true;
+
+								}
+
+							}
+							continue;
+
+						}
+`;
+const CURVE_SHADE = `
+						// RINDR hair (curves/): the hit lies on the cylinder around the axis point the triangle gives
+						if ( objectInfo.rindrCurve != 0u ) {
+
+							vertexData.position = vec4f( traceOrigin + ray.direction * hitResult.dist, 1.0 );
+							vertexData.normal = vec4f( hitResult.normal, 0.0 );
+
+						}
+`;
+// Stage 2 – the hair model (curves/hair-bsdf.js): the surface record gets the model's frame (x along the fibre, z across
+// it towards the viewer) and parameters (rindrHair: on, h, β_m from the roughness, β_n from the sheen roughness;
+// rindrHairSigma: absorption from the colour – Chiang et al. – and η from the IOR); in kernels with curves every
+// bsdfSample / bsdfEvalPdf goes through wrappers that scatter hair hits by the model (light sampling and glowing meshes
+// included) – kernels without curves keep the library's calls.
+const HAIR_SURFACE = `
+						// RINDR hair (curves/hair-bsdf.js): the model's frame and parameters
+						if ( objectInfo.rindrCurve != 0u ) {
+
+							let hT = normalize( vertexData.tangent.xyz );
+							let hWo = - ray.direction;
+							var hZ = hWo - hT * dot( hWo, hT );
+							hZ = select( hitResult.normal, normalize( hZ ), dot( hZ, hZ ) > 1e-12 );
+							let hY = cross( hZ, hT );
+							surface.normalBasis = mat3x3f( hT, hY, hZ );
+							surface.normalInvBasis = transpose( surface.normalBasis );
+							let hBn = clamp( surface.sheenRoughness, 0.05, 1.0 );
+							let hF = 5.969 - 0.215 * hBn + 2.532 * hBn * hBn - 10.73 * hBn * hBn * hBn + 5.574 * hBn * hBn * hBn * hBn + 0.245 * hBn * hBn * hBn * hBn * hBn;
+							let hLog = log( max( surface.color, vec3f( 1e-4 ) ) ) / hF;
+							surface.rindrHair = vec4f( 1.0, clamp( dot( hitResult.normal, hY ), - 1.0, 1.0 ), clamp( surface.roughness, 0.02, 1.0 ), hBn );
+							surface.rindrHairSigma = vec4f( hLog * hLog, max( surface.ior, 1.01 ) );
+
+						}
+`;
+const HAIR_WRAPPERS = `
+		// RINDR hair (rindr-curves): hair hits scatter by the hair model – used in kernels with curves only
+		const __rindrHairSampleFn = wgslTagFn/* wgsl */\`
+			fn rindrBsdfSample( worldWo: vec3f, surf: \${ __hairSurface } ) -> \${ __hairScatter } {
+
+				if ( surf.rindrHair.x > 0.5 ) {
+
+					var result: \${ __hairScatter };
+					let wo = normalize( surf.normalInvBasis * worldWo );
+					let hs = \${ __HAIR.sample }( wo, surf.rindrHair.y, surf.rindrHairSigma.xyz, surf.rindrHair.z, surf.rindrHair.w, \${ __HAIR.alpha }, surf.rindrHairSigma.w, \${ rand1 }( \${ __hairRngType } ), \${ rand2 }( \${ __hairRngDirection } ) );
+					result.direction = normalize( surf.normalBasis * hs[ 0 ].xyz );
+					result.pdf = hs[ 0 ].w;
+					result.color = hs[ 1 ].xyz;
+					result.isTransmissive = false;
+					return result;
+
+				}
+				return \${ bsdfSampleFn }( worldWo, surf );
+
+			}
+		\`;
+		const __rindrHairEvalFn = wgslTagFn/* wgsl */\`
+			fn rindrBsdfEvalPdf( worldWo: vec3f, worldWi: vec3f, surf: \${ __hairSurface } ) -> \${ __hairScatter } {
+
+				if ( surf.rindrHair.x > 0.5 ) {
+
+					var result: \${ __hairScatter };
+					let wo = normalize( surf.normalInvBasis * worldWo );
+					let wi = normalize( surf.normalInvBasis * worldWi );
+					let e = \${ __HAIR.eval }( wo, wi, surf.rindrHair.y, surf.rindrHairSigma.xyz, surf.rindrHair.z, surf.rindrHair.w, \${ __HAIR.alpha }, surf.rindrHairSigma.w );
+					result.direction = worldWi;
+					result.color = e.xyz;
+					result.pdf = e.w;
+					result.isTransmissive = false;
+					return result;
+
+				}
+				return \${ bsdfEvalPdfFn }( worldWo, worldWi, surf );
+
+			}
+		\`;
+`;
+const HAIR_MODULE = fileURLToPath(new URL('./src/scripts/curves/hair-bsdf.js', import.meta.url));
+const CURVE_PT_MODULE = fileURLToPath(new URL('./src/scripts/curves/curve-pt.js', import.meta.url));
+// the piece this hit leaves (curve-pt.js) – for the shadow rays and the next bounce
+const CURVE_SKIP_SET = `
+						\${ __curveSkip } = select( vec4u( 0u ), vec4u( hitResult.objectIndex + 1u, hitResult.indices.x, hitResult.indices.y, 0u ), objectInfo.rindrCurve != 0u );
+`;
+function curvesPatch() {
+  return {
+    name: 'rindr-curves',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.replace(/\\/g, '/').split('?')[0];
+      const name = file.split('/').pop();
+      const replaceOnce = (from, to) => {
+        const n = typeof from === 'string' ? code.split(from).length - 1 : (code.match(new RegExp(from.source, 'g')) || []).length;
+        if (n !== 1) this.error(`rindr-curves: ${from} not found exactly once in ${name} (three-gpu-pathtracer changed?)`);
+        code = code.replace(from, to);
+      };
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/PathtracerBVHComputeData.js')) {
+        // the flag in the edges patch's spare field (runs before this one)
+        replaceOnce("_rindrPad0: 'uint',", "rindrCurve: 'uint',");
+        replaceOnce(/\n(\t+)transformBufferU32\[ writeOffset \* transformStruct\.getLength\(\) \+ 41 \] = [^\n]+\n/, (m, tab) => `${m}`
+          + `${tab}transformBufferU32[ writeOffset * transformStruct.getLength() + 42 ] = object.userData?.ptCurves ? 1 : 0;\n`);
+        replaceOnce("const baseOpacityScalar = float( 1.0 ).toVar( 'bvh_baseOpacity' );", m => `${m}
+		const curveObject = uint( 0 ).toVar( 'bvh_curveObject' );`);
+        replaceOnce(/\n(\t+)let material = \$\{ storage\.materials \}\[ object\.materialIndex \];/, (m, tab) => `${m}\n${tab}\${ curveObject } = object.rindrCurve;\n${tab}\${ __curveObjectIndex } = objectIndex;`);
+        replaceOnce(/\n(\t+)\$\{ scratchRayScalar \} = 1\.0;\n\t+\$\{ baseOpacityScalar \} = 1\.0;/, (m, tab) => `${m}\n${tab}\${ curveObject } = 0u;`);
+        // (the wool patch put its fibre test right before this line, without a line break after it)
+        replaceOnce('var triResult = ${ intersectRayTriangle }( ray, a, b, c, 0.0 );', m => gate('curves', CURVE_HIT) + '\n\t\t\t\t\t\t' + m);
+        return { code: `import { CURVE_SKIP as __curveSkip, CURVE_OBJECT_INDEX as __curveObjectIndex } from ${JSON.stringify(CURVE_PT_MODULE)};\n` + code, map: null };
+      }
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/structs.wgsl.js')) {
+        replaceOnce(/\n(\t)specularIntensity: 'f32',\n\}, 'SurfaceRecord' \);/, (m, tab) => m.replace("}, 'SurfaceRecord' );", `${tab}// rindr-curves: hair model (on, h, β_m, β_n) and (absorption, η)\n${tab}rindrHair: 'vec4f',\n${tab}rindrHairSigma: 'vec4f',\n}, 'SurfaceRecord' );`));
+        return { code, map: null };
+      }
+      if (file.endsWith('three-gpu-pathtracer/src/webgpu/compute/PathTracerMegaKernel.js')) {
+        // both copies of the kernel's template (the light passes made a second one – rindr-light-passes)
+        const every = (from, to) => {
+          const n = (code.match(new RegExp(from.source, 'g')) || []).length;
+          if (n < 1) this.error(`rindr-curves: ${from} not found in ${name}`);
+          code = code.replace(new RegExp(from.source, 'g'), to);
+        };
+        every(/\n\t+vertexData\.position = objectInfo\.matrixWorld \* vertexData\.position;\n/, m => m + gate('curves', CURVE_SHADE));
+        every(/\n\t+var surface = \$\{ getSurfaceRecordFn \}\( materialInfo, vertexData, hitResult\.side, hitResult\.normal, view, blurRoughness \);\n/, m => m + gate('curves', CURVE_SKIP_SET + HAIR_SURFACE));
+        // a camera ray leaves no piece
+        every(/\n\t+var ray: \$\{ rayStruct \};\n/, m => m + gate('curves', '\n\t\t\t\t${ __curveSkip } = vec4u( 0u );\n'));
+        replaceOnce(/\n(\t+)const bsdfEvalPdfFn = proxyFn\( 'material\.value\.bsdfEvalPdf', params \);\n/, m => m + HAIR_WRAPPERS);
+        // every call in the kernel's template (also those of the other patches – this plugin runs last); the template is
+        // a function of the kernel features (rindr-pt-perf)
+        const calls = (from, to) => {
+          const n = code.split(from).length - 1;
+          if (n < 1) this.error(`rindr-curves: ${from} not found in ${name}`);
+          code = code.split(from).join(to);
+        };
+        calls('${ bsdfSampleFn }( view', "${ features.has( 'curves' ) ? __rindrHairSampleFn : bsdfSampleFn }( view");
+        calls('${ bsdfEvalPdfFn }( view', "${ features.has( 'curves' ) ? __rindrHairEvalFn : bsdfEvalPdfFn }( view");
+        return { code: `import { HAIR_PT as __HAIR } from ${JSON.stringify(HAIR_MODULE)};\n`
+          + `import { CURVE_SKIP as __curveSkip } from ${JSON.stringify(CURVE_PT_MODULE)};\n`
+          + `import { surfaceRecordStruct as __hairSurface, scatterRecordStruct as __hairScatter } from '../nodes/structs.wgsl.js';\n`
+          + `import { RNG_INDEX_SCATTER_TYPE as __hairRngType, RNG_INDEX_SCATTER_DIRECTION as __hairRngDirection } from '../nodes/random.wgsl.js';\n` + code, map: null };
+      }
+      return null;
+    },
+  };
+}
+
 // Cross-origin isolation: required for SharedArrayBuffer so three-mesh-bvh can build the BVH
 // in parallel on several workers (= CPU cores). In production public/.htaccess sets the
 // same headers.
@@ -1893,7 +2119,7 @@ export default defineConfig({
     headers: isolationHeaders,
   },
   vite: {
-    plugins: [tailwindcss(), threeCompileStatePatch(), cameraRayPatch(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), bucketPatch(), ptStandInPatch(), openPbrPatch(), mediumPatch(), glassBouncesPatch(), motionJitterPatch(), cloudPatch(), gaussianPatch(), woolPatch(), soapPatch(), edgesPatch(), emittersPatch(), glassShadowPatch(), causticsPatch(), glassSplitPatch(), nanGuardPatch(), adaptivePatch(), lightPassesPatch()],
+    plugins: [tailwindcss(), threeCompileStatePatch(), cameraRayPatch(), shadowCatcherPatch(), pathTracerPerfPatch(), atlasCapacityPatch(), bucketPatch(), ptStandInPatch(), openPbrPatch(), mediumPatch(), glassBouncesPatch(), motionJitterPatch(), cloudPatch(), gaussianPatch(), woolPatch(), soapPatch(), edgesPatch(), emittersPatch(), glassShadowPatch(), causticsPatch(), glassSplitPatch(), nanGuardPatch(), adaptivePatch(), lightPassesPatch(), curvesPatch()],
     server: { headers: isolationHeaders },
     preview: { headers: isolationHeaders },
     worker: { format: 'es' },

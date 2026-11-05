@@ -4,6 +4,7 @@
 // Kept: Camera, Film, shapes (with material, area light, ReverseOrientation, transform), named materials and textures,
 // lights, object instances (ObjectBegin/End/Instance), Attribute defaults, Include/Import (read relative to the main file).
 // Media: MakeNamedMedium kept with its transform (grid media → volumes, glass interiors → tint), MediumInterface per shape.
+// Curves (hair, fur): gathered into batches of Bézier segments (curves/curve-build.js), one shape "curves" per batch.
 // Left out: motion (only the start transform counts), Sampler, Integrator,
 // PixelFilter, Accelerator, Option, ColorSpace (scenes use sRGB – other spaces are reported once).
 //
@@ -11,6 +12,7 @@
 // matrix (column after column, translation last).
 //
 // read(path) → Promise<Uint8Array> (decompressed); paths are relative to the main file's folder.
+import { CurveBatch } from '../curves/curve-build.js';
 
 const T_EOF = 0, T_WORD = 1, T_STRING = 2, T_NUMBER = 3, T_OPEN = 4, T_CLOSE = 5;
 
@@ -249,6 +251,24 @@ export async function parsePbrt(mainPath, read, { onProgress } = {}) {
     // stream, so parameters right after `Include "file"` continue the included file's last directive (a scene sets a
     // medium's σa/σs this way after including its grid)
     let lastParams = null;
+    // curves (hair, fur – millions of `Shape "curve"`): gathered into one batch per material, transform, object, medium
+    // and name (curves/curve-build.js) instead of a shape each; they become shapes of type "curves" at the end
+    const curveBatches = new Map();
+    const ctmIds = new WeakMap();   // transform matrix → number (the CTM object is replaced on every change)
+    let ctmCount = 0;
+    const addCurve = (params, file) => {
+        const P = params.P?.v;
+        if (!P || P.length < 9) { warn('curve without control points'); return; }
+        if (!ctmIds.has(gs.ctm)) ctmIds.set(gs.ctm, ctmCount++);
+        const key = `${gs.material}|${ctmIds.get(gs.ctm)}|${object ? object.index : -1}|${gs.name ?? ''}|${JSON.stringify(gs.media ?? null)}`;
+        let entry = curveBatches.get(key);
+        if (!entry) {
+            entry = { type: 'curves', params: {}, ctm: gs.ctm, reverse: false, material: gs.material, areaLight: null, name: gs.name, file, object: object ? object.index : -1, media: gs.media, curves: new CurveBatch() };
+            curveBatches.set(key, entry);
+        }
+        const width = params.width?.v?.[0];
+        entry.curves.add(P, params.degree?.v?.[0] ?? 3, params.basis?.v?.[0] ?? 'bezier', params.width0?.v?.[0] ?? width ?? 1, params.width1?.v?.[0] ?? width ?? 1);
+    };
 
     const applyTransform = m => { if (activeStart) gs.ctm = mul(gs.ctm, m); };
     const withDefaults = (kind, params) => {
@@ -387,6 +407,7 @@ export async function parsePbrt(mainPath, read, { onProgress } = {}) {
                 case 'Shape': {
                     const type = str();
                     const params = withDefaults('shape', readParams(tk, warn));
+                    if (type === 'curve') { addCurve(params, path); break; }
                     const shape = { type, params, ctm: gs.ctm, reverse: gs.reverse, material: gs.material, areaLight: gs.areaLight, name: gs.name, file: path, object: object ? object.index : -1, media: gs.media };
                     scene.shapes.push(shape);
                     if (object) object.shapes.push(scene.shapes.length - 1);
@@ -447,6 +468,10 @@ export async function parsePbrt(mainPath, read, { onProgress } = {}) {
         }
     }
     await parseFile(mainPath, 0);
+    for (const entry of curveBatches.values()) {
+        scene.shapes.push(entry);
+        if (entry.object >= 0) scene.objects[entry.object].shapes.push(scene.shapes.length - 1);
+    }
     scene.objects.forEach(o => { delete o.index; });
     return scene;
 }

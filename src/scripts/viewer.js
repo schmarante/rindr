@@ -32,6 +32,7 @@ import { MaterialThumbs } from './material-thumbs.js';
 import { uvCheckerTexture } from './uv-checker.js';
 import { CloudSystem } from './materials/clouds.js';
 import { GridVolumeSystem, volumeBounds } from './volumes/grid-volumes.js';
+import { setupCurveMesh, updateHairLight } from './curves/curve-mesh.js';
 import { WoolSystem } from './materials/wool.js';
 import { setSoapSceneSize } from './materials/soap.js';
 import { GrassSystem } from './materials/grass.js';
@@ -47,7 +48,7 @@ import { ObjectTransformer, applyTransform, ensureTransform, restoreTransform, c
 import { History } from './history.js';
 import { DepthOfField } from './dof.js';
 import { LensEffects } from './lens-effects.js';
-import { t, applyDom, getLocale } from './i18n.js';
+import { t, applyDom, getLocale, getLanguage, setLanguage } from './i18n.js';
 import { QuadMenu } from './quad-menu.js';
 import { Exploder } from './explode.js';
 import { kiSettings } from './ki-gemini.js';
@@ -678,6 +679,18 @@ gridVolumes.onChange = () => { pathTracing.updateTransforms(); pathTracing.updat
 // the volumes of a loaded model: each on its own Scene Graph node (volume.node – shown, hidden, selected, moved like any
 // object; counted as one part there, otherwise the tree leaves the row out), its box for pivot, size and framing
 // (userData.volumeBox – transform.js meshBox, frameFit, modelBox)
+// hair (curves/curve-mesh.js) in the scene – its raster lines need the key light every frame (meshes of removed models
+// drop out: no longer under the scene)
+const hairMeshes = new Set();
+const hairShown = () => {
+    for (const m of hairMeshes) {
+        let o = m;
+        while (o.parent) o = o.parent;
+        if (o !== scene) hairMeshes.delete(m);
+    }
+    return hairMeshes.size > 0;
+};
+const addHair = mesh => { setupCurveMesh(mesh); hairMeshes.add(mesh); };
 function placeVolumes(volumes, root, groups, partCounts) {
     gridVolumes.set(volumes, root, groups);
     for (const v of volumes) {
@@ -3774,6 +3787,26 @@ function deviceMemoryText() {
 }
 // Mesh models (glTF/FBX/STL/PLY) cannot be tessellated coarser: above the device's limit ask before the
 // memory-heavy part (BVHs, GPU upload) – the triangle count is known then
+// Language (Settings → About): stored for the next visit (i18n.js setLanguage – the fixed texts switch at once). Most of the
+// interface is built with its texts at the start – it changes completely only on a reload: at once when nothing is
+// loaded, otherwise asked (a reload drops the scene). ?lang= in the address would win over the stored choice: removed.
+async function switchLanguage(code) {
+    if (code === getLanguage() || !await setLanguage(code)) return;
+    const reload = () => {
+        // the other parameters as they were (URLSearchParams would turn ?debug into ?debug=)
+        const search = location.search.slice(1).split('&').filter(p => p && !/^lang(=|$)/.test(p)).join('&');
+        location.replace(location.pathname + (search ? `?${search}` : '') + location.hash);
+    };
+    if (!rootGroup && !extraModels.length && !splatMesh) { reload(); return; }
+    const now = await choiceDialog({
+        icon: 'info', title: t('about.languageReload.title'), message: t('about.languageReload.message'),
+        buttons: [
+            { label: t('about.languageReload.later'), value: false, kind: 'secondary', cancel: true },
+            { label: t('about.languageReload.now'), value: true, kind: 'primary' },
+        ],
+    });
+    if (now) reload();
+}
 async function confirmLargeModel({ name, triangles }) {
     if (triangles <= importLimits().limit) return true;
     const ok = await choiceDialog({
@@ -5168,6 +5201,11 @@ function importNotices(result, name) {
         id: 'pbrt-skipped', icon: 'info', title: t('import.pbrt.skipped.title'), timeout: 15000,
         message: t('import.pbrt.skipped.message', { name: displayName(name), what: result.pbrtSkipped.what.join(', ') }),
     });
+    // hair over this device's budget: every k-th hair kept, thicker (curves/curve-mesh.js curvePieceBudget)
+    if (result.curvesThinned) showNotice({
+        id: 'curves-thinned', icon: 'info', title: t('import.curves.thinned.title'), timeout: 15000,
+        message: t('import.curves.thinned.message', { name: displayName(name), share: Math.round(100 / result.curvesThinned.stride) }),
+    });
     const approx = result.maxApprox;
     if (approx?.count) showNotice({
         id: 'max-approx', icon: 'info', title: t('import.max.approx.title', { count: approx.count }), timeout: 15000,
@@ -5296,6 +5334,7 @@ async function loadModel(reload = false, safe = false) {
             if (!reload && streamed.length < FADE_MAX_MESHES) startFade(mesh);
             mesh.receiveShadow = true;
             if (m.name) mesh.name = m.name;
+            if (m.curves) addHair(mesh);   // hair/fur: path tracer pieces + raster lines (curves/curve-mesh.js)
             (nodeGroups[m.node] || root).add(mesh);
             mesh.updateMatrixWorld();
             bbox.union(meshBox.copy(localBox(mesh)).applyMatrix4(mesh.matrix));
@@ -5811,7 +5850,7 @@ function setupGUI() {
         });
     }
 
-    setup.addSection('about', t('about.title')).append(buildAbout({ gpu: adapter ? gpuLabel(adapter.info) : t('about.gpuNone') }));
+    setup.addSection('about', t('about.title')).append(buildAbout({ gpu: adapter ? gpuLabel(adapter.info) : t('about.gpuNone'), onLanguage: switchLanguage }));
 
     // save/load scene and undo/redo live in the bar at the bottom
 }
@@ -5922,6 +5961,7 @@ async function loadExtraModel(source, { sceneIndex, placement: savedPlacement } 
             mesh.matrix.fromArray(m.matrix);
             mesh.castShadow = mesh.receiveShadow = true;
             if (m.name) mesh.name = m.name;
+            if (m.curves) addHair(mesh);
             (groups[m.node] || root).add(mesh);
             bbox.union(box.copy(localBox(mesh)).applyMatrix4(mesh.matrix));
             meshList.push(mesh);
@@ -7064,6 +7104,7 @@ function renderFrame() {
     exploder.update(frameStart);
     clouds.update(camera);
     if (gridVolumes.active) gridVolumes.update(gridVolumeLight());
+    if (hairShown()) updateHairLight(gridVolumeLight());   // raster hair lines: the same key light (curves/curve-mesh.js)
     wool.update();
     grass.update();
     edges.update();

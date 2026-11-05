@@ -94,6 +94,13 @@
             "unnamedMesh": "Mesh",
             "instancedObject": "{name} ({count}×)"
         },
+        "curves": {
+            "node": "Hair “{name}”",
+            "thinned": {
+                "title": "Hair thinned out",
+                "message": "“{name}” has more hair than this device can hold well – about {share} % of it is shown, a little thicker."
+            }
+        },
         "volume": {
             "node": "Volume “{name}”"
         },
@@ -3051,6 +3058,10 @@
         "ptStatus": "Path tracing",
         "brand": "<strong>RINDR</strong> <i>alpha</i>"
     },
+    "languages": {
+        "de_de": "Deutsch",
+        "en_us": "English"
+    },
     "about": {
         "title": "About",
         "description": "Your Local 3D-File Viewer – STEP, IGES, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, pbrt, VDB volumes, MaterialX, BIM (IFC, BCF), Gaussian splats, HDRIs and IES light profiles right in the browser, with real-time path tracing.",
@@ -3059,6 +3070,13 @@
         "version": "Version",
         "gpu": "Graphics",
         "gpuNone": "WebGL2 (no WebGPU)",
+        "language": "Language",
+        "languageReload": {
+            "title": "Language changed",
+            "message": "Part of the interface switches to the new language only after a reload. That closes the current scene – save it first if you need it. The choice is kept for your next visit.",
+            "now": "Reload now",
+            "later": "Later"
+        },
         "madeWith": "Designed with ❤️. Powered by Claude.",
         "openSource": "RINDR is built on great open-source projects. Thanks to everyone who contributes to them!",
         "runtime": "In the viewer",

@@ -1329,10 +1329,13 @@ function assembleSolid(s, results, geometries, onFlipped) {
 async function buildBVH(w, g, shapeSeed = 0) {
     const bytes = bvhJobBytes(g);
     await gate().acquire(bytes);
+    // hair (curves/curve-build.js): no tangents from the UVs – its tangents are the fibre directions (the degenerate
+    // stand-in triangles gave zeros), its uv the radius
+    const curves = !!g.curves;
     let r;
     try {
-        r = await requestWorker(w, { type: 'bvh', positions: g.positions, index: g.index, normals: g.normals, uvs: g.uvs, shape: shapeSeed > 0, seed: shapeSeed },
-            [g.positions.buffer, g.index.buffer, g.normals.buffer, g.uvs.buffer]);
+        r = await requestWorker(w, { type: 'bvh', positions: g.positions, index: g.index, normals: curves ? null : g.normals, uvs: curves ? null : g.uvs, shape: shapeSeed > 0, seed: shapeSeed },
+            curves ? [g.positions.buffer, g.index.buffer] : [g.positions.buffer, g.index.buffer, g.normals.buffer, g.uvs.buffer]);
     } finally {
         gate().release(bytes);
     }
@@ -1340,6 +1343,7 @@ async function buildBVH(w, g, shapeSeed = 0) {
     g.positions = r.positions;
     g.index = r.index;
     g.bvh = r.roots;
+    if (curves) return;
     g.normals = r.normals;
     g.uvs = r.uvs;
     g.tangents = r.tangents;

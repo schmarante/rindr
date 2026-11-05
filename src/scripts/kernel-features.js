@@ -26,7 +26,9 @@ export const KERNEL_FEATURES = [
     'ground',   // shadow catcher (matte ground)
     'caustics', // glass or mirroring metal with the glass shadows set to caustics (caustics.js): photon grid lookup
     'emitters', // glowing meshes (emitters.js): next event estimation towards their triangles, MIS on hits
+    'curves',   // hair and fur (curves/: meshes with userData.ptCurves): cylinder pieces in the ray test, hits on them
 ];
+const CURVES = { curves: true };   // stands for "a hair mesh is shown" in the set of shown materials
 
 // ?kernel=all: every feature, whatever the scene (comparison, debugging)
 const ALL = typeof location !== 'undefined' && new URLSearchParams(location.search).get('kernel') === 'all';
@@ -40,12 +42,15 @@ export const kernelFeatures = {
     object(o) {
         let shown = true;
         for (let p = o; p && shown; p = p.parent) shown = p.visible;
-        if (!shown || !o.material) return;
+        if (!shown) return;
+        if (o.userData?.ptCurves) this.shown.add(CURVES);
+        if (!o.material) return;
         for (const m of Array.isArray(o.material) ? o.material : [o.material]) this.shown.add(m);
     },
     /** the library starts packing the material data */
     begin() {
         this.current = new Set(ALL ? KERNEL_FEATURES : []);
+        if (this.shown.has(CURVES)) this.current.add('curves');
     },
     /** a material as the kernel sees it (m: its stand-in, material: itself) – returns m */
     see(m, material) {

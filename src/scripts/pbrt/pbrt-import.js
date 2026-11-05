@@ -15,6 +15,7 @@ import { textureMaxSide } from '../memory-budget.js';
 import { colorFromAlbedo } from '../materials/medium.js';
 import { minCopies } from '../model-instances.js';
 import { gridVoxelBudget } from '../volumes/grid-volumes.js';
+import { curvePieceBudget } from '../curves/curve-mesh.js';
 import { withLook } from '../volumes/volume-look.js';
 import { t, getLocale } from '../i18n.js';
 import { debugLog } from '../log.js';
@@ -70,7 +71,7 @@ const hex = c => '#' + new THREE.Color(Math.min(Math.max(c[0], 0), 1), Math.min(
  */
 export async function importPbrt(source, { materialManager, onStatus = () => {} }) {
     const t0 = performance.now();
-    const { scene, geometries, meshes, volumes: gridVolumes } = await runWorker(source, onStatus);
+    const { scene, geometries, meshes, volumes: gridVolumes, curvesThinned } = await runWorker(source, onStatus);
     debugLog('[pbrt] read', { ms: Math.round(performance.now() - t0), geometries: geometries.length, meshes: meshes.count, warnings: scene.warnings });
     onStatus(t('import.pbrt.materials'));
     const files = fileAccess(source);
@@ -87,7 +88,8 @@ export async function importPbrt(source, { materialManager, onStatus = () => {} 
     const materialName = ref => (typeof ref === 'string' ? ref.slice(2) : scene.materials[ref]?.name || '');
     const looseNode = shape => {
         const stemOf = (path, ext) => path?.split('/').pop().replace(ext, '');
-        const name = shape.name || materialName(shape.material) || stemOf(shape.ply, /\.ply(\.gz)?$/i) || stemOf(shape.file, /\.pbrt(\.gz)?$/i) || t('import.mesh.unnamedMesh');
+        let name = shape.name || materialName(shape.material) || stemOf(shape.ply, /\.ply(\.gz)?$/i) || stemOf(shape.file, /\.pbrt(\.gz)?$/i) || t('import.mesh.unnamedMesh');
+        if (shape.type === 'curves') name = t('import.curves.node', { name });   // hair/fur: a row of its own
         if (!nodeByName.has(name)) { nodeByName.set(name, nodes.length); nodes.push({ name, parent: 0 }); }
         return nodeByName.get(name);
     };
@@ -119,7 +121,7 @@ export async function importPbrt(source, { materialManager, onStatus = () => {} 
             const b = boxProject(g, UV_TILE / Math.max(M.getMaxScaleOnAxis(), 1e-12));
             return { positions: b.positions, normals: b.normals, index: b.index, uvs: b.uvs, name: '' };
         }
-        return { positions: g.positions, normals: g.normals, index: g.index, uvs: g.uvs, name: '' };
+        return { positions: g.positions, normals: g.normals, index: g.index, uvs: g.uvs, tangents: g.tangents ?? null, curves: g.curves ?? null, name: '' };
     });
 
     // --- material definitions (bump maps: their relief height is set with the other importers' – mesh-importer.js
@@ -154,7 +156,8 @@ export async function importPbrt(source, { materialManager, onStatus = () => {} 
                     objectId.set(object, instance++);
                 }
                 part = { geometry: meshes.geometry[m], matrix: IDENTITY.slice(), instances: new Float32Array(uses[object] * 16), materialId: defIds[meshPlan[m]],
-                    name, node: objectNode.get(object), instance: objectId.get(object), key: `o${object}/${si}`, copies: uses[object], filled: 0 };
+                    name, node: objectNode.get(object), instance: objectId.get(object), key: `o${object}/${si}`, copies: uses[object], filled: 0,
+                    ...(geometries[meshes.geometry[m]].curves ? { curves: true } : {}) };
                 copied.set(si, part);
                 outMeshes.push(part);
             }
@@ -173,7 +176,7 @@ export async function importPbrt(source, { materialManager, onStatus = () => {} 
             inst = instanceId.get(ii);
         }
         outMeshes.push({ geometry: meshes.geometry[m], matrix: Array.from(meshes.matrices.subarray(16 * m, 16 * m + 16)), materialId: defIds[meshPlan[m]],
-            name: nodes[node].name, node, instance: inst, key: String(m) });
+            name: nodes[node].name, node, instance: inst, key: String(m), ...(geometries[meshes.geometry[m]].curves ? { curves: true } : {}) });
     }
     for (const part of copied.values()) {
         if (part.filled * 16 < part.instances.length) part.instances = part.instances.slice(0, part.filled * 16);
@@ -195,6 +198,7 @@ export async function importPbrt(source, { materialManager, onStatus = () => {} 
     const render = renderSettings(plans, lights, environment);
     const result = { nodes, geometries: outGeometries, meshes: outMeshes, cameras, lights, environment, render, animation: null, activateCamera: true, volumes };
     if (what.length) result.pbrtSkipped = { what };
+    if (curvesThinned) result.curvesThinned = curvesThinned;   // hair over the device's budget: every k-th kept
     debugLog('[pbrt] converted', { materials: plans.length, lights: lights.length, environment: environment && (environment.file ? 'map' : environment.off ? 'off' : 'uniform'), mirror: scene.mirror, up: scene.upAxis, render });
     return { result, missing };
 }
@@ -260,7 +264,7 @@ function runWorker(source, onStatus) {
         };
         worker.onerror = e => { worker.terminate(); reject(new Error(e.message || 'pbrt worker failed')); };
         worker.postMessage({ mainPath: source.name.split(/[\\/]/).pop(), main: source.main || null, files: source.files || [], baseUrl: source.baseUrl ? new URL(source.baseUrl, location.href).href : null,
-            volumeVoxels: gridVoxelBudget() });
+            volumeVoxels: gridVoxelBudget(), curvePieces: curvePieceBudget() });
     });
 }
 
@@ -593,16 +597,22 @@ class MaterialConverter {
                 break;
             }
             case 'hair': {
-                // hair fibres as a surface: colour from the melanin concentrations (absorption of the published pigment
-                // spectra), coarse sheen
-                const e = p.eumelanin?.v?.[0] ?? (p.sigma_a || p.reflectance ? 0 : 1.3), ph = p.pheomelanin?.v?.[0] ?? 0;
-                let c = p.reflectance ? spectrumRgb(p.reflectance, this.spectra) : null;
+                // hair fibres (curves – cylinders in the path tracer): the colour hair shows after many passes through its
+                // fibres – given (`color`, as pbrt takes it) or from the absorption σa (melanin concentrations × the
+                // published pigment absorptions, or given) by the published fit of Chiang et al. 2016: colour =
+                // exp(−√σa · f(β_n))
+                const e = p.eumelanin?.v?.[0] ?? (p.sigma_a || p.reflectance || p.color ? 0 : 1.3), ph = p.pheomelanin?.v?.[0] ?? 0;
+                let c = p.reflectance ? spectrumRgb(p.reflectance, this.spectra) : p.color ? spectrumRgb(p.color, this.spectra) : null;
                 if (!c) {
                     const sa = p.sigma_a ? spectrumRgb(p.sigma_a, this.spectra) : [0.419, 0.697, 1.37].map((x, i) => e * x + ph * [0.187, 0.4, 1.05][i]);
-                    c = sa.map(x => Math.exp(-x * 0.7));
+                    const bn = p.beta_n?.v?.[0] ?? 0.3;
+                    const f = 5.969 - 0.215 * bn + 2.532 * bn ** 2 - 10.73 * bn ** 3 + 5.574 * bn ** 4 + 0.245 * bn ** 5;
+                    c = sa.map(x => Math.exp(-Math.sqrt(Math.max(x, 0)) * f));
                 }
                 params.color = hex(c);
-                Object.assign(params, { roughness: 0.45, sheen: 0.3, sheenColor: hex(c) });
+                // the hair model (curves/hair-bsdf.js) reads β_m from the roughness, β_n from the sheen roughness, η from the IOR
+                Object.assign(params, { roughness: Math.min(Math.max(p.beta_m?.v?.[0] ?? 0.3, 0.02), 1), sheen: 0,
+                    sheenRoughness: Math.min(Math.max(p.beta_n?.v?.[0] ?? 0.3, 0.05), 1), ior: p.eta?.v?.[0] ?? 1.55 });
                 break;
             }
             case 'measured': {

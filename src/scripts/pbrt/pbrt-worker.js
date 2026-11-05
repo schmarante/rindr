@@ -14,6 +14,7 @@ import { buildShape, emitterShape } from './pbrt-shapes.js';
 import { octahedralToEquirect, octahedralIlluminance, encodeRgbe, readPfm } from './pbrt-env.js';
 import { unzlibSync } from 'three/addons/libs/fflate.module.js';
 import { readVdbGrids, vdbVolume, reduceDense, packVolume } from '../volumes/vdb-import.js';
+import { countPieces } from '../curves/curve-build.js';
 
 const MM = 1000;   // file unit (m) → mm
 
@@ -184,6 +185,19 @@ self.onmessage = async ({ data: msg }) => {
             pending.delete(file);
             return p;
         };
+        // hair/fur (curve batches): within the device's budget of pieces – above it every k-th hair stays, thicker by √k
+        // (about the same coverage)
+        const curveShapes = shapeList.map(si => scene.shapes[si]).filter(s => s.type === 'curves');
+        let curvesThinned = null;
+        if (curveShapes.length) {
+            const total = curveShapes.reduce((a, s) => a + countPieces(s.curves), 0);
+            const limit = msg.curvePieces || 8e6;
+            if (total > limit) {
+                const stride = Math.ceil(total / limit);
+                for (const s of curveShapes) s.curveThinning = { stride, widthScale: Math.sqrt(stride) };
+                curvesThinned = { stride, pieces: total };
+            }
+        }
         let done = 0;
         for (const si of shapeList) {
             const s = scene.shapes[si];
@@ -200,6 +214,7 @@ self.onmessage = async ({ data: msg }) => {
             }
             let g;
             try { g = buildShape(s, bytes, warn); } catch (err) { warn(`shape ${s.type} could not be built (${err.message})`); continue; }
+            if (s.type === 'curves') s.curves = null;   // the segments (built now) – hundreds of MB for big hair
             if (!g) continue;
             // area lights that are real lights: flat rectangles, full discs, spheres (outside instances – pbrt ignores
             // area lights there)
@@ -221,7 +236,7 @@ self.onmessage = async ({ data: msg }) => {
             geometryOf[si] = geometries.length;
             if (key && !isEmitter(s)) plyCache.set(key, geometries.length);
             geometries.push(g);
-            for (const a of [g.positions, g.normals, g.uvs, g.index]) if (a) transfer.push(a.buffer);
+            for (const a of [g.positions, g.normals, g.uvs, g.index, g.tangents]) if (a) transfer.push(a.buffer);
         }
         // meshes: loose shapes, then every instance's shapes
         const objects = scene.objects.map(o => ({ name: o.name, shapes: o.shapes.filter(si => geometryOf[si] >= 0) }));
@@ -299,7 +314,7 @@ self.onmessage = async ({ data: msg }) => {
                 lights, emitters, environment, mirror, upAxis, media: scene.media, warnings: [...scene.warnings],
             },
             geometries,
-            meshes: { count, matrices, geometry: meshGeometry, shape: meshShape, instance: meshInstance }, volumes,
+            meshes: { count, matrices, geometry: meshGeometry, shape: meshShape, instance: meshInstance }, volumes, curvesThinned,
         }, transfer);
     } catch (err) {
         self.postMessage({ type: 'error', message: err.message || String(err) });
