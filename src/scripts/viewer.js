@@ -118,6 +118,10 @@ let playerCreated = false;
 export async function createPlayer(options = {}) {
     if (playerCreated) throw new Error('createPlayer: only one player per page so far (docs/player.md)');
     playerCreated = true;
+    // where the player's elements are: `dom` holds its fixed elements (index.astro – looked up by id; the page today, a
+    // shadow root later), `host` takes the hidden file inputs (docs/player.md)
+    const dom = options.dom ?? document;
+    const host = options.host ?? document.body;
 
     // where the app's files lie (models/, hdr/, oidn/, samplescene/): the page's base path; an embedded player gets its
     // own (docs/player.md)
@@ -131,7 +135,7 @@ export async function createPlayer(options = {}) {
     // OIDN weights (Apache 2.0, from RenderKit/oidn-weights)
     const DENOISE_WEIGHTS_URL = `${ASSET_BASE}oidn/rt_hdr_alb_nrm.tza`;
 
-    const loadingEl = document.getElementById('loading');
+    const loadingEl = dom.getElementById('loading');
     function showStatus(text) {
         loadingEl.textContent = text;
         loadingEl.style.opacity = '1';
@@ -163,7 +167,7 @@ export async function createPlayer(options = {}) {
     // the preloader of the page (index.astro): complete the sweep from where its animation stands, fade out, remove
     let preloaderFrames = 0, preloaderStart = null, preloaderGone = false;
     function hidePreloader() {
-        const el = document.getElementById('preloader');
+        const el = dom.getElementById('preloader');
         if (!el || el.dataset.closing) return;
         el.dataset.closing = '1';
         const fill = el.querySelector('[data-fill]');
@@ -200,7 +204,7 @@ export async function createPlayer(options = {}) {
     // Undo/redo (Ctrl+Z / Ctrl+Y), at most 50 steps
     const history = new History({ limit: 50 });
     // Loading progress (bottom): phase + bar; fraction undefined = indeterminate
-    const progressEl = document.getElementById('progress');
+    const progressEl = dom.getElementById('progress');
     const progressLabel = progressEl.querySelector('[data-label]');
     const progressBar = progressEl.querySelector('[data-bar]');
     function showProgress(text, fraction) {
@@ -300,7 +304,7 @@ export async function createPlayer(options = {}) {
     const lens = new LensEffects(renderer);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap; // PCFSoftShadowMap does not exist under WebGPU
-    document.getElementById('viewport').appendChild(renderer.domElement);
+    dom.getElementById('viewport').appendChild(renderer.domElement);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = false;
@@ -1101,7 +1105,7 @@ export async function createPlayer(options = {}) {
         if (kind === 'model' || kind === 'node') return resolveOne(object);
         return () => object;
     }
-    const properties = new PropertiesPanel(document.getElementById('properties'), {
+    const properties = new PropertiesPanel(dom.getElementById('properties'), {
         transformer, scene, camera, slicer,
         splats: entry => (entry ? !!splatMesh && holdsSplat(entry.object) : !!splatMesh),
         // relighting / override material of the splats (entry holds the splat)
@@ -1827,7 +1831,7 @@ export async function createPlayer(options = {}) {
         openQuadMenu(e.clientX, e.clientY);
     });
     // Scene Graph: right click on a row selects it (unless already part of the selection) and opens the menu
-    document.querySelector('#scene-graph [data-tree-list]').addEventListener('contextmenu', e => {
+    dom.querySelector('#scene-graph [data-tree-list]').addEventListener('contextmenu', e => {
         const entry = sceneGraph.entryAt(e.target);
         if (entry?.kind === 'missing') {
             e.preventDefault();
@@ -1991,7 +1995,7 @@ export async function createPlayer(options = {}) {
         }).catch(err => console.error('[SSS] distance field failed', err));
     }
     const isModelEntry = e => e && (e.kind === 'node' || e.kind === 'model' || e.kind === 'surface' || e.kind === 'selection');
-    const materialPanel = new MaterialPanel(document.getElementById('materials'), materialManager, {
+    const materialPanel = new MaterialPanel(dom.getElementById('materials'), materialManager, {
         getSelectionObject: () => (isModelEntry(selection) ? selection.object : null),
         onAssignToSelection: id => {
             if (!isModelEntry(selection)) return;
@@ -2033,7 +2037,7 @@ export async function createPlayer(options = {}) {
     pathTracing.yieldTo = () => materialPanel.thumbs?.busy || graphApplier.baking.size > 0 || graphApplier.previewing > 0;
     // node previews: one output baked small in the bake queue; output node = the material's sphere from the panel.
     // Loaded with its first opening (lazy).
-    const nodeEditor = lazy(async () => new (await import('./node-editor.js')).NodeEditor(document.getElementById('node-editor'), materialManager, {
+    const nodeEditor = lazy(async () => new (await import('./node-editor.js')).NodeEditor(dom.getElementById('node-editor'), materialManager, {
         preview: (def, nodeId, port, size) => graphApplier.previewNode(def, nodeId, port, size),
         materialThumb: (id, size) => materialPanel.thumbUrl(id, size),
         onThumbReady: cb => materialPanel.thumbs?.addEventListener('ready', cb),
@@ -2051,7 +2055,7 @@ export async function createPlayer(options = {}) {
     function followNodeEditor(id) { if (nodeEditor.now?.isOpen) nodeEditor.now.open(id); }
 
     // --- HDRI editor (hdri/hdri-editor.js): own procedural HDRIs, free window – loaded with its first opening ---
-    const hdriEditor = lazy(async () => new (await import('./hdri/hdri-editor.js')).HdriEditor(document.getElementById('hdri-editor'), {
+    const hdriEditor = lazy(async () => new (await import('./hdri/hdri-editor.js')).HdriEditor(dom.getElementById('hdri-editor'), {
         service: hdriService,
         // rendered image of a description: shown if that HDRI is (still) the environment
         onApply: (texture, { final, id }) => {
@@ -2102,7 +2106,7 @@ export async function createPlayer(options = {}) {
 
     let selection = null;   // selected Scene Graph entry
     let hovered = null;     // entry under the mouse in the Scene Graph
-    const sceneGraph = new SceneGraph(document.getElementById('scene-graph'), {
+    const sceneGraph = new SceneGraph(dom.getElementById('scene-graph'), {
         onVisibility: changed => {
             const kinds = new Set(changed.map(e => e.kind));
             if (kinds.has('node') || kinds.has('model')) pathTracing.updateTransforms();
@@ -2302,7 +2306,7 @@ export async function createPlayer(options = {}) {
     }
 
     // IES editor window (loaded on first use)
-    const iesEditor = lazy(async () => new (await import('./ies-editor.js')).IesEditor(document.getElementById('ies-editor'), {
+    const iesEditor = lazy(async () => new (await import('./ies-editor.js')).IesEditor(dom.getElementById('ies-editor'), {
         profile: light => profileValues(light),
         // the light's edited shape, or its profile as editable planes (own profile, file: symmetric → one curve, asymmetric
         // → four planes)
@@ -2700,7 +2704,7 @@ export async function createPlayer(options = {}) {
     const animations = [];   // [{ anim: ModelAnimation, owner: 'main' | extra id }]
     let animPlaying = false, animScrubbing = false, animLast = 0;
     let hqBeforePlay = false;   // HQ was on when playing started (restored on pause)
-    const playbar = createPlaybar(document.getElementById('playbar'), {
+    const playbar = createPlaybar(dom.getElementById('playbar'), {
         onPlay: play => setAnimPlaying(play),
         onScrub: time => {
             if (!animScrubbing) {
@@ -3342,7 +3346,7 @@ export async function createPlayer(options = {}) {
         setDropTarget(null);
         if (target) dropOnto(target, e, { exact: true });   // target is already known (dragover)
     });
-    const graphList = document.querySelector('#scene-graph [data-tree-list]');
+    const graphList = dom.querySelector('#scene-graph [data-tree-list]');
     graphList.addEventListener('dragover', e => {
         if (!isMaterialDrag(e)) return;
         const entry = sceneGraph.entryAt(e.target);
@@ -3583,7 +3587,7 @@ export async function createPlayer(options = {}) {
         camera.position.copy(controls.target).add(offset.setFromSpherical(_orbit));
         controls.update();   // 'change' → path tracing reduced like orbiting with the mouse
     }
-    const viewCube = new ViewCube(document.getElementById('view-cube'), {
+    const viewCube = new ViewCube(dom.getElementById('view-cube'), {
         onSelect: dir => flyToDirection(dir),
         onOrbitStart: () => { cancelFlight(); controls.dispatchEvent({ type: 'start' }); },
         onOrbit: orbitCamera,
@@ -3723,7 +3727,7 @@ export async function createPlayer(options = {}) {
 
     // --- GUI ---
     // Setup menu (gear in the bar, setSetupOpen): path tracing + tessellation
-    const setupMenu = document.getElementById('setup-menu');
+    const setupMenu = dom.getElementById('setup-menu');
     const setup = new SetupMenu(setupMenu, t('setup.title'), { onClose: () => setSetupOpen(false) });   // sections left, options right
     setup.onChange = smoothChange;
     const settings = {
@@ -4162,7 +4166,7 @@ export async function createPlayer(options = {}) {
     const isAnalysis = mode => mode in ANALYSIS_MATERIALS;
     ground.material.allowOverride = false;
     let viewMode = pathTracing.enabled ? 'hq' : 'default';
-    const viewModeBar = new ViewModeBar(document.getElementById('view-mode'), mode => setViewMode(mode));
+    const viewModeBar = new ViewModeBar(dom.getElementById('view-mode'), mode => setViewMode(mode));
 
     // --- AI rendering (ki-render.js → Gemini directly from the browser, ki-gemini.js) ---
     let captureRequest = null;   // render loop delivers the next frame as a data: URL
@@ -4470,7 +4474,7 @@ export async function createPlayer(options = {}) {
         const state = file && await openJsonFile(file);
         if (state) { closeBcf(); openSceneFile(state); }
     };
-    document.body.append(sceneFileInput);
+    host.append(sceneFileInput);
     // export dialog: loaded with its first opening (lazy)
     const imageExport = lazy(async () => (await import('./image-export.js')).createImageExport({
         exportImage,
@@ -4538,7 +4542,7 @@ export async function createPlayer(options = {}) {
     }));
     const bcfFileInput = Object.assign(document.createElement('input'), { type: 'file', accept: '.bcfzip,.bcf', hidden: true });
     bcfFileInput.onchange = () => { const f = bcfFileInput.files[0]; bcfFileInput.value = ''; if (f) openBcfFile(f); };
-    document.body.append(bcfFileInput);
+    host.append(bcfFileInput);
     const ICON_BCF = icon('bcf', 'size-4');
     const setBcfTool = viewModeBar.addTool({ icon: ICON_BCF, title: t('toolbar.bcf'), onClick: async () => (await loadBcf()).panel.toggle(), group: 'scene' });
     // only with BIM: an IFC model is loaded (issues can be created and saved) or a BCF file is open
@@ -6343,7 +6347,7 @@ export async function createPlayer(options = {}) {
         return out;
     }
 
-    const dropOverlay = document.getElementById('drop-overlay');
+    const dropOverlay = dom.getElementById('drop-overlay');
     // While the drop area is shown, the status text behind it (e.g. the drop hint) is hidden – no two texts on
     // top of each other. With a model loaded the area is split: left "replace models", right "add to the scene";
     // the half under the pointer is highlighted and decides on drop (dropSide).
@@ -6445,7 +6449,7 @@ export async function createPlayer(options = {}) {
         modelFileInput.value = '';
         if (files.length) openFiles(files, { side: 'add', relink: assetsWindow.isOpen });
     };
-    document.body.append(modelFileInput);
+    host.append(modelFileInput);
 
     // --- MaterialX (materialx.js, docs/material-format.md) ---
 
@@ -6455,7 +6459,7 @@ export async function createPlayer(options = {}) {
         materialFileInput.value = '';
         if (files.length) importMaterialFiles(files);
     };
-    document.body.append(materialFileInput);
+    host.append(materialFileInput);
 
     /** MaterialX files / packages among the files → new scene materials (the first opened in the panel); returns the
      *  files left over that are something else (a model dropped along) or null */
@@ -6829,12 +6833,12 @@ export async function createPlayer(options = {}) {
 
     // --- Path tracing status display ---
     const ptStatus = {
-        root: document.getElementById('pt-status'),
-        dot: document.getElementById('pt-status-dot'),
-        label: document.getElementById('pt-status-label'),
-        value: document.getElementById('pt-status-value'),
-        bar: document.getElementById('pt-status-bar'),
-        detail: document.getElementById('pt-status-detail'),
+        root: dom.getElementById('pt-status'),
+        dot: dom.getElementById('pt-status-dot'),
+        label: dom.getElementById('pt-status-label'),
+        value: dom.getElementById('pt-status-value'),
+        bar: dom.getElementById('pt-status-bar'),
+        detail: dom.getElementById('pt-status-detail'),
         last: '',
     };
     // label: i18n key, translated when the status is shown
@@ -7047,7 +7051,7 @@ export async function createPlayer(options = {}) {
     let debugStats = null;
     if (new URLSearchParams(location.search).has('debug')) {
         import('./debug-stats.js').then(({ DebugStats }) => {
-            debugStats = new DebugStats(document.getElementById('debug-stats'), {
+            debugStats = new DebugStats(dom.getElementById('debug-stats'), {
                 renderer, adapter, getRoot: () => rootGroup,
                 getPhase: () => (pathTracing.enabled ? `PT ${pathTracing.getStatus().phase} (${viewMode})` : viewMode) + (loading ? ', loading' : '')
                     + (batcher.stats.batches ? `, ${batcher.stats.instances} meshes in ${batcher.stats.batches} batches` : ''),
@@ -7395,7 +7399,7 @@ export async function createPlayer(options = {}) {
             initRenderClient(param);
             return;
         }
-        distDisplay = new BucketDisplay(renderer, document.getElementById('viewport'));
+        distDisplay = new BucketDisplay(renderer, dom.getElementById('viewport'));
         distHub = hubTransport();
         if ('BroadcastChannel' in window) distHub.add(localTransport());
         renderMaster = new RenderMaster(distHub, {
@@ -7830,7 +7834,7 @@ export async function createPlayer(options = {}) {
     }
     // status bottom left while distributed rendering shows its picture (instead of the path tracer's): buckets, clients,
     // time; the round ✕ cancels the job – once it is done, it closes the picture
-    const distStatusCancel = document.getElementById('pt-status-cancel');
+    const distStatusCancel = dom.getElementById('pt-status-cancel');
     distStatusCancel?.addEventListener('click', () => {
         if (renderMaster?.running) cancelDistributed();
         else if (distDisplay?.active) endDistributedView();
