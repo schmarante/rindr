@@ -135,6 +135,23 @@ export async function createPlayer(options = {}) {
     }
     async function idle() { while (opening.size || loading) await Promise.allSettled([...opening, loading ? loadLoop : null]); }
     let lastSelect = 'null';   // the selection last told to the host page (told once per change)
+    // a file a scene names, from the host page (element.resolveAsset(name, kind) – docs/player.md stage 4): its URL, Blob or
+    // File, or nothing (then the usual places). hostAsset → File, hostAssetUrl → URL (a Blob as an object URL)
+    async function hostAssetSource(name, kind) {
+        try { return (await options.resolveAsset?.(name, kind)) || null; } catch (err) { console.warn(`[Player] resolveAsset(${name}): ${err.message}`); return null; }
+    }
+    async function hostAsset(name, kind) {
+        const own = await hostAssetSource(name, kind);
+        if (!own) return null;
+        if (own instanceof Blob) return own instanceof File ? own : new File([own], name);
+        const res = await fetch(new URL(String(own), document.baseURI));
+        if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
+        return new File([await res.blob()], name);
+    }
+    async function hostAssetUrl(name, kind) {
+        const own = await hostAssetSource(name, kind);
+        return !own ? null : own instanceof Blob ? URL.createObjectURL(own) : new URL(String(own), document.baseURI).href;
+    }
     // the player is the whole page (the RINDR app, app.js): it may reload the page and change its URL (language switch,
     // GPU reset, render client pairing) and offers distributed rendering – an embedded player never touches the page
     const APP_MODE = !!options.appMode;
@@ -264,12 +281,17 @@ export async function createPlayer(options = {}) {
     // Undo/redo (Ctrl+Z / Ctrl+Y), at most 50 steps
     const history = new History({ limit: 50 });
     // a change the user can undo (material, visibility, transform …), its undo/redo: 'rindr-change' { action, label }
-    history.addEventListener('change', e => { if (e.detail?.action && e.detail.action !== 'clear') emit('change', { ...e.detail }); });
+    history.addEventListener('change', e => {
+        if (!e.detail?.action || e.detail.action === 'clear') return;
+        wake('change');   // (a change made without input in the player – the host page's methods, keys – redraws a frozen one)
+        emit('change', { ...e.detail });
+    });
     // Loading progress (bottom): phase + bar; fraction undefined = indeterminate
     const progressEl = dom.getElementById('progress');
     const progressLabel = progressEl.querySelector('[data-label]');
     const progressBar = progressEl.querySelector('[data-bar]');
     function showProgress(text, fraction) {
+        wake('progress');   // something is going on: a frozen player draws until it is done
         optimizeWait = null;   // another task takes over the display
         progressEl.hidden = false;
         progressLabel.textContent = text;
@@ -1596,6 +1618,8 @@ export async function createPlayer(options = {}) {
         if (incomplete) return { ...incomplete, files: [...(incomplete.files || []), ...extras], incomplete: true };
         const match = pool.find(f => baseName(f.path) === info.name.toLowerCase());
         if (match) return modelFromFiles([match, ...extras]);
+        const own = await hostAsset(info.name, 'model').catch(err => { console.warn(`[Player] ${err.message}`); return null; });
+        if (own) return modelFromFiles([{ path: info.name, file: own }, ...extras]);
         const url = `${ASSET_BASE}models/${encodeURIComponent(info.name)}`;
         try {
             const res = await fetch(url, { method: 'HEAD' });
@@ -1635,6 +1659,13 @@ export async function createPlayer(options = {}) {
     }
     async function openSceneFileNow(state, files = [], { reload = false } = {}) {
         filePool = [...filePool, ...files];
+        // the scene's HDRI where the host page keeps it (or handed in with the scene, e.g. in a package)
+        const hdri = state?.environment?.hdri;
+        if (hdri && !environment.hdriUrls[hdri] && !environment.customName(hdri)) {
+            const given = files.find(f => baseName(f.path) === hdri.toLowerCase());
+            const url = given ? URL.createObjectURL(given.file) : await hostAssetUrl(hdri, 'hdri');
+            if (url) environment.hdriUrls[hdri] = url;
+        }
         const chunks = sceneModels(state);
         if (!chunks.length) { await restoreScene(state, { force: true }); rebuildPathTracing(); return; }
         // exactly these models are loaded already: only apply the state
@@ -1689,9 +1720,10 @@ export async function createPlayer(options = {}) {
         openedScene = state;
         rebuildPathTracing();
         const hdri = state?.environment?.hdri;
-        missingHdri = hdri && !environment.hdris.includes(hdri) && !environment.customName(hdri) ? hdri : null;
+        missingHdri = hdri && !environment.hdris.includes(hdri) && !environment.customName(hdri) && !environment.hdriUrls[hdri] ? hdri : null;
         assetsWindow.render();
-        if (assetRows().some(r => r.status === 'missing')) assetsWindow.show();
+        // (a player that cannot open files – embedded without 'open' – leaves it to the host page: 'rindr-load' { missing })
+        if (has('open') && assetRows().some(r => r.status === 'missing')) assetsWindow.show();
         updateAssetsTool();
     }
     let missingHdri = null;
@@ -5285,6 +5317,7 @@ export async function createPlayer(options = {}) {
         root.removeFromParent();
     }
     function clearModel() {
+        wake('clear');   // a frozen player draws the emptied view (several players – stage 3)
         clearFields([rootGroup, ...extraModels.map(x => x.root)]);   // SSS distance fields of the old geometries (the atlas is the page's)
         if (gridVolumes.active) gridVolumes.clear();
         splatSpin.active = false;
@@ -6480,6 +6513,8 @@ export async function createPlayer(options = {}) {
         const json = JSON.stringify(state, null, 1);
         const firstName = state.models[0]?.file?.name || model?.name || 'scene';
         const suggested = sceneFileName || firstName.replace(/\.[^.]+$/, '') + '.scene.json';
+        // the host page keeps the scene itself (PIM – docs/player.md stage 4): 'rindr-save' cancelled = taken over, no file
+        if (!emit('save', { scene: state, json, name: suggested, package: () => scenePackage(state, suggested) }, { cancelable: true })) return;
         if (window.showSaveFilePicker) {
             let handle;
             try {
@@ -6509,6 +6544,50 @@ export async function createPlayer(options = {}) {
         a.download = suggested;
         a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    }
+
+    // The scene with its files in one zip (stage 4 – the host page's 'rindr-save' / getPackage(), load({ package })): the scene
+    // JSON, every model's file (with the files handed in with it; a .gltf fetched by URL: its buffers and images) and the
+    // HDRI when it is a file
+    async function scenePackage(state = captureState(sceneStateContext), name = null) {
+        const fetchBlob = async url => { const res = await fetch(url); if (!res.ok) throw new Error(`${url.split('/').pop()}: HTTP ${res.status}`); return res.blob(); };
+        const files = new Map();
+        const add = (path, blob) => { if (blob && !files.has(path)) files.set(path, blob); };
+        for (const rm of runtimeModels()) {
+            const src = rm.source || {};
+            const main = src.file ?? src.main ?? (src.content != null ? new Blob([src.content]) : null) ?? (src.url ? await fetchBlob(src.url) : null);
+            add(src.name, main);
+            for (const f of src.files || []) add(f.path, f.file);
+            if (main && src.url && !src.main && /\.gltf$/i.test(src.name)) {
+                const json = JSON.parse(await main.text());
+                for (const uri of [...(json.buffers || []), ...(json.images || [])].map(x => x.uri).filter(u => u && !u.startsWith('data:'))) {
+                    add(decodeURIComponent(uri), await fetchBlob(new URL(uri, src.url).href));
+                }
+            }
+        }
+        const hdri = state.environment?.hdri;
+        if (hdri && !environment.customName(hdri)) add(hdri, await fetchBlob(environment.hdriUrls[hdri] || `${ASSET_BASE}hdr/${encodeURIComponent(hdri)}`).catch(() => null));
+        const sceneName = name || `${(state.models[0]?.file?.name || 'scene').replace(/\.[^.]+$/, '')}.scene.json`;
+        const entries = [{ name: sceneName, data: new TextEncoder().encode(JSON.stringify(state, null, 1)) }];
+        for (const [path, blob] of files) entries.push({ name: path, data: new Uint8Array(await blob.arrayBuffer()) });
+        const { zipStore } = await import('./zip.js');
+        return new Blob([zipStore(entries)], { type: 'application/zip' });
+    }
+    // a package (scenePackage) → the scene and its files
+    async function unpackScene(blob) {
+        const { readZip } = await import('./splat/splat-formats.js');
+        const entries = readZip(await blob.arrayBuffer(), { paths: true });
+        let state = null;
+        const files = [];
+        for (const [path, read] of entries) {
+            const data = await read();
+            if (!state && /\.json$/i.test(path)) {
+                try { const json = JSON.parse(new TextDecoder().decode(data)); if (json?.format === SCENE_FORMAT) { state = json; continue; } } catch { /* another JSON file */ }
+            }
+            files.push({ path, file: new File([data], path.split('/').pop()) });
+        }
+        if (!state) throw new Error('No RINDR scene in the package');
+        return { state, files };
     }
 
     async function restoreScene(state, { force = false } = {}) {
@@ -6911,7 +6990,7 @@ export async function createPlayer(options = {}) {
                 return res.blob();
             };
             const jsonName = decodeURIComponent(new URL(url).pathname.split('/').pop()) || 'scene.json';
-            const modelFile = async name => ({ path: name, file: new File([await get(new URL(name, url).href)], name) });
+            const modelFile = async name => ({ path: name, file: (await hostAsset(name, 'model')) ?? new File([await get(new URL(name, url).href)], name) });
             const [json, known] = await Promise.all([get(url), models ? Promise.all(models.map(modelFile)) : null]);
             let modelFiles = known;
             if (!modelFiles) {
@@ -7115,7 +7194,13 @@ export async function createPlayer(options = {}) {
         errorMark: () => errorLog.count,
         errorSince: mark => (errorLog.count > mark ? errorLog.last : null),
         idle,
+        // a method acts like input in the player: it becomes the current one (shared uniforms) and draws again if frozen
+        touch: () => { usePlayer(player); wake('api'); },
         openSceneUrl: url => track(openSceneUrl(url)),
+        openScene: (state, files) => track(openSceneFile(state, files, { reload: true })),
+        unpackScene,
+        scenePackage: () => scenePackage(),
+        missing: () => missingModels.map(m => m.name),
         openUrl: url => track(openModel(sourceForUrl(decodeURIComponent(new URL(url).pathname.split('/').pop()), url))),
         selectHdrUrl: url => {
             const name = decodeURIComponent(new URL(url).pathname.split('/').pop());

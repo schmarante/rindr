@@ -434,9 +434,10 @@ export async function applyState(ctx, state) {
         const hdri = e.hdri || '';
         const own = !!env.customName?.(hdri);
         env.mirror = !!e.mirror;   // a newly loaded HDRI comes mirrored, the current one is mirrored below
+        const known = env.hdris.includes(hdri) || own || !!env.hdriUrls?.[hdri];   // (hdriUrls: dropped, or from the host page)
         if (hdri !== env.hdri || own) {
-            if (hdri && !env.hdris.includes(hdri) && !own) warnings.push(t('sceneState.hdriMissing', { name: hdri }));
-            try { await env.select(env.hdris.includes(hdri) || own ? hdri : ''); }   // progress: status monitor
+            if (hdri && !known) warnings.push(t('sceneState.hdriMissing', { name: hdri }));
+            try { await env.select(known ? hdri : ''); }   // progress: status monitor
             catch (err) { warnings.push(t('sceneState.hdriError', { name: env.customName?.(hdri) ?? hdri, message: err.message })); }
         }
         await env.setMirror?.(env.mirror);

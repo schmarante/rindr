@@ -83,27 +83,51 @@ export function createHostApi(ctx) {
     let renderQueue = Promise.resolve();
 
     const api = {
-        /** load a model (URL) or { src | scene, hdr } – resolves when it is shown, rejects with the load error */
+        /**
+         * load a model (URL) or { src | scene | package, files, hdr } – scene: URL or the scene as data (getScene(), 'rindr-save'),
+         * files: { name: URL | Blob } for the files the scene names (otherwise element.resolveAsset, then next to a scene URL),
+         * package: a zip from getPackage(). Resolves when it is shown ({ models, missing, parts }), rejects with the load error
+         */
         async load(spec) {
             if (typeof spec === 'string') spec = { src: spec };
-            if (!spec || (!spec.src && !spec.scene && !spec.hdr)) throw fail('bad-argument', 'load() needs src, scene or hdr');
+            if (!spec || (!spec.src && !spec.scene && !spec.package && !spec.hdr)) throw fail('bad-argument', 'load() needs src, scene, package or hdr');
+            ctx.touch();
             const mark = ctx.errorMark();
-            if (spec.scene) await ctx.openSceneUrl(absolute(spec.scene));
+            if (spec.package) {
+                const { state, files } = await ctx.unpackScene(spec.package).catch(err => { throw fail('load-failed', err.message); });
+                await ctx.openScene(state, files);
+            } else if (spec.scene && typeof spec.scene === 'object') {
+                const files = await Promise.all(Object.entries(spec.files || {}).map(async ([name, value]) => {
+                    if (value instanceof Blob) return { path: name, file: value instanceof File ? value : new File([value], name) };
+                    const res = await fetch(absolute(String(value)));
+                    if (!res.ok) throw fail('load-failed', `${name}: HTTP ${res.status}`);
+                    return { path: name, file: new File([await res.blob()], name) };
+                }));
+                await ctx.openScene(spec.scene, files);
+            } else if (spec.scene) await ctx.openSceneUrl(absolute(spec.scene));
             else if (spec.src) await ctx.openUrl(absolute(spec.src));
             const err = ctx.errorSince(mark);
             if (err) throw fail('load-failed', err.message);
             if (spec.hdr) await ctx.selectHdrUrl(absolute(spec.hdr));
-            return { models: ctx.runtimeModels().map(rm => rm.file?.name ?? null), parts: allParts().length };
+            return { models: ctx.runtimeModels().map(rm => rm.file?.name ?? null), missing: ctx.missing(), parts: allParts().length };
+        },
+        /** the scene with its files as one zip (Blob) – load({ package }) opens it again */
+        async getPackage() {
+            await ctx.idle();
+            ctx.touch();
+            return ctx.scenePackage();
         },
         /** every part (node) of the loaded models: { path, name, model, visible, materials } */
         async getParts(pattern = '**') {
             await ctx.idle();
+            ctx.touch();
             const all = allParts();
             return (pattern === '**' ? all : all.filter(pathMatcher(pattern))).map(describePart);
         },
         /** the scene's materials: { id, name, library, source } */
         async getMaterials() {
             await ctx.idle();
+            ctx.touch();
             return ctx.materialManager.list.map(e => ({ id: e.def.id, name: e.def.name, library: e.def.libraryId ?? null, source: e.def.source ?? null }));
         },
         /** the material library (all categories): { library, name, category } */
@@ -114,6 +138,7 @@ export function createHostApi(ctx) {
         /** assign a material to parts (one undo step); returns the material's id */
         async setMaterial(target, material) {
             await ctx.idle();
+            ctx.touch();
             const parts = resolve(target);
             const make = await materialMaker(material);
             let id = null;
@@ -127,12 +152,14 @@ export function createHostApi(ctx) {
         /** show or hide parts (one undo step) */
         async setVisible(target, visible = true) {
             await ctx.idle();
+            ctx.touch();
             const entries = resolve(target).flatMap(entriesOf);
             if (entries.length) ctx.sceneGraph.setVisible(entries, !!visible);
         },
         /** select parts (null: nothing) – as a click in the Scene Graph */
         async select(target) {
             await ctx.idle();
+            ctx.touch();
             if (target == null) { ctx.sceneGraph.select(null); return; }
             const parts = resolve(target);
             const entries = parts.length === 1 ? entriesOf(parts[0]) : [];
@@ -142,15 +169,18 @@ export function createHostApi(ctx) {
         /** fly the camera so that the parts (or everything) fill the view */
         async frame(target) {
             await ctx.idle();
+            ctx.touch();
             ctx.frame(target == null ? null : resolve(target).map(p => p.group));
         },
         /** the saved views (cameras of the scene and of the file) */
         async getViews() {
             await ctx.idle();
+            ctx.touch();
             return ctx.views().map(v => v.name);
         },
         /** a saved view by name, or { position, target, fov } (camera flies there) */
         async setView(view) {
+            ctx.touch();
             if (typeof view === 'string') {
                 const v = ctx.views().find(x => x.name === view);
                 if (!v) throw fail('no-view', `No view named ${JSON.stringify(view)}`);
@@ -163,6 +193,7 @@ export function createHostApi(ctx) {
         /** view mode: 'default', 'hq' (path tracing), 'basic', 'uv', 'wire' */
         async setMode(mode) {
             if (!ctx.viewModes.includes(mode)) throw fail('bad-argument', `mode is one of ${ctx.viewModes.join(', ')}`);
+            ctx.touch();
             ctx.setViewMode(mode);
         },
         async getMode() { return ctx.getViewMode(); },
@@ -173,6 +204,7 @@ export function createHostApi(ctx) {
         render({ width = null, scale = null, transparent = false, samples = 0, hq = true, type = 'image/png', quality } = {}) {
             const run = async () => {
                 await ctx.idle();
+                ctx.touch();
                 let canvas;
                 if (hq) {
                     const base = ctx.bufferWidth();
@@ -190,6 +222,7 @@ export function createHostApi(ctx) {
         /** the scene as data (RINDR scene format – the same JSON as "Save scene") */
         async getScene() {
             await ctx.idle();
+            ctx.touch();
             return ctx.captureState();
         },
 

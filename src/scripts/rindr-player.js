@@ -57,7 +57,7 @@ function playerSheet() {
 // The element's methods for the host page (docs/player.md, stage 4 – player/host-api.js; load() has its own below): each
 // returns a promise; a player still waiting for its activation (activate="click" / "visible") starts on the first call
 const HOST_METHODS = ['getParts', 'getMaterials', 'getLibrary', 'setMaterial', 'setVisible', 'select', 'frame', 'getViews', 'setView',
-    'setMode', 'getMode', 'render', 'getScene'];
+    'setMode', 'getMode', 'render', 'getScene', 'getPackage'];
 // attributes the player follows when the page changes them after the start (the others count once, at the start)
 const LIVE_ATTRIBUTES = ['src', 'scene', 'hdr', 'mode'];
 
@@ -93,6 +93,8 @@ export class RindrPlayer extends HTMLElement {
                 ...(attrs.mode ? { mode: attrs.mode } : {}),
                 features: options.features ?? this.getAttribute('features') ?? '',
                 emit: (type, detail, { cancelable = false } = {}) => this._emit(type, detail, cancelable),
+                // files a scene names, from the host page: element.resolveAsset = (name, kind) => URL | Blob | null
+                resolveAsset: (name, kind) => this.resolveAsset?.(name, kind),
             });
         };
         const started = options.appMode ? create() : this._deferredStart(root, create, () => !!(this.getAttribute('src') || this.getAttribute('scene')));
@@ -124,7 +126,7 @@ export class RindrPlayer extends HTMLElement {
     async load(spec) {
         const api = await this.start();
         const s = typeof spec === 'string' ? { src: spec } : spec ?? {};
-        if (s.src || s.scene) this._shows = { ...this._shows, src: s.src ?? null, scene: s.src ? null : s.scene };
+        if (s.src || s.scene || s.package) this._shows = { ...this._shows, src: s.src ?? null, scene: typeof s.scene === 'string' && !s.src ? s.scene : null };
         if (s.hdr) this._shows = { ...this._shows, hdr: s.hdr };
         return api.host.load(spec);
     }
