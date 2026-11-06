@@ -1,8 +1,9 @@
 // Notices: non-blocking cards at the top centre in the style of the panels (black, translucent, blur, rounded) –
 // for things the user should know but need not answer at once: a feature this device does not support, a model
 // opened more sparingly, the last load ended by the browser … (blocking questions: dialog.js choiceDialog).
-//   showNotice({ id, icon: 'warning'|'info', title, message, actions: [{ label, onClick, primary }], timeout })
-// The same id replaces its card instead of stacking it. Returns { close }.
+//   showNotice({ id, icon: 'warning'|'info', title, message, actions: [{ label, onClick, primary }], timeout, anchor })
+// The same id replaces its card instead of stacking it (per player). anchor: a node of the player the notice belongs to
+// (its layer – shadow-dom.js; without: the page's default layer). Returns { close }.
 import { layerFor } from './shadow-dom.js';
 import { icon } from './icons.js';
 
@@ -14,10 +15,9 @@ const ICONS = {
 const ICON_CLOSE = icon('close', 'size-3.5');
 
 const stacks = new WeakMap();   // layer (page or player, shadow-dom.js) -> its stack of notices
-const open = new Map();   // id -> { el, close }
+const open = new WeakMap();     // layer -> Map(id -> { close }): ids per player
 
-function container() {
-    const layer = layerFor();
+function container(layer) {
     let stack = stacks.get(layer);
     if (stack) return stack;
     stack = document.createElement('div');
@@ -29,8 +29,11 @@ function container() {
 }
 
 /** @returns {{ close: () => void }} */
-export function showNotice({ id = null, icon = 'info', title, message = '', actions = [], timeout = 0 }) {
-    if (id && open.has(id)) open.get(id).close();
+export function showNotice({ id = null, icon = 'info', title, message = '', actions = [], timeout = 0, anchor = null }) {
+    const layer = layerFor(anchor);
+    let ids = open.get(layer);
+    if (!ids) open.set(layer, ids = new Map());
+    if (id && ids.has(id)) ids.get(id).close();
     const card = document.createElement('div');
     card.className = 'pointer-events-auto flex gap-2.5 rounded-lg bg-black/60 px-3.5 py-3 shadow-2xl backdrop-blur-sm transition-[opacity,transform] duration-300 opacity-0 -translate-y-1';
     card.setAttribute('role', 'status');
@@ -48,10 +51,11 @@ export function showNotice({ id = null, icon = 'info', title, message = '', acti
         body.append(text);
     }
     let timer = null;
+    const handle = { close: () => close() };
     const close = () => {
         if (!card.isConnected) return;
         clearTimeout(timer);
-        if (id) open.delete(id);
+        if (id && ids.get(id) === handle) ids.delete(id);
         card.classList.add('opacity-0', '-translate-y-1');
         setTimeout(() => card.remove(), 300);
     };
@@ -74,10 +78,9 @@ export function showNotice({ id = null, icon = 'info', title, message = '', acti
     x.innerHTML = ICON_CLOSE;
     x.onclick = close;
     card.append(body, x);
-    container().append(card);
+    container(layer).append(card);
     requestAnimationFrame(() => card.classList.remove('opacity-0', '-translate-y-1'));
     if (timeout > 0) timer = setTimeout(close, timeout);
-    const handle = { close };
-    if (id) open.set(id, handle);
+    if (id) ids.set(id, handle);
     return handle;
 }

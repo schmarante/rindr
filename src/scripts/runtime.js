@@ -3,6 +3,7 @@
 // Stage 1: the player still sets everything else on the renderer (size, tone mapping, shadows, hooks – listed in
 // docs/player.md "Seitenweite Zustände").
 import * as THREE from 'three/webgpu';
+import { captureSlots, restoreSlots } from './player-slots.js';
 
 // WebGPU renderer (falls back to WebGL2 without WebGPU – then without path tracing).
 // Without an explicit request the device only gets the WebGPU default limits (128 MB per storage
@@ -79,10 +80,16 @@ export function claimCanvasTarget(renderer) {
 /** Make p the renderer's current player (nothing to do when it already is) */
 export function usePlayer(p) {
     if (current === p) return;
-    const renderer = p.renderer;
+    const renderer = p.renderer, prev = current;
     if (renderer.getCanvasTarget() !== p.ct) renderer.setCanvasTarget(p.ct);
-    if (current) { renderer.setRenderTarget(null); renderer.setMRT?.(null); }   // nothing of the previous one carries over
+    if (prev) {
+        // nothing of the previous one carries over: its render target, its values in the shared uniforms (player-slots.js)
+        renderer.setRenderTarget(null);
+        renderer.setMRT?.(null);
+        prev.slots = captureSlots();
+    }
     current = p;
+    if (prev || p.slots) restoreSlots(p.slots ?? null);
     p.enter?.();
 }
 export const currentPlayer = () => current;
@@ -146,3 +153,21 @@ export function onDeviceLost(renderer, fn) {
     lostHandlers.add(fn);
     return () => lostHandlers.delete(fn);
 }
+
+// One import at a time for the page (docs/player.md, stage 3): the STEP workers and their session are the page's, and
+// two large models loading at once would share one memory budget. A player waits for its turn; aborting a load ends the
+// workers only while that player's import is the running one (importRunning).
+let importChain = Promise.resolve();
+let importer = null;
+
+/** Wait for the page's import turn of `owner` – resolves with release() (call it when the import is done) */
+export function importTurn(owner) {
+    let release;
+    const done = new Promise(resolve => { release = resolve; });
+    const turn = importChain.then(() => { importer = owner; });
+    importChain = turn.then(() => done);
+    return turn.then(() => () => { if (importer === owner) importer = null; release(); });
+}
+
+/** `owner`'s import is the one running now */
+export const importRunning = owner => importer === owner;

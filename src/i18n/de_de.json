@@ -2699,6 +2699,7 @@
         "sceneSaved": "Szene gespeichert: {name}",
         "sceneSaveErrorTitle": "Szene konnte nicht gespeichert werden",
         "noRenderer": "Dieser Browser kann hier weder WebGPU noch WebGL2 nutzen (keine Grafikkarte bzw. Hardwarebeschleunigung aus) – der Viewer kann nicht starten.",
+        "onlyFirstPlayer": "Ohne WebGPU zeigt diese Seite nur den ersten 3D-Player – dieser Browser kann hier kein WebGPU nutzen.",
         "bcfLoaded": "{count} BCF-Tickets aus {name} geladen",
         "bcfSaved": "BCF gespeichert: {name}",
         "bcfNoElements": {
@@ -2723,6 +2724,7 @@
         "phases": {
             "unsupported": "Pathtracing: kein WebGPU",
             "waiting": "Warte auf Modell",
+            "queued": "HQ wartet – ein anderer Player rechnet",
             "bvh": "Übernehme Szene",
             "compiling": "Bereite Pathtracer vor",
             "preview": "Bewegung",

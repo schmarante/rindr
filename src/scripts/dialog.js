@@ -1,23 +1,24 @@
 // Dialogs inside the interface instead of the browser's confirm()/alert(): same style as the other panels
 // (black, translucent, blur, rounded, no outline), centred, without darkening the viewer.
-// Enter = confirm, Esc or a click next to it = cancel. Returns a promise.
+// Enter = confirm, Esc or a click next to it = cancel. Returns a promise. One dialog at a time per player (option anchor:
+// a node of the player – its layer, shadow-dom.js; without: the page's default layer).
 import { layerFor } from './shadow-dom.js';
 import { t } from './i18n.js';
 import { icon } from './icons.js';
 
 const BUTTON = 'rounded px-3 py-1 outline-none transition-colors';
-let open = null;   // only one dialog at a time
+const open = new Map();   // layer -> its dialog (one at a time per player)
 
-/** Is a dialog open? (other panels must not react to its clicks/keys) */
-export const dialogOpen = () => !!open;
+/** Is a dialog open – in the player of `node`, or anywhere without? (other panels must not react to its clicks/keys) */
+export const dialogOpen = (node = null) => (node ? open.has(layerFor(node)) : open.size > 0);
 
 /**
  * Question with two buttons.
  * @param {{ title: string, message: string, confirmLabel?: string, danger?: boolean }} o
  * @returns {Promise<boolean>}  true = confirmed
  */
-export function confirmDialog({ title, message, confirmLabel = t('dialog.ok'), danger = false }) {
-    return show({ title, message, buttons: [
+export function confirmDialog({ title, message, confirmLabel = t('dialog.ok'), danger = false, anchor = null }) {
+    return show({ title, message, anchor, buttons: [
         { label: t('dialog.cancel'), value: false, className: 'bg-white/10 text-white/80 hover:bg-white/20' },
         { label: confirmLabel, value: true, primary: true, className: danger ? 'bg-red-500/80 text-white hover:bg-red-500' : 'bg-sky-500/80 text-white hover:bg-sky-500' },
     ] });
@@ -41,19 +42,20 @@ const ICONS = {
  *   buttons: { label: string, value: any, kind?: 'primary'|'secondary'|'cancel'|'danger', cancel?: boolean }[], list?: boolean }} o
  *   list: the answers one below the other (a choice among several items, e.g. the scene files of a folder)
  */
-export function choiceDialog({ title, message, icon, facts, buttons, list = false }) {
+export function choiceDialog({ title, message, icon, facts, buttons, list = false, anchor = null }) {
     const cancel = buttons.find(b => b.cancel);
-    return show({ title, message, icon, facts, list, cancelValue: cancel ? cancel.value : null,
+    return show({ title, message, icon, facts, list, anchor, cancelValue: cancel ? cancel.value : null,
         buttons: buttons.map(b => ({ ...b, primary: b.kind === 'primary', className: KIND[b.kind || 'secondary'] })) });
 }
 
 /** Message with one button (e.g. an error) */
-export function messageDialog({ title, message }) {
-    return show({ title, message, buttons: [{ label: t('dialog.ok'), value: true, primary: true, className: 'bg-white/15 text-white hover:bg-white/25' }] });
+export function messageDialog({ title, message, anchor = null }) {
+    return show({ title, message, anchor, buttons: [{ label: t('dialog.ok'), value: true, primary: true, className: 'bg-white/15 text-white hover:bg-white/25' }] });
 }
 
-function show({ title, message, buttons, icon, facts, cancelValue, list = false }) {
-    open?.close(false);
+function show({ title, message, buttons, icon, facts, cancelValue, list = false, anchor = null }) {
+    const layer = layerFor(anchor);
+    open.get(layer)?.close(false);
     return new Promise(resolve => {
         const root = document.createElement('div');
         root.dataset.dialog = '';
@@ -96,10 +98,16 @@ function show({ title, message, buttons, icon, facts, cancelValue, list = false 
         }
         panel.append(head, body, foot);
         root.append(panel);
-        layerFor().append(root);
+        layer.append(root);
+        // the player the dialog is in: keys typed in another player or a field of the page are not its answer (focus on
+        // the page itself or in the player: they are)
+        const layerRoot = layer.getRootNode?.();
+        const host = typeof ShadowRoot !== 'undefined' && layerRoot instanceof ShadowRoot ? layerRoot.host : null;
 
         const dismissed = cancelValue !== undefined ? cancelValue : buttons.length > 1 ? false : true;
         const onKey = e => {
+            const target = e.composedPath()[0];
+            if (host && target !== document.body && target !== document.documentElement && !e.composedPath().includes(host)) return;
             if (e.key === 'Escape' || e.key === 'Enter') {
                 e.preventDefault();
                 e.stopImmediatePropagation();
@@ -111,14 +119,14 @@ function show({ title, message, buttons, icon, facts, cancelValue, list = false 
         window.addEventListener('keydown', onKey, true);
         root.addEventListener('pointerdown', onDown);
         function close(value) {
-            if (open !== self) return;
-            open = null;
+            if (open.get(layer) !== self) return;
+            open.delete(layer);
             window.removeEventListener('keydown', onKey, true);
             root.remove();
             resolve(value);
         }
         const self = { close };
-        open = self;
+        open.set(layer, self);
         primary?.focus();
     });
 }

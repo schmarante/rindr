@@ -22,15 +22,39 @@
 // → its texels, depth-aware from the four nearest (no halos at silhouettes). Where the snapshot saw another surface
 // (disocclusion while orbiting, a surface not in the pre-pass) the depth does not match → no occlusion.
 import * as THREE from 'three/webgpu';
-import { Fn, context, float, vec2, vec4, ivec2, uniform, textureLoad, screenUV, normalView, positionView, positionWorld,
+import { Fn, context, float, vec2, vec4, ivec2, uniform, texture, textureLoad, screenUV, normalView, positionView, positionWorld,
     Discard, min, sqrt, select, If } from 'three/tsl';
 import { RASTER } from './config.js';
 import { memoryBudget } from './memory-budget.js';
+import { playerSlot, playerUniforms } from './player-slots.js';
 
 const BLUR = [[-2, 0.5], [-1, 1], [0, 1], [1, 1], [2, 0.5]];   // per axis: an even 4-wide box centred on the texel
 // resolution steps (share of the picture per side): the base (settings.resolution) and finer ones when zoomed out
 const STEPS = [0.71, 1];
 const BYTES_PER_TEXEL = 3 * 8 + 4;   // three RGBA half float targets + the pre-pass depth
+
+// Shared by the players of a page (docs/player.md, stage 3): the materials' hook (renderer.contextNode – one shader per
+// material for all of them) reads these uniforms and the blurred occlusion through one texture node; each player's
+// RasterAO has its own targets and puts its values back when it becomes the current player (player-slots.js)
+let shared = null;
+function sharedUniforms(settings) {
+    const u = {
+        active: uniform(0),                        // 1 only during the main render (materials)
+        size: uniform(new THREE.Vector2(1, 1)),    // AO target size (texels)
+        depthScale: uniform(1),                    // depth stored ÷ this (half float range for any scene size)
+        radius: uniform(1),                        // world units
+        strength: uniform(settings.strength),
+        maxPx: uniform(64),                        // projected radius at most (AO texels)
+        // view position = O + D · depth, both affine in the NDC xy (perspective and orthographic, lens shift included)
+        rayO: [uniform(new THREE.Vector3()), uniform(new THREE.Vector3()), uniform(new THREE.Vector3())],
+        rayD: [uniform(new THREE.Vector3()), uniform(new THREE.Vector3()), uniform(new THREE.Vector3())],
+        // camera of the snapshot (materials reproject into it)
+        view: uniform(new THREE.Matrix4()),
+        projection: uniform(new THREE.Matrix4()),
+    };
+    playerUniforms(u);
+    return { uniforms: u, blur: null, value: null, installed: false };
+}
 
 export class RasterAO {
     /**
@@ -42,18 +66,9 @@ export class RasterAO {
         this.enabled = this.settings.enabled;
         // ?ao=0: not even hooked into the materials (comparison with the shaders as they were)
         this.supported = !!renderer.backend?.isWebGPUBackend && new URLSearchParams(location.search).get('ao') !== '0';
-        this.active = uniform(0);                        // 1 only during the main render (materials)
-        this.size = uniform(new THREE.Vector2(1, 1));    // AO target size (texels)
-        this.depthScale = uniform(1);                    // depth stored ÷ this (half float range for any scene size)
-        this.radius = uniform(1);                        // world units
-        this.strength = uniform(this.settings.strength);
-        this.maxPx = uniform(64);                        // projected radius at most (AO texels)
-        // view position = O + D · depth, both affine in the NDC xy (perspective and orthographic, lens shift included)
-        this.rayO = [uniform(new THREE.Vector3()), uniform(new THREE.Vector3()), uniform(new THREE.Vector3())];
-        this.rayD = [uniform(new THREE.Vector3()), uniform(new THREE.Vector3()), uniform(new THREE.Vector3())];
-        // camera of the snapshot (materials reproject into it)
-        this.view = uniform(new THREE.Matrix4());
-        this.projection = uniform(new THREE.Matrix4());
+        // uniforms (active, size, depthScale, radius, strength, maxPx, rayO/rayD, view, projection): the page's (shared)
+        shared ??= sharedUniforms(this.settings);
+        Object.assign(this, shared.uniforms);
         this._full = new THREE.Vector2();
         this._clear = new THREE.Color();
         // schedule: valid snapshot, its view signature, scene changed since, cost of the last pre-pass (ms, smoothed)
@@ -145,9 +160,19 @@ export class RasterAO {
         this.quad = new THREE.QuadMesh(this.aoMaterial);
 
         // 4. value for the materials: this fragment in the snapshot's camera, the four nearest texels weighted
-        // bilinearly and by matching depth; none matching or outside the snapshot → 1
-        const blurTex = this.blur.texture;
-        this.value = Fn(() => {
+        // bilinearly and by matching depth; none matching or outside the snapshot → 1. Built once for the page; it reads
+        // the blurred target of the current player (prepare points the node at its own, the slot keeps it per player)
+        if (!shared.value) {
+            shared.blur = texture(this.blur.texture);
+            playerSlot(() => shared.blur.value, v => { shared.blur.value = v; });
+            shared.value = this._materialValue(p => shared.blur.load(ivec2(p.clamp(vec2(0), this.size.sub(1)))));
+        }
+        this.value = shared.value;
+    }
+
+    // the materials' occlusion (see constructor, step 4); load(p) = a texel of the blurred target
+    _materialValue(load) {
+        return Fn(() => {
             const result = float(1).toVar();
             If(this.active.greaterThan(0), () => {
                 const pv = this.view.mul(vec4(positionWorld, 1));
@@ -159,7 +184,7 @@ export class RasterAO {
                 const inside = base.x.greaterThanEqual(-1).and(base.y.greaterThanEqual(-1)).and(base.x.lessThan(this.size.x)).and(base.y.lessThan(this.size.y));
                 const sum = float(0).toVar(), weight = float(0.002).toVar();   // the fallback 1 weighs 0.002
                 for (const [ox, oy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
-                    const s = load(blurTex, base.add(vec2(ox, oy)));
+                    const s = load(base.add(vec2(ox, oy)));
                     const bilinear = (ox ? t.x : t.x.oneMinus()).mul(oy ? t.y : t.y.oneMinus()).add(1e-3);
                     const w = bilinear.mul(float(1).sub(s.g.sub(depth).abs().div(depth.mul(0.03).max(1e-6))).max(0));
                     sum.addAssign(s.r.mul(w));
@@ -173,7 +198,8 @@ export class RasterAO {
 
     /** renderer.contextNode for the whole session (call once, before any material is built) */
     install() {
-        if (!this.supported) return;
+        if (!this.supported || shared.installed) return;   // once for the page (the first player's)
+        shared.installed = true;
         const value = this.value;
         this.renderer.contextNode = context({
             getAO: (input, { material }) => {
@@ -233,6 +259,7 @@ export class RasterAO {
             this.blur.setSize(w, h);
         }
         this.size.value.set(w, h);
+        if (shared.blur.value !== this.blur.texture) shared.blur.value = this.blur.texture;   // the materials read this player's
         this.radius.value = radius;
         this.depthScale.value = Math.max(depthScale, 1e-9);
         this.maxPx.value = Math.max(2, h * this.settings.maxScreen);

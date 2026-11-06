@@ -38,7 +38,7 @@ export class RindrPlayer extends HTMLElement {
         root.adoptedStyleSheets = [playerSheet()];
         root.innerHTML = playerTemplate();
         const layer = root.querySelector('[data-rindr-layer]');
-        setDefaultLayer(layer);   // windows and notices without an anchor go here (one player per page until stage 3)
+        setDefaultLayer(layer);   // windows and notices without an anchor go here (the player's own get their layer)
         // an embedded player takes keys while it has the focus (click into the view, or Tab)
         if (!options.appMode && !this.hasAttribute('tabindex')) this.tabIndex = 0;
         const src = this.getAttribute('src');
@@ -59,6 +59,9 @@ export class RindrPlayer extends HTMLElement {
             ...(mode ? { mode } : {}),
             features: options.features ?? this.getAttribute('features') ?? '',
         });
+        // a player that cannot start says so in its box (no renderer, without WebGPU only the first player) – the page may
+        // still await `ready`; no unhandled rejection in the console otherwise
+        this.ready.catch(() => {});
     }
 }
 

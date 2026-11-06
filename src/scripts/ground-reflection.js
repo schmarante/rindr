@@ -13,6 +13,7 @@
 import * as THREE from 'three/webgpu';
 import { uniform } from 'three/tsl';
 import { wgslTagFn } from 'three-mesh-bvh/webgpu';
+import { playerUniforms } from './player-slots.js';
 
 // x = reflection strength (0 = off), y = blur 0…1, z = bad weather 0/1, w = puddle coverage 0…1
 // params2: x = puddle size (world units), y/z = centre of the ground (world xz), w = 1: the environment is reflected
@@ -23,6 +24,7 @@ export const GROUND_SURFACE = {
     // x/y = soft edge: effects fade out between these distances from the centre (as the ground shadow's edge)
     params3: uniform(new THREE.Vector4(1e9, 1e9, 0, 0)),
 };
+playerUniforms(GROUND_SURFACE);   // each player's own ground (player-slots.js)
 
 const WET = { roughness: 0.35, darken: 0.72, puddleDarken: 0.5, edge: 0.04 };
 const OCTAVES = 4;

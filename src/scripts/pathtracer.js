@@ -49,6 +49,7 @@ const DENOISE_TILE_COST = { fixed: 60, perPixel: 0.215e-3 };
 // owns the engine again. A single player (the app) owns it from its first load() on.
 const engine = {
     owner: null,
+    queue: [],       // views waiting for it (players in HQ: one after the other, in the order of the page)
     hooked: false,   // backend hooks installed (_installAsyncCompile, _installTimestamps)
     minSamples: 0,   // the library's minSamples (the owners' first-sample tricks set it to 0 for a frame)
     // the engine's parts – a view sees them only while it owns the engine (OWNED)
@@ -165,13 +166,21 @@ export class PathTracingView {
 
     /**
      * Take the page's engine (this player shows HQ): the previous owner's view stops – not ready, its settings kept, its
-     * scene set again once it gets the engine back (onAttach). false while the owner may not give it up (locked: a render,
-     * export … of that player).
+     * scene set again once it gets the engine back (onAttach). While the owner still needs it (its HQ picture not finished)
+     * this view waits in the queue and gets it when the owner is done or leaves HQ (several HQ players: one after the
+     * other) – unless `force` (the user works with this player: it comes first; the owner, if not finished, waits next).
+     * false while it waits or the owner may not give it up (locked: a render, export … of that player).
      */
-    claim() {
+    claim({ force = false } = {}) {
         if (engine.owner === this) return true;
         const prev = engine.owner;
-        if (prev?.locked) return false;
+        if (prev && (prev.locked || (!force && prev._wantsEngine()))) {
+            this._enqueue();
+            return false;
+        }
+        const pos = engine.queue.indexOf(this);
+        if (pos >= 0) engine.queue.splice(pos, 1);
+        if (prev && force && prev._wantsEngine()) engine.queue.unshift(prev);   // its picture continues afterwards
         prev?._detach();
         engine.owner = this;
         if (engine.pathTracer) {
@@ -179,6 +188,29 @@ export class PathTracingView {
             this.onAttach?.();
         }
         return true;
+    }
+
+    // waiting for the engine: in the order of the players on the page (element = the player's, set by the viewer)
+    _enqueue() {
+        const q = engine.queue;
+        if (q.includes(this)) return;
+        const after = q.findIndex(v => v.element && this.element && (this.element.compareDocumentPosition(v.element) & Node.DOCUMENT_POSITION_FOLLOWING));
+        if (after < 0) q.push(this); else q.splice(after, 0, this);
+    }
+
+    // this view's HQ picture still needs the engine: in HQ, its scene being set up or its picture not finished
+    _wantsEngine() {
+        if (!this.enabled || this.error || this.suspended) return false;
+        if (this.building) return true;
+        if (!this.ready) return false;
+        return !this._isDone() || !this._fadeSettled();
+    }
+
+    // the owner no longer needs the engine: the next waiting view takes it
+    _handOver() {
+        if (engine.owner !== this || !engine.queue.length || this.locked || this._wantsEngine()) return;
+        const next = engine.queue.shift();
+        next.claim();
     }
 
     // the engine goes to another view: this one's picture ends (reduced orbit settings and its light mix back first)
@@ -623,12 +655,18 @@ export class PathTracingView {
     fail(message) {
         if (!this.error) console.warn('[Pathtracer] disabled:', message);
         this.error = message || t('render.gpuError');
+        this._handOver();
     }
 
     setEnabled(enabled) {
         this._exitMotion();
         this.enabled = enabled && this.supported;
         this.reset();
+        if (!this.enabled) {
+            const pos = engine.queue.indexOf(this);   // no longer waiting
+            if (pos >= 0) engine.queue.splice(pos, 1);
+            this._handOver();
+        }
     }
 
     // Temporarily rasterize only (e.g. section view); start over when resuming
@@ -638,6 +676,7 @@ export class PathTracingView {
         this.suspended = suspended;
         if (!suspended) this._pendingCameraUpdate = true;
         this.reset();
+        if (suspended) this._handOver();
     }
 
     setBounces(bounces) {
@@ -1089,6 +1128,7 @@ export class PathTracingView {
             this._lastCount = now;
             pt.getSampleCountsAsync();
         }
+        if (engine.queue.length) this._handOver();   // picture finished: the next HQ player (several on the page)
         return true;
     }
 
@@ -1752,7 +1792,7 @@ export class PathTracingView {
     }
 
     // Current state for the status display.
-    // phase: unsupported | off | waiting | bvh | compiling | error | preview | rendering | denoise-loading | denoising | done
+    // phase: unsupported | off | waiting | queued | bvh | compiling | error | preview | rendering | denoise-loading | denoising | done
     getStatus() {
         const status = {
             phase: 'off',
@@ -1765,7 +1805,8 @@ export class PathTracingView {
         if (!this.supported) return { ...status, phase: 'unsupported' };
         if (!this.enabled) return status;
         if (this.building) return { ...status, phase: 'bvh' };
-        if (!this.ready) return { ...status, phase: 'waiting' };
+        // not ready: waiting for its scene – or for the engine, which another player has (several on the page)
+        if (!this.ready) return { ...status, phase: engine.owner && engine.owner !== this ? 'queued' : 'waiting' };
         if (this.error) return { ...status, phase: 'error', error: this.error };
         if (this.suspended) return { ...status, phase: 'suspended' };
 

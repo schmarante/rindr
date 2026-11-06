@@ -154,7 +154,7 @@ export class MaterialPanel {
             if (!row) return;
             // a scene material with its whole description and this tab: droppable into another RINDR tab too
             const data = JSON.parse(row.dataset.drag);
-            e.dataTransfer.setData(MATERIAL_MIME, JSON.stringify(data.id ? materialDragData(data.id) : libraryDragData(data.libraryId)));
+            e.dataTransfer.setData(MATERIAL_MIME, JSON.stringify(data.id ? materialDragData(data.id, this.manager) : libraryDragData(data.libraryId)));
             e.dataTransfer.effectAllowed = 'copy';
         });
         this.file.addEventListener('change', () => this._import());
@@ -730,7 +730,7 @@ export class MaterialPanel {
             const entries = this.manager.fromJSON(JSON.parse(await file.text()));
             if (entries[0]) this.open(entries[0].def.id, 'scene');
         } catch (err) {
-            messageDialog({ title: t('materials.panel.importErrorTitle'), message: t('materials.panel.importFailed', { message: err.message }) });
+            messageDialog({ title: t('materials.panel.importErrorTitle'), message: t('materials.panel.importFailed', { message: err.message }), anchor: this.root });
         }
     }
 }

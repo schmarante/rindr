@@ -20,6 +20,7 @@
 import * as THREE from 'three/webgpu';
 import { Fn, If, float, texture, uniform, vec2, vec3, vec4, normalWorldGeometry, equirectUV, backgroundRotation } from 'three/tsl';
 import { wgslTagFn } from 'three-mesh-bvh/webgpu';
+import { playerUniforms } from './player-slots.js';
 
 // shared by the raster node and the path tracer kernel
 const U = {
@@ -31,6 +32,7 @@ const U = {
     blend: uniform(1),                      // fillet between floor and sphere (ray distance units)
     shift: uniform(0),                      // HDRI latitude at the horizon (rad, ≤ 0 = pushed up)
 };
+playerUniforms(U);   // each player's own dome (player-slots.js)
 
 // latitude remap: φ = 0 (horizon) → shift, ±90° stay
 const SHIFT_WGSL = wgslTagFn/* wgsl */`

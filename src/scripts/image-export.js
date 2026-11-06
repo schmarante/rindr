@@ -31,14 +31,14 @@ export function createImageExport(ctx) {
     const root = document.createElement('div');
     root.className = 'pointer-events-none fixed inset-0 z-40 flex items-center justify-center p-4 text-xs text-white/90';
     root.hidden = true;
-    layerFor().append(root);
+    (ctx.layer ?? layerFor()).append(root);   // the player's layer (ctx.layer – several players on a page)
 
     const close = () => { root.hidden = true; state.busy = false; };
     document.addEventListener('pointerdown', e => {
-        if (root.hidden || dialogOpen()) return;
+        if (root.hidden || dialogOpen(root)) return;
         if (!root.firstElementChild?.contains(eventTarget(e))) close();
     }, true);
-    window.addEventListener('keydown', e => { if (e.key === 'Escape' && !root.hidden && !dialogOpen()) { e.stopPropagation(); close(); } }, true);
+    window.addEventListener('keydown', e => { if (e.key === 'Escape' && !root.hidden && !dialogOpen(root)) { e.stopPropagation(); close(); } }, true);
 
     function render(progress = null) {
         const panel = document.createElement('div');

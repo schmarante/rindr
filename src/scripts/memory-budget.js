@@ -24,9 +24,29 @@ export function setSafeMode(on) {
     safe = !!on;
 }
 
-/** Bytes the tab should stay below (RAM data of models, BVHs, worker heaps, file buffers) */
+// Several players on a page share the tab's budget (docs/player.md, stage 3): each reports what its loaded models hold;
+// the player sizing work now (its import – runtime.js importTurn) gets the budget minus what the others hold (at least a
+// quarter). A single player holds nothing against itself.
+const held = new Map();   // player → bytes of its loaded models
+let sizing = null;        // the player whose work is sized now
+
+/** what `owner`'s loaded models hold (bytes; 0: nothing – e.g. the player was removed) */
+export function holdMemory(owner, bytes) {
+    if (bytes > 0) held.set(owner, bytes); else held.delete(owner);
+}
+
+/** the budget is for `owner`'s work from now on (its import turn) */
+export function sizeFor(owner) {
+    sizing = owner;
+}
+
+/** Bytes the tab should stay below (RAM data of models, BVHs, worker heaps, file buffers) – for the player sizing work
+ *  now, less what the page's other players hold */
 export function memoryBudget() {
-    return Math.min(Math.max(deviceMemoryGB() * 0.5, 0.75), 6) * GB * (safe ? 0.5 : 1);
+    const base = Math.min(Math.max(deviceMemoryGB() * 0.5, 0.75), 6) * GB * (safe ? 0.5 : 1);
+    let others = 0;
+    for (const [owner, bytes] of held) if (owner !== sizing) others += bytes;
+    return others > 0 ? Math.max(base - others, base * 0.25) : base;
 }
 
 /** largest side of `count` textures loaded together (USD import, textures from the net): a quarter of the budget for

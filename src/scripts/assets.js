@@ -31,7 +31,7 @@ const MB = 1024 * 1024;
  *   each row its own (only on that click); while loading the bar shows the current file and a thin progress bar (its
  *   button cancels), each row its own progress (percent + bar), a tick when loaded, a cross when it failed
  */
-export function createAssetsWindow({ rows, onFiles, remote = null }) {
+export function createAssetsWindow({ rows, onFiles, remote = null, layer = layerFor() }) {
     // free window like the editors (float-window.js): move by the header, resize at the edges, place remembered
     const root = document.createElement('div');
     root.hidden = true;
@@ -108,7 +108,7 @@ export function createAssetsWindow({ rows, onFiles, remote = null }) {
     foot.append(hint, pick, pickFolder, input, folderInput);
     panel.append(head, remoteBar, list, foot);
     const placement = floatWindow(root, head, { storeKey: 'rindr.assets.window', width: 544, height: 520, minWidth: 360, minHeight: 220 });
-    layerFor().append(root);
+    layer.append(root);   // the player's layer (several players on a page: its own window)
 
     // dropping files: the viewer's global drop handler relinks while the window is open (anywhere in the
     // window, the replace/add plane is not shown then)

@@ -86,13 +86,13 @@ export class KiRender {
         // the area around it lets clicks through, a click next to the panel closes it
         this.root = el('div', 'pointer-events-none fixed inset-0 z-40 flex items-center justify-center p-5 text-xs text-white/90');
         this.root.hidden = true;
-        layerFor().append(this.root);
+        (ctx.layer ?? layerFor()).append(this.root);   // the player's layer (ctx.layer – several players on a page)
         document.addEventListener('pointerdown', e => {
             const panel = this.root.firstElementChild;
-            if (dialogOpen()) return;   // question dialog on top (e.g. delete)
+            if (dialogOpen(this.root)) return;   // question dialog on top (e.g. delete)
             if (this.isOpen && !this.busy && panel && !panel.contains(eventTarget(e))) this.close();
         }, true);
-        window.addEventListener('keydown', e => { if (e.key === 'Escape' && !this.root.hidden && !this.busy && !dialogOpen()) { e.stopPropagation(); this.close(); } }, true);
+        window.addEventListener('keydown', e => { if (e.key === 'Escape' && !this.root.hidden && !this.busy && !dialogOpen(this.root)) { e.stopPropagation(); this.close(); } }, true);
     }
 
     get isOpen() {
@@ -278,12 +278,12 @@ export class KiRender {
 
     /** Delete a stored AI result (after confirmation); true on success */
     async remove(id) {
-        if (!await confirmDialog({ title: t('ki.deleteDialogTitle'), message: t('ki.confirmDelete'), confirmLabel: t('ki.delete'), danger: true })) return false;
+        if (!await confirmDialog({ title: t('ki.deleteDialogTitle'), message: t('ki.confirmDelete'), confirmLabel: t('ki.delete'), danger: true, anchor: this.root })) return false;
         try {
             await removeRender(id);
             return true;
         } catch (err) {
-            messageDialog({ title: t('ki.deleteDialogTitle'), message: t('ki.deleteFailed', { message: errorText(err) }) });
+            messageDialog({ title: t('ki.deleteDialogTitle'), message: t('ki.deleteFailed', { message: errorText(err) }), anchor: this.root });
             return false;
         }
     }

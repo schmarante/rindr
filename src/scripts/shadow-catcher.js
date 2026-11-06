@@ -20,6 +20,7 @@
 //              HDRI floor colour × y (≤ 0.9), so the model's light tints the ground, over all bounces
 import * as THREE from 'three/webgpu';
 import { uniform } from 'three/tsl';
+import { playerUniforms } from './player-slots.js';
 
 export const SHADOW_CATCHER = {
     params: uniform(new THREE.Vector4(1, 0, 1, 0)),
@@ -27,6 +28,7 @@ export const SHADOW_CATCHER = {
     lights2: uniform(new THREE.Vector4()),
     bounce: uniform(new THREE.Vector4()),
 };
+playerUniforms(SHADOW_CATCHER);   // each player's own shadow catcher (player-slots.js)
 
 const luminance = c => 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
 const isPathTracerLight = c => c.isRectAreaLight || c.isSpotLight || c.isPointLight || c.isDirectionalLight;

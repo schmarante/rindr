@@ -5,6 +5,8 @@
 // the source tab over a BroadcastChannel – PNG blobs plus their texture settings – and linked in like textures dropped
 // later (materialManager.linkImportMaps). Same origin only (BroadcastChannel, custom drag data). Library materials
 // travel as their libraryId plus the preset (the other tab may not have loaded its category yet).
+// Several players in one tab (docs/player.md, stage 3): each player's material manager is a source of its own (the first
+// one is the tab, later ones `<tab>#<n>`) – between players of the tab the textures are taken over directly (one renderer).
 import * as THREE from 'three/webgpu';
 import { debugLog } from './log.js';
 import { MATERIAL_PRESETS } from './material-presets.js';
@@ -12,23 +14,30 @@ import { MATERIAL_PRESETS } from './material-presets.js';
 /** this tab (drag data names its source) */
 export const TAB_ID = globalThis.crypto?.randomUUID?.() ?? `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('rindr-material-transfer') : null;
-const received = new Map();   // `${tab}/${id}` → local material id: a second drop of the same material reuses it
+const received = new Map();   // `${target}/${source}/${id}` → local material id: a second drop of the same material reuses it
 const pending = new Map();    // request id → local material id (textures on their way)
 const REQUEST_TIMEOUT = 20000;
 // render values of an imported material besides its textures (material-manager.js applyRender)
 const RENDER_KEYS = ['side', 'alphaTest', 'transparent', 'normalScale', 'bumpScale', 'aoMapIntensity', 'vertexColors'];
 // texture settings that travel with a picture
 const TEXTURE_KEYS = ['colorSpace', 'flipY', 'wrapS', 'wrapT', 'channel', 'rotation', 'anisotropy', 'name'];
-let manager = null;
+const sources = new Map();    // source id → material manager (the players of this tab)
+const sourceOf = new Map();   // material manager → its source id
 
-/** answer requests of other tabs and take their textures (once, with the scene's material manager) */
+/**
+ * A player's material manager as a source and target of transfers (answers requests of other tabs, takes their
+ * textures). Returns its source id (the drag data names it; a drop with the same id is the player's own material).
+ */
 export function initMaterialTransfer(materialManager) {
-    manager = materialManager;
-    if (channel) channel.onmessage = e => onMessage(e.data).catch(err => console.warn('[materials] transfer:', err?.message || err));
+    const id = sources.size ? `${TAB_ID}#${sources.size + 1}` : TAB_ID;
+    sources.set(id, materialManager);
+    sourceOf.set(materialManager, id);
+    if (channel && sources.size === 1) channel.onmessage = e => onMessage(e.data).catch(err => console.warn('[materials] transfer:', err?.message || err));
+    return id;
 }
 
-/** drag data of a scene material: { id, tab, def } – def without textures (render.maps: key → name) */
-export function materialDragData(id) {
+/** drag data of a scene material of `manager`: { id, tab, def } – def without textures (render.maps: key → name) */
+export function materialDragData(id, manager) {
     const entry = manager?.get(id);
     if (!entry) return { id };
     const def = manager.toJSON([id]).materials[0];
@@ -38,7 +47,7 @@ export function materialDragData(id) {
         def.render.maps = Object.fromEntries(Object.entries(r.maps || {}).map(([k, tex]) => [k, tex?.name || k]));
         def.render.missing = structuredClone(r.missing || {});
     }
-    return { id, tab: TAB_ID, def };
+    return { id, tab: sourceOf.get(manager) ?? TAB_ID, def };
 }
 
 /**
@@ -50,10 +59,12 @@ export function libraryDragData(libraryId) {
     return p ? { libraryId, preset: { params: p.params, graph: p.graph } } : { libraryId };
 }
 
-/** a material dropped from another tab: created from its description (null: from this tab or no description) */
-export function materialFromTransfer(data) {
-    if (!manager || !data?.def || !data.tab || data.tab === TAB_ID) return null;
-    const key = `${data.tab}/${data.id}`;
+/** a material dropped from another tab or player into `manager`: created from its description (null: its own or no
+ *  description) */
+export function materialFromTransfer(data, manager) {
+    const target = sourceOf.get(manager);
+    if (!manager || !data?.def || !data.tab || data.tab === target) return null;
+    const key = `${target}/${data.tab}/${data.id}`;
     const known = manager.get(received.get(key));
     if (known) return known;
     const { render, id: _id, ...rest } = data.def;
@@ -67,14 +78,21 @@ export function materialFromTransfer(data) {
     }
     const entry = manager.create(def);   // an undo step like any new material
     received.set(key, entry.def.id);
-    if (Object.keys(names).length) requestTextures(data.tab, data.id, entry.def.id);
+    if (Object.keys(names).length) {
+        // another player of this tab: its textures directly (the same renderer); another tab: over the channel
+        const local = sources.get(data.tab);
+        if (local) {
+            const maps = local.get(data.id)?.def.render?.maps || {};
+            if (Object.keys(maps).length) manager.linkImportMaps(entry.def.id, { ...maps });
+        } else requestTextures(data.tab, data.id, entry.def.id, target);
+    }
     return entry;
 }
 
-function requestTextures(tab, id, localId) {
+function requestTextures(tab, id, localId, target) {
     if (!channel) return;
     const req = `${TAB_ID}/${Date.now()}/${Math.random().toString(36).slice(2)}`;
-    pending.set(req, localId);
+    pending.set(req, { localId, target });
     channel.postMessage({ type: 'textures?', to: tab, from: TAB_ID, id, req });
     setTimeout(() => {
         if (pending.delete(req)) debugLog('[materials] no textures from the source tab (closed?) for', localId);
@@ -82,9 +100,11 @@ function requestTextures(tab, id, localId) {
 }
 
 async function onMessage(m) {
-    if (!m || m.to !== TAB_ID) return;
+    if (!m) return;
     if (m.type === 'textures?') {
-        const maps = manager?.get(m.id)?.def.render?.maps || {};
+        const source = sources.get(m.to);   // a player of this tab (the request names its source id)
+        if (!source) return;
+        const maps = source.get(m.id)?.def.render?.maps || {};
         const out = {};
         for (const [key, tex] of Object.entries(maps)) {
             const blob = await textureBlob(tex);
@@ -93,9 +113,10 @@ async function onMessage(m) {
         channel.postMessage({ type: 'textures', to: m.from, req: m.req, maps: out });
         return;
     }
-    if (m.type === 'textures') {
-        const localId = pending.get(m.req);
-        if (!localId || !manager.get(localId)) return;
+    if (m.type === 'textures' && m.to === TAB_ID) {
+        const { localId, target } = pending.get(m.req) || {};
+        const manager = sources.get(target);
+        if (!localId || !manager?.get(localId)) return;
         pending.delete(m.req);
         const maps = {};
         for (const [key, { blob, settings }] of Object.entries(m.maps || {})) {

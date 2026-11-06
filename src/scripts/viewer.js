@@ -18,7 +18,7 @@ import { setPlainView } from './materials/override-hide.js';
 import { MATERIAL_PRESETS, presetName, loadLibraryPresets } from './material-presets.js';
 import { requestField, clearFields } from './materials/sss-field.js';
 import { MATERIAL_MIME } from './material-mime.js';
-import { TAB_ID, initMaterialTransfer, materialFromTransfer } from './material-transfer.js';
+import { initMaterialTransfer, materialFromTransfer } from './material-transfer.js';
 import { uvCheckerTexture } from './uv-checker.js';
 import { volumeBounds } from './volumes/volume-bounds.js';
 import { setupCurveMesh, updateHairLight } from './curves/curve-mesh.js';
@@ -58,10 +58,10 @@ import { GROUND_SURFACE } from './ground-reflection.js';
 import { BackgroundDome } from './background-dome.js';
 import { ContactShadow } from './contact-shadow.js';
 import { ModelAnimation, createPlaybar } from './animation.js';
-import { confirmDialog, choiceDialog, dialogOpen } from './dialog.js';
-import { showNotice } from './notice.js';
+import * as dialogs from './dialog.js';
+import { showNotice as showPageNotice } from './notice.js';
 import { gpuLabel, looksIntegrated } from './gpu-info.js';
-import { triangleLimits, deviceMemoryGB, memoryBudget, BYTES_PER_TRIANGLE, formatBytes, setSafeMode } from './memory-budget.js';
+import { triangleLimits, deviceMemoryGB, memoryBudget, BYTES_PER_TRIANGLE, formatBytes, setSafeMode, holdMemory, sizeFor } from './memory-budget.js';
 import { beginLoad, endLoad, crashedLoad, markSafe, isSafe, clearSafe } from './load-guard.js';
 import { findOutliers, formatLength } from './outliers.js';   // patches the path tracer's background lookup – import before it is created
 import { ANALYSIS_KEYS } from './analysis-modes.js';
@@ -73,7 +73,7 @@ import { RasterAO } from './ambient-occlusion.js';
 import { OcclusionCuller } from './occlusion-culling.js';
 import { instancedModelMesh, localBox, lowestInstanced } from './model-instances.js';
 import { icon } from './icons.js';
-import { getRuntime, claimCanvasTarget, usePlayer, currentPlayer, addPlayer, onRendererError, onDeviceLost as onRendererLost } from './runtime.js';
+import { getRuntime, claimCanvasTarget, usePlayer, currentPlayer, playerCount, addPlayer, onRendererError, onDeviceLost as onRendererLost, importTurn, importRunning } from './runtime.js';
 import { resolveFeatures } from './player/features.js';
 
 // a part of the UI whose module is loaded on first use: get() → Promise of the instance (created once), now → the
@@ -104,22 +104,22 @@ const loadDistributed = () => Promise.all([
 // BVH-accelerated raycasting for every mesh (picking, focus, material drops) – once per page
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
-// one player per page until the shared runtime exists (docs/player.md, stage 3): several things below are still
-// page-wide (renderer hooks, the material transfer channel, the plain-view hook)
-let playerCreated = false;
-
 /**
- * The viewer on the page's elements (index.astro) – stage 1 of docs/player.md, still one per page.
+ * One player (docs/player.md): the viewer on the elements of a <rindr-player> – several per page share the runtime
+ * (runtime.js: renderer, render loop, path tracing engine).
  * @param {object} [options]
  * @returns {Promise<object>} the debug/test interface (app.js: globalThis.__viewer with ?debug)
  */
 export async function createPlayer(options = {}) {
-    if (playerCreated) throw new Error('createPlayer: only one player per page so far (docs/player.md)');
-    playerCreated = true;
     // where the player's elements are: `dom` holds its fixed elements (index.astro – looked up by id; the page today, a
     // shadow root later), `host` takes the hidden file inputs (docs/player.md)
     const dom = options.dom ?? document;
     const host = options.host ?? document.body;
+    // notices and dialogs in this player's layer: ids and the one-dialog rule per player (notice.js, dialog.js)
+    const showNotice = o => showPageNotice({ anchor: host, ...o });
+    const confirmDialog = o => dialogs.confirmDialog({ anchor: host, ...o });
+    const choiceDialog = o => dialogs.choiceDialog({ anchor: host, ...o });
+    const dialogOpen = () => dialogs.dialogOpen(host);
     // the player is the whole page (the RINDR app, app.js): it may reload the page and change its URL (language switch,
     // GPU reset, render client pairing) and offers distributed rendering – an embedded player never touches the page
     const APP_MODE = !!options.appMode;
@@ -327,6 +327,14 @@ export async function createPlayer(options = {}) {
     // webgpuBlocked: WebGPU present but no adapter – usually the browser withholds the GPU after a reset (until it is
     // restarted completely), otherwise graphics card/driver are not supported; gpuRecovering: a GPU reset in this tab before
     const { adapter, renderer, webgpuBlocked, gpuRecovering } = runtime;
+    // this player's canvas: the first player of the page takes the renderer's own; without WebGPU (WebGL2) the renderer
+    // draws only into that one – every later player says so instead (docs/player.md, stage 3)
+    const ownCanvas = claimCanvasTarget(renderer);
+    if (!ownCanvas && !renderer.backend?.isWebGPUBackend) {
+        hidePreloader();
+        showStatus(t('status.onlyFirstPlayer'));
+        throw new Error('without WebGPU only the first player of a page renders');
+    }
     const dist = distributedLoading ? await distributedLoading : null;   // distributed rendering (app only)
     const uiModules = await uiLoading;
     // default tone curve Neutral (user, Oct. 2026): material colours come out as set up – ACES bent mid tones and hues (a
@@ -344,11 +352,13 @@ export async function createPlayer(options = {}) {
     // this player on the page's renderer (runtime.js): its canvas – the first player takes the renderer's own, every later
     // one a canvas target of its own – and its state on the renderer, applied when it becomes the current player. Calls
     // that act on the canvas outside the render loop (size, pixel ratio) make it the current one first (usePlayer).
-    const canvasTarget = claimCanvasTarget(renderer) ?? new THREE.CanvasTarget(THREE.createCanvasElement());
+    const canvasTarget = ownCanvas ?? new THREE.CanvasTarget(THREE.createCanvasElement());
     const canvasEl = canvasTarget.domElement;
     const player = {
         renderer, ct: canvasTarget, frame: null,
         enter() { renderer.toneMapping = tone.curve; renderer.toneMappingExposure = tone.exposure; },
+        // drawn while its element is in the page (taken out by the page's framework: no frames until it is back)
+        awake: () => !options.element || options.element.isConnected,
     };
     usePlayer(player);
     renderer.setSize(viewSize().width, viewSize().height);
@@ -588,6 +598,15 @@ export async function createPlayer(options = {}) {
     const pathTracing = new PathTracingView(renderer, { denoiseWeightsUrl: DENOISE_WEIGHTS_URL });
     // the page's path tracing engine came back from another player (pathtracer.js claim): this player's scene into it again
     pathTracing.onAttach = () => updatePathTracingScene();
+    pathTracing.element = playerEl;   // several HQ players wait for the engine in the order of the page
+    // HQ belongs to the player the user works with (several players on a page): pressing, scrolling or a key in this
+    // player while it shows HQ takes the engine from another one (that one's picture waits until this one is done)
+    const takeHQ = () => {
+        if (playerCount() < 2 || viewMode !== 'hq' || !pathTracing.enabled || pathTracing.owner) return;
+        if (pathTracing.claim({ force: true })) updatePathTracingScene();
+    };
+    for (const type of ['pointerdown', 'wheel']) canvasEl.addEventListener(type, takeHQ, { passive: true });
+    window.addEventListener('keydown', e => { if (ownsEvent(e)) takeHQ(); });
     // path tracer modules: not in the start bundle – loaded when the browser is idle after the start, so
     // switching to HQ later does not wait for the download (setScene() waits for it if HQ comes earlier). An embedded
     // player in the Default view leaves them out (~420 KB): HQ (key 3) then loads them first (docs/player.md "schlank")
@@ -2013,7 +2032,8 @@ export async function createPlayer(options = {}) {
 
     // --- Materials ---
     const materialManager = new MaterialManager();
-    initMaterialTransfer(materialManager);
+    // this player as a source of dragged materials (another tab or player of the page creates them from the description)
+    const transferId = initMaterialTransfer(materialManager);
     materialManager.scene = scene;
     materialManager.history = history;
     // Node graphs: constants directly, textures are baked (then update the path tracer)
@@ -3318,8 +3338,8 @@ export async function createPlayer(options = {}) {
     function materialFromDrop(e) {
         try {
             const data = JSON.parse(e.dataTransfer.getData(MATERIAL_MIME));
-            // from another RINDR tab: created from its description (textures follow – material-transfer.js)
-            if (data.tab && data.tab !== TAB_ID) return materialFromTransfer(data);
+            // from another RINDR tab or player: created from its description (textures follow – material-transfer.js)
+            if (data.tab && data.tab !== transferId) return materialFromTransfer(data, materialManager);
             if (data.id) return materialManager.get(data.id);
             if (data.libraryId) return materialManager.fromLibrary(data.libraryId, data.preset);
         } catch { /* no material data */ }
@@ -3330,7 +3350,7 @@ export async function createPlayer(options = {}) {
     function splatMaterialFromDrop(e) {
         let data;
         try { data = JSON.parse(e.dataTransfer.getData(MATERIAL_MIME)); } catch { return null; }
-        const source = data.tab && data.tab !== TAB_ID ? data.def
+        const source = data.tab && data.tab !== transferId ? data.def
             : data.id ? materialManager.get(data.id)?.def : MATERIAL_PRESETS.find(p => p.libraryId === data.libraryId) || data.preset;
         if (!source) return null;
         const p = source.params || {};
@@ -4588,6 +4608,7 @@ export async function createPlayer(options = {}) {
         });
     // loaded with the first click on KI (lazy)
     const kiRender = lazy(async () => { const { KiRender, describeMaterial } = await import('./ki-render.js'); return new KiRender({
+        layer: host,
         getTitle: () => model?.name.replace(/\.[^.]+$/, '') || '',
         waitForImage: onProgress => waitForImage(onProgress, () => !!kiRender.now?.isOpen),
         capture: captureFrame,
@@ -4654,6 +4675,7 @@ export async function createPlayer(options = {}) {
     host.append(sceneFileInput);
     // export dialog: loaded with its first opening (lazy)
     const imageExport = lazy(async () => (await import('./image-export.js')).createImageExport({
+        layer: host,
         exportImage,
         getName: () => (sceneFileName?.replace(/\.scene\.json$|\.json$/i, '') || model?.name.replace(/\.[^.]+$/, '') || 'rindr'),
         getSize: () => ({ width: canvasEl.width, height: canvasEl.height }),
@@ -4679,7 +4701,7 @@ export async function createPlayer(options = {}) {
     // asset window (links): which files the scene uses, relink missing ones
     // asset window (assets.js): loaded with its first opening. Until then the calls that only matter for an open window do
     // nothing; state for the loading bar waits for the module (in order)
-    const assetsModule = lazy(async () => (await import('./assets.js')).createAssetsWindow({ rows: () => assetRows(), onFiles: files => relinkFiles(files),
+    const assetsModule = lazy(async () => (await import('./assets.js')).createAssetsWindow({ layer: host, rows: () => assetRows(), onFiles: files => relinkFiles(files),
         remote: { count: () => remoteTextureUrls().length, start: urls => loadRemoteTextures(urls), cancel: () => remoteAbort?.abort() } }));
     assetsWindow = {
         show: () => { assetsModule.get().then(w => w.show()); },
@@ -6036,6 +6058,29 @@ export async function createPlayer(options = {}) {
     let loadLoop = null;  // promise until everything requested is loaded
     const LOAD_RANK = { parts: 1, reload: 2, open: 3 };
     const addQueue = [];   // additional models waiting to be loaded (addModel)
+    // One import at a time on the page (runtime.js importTurn – the STEP workers are the page's): this player's load waits
+    // for its turn; its budget is then the tab's less what the page's other players hold (memory-budget.js), afterwards it
+    // reports what its models hold
+    async function withImportTurn(run) {
+        const release = await importTurn(player);
+        sizeFor(player);
+        try {
+            return await run();
+        } finally {
+            release();
+            holdMemory(player, heldBytes());
+        }
+    }
+    function heldBytes() {
+        let triangles = 0;
+        for (const root of [rootGroup, ...extraModels.map(x => x.root)]) {
+            root?.traverse(o => {
+                const g = o.isMesh ? o.geometry : null;
+                if (g) triangles += (g.index ? g.index.count : g.attributes.position?.count ?? 0) / 3;
+            });
+        }
+        return triangles * BYTES_PER_TRIANGLE;
+    }
     function runLoad(kind) {
         if (kind && (!pending || LOAD_RANK[kind] > LOAD_RANK[pending])) pending = kind;
         if (loading) return loadLoop;
@@ -6045,7 +6090,7 @@ export async function createPlayer(options = {}) {
                     // additional model (only when no main load is waiting)
                     loadAbort = new AbortController();
                     const item = addQueue.shift();
-                    loading = guardedLoad(item.source, () => loadExtraModel(item.source, item.options));
+                    loading = withImportTurn(() => guardedLoad(item.source, () => loadExtraModel(item.source, item.options)));
                     await loading;
                     loading = null;
                     loadAbort = null;
@@ -6058,7 +6103,7 @@ export async function createPlayer(options = {}) {
                 if (next === 'open' && nextModel) { model = nextModel; nextModel = null; }
                 if (!model || (next !== 'open' && model.type !== 'step')) continue;
                 loadAbort = new AbortController();
-                loading = next === 'parts' ? retessellateParts() : guardedLoad(model, safe => loadModel(next === 'reload', safe), { opening: next === 'open' });
+                loading = withImportTurn(() => (next === 'parts' ? retessellateParts() : guardedLoad(model, safe => loadModel(next === 'reload', safe), { opening: next === 'open' })));
                 await loading;
                 loading = null;
                 loadAbort = null;
@@ -6284,7 +6329,7 @@ export async function createPlayer(options = {}) {
         nextModel = next;
         if (loading) {
             loadAbort?.abort();
-            stepModule?.abortStepImport();
+            if (importRunning(player)) stepModule?.abortStepImport();   // the page's workers – only for this player's import
         }
         return runLoad('open');
     }
@@ -7003,7 +7048,7 @@ export async function createPlayer(options = {}) {
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel?.thumbs, def)),
         // all library presets (categories loaded on demand) – tests bake their node graphs
         presets: () => loadLibraryPresets().then(() => MATERIAL_PRESETS),
-        get skeletonView() { return skeletonView; }, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, get clouds() { return clouds; }, get grass() { return grass; }, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats: (...args) => loadSplatLoader().then(m => m.loadSplats(...args)), lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = canvasTarget.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, getPlan: () => currentPlan, setViewMode: m => setViewMode(m), getViewMode: () => viewMode, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+        get skeletonView() { return skeletonView; }, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, get clouds() { return clouds; }, get grass() { return grass; }, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats: (...args) => loadSplatLoader().then(m => m.loadSplats(...args)), lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, canvas: canvasEl, player, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = canvasTarget.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, getPlan: () => currentPlan, setViewMode: m => setViewMode(m), getViewMode: () => viewMode, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 
     // --- Resize ---
     // device pixel ratio changed (window moved to a screen with another scaling, browser zoom): the canvas follows – it was
@@ -7049,6 +7094,7 @@ export async function createPlayer(options = {}) {
     const PT_PHASES = {
         unsupported:       { label: 'pathtracing.phases.unsupported',    color: 'bg-neutral-400' },
         waiting:           { label: 'pathtracing.phases.waiting',        color: 'bg-neutral-400' },
+        queued:            { label: 'pathtracing.phases.queued',         color: 'bg-neutral-400' },   // another player has the engine
         bvh:               { label: 'pathtracing.phases.bvh',            color: 'bg-amber-400' },
         compiling:         { label: 'pathtracing.phases.compiling',      color: 'bg-amber-400' },
         preview:           { label: 'pathtracing.phases.preview',        color: 'bg-violet-400' },
@@ -7061,7 +7107,7 @@ export async function createPlayer(options = {}) {
         done:              { label: 'pathtracing.phases.done',           color: 'bg-emerald-400' },
         saving:            { label: 'pathtracing.phases.saving',         color: 'bg-teal-400' },   // render job: file being written
     };
-    const STATIC_PHASES = new Set(['done', 'waiting', 'unsupported', 'error', 'suspended']);
+    const STATIC_PHASES = new Set(['done', 'waiting', 'queued', 'unsupported', 'error', 'suspended']);
     const FULL_BAR_PHASES = new Set(['preview', 'bvh', 'compiling', 'denoise-loading', 'suspended']);   // motion: its resolution
     // render time of the last image: from the moment the path tracer renders at full quality until "done" (denoising
     // included) – scene build, BVH, shader compiling and the reduced frames while orbiting do not count; a restart (camera,
@@ -7738,6 +7784,7 @@ export async function createPlayer(options = {}) {
     // render loop of a client or of the master showing buckets does not draw it meanwhile
     async function ensurePathTracer() {
         if (viewMode !== 'hq') setViewMode('hq');
+        takeHQ();   // a render of this player: the engine comes to it (several players on the page)
         // splats: their volume baked first (prepareSplatVolume hands the path tracer the scene with it afterwards) – a job
         // started right away rendered the passes without the splats
         if (splatVolume.baking && !splatVolume.ready) await splatVolume.baking;

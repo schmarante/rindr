@@ -13,6 +13,7 @@
 import * as THREE from 'three/webgpu';
 import { uniform, cubeTexture, screenUV, vec2, vec3, vec4, float, Fn } from 'three/tsl';
 import { wgslTagFn, rayStruct } from 'three-mesh-bvh/webgpu';
+import { playerUniforms } from './player-slots.js';
 
 export const PERSPECTIVE_LIMIT = 100;   // ° vertical – above: fisheye
 export const MAX_VIEW_ANGLE = 240;
@@ -23,6 +24,7 @@ const U = {
     k: uniform(1),
     aspect: uniform(1),
 };
+playerUniforms(U);   // each player's own lens (player-slots.js) – the change check below compares with its values
 
 /** Full vertical view angle (°) of the camera incl. the fisheye part */
 export function viewAngle(camera) {
