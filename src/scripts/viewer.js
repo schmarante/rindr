@@ -810,7 +810,7 @@ export async function createPlayer(options = {}) {
             if (refresh && selection) properties?.show(selection);
         };
         apply(after, false);
-        if (record) history.record({ label: t('properties?.volume.undo'), mergeKey, undo: () => apply(before, true), redo: () => apply(after, true) });
+        if (record) history.record({ label: t('properties.volume.undo'), mergeKey, undo: () => apply(before, true), redo: () => apply(after, true) });
     }
     // a saved scene: the looks of a model's volumes in their order (volume-look.js loaded on demand)
     async function setVolumeLooks(rm, looks) {
@@ -1996,7 +1996,7 @@ export async function createPlayer(options = {}) {
             e.preventDefault();
             sceneGraph.select(entry, { reveal: false });
             quadMenu?.open(e.clientX, e.clientY, [{ title: t('quadMenu.display'), quadrant: 'tr', items: [
-                { label: t('properties?.missing.relink'), onClick: () => assetsWindow.show() },
+                { label: t('properties.missing.relink'), onClick: () => assetsWindow.show() },
                 { label: t('quadMenu.delete'), shortcut: t('quadMenu.deleteKey'), onClick: () => removeMissingModel(entry) },
             ] }]);
             return;
@@ -2254,7 +2254,7 @@ export async function createPlayer(options = {}) {
         if (environment.hdri !== CUSTOM_HDRI + doc.id) {
             const before = environment.hdri;
             await environment.select(CUSTOM_HDRI + doc.id);
-            history.record({ label: t('properties?.environment.undo.hdri'), undo: () => environment.select(before), redo: () => environment.select(CUSTOM_HDRI + doc.id) });
+            history.record({ label: t('properties.environment.undo.hdri'), undo: () => environment.select(before), redo: () => environment.select(CUSTOM_HDRI + doc.id) });
         }
         if (selection?.kind === 'environment') properties?.show(selection);
     }
@@ -3181,7 +3181,7 @@ export async function createPlayer(options = {}) {
             const anim = animOf(entry);
             if (!anim) return;
             const before = anim.userPoses;
-            const pose = { id: `user:${++poseSeq}`, name: t('properties?.skeleton.poseName', { n: before.length + 1 }), values: anim.poseValues({ round: false }) };
+            const pose = { id: `user:${++poseSeq}`, name: t('properties.skeleton.poseName', { n: before.length + 1 }), values: anim.poseValues({ round: false }) };
             const after = [...before, pose];
             setUserPoses(anim, after);
             anim.activePose = pose.id;
@@ -3366,7 +3366,7 @@ export async function createPlayer(options = {}) {
             if (refresh && selection) properties?.show(selection);
         };
         apply(after, before.mode !== after.mode || !before.material !== !after.material);
-        if (record) history.record({ label: t('properties?.splatLook.undo'), mergeKey, undo: () => apply(before, true), redo: () => apply(after, true) });
+        if (record) history.record({ label: t('properties.splatLook.undo'), mergeKey, undo: () => apply(before, true), redo: () => apply(after, true) });
     }
     // Target of a material drop: if it is in the multi-selection, the drop applies to the whole selection
     // (a sub-surface stays single unless it is marked itself)
@@ -6720,7 +6720,7 @@ export async function createPlayer(options = {}) {
             environment.background = bg;
             return environment.select(name).catch(err => properties?.ctx.onHdriError(name, err));
         };
-        history.record({ label: t('properties?.environment.undo.hdri'), undo: () => load(before, wasOn, bgBefore), redo: () => load(file.name, true, bgAfter) });
+        history.record({ label: t('properties.environment.undo.hdri'), undo: () => load(before, wasOn, bgBefore), redo: () => load(file.name, true, bgAfter) });
         sceneGraph.render();
         if (selection?.kind === 'environment') properties?.show(selection);
         assetsWindow.render();
