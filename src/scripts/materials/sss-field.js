@@ -90,9 +90,11 @@ export function requestField(mesh) {
     return { geometry, field: f };
 }
 
-/** forget all fields (model replaced) */
-export function clearFields() {
-    fields.clear();
+/** forget the fields of the geometries under `roots` (a player's model replaced – the atlas is the page's, other players
+ *  keep theirs); without roots all of them */
+export function clearFields(roots = null) {
+    if (!roots) { fields.clear(); return; }
+    for (const root of roots) root?.traverse(o => { if (o.isMesh) fields.delete(sourceOf(o.geometry)); });
 }
 
 /** the per-object uniforms (sss-sdf.js writes no uniforms – exported for tests) */

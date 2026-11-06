@@ -154,14 +154,17 @@ export class WoolSystem {
             const local = wool.length * scale / Math.max(minScale(mesh.matrixWorld) * instanceScale, 1e-9);
             need.set(mesh.geometry, Math.max(need.get(mesh.geometry) ?? 0, local));
         }
-        let stale = need.size !== WOOL_GEOMETRIES.size;
+        // the map is the page's (every player's wool – docs/player.md, stage 3): this system changes only its own entries
+        const own = this._boundsOwn ??= new Set();
+        let stale = need.size !== own.size;
         for (const [geometry, local] of need) {
             const have = WOOL_GEOMETRIES.get(geometry);
             if (have === undefined || local > have || local < have / (BOUNDS_HEADROOM * BOUNDS_HEADROOM)) stale = true;
         }
         if (!stale) return false;
-        WOOL_GEOMETRIES.clear();
-        for (const [geometry, local] of need) WOOL_GEOMETRIES.set(geometry, local * BOUNDS_HEADROOM);
+        for (const geometry of own) WOOL_GEOMETRIES.delete(geometry);
+        own.clear();
+        for (const [geometry, local] of need) { WOOL_GEOMETRIES.set(geometry, local * BOUNDS_HEADROOM); own.add(geometry); }
         return true;
     }
 

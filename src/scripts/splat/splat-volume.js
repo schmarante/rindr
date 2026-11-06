@@ -25,6 +25,7 @@ import { memoryBudget } from '../memory-budget.js';
 import { MeshBVH } from 'three-mesh-bvh';
 import { uniform } from 'three/tsl';
 import { debugLog } from '../log.js';
+import { onPlayerSwitch } from '../player-slots.js';
 
 export const SPLAT_GRID = 160;
 export const SPLAT_BLOCK = 8;
@@ -62,6 +63,13 @@ const GAUSSIANS = typeof location === 'undefined' || new URLSearchParams(locatio
 const BOX = new THREE.BoxGeometry(1, 1, 1);
 BOX.boundsTree = new MeshBVH(BOX);   // the path tracer needs it before setScene
 
+// the shared textures, the Gaussians' buffer and the uniforms hold one player's bake (docs/player.md, stage 3 – it bakes
+// for HQ, which one player has at a time): the volume that baked last; another player's volume bakes again when its
+// player gets HQ back
+let volumeOwner = null;
+// another player becomes the current one: no splat volume for the path tracer until its player's shows it (updateUniforms)
+onPlayerSwitch(() => { SPLAT_UNIFORMS.active.value = 0; SPLAT_UNIFORMS.grid.value = 0; GAUSS.on.value = 0; });
+
 export class SplatVolume {
     constructor() {
         this.material = new THREE.MeshBasicNodeMaterial({ colorWrite: false, depthWrite: false });
@@ -82,10 +90,13 @@ export class SplatVolume {
 
     /** the splats of the scene (null: none) – the volume is baked again on the next ensure() */
     attach(splat) {
-        SPLAT_UNIFORMS.active.value = 0;
-        SPLAT_UNIFORMS.grid.value = 0;
-        GAUSS.on.value = 0;
-        this._setGaussians(null);   // the previous splats' buffer (up to hundreds of MB on the GPU)
+        if (!volumeOwner || volumeOwner === this) {   // (another player's bake stays)
+            SPLAT_UNIFORMS.active.value = 0;
+            SPLAT_UNIFORMS.grid.value = 0;
+            GAUSS.on.value = 0;
+            this._setGaussians(null);   // the previous splats' buffer (up to hundreds of MB on the GPU)
+            volumeOwner = null;
+        }
         this.traced = false;
         this.gridBaked = false;
         this.proxy.removeFromParent();
@@ -124,6 +135,7 @@ export class SplatVolume {
             : null;
         if (splat !== this.splat) return false;
         if (gaussians?.count) {
+            this._own();
             this._setGaussians(gaussians.data);
             GAUSS.shRange.value = splat.data.shRange ?? 1;
             this.traced = true;
@@ -146,6 +158,7 @@ export class SplatVolume {
                 worker.postMessage({ a: splat.data.a, b, count: splat.count, min: box.min.toArray(), max: box.max.toArray(), n: SPLAT_GRID, block: SPLAT_BLOCK });
             });
             if (splat !== this.splat) return false;
+            this._own();
             SPLAT_TEXTURES.density.image.data = result.density;
             SPLAT_TEXTURES.color.image.data = result.color;
             SPLAT_TEXTURES.majorant.image.data = result.majorant;
@@ -164,6 +177,17 @@ export class SplatVolume {
         this.ready = true;
         this.sync();
         return true;
+    }
+
+    // this volume's bake goes into the shared data: another player's volume (baked before) has to bake again
+    _own() {
+        const prev = volumeOwner;
+        volumeOwner = this;
+        if (!prev || prev === this) return;
+        prev.ready = false;
+        prev.baking = null;
+        prev.traced = prev.gridBaked = false;
+        prev.proxy.visible = false;
     }
 
     // the Gaussians' buffer (null: a small empty one) – the previous one is freed on the GPU (three.js r187 frees an
@@ -220,6 +244,7 @@ export class SplatVolume {
         this._standIn({ relit: look.mode !== 'baked', material: look.material, meanLuma: look.meanLuma.value, sigma: this.sigma / worldPerData,
             primary: this.primary, gaussians: this.gaussians });
         const pt = this.material.userData.ptStandIn, u = SPLAT_UNIFORMS;
+        if (volumeOwner && volumeOwner !== this) return;   // the shared uniforms hold another player's bake
         u.sigma.value = pt.roughness;
         u.relit.value = pt.metalness;
         u.override.value = pt.sheen;
@@ -235,6 +260,7 @@ export class SplatVolume {
 
     /** per frame in HQ: where the volume is and whether it is shown (the volume walk reads it through uniforms) */
     updateUniforms() {
+        if (volumeOwner && volumeOwner !== this) return;   // the shared uniforms hold another player's bake
         const u = SPLAT_UNIFORMS;
         let shown = this.ready && this.proxy.visible;
         for (let o = this.splat; o && shown; o = o.parent) shown = o.visible;   // hidden in the Scene Graph: a parent

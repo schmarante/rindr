@@ -356,7 +356,8 @@ export async function createPlayer(options = {}) {
     const canvasEl = canvasTarget.domElement;
     const player = {
         renderer, ct: canvasTarget, frame: null,
-        enter() { renderer.toneMapping = tone.curve; renderer.toneMappingExposure = tone.exposure; },
+        enter() { renderer.toneMapping = tone.curve; renderer.toneMappingExposure = tone.exposure; this.refreshMedia?.(); },
+        refreshMedia: null,   // its path tracer media (clouds, grid volumes, splats) – set once those systems exist
         // drawn while its element is in the page (taken out by the page's framework: no frames until it is back)
         awake: () => !options.element || options.element.isConnected,
     };
@@ -597,8 +598,9 @@ export async function createPlayer(options = {}) {
     // --- Pathtracing (three-gpu-pathtracer, WebGPU) ---
     const pathTracing = new PathTracingView(renderer, { denoiseWeightsUrl: DENOISE_WEIGHTS_URL });
     // the page's path tracing engine came back from another player (pathtracer.js claim): this player's scene into it again
-    pathTracing.onAttach = () => updatePathTracingScene();
+    pathTracing.onAttach = () => { prepareSplatVolume(); updatePathTracingScene(); };
     pathTracing.element = playerEl;   // several HQ players wait for the engine in the order of the page
+    pathTracing.onUse = () => usePlayer(player);   // its work outside the render loop (buckets, passes) on this player
     // HQ belongs to the player the user works with (several players on a page): pressing, scrolling or a key in this
     // player while it shows HQ takes the engine from another one (that one's picture waits until this one is done)
     const takeHQ = () => {
@@ -1029,6 +1031,7 @@ export async function createPlayer(options = {}) {
         // Transfer state to scene + path tracer. params: only intensity/rotation changed (fast)
         matte: null,         // image export: plain background colour instead of HDRI/vignette (light unchanged)
         apply({ geometry = false, params = false } = {}) {
+            usePlayer(player);   // ground, dome and shadow catcher write the page's uniforms: this player's values
             this.onChange?.();   // preview in the environment panel (texture, intensity, light boost, rotation)
             scene.environment = this.on ? this.texture : null;
             clouds.setEnvironment(this.on ? this.texture : studioTexture, this.on ? this.intensity * this.lightBoost : 0.8, this.on ? scene.environmentRotation.y : 0);
@@ -3362,6 +3365,8 @@ export async function createPlayer(options = {}) {
     // splats in HQ: the volume baked (progress display meanwhile), then the path tracer gets the scene with it
     function prepareSplatVolume() {
         if (splatVolume.ready || !splatMesh || splatMesh.loading) return;
+        // the splat volume's data is the page's (splat-volume.js): baked by the player that has HQ (onAttach otherwise)
+        if (playerCount() > 1 && !pathTracing.owner) return;
         showProgress(t('status.splatVolume'), 0);   // progress display bottom left, the worker reports the share done
         splatVolume.ensure(renderer, f => showProgress(t('status.splatVolume'), f)).then(ok => {
             hideProgress();
@@ -5225,7 +5230,7 @@ export async function createPlayer(options = {}) {
         root.removeFromParent();
     }
     function clearModel() {
-        clearFields();   // SSS distance fields belong to the old geometries
+        clearFields([rootGroup, ...extraModels.map(x => x.root)]);   // SSS distance fields of the old geometries (the atlas is the page's)
         if (gridVolumes.active) gridVolumes.clear();
         splatSpin.active = false;
         fading.clear();
@@ -7644,6 +7649,15 @@ export async function createPlayer(options = {}) {
             lens.restoreToneMapping();
         }
     };
+    // this player's path tracer media again when it becomes the current one (the uniforms are the page's)
+    player.refreshMedia = () => {
+        clouds.showMedia?.();
+        if (gridVolumes.active) gridVolumes.showMedia?.();
+        if (splatMesh) splatVolume.updateUniforms();
+    };
+    // working with this player's interface (panels, keys): its values in the page's shared state before any handler
+    // writes them (several players – runtime.js usePlayer; nothing to do for a single one)
+    if (playerEl) for (const type of ['pointerdown', 'keydown', 'input', 'change', 'wheel']) playerEl.addEventListener(type, () => usePlayer(player), { capture: true, passive: true });
     addPlayer(player);
 
     // --- Distributed rendering (docs/distributed.md) ---

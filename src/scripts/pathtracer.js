@@ -144,6 +144,8 @@ export class PathTracingView {
                                         // the restart count of its picture – the next restart goes back to the normal one
         this.onLightMixEnd = null;      // called when it ends (viewer: closes its window)
         this.onAttach = null;           // the view got the engine back from another player (viewer: sets its scene again)
+        this.onUse = null;              // before work outside the render loop (buckets, passes …): its player made the
+                                        // current one (viewer – several players: the renderer and the kernel media are its)
     }
 
     // --- The page's engine (one per page, see `engine`) ---
@@ -866,6 +868,7 @@ export class PathTracingView {
         this.regionBusy = true;
         try {
             // renderSample() initialises the material on its first call – a region may come first (kernel nodes)
+            this.onUse?.();
             if (!pt.material.initialized) { pt.material.init(this.renderer); pt.material.initialized = true; }
             camera.aspect = fullW / fullH;
             camera.setViewOffset(fullW, fullH, x, y, w, h);
@@ -886,6 +889,7 @@ export class PathTracingView {
                 if (this._compiled) { this._compiled = false; pt.reset(); }   // skipped dispatches counted as samples
                 // as many samples this frame as the budget allows (a small bucket is one tile per sample)
                 const perFrame = Math.max(1, Math.floor(backend.frameBudget / (w * h)));
+                this.onUse?.();   // other players drew meanwhile
                 this._tracing = true;
                 try {
                     for (let i = 0; i < perFrame && progress() < samples; i++) backend.update();
@@ -940,6 +944,7 @@ export class PathTracingView {
      */
     async injectImage(data, w, h, samples) {
         if (!this.ready) throw new Error('path tracer not ready');
+        this.onUse?.();
         const pt = this.pathTracer, backend = pt._pathTracer, gpu = this.renderer.backend;
         if (!pt.material.initialized) { pt.material.init(this.renderer); pt.material.initialized = true; }
         // what the next frame would take over and restart with (the view traced nothing yet – holdKernel): the kernel
@@ -1041,6 +1046,7 @@ export class PathTracingView {
      * would otherwise wait for it one by one. Returns when it is ready (holdPassKernel: usually already there).
      */
     async prepareLightPasses(cancelled = () => false) {
+        this.onUse?.();
         const pt = this.pathTracer, backend = pt._pathTracer;
         if (!backend.kernel?.setLightPasses) return;
         if (!pt.material.initialized) { pt.material.init(this.renderer); pt.material.initialized = true; }
@@ -1064,6 +1070,7 @@ export class PathTracingView {
      * textures (position, normal, albedo).
      */
     async helperPasses(w, h) {
+        this.onUse?.();
         const pt = this.pathTracer;
         const helpers = this._helpers ??= new this._GuideKernel({ ...PATHTRACING.denoiseMotion, samples: PATHTRACING.helperPassSamples, aov: true });
         // the first dispatch creates the pipeline – asynchronously (_ownCompile), the dispatch is skipped meanwhile

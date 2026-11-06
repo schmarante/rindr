@@ -5,6 +5,18 @@
 // turn starts from the values the slots had when they were registered (the modules' defaults). A single player (the
 // app) never switches: nothing is captured or restored.
 const slots = [];
+const switchHooks = [];
+
+/**
+ * fn() whenever another player becomes the current one (before it is entered): the path tracer's media uniforms (cloud,
+ * grid and splat volumes) are switched off there – the coming player's systems show their own again (viewer.js enter)
+ */
+export function onPlayerSwitch(fn) {
+    switchHooks.push(fn);
+}
+export function playerSwitched() {
+    for (const fn of switchHooks) fn();
+}
 
 /**
  * A shared value: get() reads it, set(v) writes it; init = its value for a player that never set it (default: get() now).

@@ -3,7 +3,7 @@
 // Stage 1: the player still sets everything else on the renderer (size, tone mapping, shadows, hooks – listed in
 // docs/player.md "Seitenweite Zustände").
 import * as THREE from 'three/webgpu';
-import { captureSlots, restoreSlots } from './player-slots.js';
+import { captureSlots, restoreSlots, playerSwitched } from './player-slots.js';
 
 // WebGPU renderer (falls back to WebGL2 without WebGPU – then without path tracing).
 // Without an explicit request the device only gets the WebGPU default limits (128 MB per storage
@@ -90,6 +90,7 @@ export function usePlayer(p) {
     }
     current = p;
     if (prev || p.slots) restoreSlots(p.slots ?? null);
+    if (prev) playerSwitched();
     p.enter?.();
 }
 export const currentPlayer = () => current;

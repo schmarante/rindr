@@ -17,6 +17,7 @@ import { MeshBVH } from 'three-mesh-bvh';
 import { DataUtils } from 'three/webgpu';
 import { hideInOverridePasses } from '../materials/override-hide.js';
 import { memoryBudget } from '../memory-budget.js';
+import { onPlayerSwitch } from '../player-slots.js';
 
 export const GRID_SLOTS = 2;                 // grid volumes at the same time
 export const GRID_BLOCK = 8;                 // samples per majorant block (vdb-import.js BLOCK)
@@ -157,6 +158,14 @@ function gridMaterial(slot) {
     return material;
 }
 
+// The atlas, the block grid, the emission table and the media are the page's (docs/player.md, stage 3): a volume of any
+// player takes a free page slot (GRID_SLOTS for the page – index k = GRID_MEDIA[k] = each system's mesh k) and the
+// upload packs the volumes of every player
+const pageSlots = new Array(GRID_SLOTS).fill(null);   // page slot → the slot entry (of some system) showing a volume there
+const systems = new Set();
+// another player becomes the current one: no volume shown for the path tracer until its system shows its own (showMedia)
+onPlayerSwitch(() => { for (const m of GRID_MEDIA) { m.params.value.w = 0; m.albedo.value.w = 0; } });
+
 /**
  * The grid volumes of the loaded models. set(volumes, root, holders): volumes as the importer delivers them (see
  * pbrt-import.js `result.volumes`), each placed in its holder's space – its own Scene Graph node (`volume.node`, the
@@ -194,9 +203,19 @@ export class GridVolumeSystem {
         this._outlined = [null, null];   // selected, hovered object
         hideInOverridePasses(renderer, this.group, { keepPlain: true });
         this.onChange = null;   // proxies appeared/disappeared (path tracer: scene, materials)
+        systems.add(this);
     }
 
     get active() { return this.slots.some(s => s.volume); }
+
+    /** this player's volumes for the path tracer again (its player became the current one – the media are the page's) */
+    showMedia() {
+        this.slots.forEach((s, k) => {
+            if (!s.volume || pageSlots[k] !== s) return;
+            GRID_MEDIA[k].params.value.w = s.mesh.visible ? 1 : 0;
+            GRID_MEDIA[k].albedo.value.w = s.mesh.visible ? 1 : 0;
+        });
+    }
 
     /** the volumes placed in an object (a model root, a node – its own or one above it) */
     volumesOf(object) { return object ? this.slots.filter(s => s.volume && within(s.holder, object)).map(s => s.volume) : []; }
@@ -210,7 +229,7 @@ export class GridVolumeSystem {
     restyle() {
         const emission = GRID_TEXTURES.emission.image.data;
         emission.fill(0);
-        this.slots.forEach((s, k) => { if (s.volume) this._style(k, s.volume, emission); });
+        pageSlots.forEach((s, k) => { if (s?.volume) this._style(k, s.volume, emission); });   // every player's
         GRID_TEXTURES.emission.needsUpdate = true;
     }
 
@@ -227,10 +246,16 @@ export class GridVolumeSystem {
 
     /** the volumes of a model (replaces those of the same root; null/[] removes them) */
     set(volumes, root, holders = null) {
-        for (const s of this.slots) if (s.root === root || !root) { s.volume = null; s.root = null; s.holder = null; }
+        this.slots.forEach((s, k) => {
+            if (s.root !== root && root) return;
+            s.volume = null; s.root = null; s.holder = null;
+            if (pageSlots[k] === s) pageSlots[k] = null;
+        });
         for (const v of volumes || []) {
-            const s = this.slots.find(x => !x.volume);
-            if (!s) { console.warn(`Grid volumes: only ${GRID_SLOTS} at a time`); break; }
+            const k = this.slots.findIndex((x, i) => !x.volume && !pageSlots[i]);   // free on the page
+            if (k < 0) { console.warn(`Grid volumes: only ${GRID_SLOTS} at a time`); break; }
+            const s = this.slots[k];
+            pageSlots[k] = s;
             s.volume = v;
             s.root = root;
             s.holder = holders?.[v.node] || root;
@@ -242,9 +267,11 @@ export class GridVolumeSystem {
 
     clear() { this.set([], null); }
 
-    // atlas: the volumes stacked along z (RG: density, temperature), the majorant blocks likewise (R)
+    // atlas: the volumes of every player stacked along z (RG: density, temperature), the majorant blocks likewise (R)
     _upload() {
-        const used = this.slots.filter(s => s.volume);
+        for (const sys of systems) sys.slots.forEach((s, k) => { if (pageSlots[k] !== s) s.mesh.visible = false; });
+        const slots = pageSlots.map(s => s ?? { volume: null, mesh: null });
+        const used = slots.filter(s => s.volume);
         const W = Math.max(1, ...used.map(s => s.volume.dims[0])), H = Math.max(1, ...used.map(s => s.volume.dims[1]));
         const D = Math.max(1, used.reduce((a, s) => a + s.volume.dims[2], 0));
         const BW = Math.max(1, ...used.map(s => s.volume.blockDims[0])), BH = Math.max(1, ...used.map(s => s.volume.blockDims[1]));
@@ -252,9 +279,9 @@ export class GridVolumeSystem {
         const atlas = new Uint8Array(W * H * D * 2), blocks = new Uint8Array(BW * BH * BD);
         const emission = new Uint16Array(GRID_EMISSION_STEPS * GRID_SLOTS * 4);
         let z = 0, bz = 0;
-        this.slots.forEach((s, k) => {
+        slots.forEach((s, k) => {
             const m = GRID_MEDIA[k], v = s.volume;
-            if (!v) { m.albedo.value.w = 0; m.params.value.w = 0; s.mesh.visible = false; return; }
+            if (!v) { m.albedo.value.w = 0; m.params.value.w = 0; return; }
             const [nx, ny, nz] = v.dims;
             for (let zz = 0; zz < nz; zz++) for (let y = 0; y < ny; y++) {
                 const src = (zz * ny + y) * nx, dst = ((z + zz) * H + y) * W;

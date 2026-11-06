@@ -116,6 +116,8 @@ export const EDGE_WGSL = wgslTagFn/* wgsl */`
 
 const RECORDS = new WeakMap();   // geometry → { data, built, base, rotated, pending }
 let packed = [];                 // geometries in EDGE_DATA
+// every player's system (docs/player.md, stage 3): EDGE_DATA is the page's, it holds the geometries of all of them
+const systems = new Set();
 
 /** block start of a geometry in EDGE_DATA (EDGE_NONE: no data) – raster uniform, path tracer transform field. A cluster
  *  LOD cut (lod/lod-store.js) indexes the vertices of its source → the source's block */
@@ -182,6 +184,7 @@ export class EdgeSystem {
         this._jobId = 0;
         this.onChange = null;        // (rebuild) – new data; rebuild = triangle corners rotated (path tracer scene)
         this.stats = { geometries: 0, vec4: 0, buildMs: 0 };
+        systems.add(this);
     }
 
     /** materials, assignments or the model changed – search again on the next update */
@@ -279,9 +282,10 @@ export class EdgeSystem {
         });
     }
 
-    // all blocks of the geometries in use into one buffer (new bases); onChange when anything changed
+    // all blocks of the geometries in use – by every player's system – into one buffer (new bases); onChange when anything
+    // changed (every system: the bases of its geometries may have moved)
     _repack() {
-        const list = [...this._need.keys()].filter(g => RECORDS.get(g)?.data);
+        const list = [...new Set([...systems].flatMap(s => [...s._need.keys()]))].filter(g => RECORDS.get(g)?.data);
         const same = list.length === packed.length && list.every((g, i) => g === packed[i]);
         if (same && !this._dirty) return;
         this._dirty = false;
@@ -305,5 +309,6 @@ export class EdgeSystem {
         const rebuild = this._rebuild;
         this._rebuild = false;
         this.onChange?.(rebuild);
+        for (const s of systems) if (s !== this) s.onChange?.(false);
     }
 }

@@ -21,6 +21,7 @@ import { MeshBVH } from 'three-mesh-bvh';
 import { FIELD_RES, FIELD_RANGE, NOISE_RES, detailNoise, sphereField } from './cloud-field.js';
 import { debugLog } from '../log.js';
 import { hideInOverridePasses } from './override-hide.js';
+import { onPlayerSwitch } from '../player-slots.js';
 
 export const CLOUD_SLOTS = 4;               // cloud materials at the same time (more: the rest stays invisible)
 const ATLAS_SLOTS = CLOUD_SLOTS + 1;        // + the material preview's sphere
@@ -77,11 +78,27 @@ function ensureNoise() {
 }
 
 export const CLOUD_TEXTURES = { atlas, noise, slots: ATLAS_SLOTS };
+// the atlas is the page's (docs/player.md, stage 3): a cloud volume of any player takes a free slot while it shows a cloud
+// material – CLOUD_SLOTS for the page; the media (below) are written by each player's system in its own frame
+const slotOwners = new Array(CLOUD_SLOTS).fill(null);
+function takeSlot(vol) {
+    const own = slotOwners.indexOf(vol);
+    if (own >= 0) return own;
+    const free = slotOwners.indexOf(null);
+    if (free >= 0) slotOwners[free] = vol;
+    return free;
+}
+function releaseSlot(vol) {
+    const own = slotOwners.indexOf(vol);
+    if (own >= 0) slotOwners[own] = null;
+}
 // every cloud volume for the path tracer's shared volume walk (volume-pt.js): world → box matrix, (slot, scale, puff,
 // σ per world unit at density 1), (albedo, 1 = shown) – updated each frame (CloudSystem.update)
 export const CLOUD_MEDIA = Array.from({ length: CLOUD_SLOTS }, () => ({
     inverse: uniform(new THREE.Matrix4()), params: uniform(new THREE.Vector4()), albedo: uniform(new THREE.Vector4()),
 }));
+// another player becomes the current one: no cloud for the path tracer until its system shows its own (showMedia)
+onPlayerSwitch(() => { for (const m of CLOUD_MEDIA) m.albedo.value.w = 0; });
 
 
 // light for the raster approximation: LIGHTS directions towards the light + irradiances – slot 0 = the environment's
@@ -348,6 +365,11 @@ export class CloudSystem {
         }
     }
 
+    /** this player's clouds for the path tracer again (its player became the current one – the media are the page's) */
+    showMedia() {
+        this._updateMedia();
+    }
+
     // the volumes for the path tracer's volume walk (CLOUD_MEDIA): only shown ones count
     _updateMedia() {
         this.volumes.forEach((vol, k) => {
@@ -384,13 +406,19 @@ export class CloudSystem {
             const [material, meshes] = entries[i] ?? [null, []];
             vol.meshes = meshes;
             vol.source = material;
-            const key = material ? material.uuid : null;
+            let key = material ? material.uuid : null;
+            // its slot in the page's atlas (all taken by other players' clouds: this one stays hidden)
+            if (key) {
+                const slot = takeSlot(vol);
+                if (slot < 0) { console.warn(`Clouds: only ${CLOUD_SLOTS} cloud materials at a time on the page`); key = null; }
+                else if (slot !== vol.slot) { vol.slot = slot; vol.material.userData.cloudUniforms.slot.value = slot; vol.signature = ''; }
+            } else releaseSlot(vol);
             if (key !== vol.key) {
                 vol.key = key;
                 vol.signature = '';
                 if (!key && vol.mesh.visible) { vol.mesh.visible = false; changed = true; }
             }
-            if (material) this._applyParams(vol, cloudOf(material));
+            if (key) this._applyParams(vol, cloudOf(material));
         });
         if (changed) this.onChange?.();
     }
@@ -551,10 +579,16 @@ export class CloudSystem {
         const c = Math.cos(rotation), s = Math.sin(rotation);
         // three.js looks the environment up with rotationᵀ · direction → world direction = rotation · texture direction
         const d = light.dir, e = light.sun;
-        lightDir.array[0].set(c * d.x + s * d.z, d.y, -s * d.x + c * d.z, 0).normalize();
-        lightColor.array[0].set(e.x * intensity, e.y * intensity, e.z * intensity, e.x + e.y + e.z > 0 ? 1 : 0);
-        envSky.copy(light.sky).multiplyScalar(intensity);
-        envGround.copy(light.ground).multiplyScalar(intensity);
+        // this system's (its player's environment – the light uniforms are the page's, applied in _updateLights)
+        this._env = {
+            dir: new THREE.Vector4(c * d.x + s * d.z, d.y, -s * d.x + c * d.z, 0).normalize(),
+            color: new THREE.Vector4(e.x * intensity, e.y * intensity, e.z * intensity, e.x + e.y + e.z > 0 ? 1 : 0),
+            sky: light.sky.clone().multiplyScalar(intensity), ground: light.ground.clone().multiplyScalar(intensity),
+        };
+        lightDir.array[0].copy(this._env.dir);
+        lightColor.array[0].copy(this._env.color);
+        envSky.copy(this._env.sky);
+        envGround.copy(this._env.ground);
     }
 
     // the scene's lights → slots 1…: shown directional lights (direction towards the light, irradiance = colour ×
@@ -562,8 +596,12 @@ export class CloudSystem {
     _updateLights() {
         const lights = this.getLights?.() ?? [];
         let slot = 1;
-        ambientSky.value.copy(envSky);
-        ambientGround.value.copy(envGround);
+        if (this._env) {   // the environment of this system's player (slot 0)
+            lightDir.array[0].copy(this._env.dir);
+            lightColor.array[0].copy(this._env.color);
+        }
+        ambientSky.value.copy(this._env?.sky ?? envSky);
+        ambientGround.value.copy(this._env?.ground ?? envGround);
         for (const light of lights) {
             if (!isShown(light) || !(light.intensity > 0)) continue;
             const c = light.color, k = light.intensity;
