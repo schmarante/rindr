@@ -20,6 +20,26 @@ import { t } from './i18n.js';
 // What every player of the page starts with unless its options say otherwise: assetBase = where the player's own files
 // lie (denoiser weights …) – the player build's entry sets it to its own folder (player-entry.js); the app: its page
 export const playerDefaults = { assetBase: null };
+
+// Page-wide settings (RINDR.configure – docs/player-embed.md): theme = { accent, panel, background, font } as CSS values
+// for every player of the page (a rule on an element of the page still wins), base = where the player's own files lie
+const themeSheet = new CSSStyleSheet();
+const THEME_KEYS = { accent: 'color', panel: 'color', background: 'color', font: 'font-family' };
+const theme = {};   // the values so far (a later call changes only what it names; null or '' removes one)
+export function configure({ theme: values, base } = {}) {
+    if (values) {
+        for (const [key, value] of Object.entries(values)) {
+            const property = THEME_KEYS[key];
+            if (!property) { console.warn(`[rindr-player] configure: unknown theme key ${key}`); continue; }
+            if (value == null || value === '') { delete theme[key]; continue; }
+            if (!CSS.supports(property, String(value)) || /[;{}]/.test(String(value))) { console.warn(`[rindr-player] configure: invalid ${key}: ${value}`); continue; }
+            theme[key] = String(value);
+        }
+        const rules = Object.entries(theme).map(([key, value]) => `--rindr-${key}:${value}`);
+        themeSheet.replaceSync(rules.length ? `:host{${rules.join(';')}}` : '');
+    }
+    if (base) playerDefaults.assetBase = new URL(base, document.baseURI).href.replace(/\/?$/, '/');
+}
 // the viewer (three.js, importers …) loads with the first player that starts (the app has it already – app.js); one promise
 // for all: players awaiting it go on in the order they started – createPlayer in page order (without WebGPU the first one
 // gets the picture)
@@ -53,10 +73,11 @@ async function shown(api, wantsModel) {
 // on the page and no clash with the page's own Tailwind)
 let sheet = null;
 const PROPERTY_FALLBACK = /@supports([^{]*)\{\s*\*,\s*:?:before,\s*:?:after,\s*::backdrop\s*\{/;
-function playerSheet() {
+// (the stylesheet as a parameter: used once here – the minifier put the 70 KB text into the bundle once per use otherwise)
+function playerSheet(source = css) {
     if (sheet) return sheet;
-    const text = PROPERTY_FALLBACK.test(css) ? css.replace(PROPERTY_FALLBACK, '@supports (display:block){:host,*,::before,::after,::backdrop{')
-        : (debugLog('[Player] Tailwind property fallback not found – shadows/rings may be missing'), css);
+    const text = PROPERTY_FALLBACK.test(source) ? source.replace(PROPERTY_FALLBACK, '@supports (display:block){:host,*,::before,::after,::backdrop{')
+        : (debugLog('[Player] Tailwind property fallback not found – shadows/rings may be missing'), source);
     sheet = new CSSStyleSheet();
     sheet.replaceSync(text);
     return sheet;
@@ -77,7 +98,7 @@ export class RindrPlayer extends HTMLElement {
         if (this.ready) return;
         const options = this.rindrOptions || {};
         const root = this.attachShadow({ mode: 'open' });
-        root.adoptedStyleSheets = [playerSheet()];
+        root.adoptedStyleSheets = [playerSheet(), themeSheet];
         root.innerHTML = playerTemplate();
         const layer = root.querySelector('[data-rindr-layer]');
         setDefaultLayer(layer);   // windows and notices without an anchor go here (the player's own get their layer)

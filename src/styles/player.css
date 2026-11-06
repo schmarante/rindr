@@ -23,9 +23,30 @@
         container-type: size;
         contain: layout;
         contain-intrinsic-block-size: 480px;
-        background-color: var(--color-neutral-900);
+        background-color: var(--rindr-background, var(--color-neutral-900));
         -webkit-user-select: none;
         user-select: none;
+    }
+    /* Whitelabel (docs/player-embed.md): the page sets --rindr-accent (accent colour – lighter and darker shades are mixed
+       from it), --rindr-panel (base tone of panels and windows, shown at their opacity), --rindr-background (behind the 3D
+       view) and --rindr-font on the element (or RINDR.configure({ theme })). Unset, everything stays Tailwind's: a helper
+       using an unset variable is invalid, the var() then falls back to the theme's own value. */
+    :host {
+        --rindr-accent-200: color-mix(in oklab, var(--rindr-accent) 30%, white);
+        --rindr-accent-300: color-mix(in oklab, var(--rindr-accent) 60%, white);
+        --rindr-accent-400: color-mix(in oklab, var(--rindr-accent) 80%, white);
+        --rindr-accent-700: color-mix(in oklab, var(--rindr-accent) 70%, black);
+        --color-sky-200: var(--rindr-accent-200, --theme(--color-sky-200 inline));
+        --color-sky-300: var(--rindr-accent-300, --theme(--color-sky-300 inline));
+        --color-sky-400: var(--rindr-accent-400, --theme(--color-sky-400 inline));
+        --color-sky-500: var(--rindr-accent, --theme(--color-sky-500 inline));
+        --color-sky-700: var(--rindr-accent-700, --theme(--color-sky-700 inline));
+        --color-black: var(--rindr-panel, --theme(--color-black inline));
+    }
+    /* the font: unset → invalid → inherited from the host (Tailwind's) */
+    [data-rindr-root],
+    [data-rindr-layer] {
+        font-family: var(--rindr-font);
     }
     /* keyboard focus of an embedded player (it takes keys only while focused) */
     :host(:focus-visible) {
