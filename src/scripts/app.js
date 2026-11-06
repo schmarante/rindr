@@ -1,6 +1,7 @@
-// Page entry (index.astro): the RINDR viewer as one player on the page's elements – stage 1 of docs/player.md.
-// viewer.js first: its first import (worker-monitor.js) replaces `Worker` before anything starts one (?debug), and the
-// modules are evaluated in the same order as before.
+// Page entry (index.astro): the RINDR app = one player on the page's elements (docs/player.md).
+// First the debug overlay's worker overview: it replaces `Worker` before anything starts one (only with ?debug, a
+// change of the whole page – the app's business, never an embedded player's).
+import './worker-monitor.js';
 import { createPlayer } from './viewer.js';
 import { applyDom } from './i18n.js';
 
@@ -13,8 +14,11 @@ applyDom();
 const params = new URLSearchParams(location.search);
 
 // not caught: a start without a renderer stays an error in the console (the status line already says so)
-await createPlayer({
+const player = await createPlayer({
+    appMode: true,   // the whole page: may reload it, change its URL, offer distributed rendering
     model: params.get('model'),
     sampleScene: params.has('samplescene'),
     hdr: params.get('hdr'),
 });
+// debug access for automated tests (tools/player-check) and the console
+if (params.has('debug')) globalThis.__viewer = player;

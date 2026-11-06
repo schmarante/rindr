@@ -1,5 +1,3 @@
-// first: the debug overlay's worker overview replaces `Worker` before anything starts one (only with ?debug)
-import './worker-monitor.js';
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { ViewCube } from './view-cube.js';
@@ -113,7 +111,7 @@ let playerCreated = false;
 /**
  * The viewer on the page's elements (index.astro) – stage 1 of docs/player.md, still one per page.
  * @param {object} [options]
- * @returns {Promise<object>} the debug/test interface (globalThis.__viewer with ?debug)
+ * @returns {Promise<object>} the debug/test interface (app.js: globalThis.__viewer with ?debug)
  */
 export async function createPlayer(options = {}) {
     if (playerCreated) throw new Error('createPlayer: only one player per page so far (docs/player.md)');
@@ -122,6 +120,9 @@ export async function createPlayer(options = {}) {
     // shadow root later), `host` takes the hidden file inputs (docs/player.md)
     const dom = options.dom ?? document;
     const host = options.host ?? document.body;
+    // the player is the whole page (the RINDR app, app.js): it may reload the page and change its URL (language switch,
+    // GPU reset, render client pairing) and offers distributed rendering – an embedded player never touches the page
+    const APP_MODE = !!options.appMode;
     // size of the view in CSS pixels: the window for now (stage 2: the player's element – docs/player.md)
     function viewSize() { return { width: window.innerWidth, height: window.innerHeight }; }
     function viewAspect() { const { width, height } = viewSize(); return width / height; }
@@ -5846,7 +5847,7 @@ export async function createPlayer(options = {}) {
             });
         }
 
-        setup.addSection('about', t('about.title')).append(buildAbout({ gpu: adapter ? gpuLabel(adapter.info) : t('about.gpuNone'), onLanguage: switchLanguage }));
+        setup.addSection('about', t('about.title')).append(buildAbout({ gpu: adapter ? gpuLabel(adapter.info) : t('about.gpuNone'), onLanguage: APP_MODE ? switchLanguage : null }));
 
         // save/load scene and undo/redo live in the bar at the bottom
     }
@@ -6746,7 +6747,8 @@ export async function createPlayer(options = {}) {
         } catch { /* storage blocked */ }
         showNotice({
             id: 'gpu-lost', icon: 'warning', title: t('gpu.lost.title'), message: t('gpu.lost.message'),
-            actions: [{ label: t('gpu.lost.reload'), primary: true, onClick: () => location.reload() }],
+            // reloading is the app's business – an embedded player must not reload the page it sits in
+            actions: APP_MODE ? [{ label: t('gpu.lost.reload'), primary: true, onClick: () => location.reload() }] : [],
         });
     };
     // state before the last GPU reset (see renderer.onDeviceLost): console + copy button
@@ -6796,8 +6798,8 @@ export async function createPlayer(options = {}) {
         showDropHint();
     }
 
-    // Debug access for automated tests + fps/memory/polygon display (globalThis.__viewer only with ?debug in the URL);
-    // also what createPlayer returns – the start of the player's interface (docs/player.md)
+    // Debug access for automated tests + fps/memory/polygon display (app.js: globalThis.__viewer with ?debug in the URL);
+    // what createPlayer returns – the start of the player's interface (docs/player.md)
     const debugApi = {
         // material node graphs: bake an input into a PNG / render a description on the thumbnail sphere (debug-graph.js)
         bakeGraph: (graph, opts) => import('./debug-graph.js').then(m => m.bakeGraphImage(graphApplier, graph, opts)),
@@ -6805,7 +6807,6 @@ export async function createPlayer(options = {}) {
         // all library presets (categories loaded on demand) – tests bake their node graphs
         presets: () => loadLibraryPresets().then(() => MATERIAL_PRESETS),
         skeletonView, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, getPlan: () => currentPlan, setViewMode: m => setViewMode(m), getViewMode: () => viewMode, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
-    if (new URLSearchParams(location.search).has('debug')) globalThis.__viewer = debugApi;
 
     // --- Resize ---
     // device pixel ratio changed (window moved to a screen with another scaling, browser zoom): the canvas follows – it was
@@ -7397,6 +7398,7 @@ export async function createPlayer(options = {}) {
     // is a master that knows the clients from their heartbeat – tabs of this browser (BroadcastChannel) and computers in the
     // network paired by code (WebRTC, rtc.js) in one hub
     function initDistributed() {
+        if (!APP_MODE) return;   // distributed rendering: the app only (client tabs, pairing links, the page's URL)
         const param = new URLSearchParams(location.search).get('render-client');
         if (!pathTracing.supported) return;
         if (param !== null) {

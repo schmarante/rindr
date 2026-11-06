@@ -25,7 +25,7 @@ const link = (href, text) => {
 
 /**
  * @param {{ gpu?: string, onLanguage?: (code: string) => void }} options  gpu = the graphics chip rendering (gpu-info.js
- *   gpuLabel); onLanguage = a language was chosen (viewer: switch, reload)
+ *   gpuLabel); onLanguage = a language was chosen (viewer: switch, reload; null = no switching, embedded player)
  */
 export function buildAbout({ gpu = '', onLanguage = null } = {}) {
     const root = el('div', 'flex flex-col gap-3 select-text');
@@ -55,6 +55,7 @@ export function buildAbout({ gpu = '', onLanguage = null } = {}) {
         language.append(option);
     }
     language.onchange = () => onLanguage?.(language.value);
+    language.disabled = !onLanguage;   // an embedded player cannot switch (the app reloads the page for it)
     fact(t('about.language'), language);
     root.append(facts, el('div', 'text-white', t('about.madeWith')));
 
