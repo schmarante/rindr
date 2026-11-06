@@ -31,6 +31,7 @@ export class ModelAnimation {
         // container: puppet space → model space (mm)
         this.container = new THREE.Group();
         this.container.name = 'AnimationPuppet';
+        this.container.userData.animationPuppet = true;   // (left out of exports – glb-export.js takes our meshes)
         this.container.matrixAutoUpdate = false;
         this.container.matrix.copy(this.toMm);
         this.container.add(root);
@@ -134,7 +135,7 @@ export class ModelAnimation {
         this.modelRoot.add(this.container);
         for (const [mesh, its] of this.live) {
             mesh.visible = true;
-            for (const it of its) { it.wasVisible = it.target.visible; it.target.visible = false; it.target.userData.liveHidden = true; }
+            for (const it of its) { it.wasVisible = it.target.visible; it.target.visible = false; it.target.userData.liveHidden = it.wasVisible ? 'shown' : 'hidden'; }
         }
         this._followParts();
     }

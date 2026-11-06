@@ -36,7 +36,7 @@ Drop a CAD model, a mesh, a BIM file or a Gaussian splat into the window and get
 - **Lighting** – HDRI environments (drop your own .hdr/.exr into the window) with a flattened ground dome, shadow catcher and contact shadows, ground reflections and rain puddles; an **HDRI editor** for your own procedural environments with sun & sky and movable light pins.
 - **Camera like a real lens** – depth of field with bokeh blades, fisheye up to 240°, bloom, glare, lens flare and **volumetric god rays**; style filters from pixel art and scanlines to sketch and ASCII.
 - **Distributed rendering** – other computers in your local network render along (paired via link and code, peer-to-peer), buckets labelled per computer.
-- **Output** – image export (incl. transparent PNG), **light passes** per light source and light type plus helper passes (alpha, depth, normals, albedo, IDs) as layered **EXR** or **PSD**, save/load whole scenes, and **AI rendering**: send the frame plus your material names to an image model for a photoreal take.
+- **Output** – image export (incl. transparent PNG), **light passes** per light source and light type plus helper passes (alpha, depth, normals, albedo, IDs) as layered **EXR** or **PSD**, save/load whole scenes, the scene as **GLB** (models with materials and textures in one glTF file), and **AI rendering**: send the frame plus your material names to an image model for a photoreal take.
 - **Embeddable** – as `<rindr-player>` in your own pages: attributes, methods and events, several players per page ([Embedding](#embedding-the-rindr-player)).
 - English and German UI.
 
@@ -69,7 +69,7 @@ script per page, as many players as you like:
 | `hdr` | HDRI URL (.hdr/.exr) – wins over the scene's HDRI |
 | `background` | what is shown behind the model: `hdri`, a colour (`#ffffff`), `linear(top, bottom)`, `radial(centre, edge)`, `default` (the dark gradient) – wins over the scene's background; shown from the first moment, while the player still loads |
 | `mode` | `default` (raster) or `hq` (path tracing as soon as the camera stands still); also `basic`, `uv`, `wire` |
-| `features` | interface parts, separated by spaces or commas: `scene-graph`, `properties`, `materials`, `material-editor`, `explode`, `transform`, `section`, `views`, `view-cube`, `view-modes`, `open`, `save`, `render`, `ki`, `animation`, `setup`, `fullscreen` – `all` = everything. Without `features`: the 3D view only (orbit, zoom, key 3 for path tracing) |
+| `features` | interface parts, separated by spaces or commas: `scene-graph`, `properties`, `materials`, `material-editor`, `explode`, `transform`, `section`, `views`, `view-cube`, `view-modes`, `open`, `save`, `export`, `render`, `ki`, `animation`, `setup`, `fullscreen` – `all` = everything. Without `features`: the 3D view only (orbit, zoom, key 3 for path tracing) |
 | `activate` | `auto` (at once, default), `visible` (when the player comes near the visible part of the page), `click` (a start button) |
 | `poster` | picture shown until the player shows its model |
 | `frame` | run the player in an iframe (see below) |
@@ -99,6 +99,7 @@ first call; methods that look at parts wait until the model is loaded.
 | `getScene()` | the scene as data (the same JSON as "Save scene") |
 | `getPackage()` | the scene with its model files (and HDRI) as a zip |
 | `save()` | what the save button does (fires `rindr-save`) |
+| `exportGlb({ camera })` | the visible models with their materials as one GLB file: `{ file, warnings }` – see [GLB export](#glb-export) |
 | `start()` | start a waiting player |
 
 **Parts by name.** A path is the chain of node names from the file, joined with `/`:
@@ -203,6 +204,7 @@ On the element; they bubble and cross the shadow DOM:
 | `rindr-mode` | `{ mode }` |
 | `rindr-error` | `{ message, name, title }` (`start: true`: the player could not start) |
 | `rindr-save` | `{ scene, json, name, package() }` – **cancelable** |
+| `rindr-export` | `{ file, name, format: 'glb', warnings }` – the export button (`features="export"`); **cancelable** |
 
 **Saving into your own system:** call `preventDefault()` in `rindr-save` and the page keeps the scene (no file dialog).
 Not cancelled, the player saves a file as usual. `element.resolveAsset = (name, kind) => URL | Blob | null` (`kind`:
@@ -230,6 +232,27 @@ await p.load({ scene: await (await fetch('/pim/scene/4711')).json() });
   p.addEventListener('rindr-select', e => e.detail?.path && showInfo(e.detail.path));
   imageButton.onclick = async () => upload(await p.render({ width: 2000, transparent: true }));
 </script>
+```
+
+### GLB export
+
+`exportGlb()` (and the export button, feature `export`) writes the visible models as one glTF binary: node tree and
+names, materials as glTF PBR with their extensions (clearcoat, transmission, volume, IOR, specular, sheen, iridescence,
+anisotropy, dispersion, emissive strength), textures – node-graph materials as baked maps –, repeated parts as GPU
+instances, in metres. `camera: true` adds the current camera. Hidden parts stay out; lights, the environment and render
+settings are no part of the file (a glTF viewer lights the model itself).
+
+What glTF cannot hold comes back in `warnings` as `[{ code, names }]`: `special` (cloud, wool, grass, hair, soap film,
+marble, toon – written as plain materials), `subsurface`, `edges` (rounded edges), `hair` (the fibres – the shape is
+included), `splats`, `volumes`, `animation` (the current pose is written), `texture` (compressed or floating-point
+maps left out).
+
+```js
+p.addEventListener('rindr-export', async e => {   // the export button: keep the file instead of downloading it
+  e.preventDefault();
+  await fetch('/pim/glb/4711', { method: 'PUT', body: e.detail.file });
+});
+const { file, warnings } = await p.exportGlb();     // or from your own button
 ```
 
 ### Colours

@@ -165,6 +165,14 @@ export function createHostApi(ctx) {
             ctx.touch();
             return ctx.scenePackage();
         },
+        /** the visible models with their materials as one GLB file (glTF 2.0 binary, metres) → { file: File, warnings:
+         *  [{ code, names }] } – what glTF could not hold (special materials, subsurface, hair fibres, splats …);
+         *  camera: true adds the current camera */
+        async exportGlb({ camera = false } = {}) {
+            await ctx.idle();
+            ctx.touch();
+            return ctx.exportGlb({ camera: !!camera });
+        },
         /** every part (node) of the loaded models: { path, name, model, visible, materials } */
         async getParts(pattern = '**') {
             await ctx.idle();

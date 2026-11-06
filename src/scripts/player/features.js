@@ -2,7 +2,7 @@
 // everything (the app). Without the attribute a minimal player: the 3D view only. The code of a part is only loaded
 // when the player has it.
 export const FEATURES = ['scene-graph', 'properties', 'materials', 'material-editor', 'explode', 'transform', 'section',
-    'views', 'view-cube', 'view-modes', 'open', 'save', 'render', 'ki', 'animation', 'setup', 'fullscreen'];
+    'views', 'view-cube', 'view-modes', 'open', 'save', 'export', 'render', 'ki', 'animation', 'setup', 'fullscreen'];
 
 // a part that needs another one to work
 const NEEDS = {

@@ -2756,7 +2756,9 @@
         "iesFailed": "IES-Datei „{name}“ nicht lesbar",
         "lockedNoMaterial": "Gesperrt – Material nicht zugewiesen",
         "lockedPartial": "Material nur auf entsperrte Teile – {count} gesperrte ausgelassen",
-        "growingHair": "Haare wachsen …"
+        "growingHair": "Haare wachsen …",
+        "exportingGlb": "GLB wird erstellt …",
+        "glbExported": "GLB exportiert: {name} ({size})"
     },
     "viewCube": {
         "title": "Ansicht wählen: Fläche, Kante oder Ecke anklicken – ziehen dreht die Kamera. Tasten: T oben, F vorne, B hinten, D unten, L links, R rechts",
@@ -2841,7 +2843,8 @@
         },
         "exportImage": "Bild exportieren (PNG/JPG)",
         "bcf": "BCF-Tickets",
-        "render": "Rendern – Bild exportieren, auch verteilt auf mehreren Rechnern"
+        "render": "Rendern – Bild exportieren, auch verteilt auf mehreren Rechnern",
+        "exportGlb": "Als GLB exportieren (Modelle mit Materialien und Texturen in einer Datei)"
     },
     "viewMode": {
         "wire": {
@@ -3595,5 +3598,19 @@
     },
     "player": {
         "start": "3D-Ansicht starten"
+    },
+    "glb": {
+        "errorTitle": "GLB-Export fehlgeschlagen",
+        "warnings": {
+            "title": "GLB exportiert – nicht alles passt in glTF",
+            "special": "Spezial-Materialien als einfache Materialien",
+            "subsurface": "Subsurface Scattering fehlt",
+            "edges": "Abgerundete Kanten fehlen",
+            "hair": "Haarfasern fehlen (die Form ist dabei)",
+            "splats": "Gaussian Splats fehlen",
+            "volumes": "Volumen (Rauch, Wolken, Feuer) fehlen",
+            "texture": "Texturen ausgelassen (komprimiert oder Gleitkomma)",
+            "animation": "Animation fehlt (gespeichert ist die aktuelle Pose)"
+        }
     }
 }

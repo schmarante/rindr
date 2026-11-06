@@ -359,7 +359,7 @@ export async function createPlayer(options = {}) {
     const panels = ['scene-graph', 'properties', 'materials', 'view-cube', 'setup'].some(has);
     // selecting parts by click (and Ctrl+A, the highlight) – with a part that works on the selection
     const selecting = ['scene-graph', 'properties', 'transform', 'materials'].some(has);
-    const toolbarWanted = APP_MODE || editing || panels || ['view-modes', 'render', 'ki', 'save', 'open', 'setup', 'fullscreen'].some(has);
+    const toolbarWanted = APP_MODE || editing || panels || ['view-modes', 'render', 'ki', 'save', 'open', 'export', 'setup', 'fullscreen'].some(has);
     const uiLoading = Promise.all([
         has('properties') ? import('./properties.js') : null,
         has('materials') ? Promise.all([import('./material-panel.js'), import('./material-thumbs.js')]) : null,
@@ -4840,7 +4840,7 @@ export async function createPlayer(options = {}) {
     const imageExport = lazy(async () => (await import('./image-export.js')).createImageExport({
         layer: host,
         exportImage,
-        getName: () => (sceneFileName?.replace(/\.scene\.json$|\.json$/i, '') || model?.name.replace(/\.[^.]+$/, '') || 'rindr'),
+        getName: () => exportName(),
         getSize: () => ({ width: canvasEl.width, height: canvasEl.height }),
         maxSize: maxExportSize,
         samples: () => pathTracing.maxSamples,
@@ -4861,6 +4861,8 @@ export async function createPlayer(options = {}) {
         addTool(has('save'), { icon: ICON_SAVE, title: t('toolbar.saveScene'), onClick: () => saveScene(), group: 'scene' });
         addTool(has('save'), { icon: ICON_OPEN, title: t('toolbar.loadScene'), onClick: () => sceneFileInput.click(), group: 'scene' });
     }
+    // the scene as a GLB file (glb-export.js)
+    addTool(has('export'), { icon: icon('download', 'size-4'), title: t('toolbar.exportGlb'), onClick: () => exportGlbFile(), group: 'scene' });
     // asset window (links): which files the scene uses, relink missing ones
     // asset window (assets.js): loaded with its first opening. Until then the calls that only matter for an open window do
     // nothing; state for the loading bar waits for the module (in order)
@@ -6621,6 +6623,60 @@ export async function createPlayer(options = {}) {
         setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     }
 
+    // the name of exports (image, GLB): the scene file's or the main model's
+    function exportName() {
+        return sceneFileName?.replace(/\.scene\.json$|\.json$/i, '') || model?.name.replace(/\.[^.]+$/, '') || 'rindr';
+    }
+
+    // GLB export (glb-export.js – docs/mesh-import.md "GLB-Export"): the visible models with their materials as one glTF
+    // binary, in metres; the code is loaded with the first export. → { file: File, warnings }
+    async function buildGlb({ camera: withCamera = false } = {}) {
+        const models = runtimeModels();
+        if (!models.length) throw Object.assign(new Error(t('status.loadModelFirst')), { code: 'no-model' });
+        const { exportGlb } = await import('./glb-export.js');
+        const name = exportName();
+        const { file, warnings } = await exportGlb({
+            models: models.map(rm => ({ root: rm.root, name: displayName(rm.file?.name) || rm.root.name, volumes: gridVolumes.volumesOf(rm.root).length, splats: rm.main && !!splatMesh,
+                animated: !!animations.find(a => a.owner === (rm.main ? 'main' : rm.id))?.anim.clips?.length })),
+            camera: withCamera ? camera : null,
+        });
+        return { file: new File([file], `${name}.glb`, { type: 'model/gltf-binary' }), warnings };
+    }
+    // the toolbar's export: 'rindr-export' (cancelled = the host page takes the file), otherwise a download; what glTF could
+    // not hold as a notice
+    let glbBusy = false;
+    async function exportGlbFile() {
+        if (!rootGroup && !extraModels.length) { showStatus(t('status.loadModelFirst')); return; }
+        if (loading) { flashStatus(t('status.busyLoading')); return; }
+        if (glbBusy) return;
+        glbBusy = true;
+        showStatus(t('status.exportingGlb'));
+        try {
+            const { file, warnings } = await buildGlb();
+            if (emit('export', { file, name: file.name, format: 'glb', warnings }, { cancelable: true })) {
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(file);
+                a.download = file.name;
+                a.click();
+                setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+            }
+            const size = file.size >= 2 ** 20 ? formatBytes(file.size, getLocale()) : `${Math.max(1, Math.round(file.size / 1024)).toLocaleString(getLocale())} KB`;
+            flashStatus(t('status.glbExported', { name: file.name, size }), 3000);
+            if (warnings.length) showNotice({ id: 'glb-export', icon: 'info', title: t('glb.warnings.title'), message: glbWarningText(warnings), timeout: 20000 });
+        } catch (err) {
+            showError(err, { title: t('glb.errorTitle') });
+        } finally {
+            glbBusy = false;
+        }
+    }
+    // the warnings as lines: what – which materials/parts (a few names)
+    function glbWarningText(warnings) {
+        return warnings.map(w => {
+            const names = w.names?.length ? `: ${w.names.slice(0, 4).join(', ')}${w.names.length > 4 ? ` (+${w.names.length - 4})` : ''}` : '';
+            return `• ${t(`glb.warnings.${w.code}`)}${names}`;
+        }).join('\n');
+    }
+
     // The scene with its files in one zip (stage 4 – the host page's 'rindr-save' / getPackage(), load({ package })): the scene
     // JSON, every model's file (with the files handed in with it; a .gltf fetched by URL: its buffers and images) and the
     // HDRI when it is a file
@@ -7294,6 +7350,7 @@ export async function createPlayer(options = {}) {
         maxExportSize,
         exportImage,
         exportFrame: () => rasterSettled().then(exportFrame),
+        exportGlb: o => buildGlb(o),
         captureState: () => captureState(sceneStateContext),
     });
 

@@ -8,11 +8,12 @@
 //   page → frame  { rindr, id, call, args }          a method of the element (load, setMaterial, render …); answer:
 //   frame → page  { rindr, id, result } | { rindr, id, error: { message, code } }
 //   frame → page  { rindr, event, detail }           the element's events (ready, progress, load, select, change, mode,
-//                                                    error, save – save: { scene, json, name }, see below)
+//                                                    error, save – save: { scene, json, name }, export – { file,
+//                                                    name, format, warnings }; both see below)
 //   frame → page  { rindr, ask: 'resolveAsset', id, name, kind } → page answers { rindr, id, result: URL | Blob | null }
 //   page → frame  { rindr, call: 'hello', args: [{ saves: true }] }  first message (the frame answers to its origin from
-//                                                    then on); saves: the page takes every save – otherwise the frame's
-//                                                    own default (a download) runs
+//                                                    then on); saves: the page takes every save and export –
+//                                                    otherwise the frame's own default (a download) runs
 // Only the embedding window may call; Blobs (render, getPackage, packages for load) travel as they are.
 
 const params = new URLSearchParams(location.hash.slice(1));
@@ -38,7 +39,7 @@ player.resolveAsset = (name, kind) => {
 };
 
 // the element's events to the page (structured-cloneable parts of the detail)
-for (const type of ['ready', 'progress', 'load', 'select', 'change', 'mode', 'error', 'save']) {
+for (const type of ['ready', 'progress', 'load', 'select', 'change', 'mode', 'error', 'save', 'export']) {
     player.addEventListener(`rindr-${type}`, e => {
         if (type === 'save') {
             if (!takesSaves) return;   // the frame's own download
@@ -46,12 +47,16 @@ for (const type of ['ready', 'progress', 'load', 'select', 'change', 'mode', 'er
             post({ event: 'save', detail: { scene: e.detail.scene, json: e.detail.json, name: e.detail.name } });
             return;
         }
+        if (type === 'export') {
+            if (!takesSaves) return;   // the frame's own download
+            e.preventDefault();   // the page decides (frame-proxy.js: its own event, else the download there)
+        }
         post({ event: type, detail: e.detail });
     });
 }
 
 const ALLOWED = new Set(['start', 'load', 'getParts', 'getMaterials', 'getLibrary', 'setMaterial', 'updateMaterial', 'setVisible', 'select', 'frame', 'getViews', 'setView',
-    'setMode', 'getMode', 'setBackground', 'render', 'getScene', 'getPackage', 'save']);
+    'setMode', 'getMode', 'setBackground', 'render', 'getScene', 'getPackage', 'save', 'exportGlb']);
 window.addEventListener('message', async e => {
     const m = e.data;
     if (e.source !== window.parent || !m || m.rindr !== 1) return;

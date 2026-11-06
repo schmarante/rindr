@@ -2756,7 +2756,9 @@
         "iesFailed": "IES file “{name}” not readable",
         "lockedNoMaterial": "Locked – material not assigned",
         "lockedPartial": "Material only on unlocked parts – {count} locked ones left out",
-        "growingHair": "Growing hair …"
+        "growingHair": "Growing hair …",
+        "exportingGlb": "Creating GLB …",
+        "glbExported": "GLB exported: {name} ({size})"
     },
     "viewCube": {
         "title": "Choose a view: click a face, edge or corner – drag to orbit the camera. Keys: T top, F front, B back, D bottom, L left, R right",
@@ -2841,7 +2843,8 @@
         },
         "exportImage": "Export image (PNG/JPG)",
         "bcf": "BCF issues",
-        "render": "Render – export an image, also distributed over several computers"
+        "render": "Render – export an image, also distributed over several computers",
+        "exportGlb": "Export as GLB (models with materials and textures in one file)"
     },
     "viewMode": {
         "wire": {
@@ -3595,5 +3598,19 @@
     },
     "player": {
         "start": "Start the 3D view"
+    },
+    "glb": {
+        "errorTitle": "GLB export failed",
+        "warnings": {
+            "title": "GLB exported – not everything fits into glTF",
+            "special": "Special materials as plain materials",
+            "subsurface": "Subsurface scattering left out",
+            "edges": "Rounded edges left out",
+            "hair": "Hair fibres left out (the shape is included)",
+            "splats": "Gaussian splats left out",
+            "volumes": "Volumes (smoke, clouds, fire) left out",
+            "texture": "Textures left out (compressed or floating point)",
+            "animation": "Animation left out (the current pose is saved)"
+        }
     }
 }

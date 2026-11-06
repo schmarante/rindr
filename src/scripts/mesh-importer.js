@@ -688,7 +688,7 @@ function convert(object, scale, materialManager, fileName = '') {
         list.forEach((bucket, j) => {
             const gi = gis[j];
             if (gi < 0) return;
-            const mat = materialId(multi ? mesh.material[bucket.materialIndex] : mesh.material);
+            const mat = materialId(multi ? mesh.material[bucket.materialIndex] : mesh.material, worldScale);
             if (copies) {
                 links.push({ mesh, instance: -1, posed, geometry: gi, sourceVertex: null, materialIndex: multi ? bucket.materialIndex : -1 });
                 meshes.push({ geometry: gi, matrix: IDENTITY.slice(), instances: copies.copies, copies: copies.copies.length / 16, materialId: mat, name: mesh.name,
@@ -777,11 +777,12 @@ function materialIdFactory(materialManager, scale, fileName) {
     const materialIds = new Map();     // source material -> material id
     const create = materialManager.importMaterials();   // copies of one material ("Wood", "Wood.001" …) become one
     let unnamed = 0;
-    return src => {
+    // meshScale: mm per unit of the first mesh using it (glTF's volume thickness is given in the mesh's own units)
+    return (src, meshScale = scale) => {
         if (!src) src = DEFAULT_MATERIAL;
         let id = materialIds.get(src);
         if (!id) {
-            const def = convertMaterial(src, scale);
+            const def = convertMaterial(src, scale, meshScale);
             if (src === DEFAULT_MATERIAL) def.name = t('import.mesh.defaultMaterial');
             if (src === VERTEX_COLOR_MATERIAL) def.name = t('import.mesh.vertexColorMaterial');
             if (!def.name) def.name = t('import.mesh.unnamedMaterial', { number: ++unnamed });
@@ -1697,7 +1698,7 @@ async function collectUnlit(gltf, object) {
 }
 
 // Source material (Standard/Physical from glTF, Phong/Lambert from FBX) -> parameters + textures
-function convertMaterial(m, scale) {
+function convertMaterial(m, scale, meshScale = scale) {
     const hex = c => '#' + c.getHexString();
     const params = { color: m.color ? hex(m.color) : '#ffffff' };
     if (m.isMeshStandardMaterial) {
@@ -1719,7 +1720,7 @@ function convertMaterial(m, scale) {
         Object.assign(params, {
             specularIntensity: m.specularIntensity,
             clearcoat: m.clearcoat, clearcoatRoughness: m.clearcoatRoughness,
-            transmission: m.transmission, ior: m.ior, thickness: m.thickness * scale,
+            transmission: m.transmission, ior: m.ior, thickness: m.thickness * meshScale,   // (mesh units; the distance: world units)
             attenuationColor: hex(m.attenuationColor),
             attenuationDistance: Number.isFinite(m.attenuationDistance) ? m.attenuationDistance * scale : 100,
             sheen: m.sheen, sheenColor: hex(m.sheenColor), sheenRoughness: m.sheenRoughness,

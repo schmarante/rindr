@@ -59,6 +59,17 @@ export function startFrame(element, root, frameUrl, emit) {
             if (emit('save', { ...m.detail, package: () => call('getPackage') }, true)) call('save', [{ event: false }]).catch(() => {});
             return;
         }
+        if (m.event === 'export') {
+            // the file came along: not cancelled = downloaded here (the frame left it to this page)
+            if (emit('export', m.detail, true)) {
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(m.detail.file);
+                a.download = m.detail.name;
+                a.click();
+                setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+            }
+            return;
+        }
         if (m.event) { emit(m.event, m.detail); return; }
         if (m.ask === 'resolveAsset') {
             let result = null;

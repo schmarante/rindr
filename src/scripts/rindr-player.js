@@ -87,7 +87,7 @@ function playerSheet(source = css) {
 // The element's methods for the host page (docs/player.md, stage 4 – player/host-api.js; load() has its own below): each
 // returns a promise; a player still waiting for its activation (activate="click" / "visible") starts on the first call
 const HOST_METHODS = ['getParts', 'getMaterials', 'getLibrary', 'setMaterial', 'updateMaterial', 'setVisible', 'select', 'frame', 'getViews', 'setView',
-    'setMode', 'getMode', 'render', 'getScene', 'getPackage', 'save'];   // (setBackground has its own below)
+    'setMode', 'getMode', 'render', 'getScene', 'getPackage', 'save', 'exportGlb'];   // (setBackground has its own below)
 // attributes the player follows when the page changes them after the start (the others count once, at the start)
 const LIVE_ATTRIBUTES = ['src', 'scene', 'hdr', 'mode', 'background'];
 
