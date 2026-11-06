@@ -144,6 +144,8 @@ export class PathTracingView {
                                         // the restart count of its picture – the next restart goes back to the normal one
         this.onLightMixEnd = null;      // called when it ends (viewer: closes its window)
         this.onAttach = null;           // the view got the engine back from another player (viewer: sets its scene again)
+        this.onDetach = null;           // the engine went to another view (viewer: keeps the picture shown – freezes)
+        this.visible = true;            // the player can be seen (setVisible): an unseen one does not hold the engine
         this.onUse = null;              // before work outside the render loop (buckets, passes …): its player made the
                                         // current one (viewer – several players: the renderer and the kernel media are its)
     }
@@ -200,9 +202,18 @@ export class PathTracingView {
         if (after < 0) q.push(this); else q.splice(after, 0, this);
     }
 
-    // this view's HQ picture still needs the engine: in HQ, its scene being set up or its picture not finished
+    /** the player can be seen (viewer: IntersectionObserver) – out of sight it gives the engine to a waiting one; back in
+     *  sight it takes it when it waits and the owner no longer needs it */
+    setVisible(visible) {
+        this.visible = visible;
+        if (!visible) { this._handOver(); return; }
+        const owner = engine.owner;
+        if (engine.queue.includes(this) && (!owner || (!owner.locked && !owner._wantsEngine()))) this.claim();   // (claim: onAttach)
+    }
+
+    // this view's HQ picture still needs the engine: in HQ and in sight, its scene being set up or its picture not finished
     _wantsEngine() {
-        if (!this.enabled || this.error || this.suspended) return false;
+        if (!this.enabled || this.error || this.suspended || !this.visible) return false;
         if (this.building) return true;
         if (!this.ready) return false;
         return !this._isDone() || !this._fadeSettled();
@@ -210,9 +221,9 @@ export class PathTracingView {
 
     // the owner no longer needs the engine: the next waiting view takes it
     _handOver() {
-        if (engine.owner !== this || !engine.queue.length || this.locked || this._wantsEngine()) return;
-        const next = engine.queue.shift();
-        next.claim();
+        if (engine.owner !== this || this.locked || this._wantsEngine()) return;
+        const next = engine.queue.find(v => v.visible);   // (an unseen one waits until it is in sight)
+        if (next) next.claim();
     }
 
     // the engine goes to another view: this one's picture ends (reduced orbit settings and its light mix back first)
@@ -223,6 +234,7 @@ export class PathTracingView {
         this._restarted = false;
         this._holdShown = this._holdCover = false;
         this._fullFirst = false;
+        this.onDetach?.();
     }
 
     // the engine came to this view (created before for another one): its settings into the path tracer, the kernels'

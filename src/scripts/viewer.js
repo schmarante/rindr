@@ -139,13 +139,24 @@ export async function createPlayer(options = {}) {
     // size changes: the window's resize event for the app (timing as before); an embedded player watches its element
     // and applies a new size before its next frame (resizing inside the observer would clear the already drawn canvas –
     // a black frame while dragging)
+    // Freezing and sleeping (several players on a page, docs/player.md stage 3): a player whose picture is settled stops
+    // drawing – its canvas keeps the last frame, no GPU work – until something changes (wake: input in the player, a resize,
+    // a load, an export, HQ coming back …); a player out of sight sleeps (unless it loads or exports). A single player (the
+    // app) always draws.
+    const rest = { quiet: 0, since: 0, frozen: false, visible: true };
+    const QUIET_FRAMES = 60, QUIET_MS = 1500;   // settled this long (frames and time) before it freezes
+    function wake(why = 'change') {
+        rest.quiet = 0;
+        rest.frozen = false;
+        rest.why = why;   // (debug: the last reason – getRest)
+    }
     const sizeHandlers = [];
     let sizePending = false;
     function onViewSizeChange(fn) {
         if (APP_MODE || !playerEl) window.addEventListener('resize', fn);
         else sizeHandlers.push(fn);
     }
-    if (!APP_MODE && playerEl) new ResizeObserver(() => { sizePending = true; }).observe(viewportEl);
+    if (!APP_MODE && playerEl) new ResizeObserver(() => { sizePending = true; wake('resize'); }).observe(viewportEl);   // (a frozen player draws anew)
     function applyPendingSize() {
         if (!sizePending) return;
         sizePending = false;
@@ -358,8 +369,10 @@ export async function createPlayer(options = {}) {
         renderer, ct: canvasTarget, frame: null,
         enter() { renderer.toneMapping = tone.curve; renderer.toneMappingExposure = tone.exposure; this.refreshMedia?.(); },
         refreshMedia: null,   // its path tracer media (clouds, grid volumes, splats) – set once those systems exist
-        // drawn while its element is in the page (taken out by the page's framework: no frames until it is back)
-        awake: () => !options.element || options.element.isConnected,
+        // drawn while its element is in the page (taken out by the page's framework: no frames until it is back), in sight
+        // and not frozen – a load or an export draws anyway (imports stream through the render loop)
+        awake: () => (!options.element || options.element.isConnected)
+            && ((rest.visible && !rest.frozen) || !!loading || !!exportRequest || !!captureRequest),
     };
     usePlayer(player);
     renderer.setSize(viewSize().width, viewSize().height);
@@ -514,6 +527,7 @@ export async function createPlayer(options = {}) {
     const IMPORT_SHADOW_MS = 1000;
     const importShadows = { pending: false, last: 0, contactPending: false, contactLast: 0 };
     function markShadowsDirty() {
+        wake('shadows');
         lens.volume.markDirty();   // volumetric light shafts: sun depth map (also in Basic)
         splatShadow.markDirty();   // models on a splat scene
         splatOpacity.markDirty();  // splats on the models
@@ -598,7 +612,9 @@ export async function createPlayer(options = {}) {
     // --- Pathtracing (three-gpu-pathtracer, WebGPU) ---
     const pathTracing = new PathTracingView(renderer, { denoiseWeightsUrl: DENOISE_WEIGHTS_URL });
     // the page's path tracing engine came back from another player (pathtracer.js claim): this player's scene into it again
-    pathTracing.onAttach = () => { prepareSplatVolume(); updatePathTracingScene(); };
+    pathTracing.onAttach = () => { wake('attach'); prepareSplatVolume(); updatePathTracingScene(); };
+    // the engine went to another player: this one keeps its HQ picture on the canvas (frozen) until it is worked with
+    pathTracing.onDetach = () => { if (playerCount() > 1) rest.frozen = true; };
     pathTracing.element = playerEl;   // several HQ players wait for the engine in the order of the page
     pathTracing.onUse = () => usePlayer(player);   // its work outside the render loop (buckets, passes) on this player
     // HQ belongs to the player the user works with (several players on a page): pressing, scrolling or a key in this
@@ -1032,6 +1048,7 @@ export async function createPlayer(options = {}) {
         matte: null,         // image export: plain background colour instead of HDRI/vignette (light unchanged)
         apply({ geometry = false, params = false } = {}) {
             usePlayer(player);   // ground, dome and shadow catcher write the page's uniforms: this player's values
+            wake('environment');
             this.onChange?.();   // preview in the environment panel (texture, intensity, light boost, rotation)
             scene.environment = this.on ? this.texture : null;
             clouds.setEnvironment(this.on ? this.texture : studioTexture, this.on ? this.intensity * this.lightBoost : 0.8, this.on ? scene.environmentRotation.y : 0);
@@ -5064,6 +5081,7 @@ export async function createPlayer(options = {}) {
     if (webgpuBlocked && gpuRecovering) showHqUnavailable();
     let modeBeforeHq = 'default';   // the mode HQ was entered from – the ✕ of the path tracing status goes back to it
     function setViewMode(mode) {
+        wake('mode');
         releaseExportScale();
         renderedFrom = null;
         // HQ without WebGPU: the dimmed button explains why; already in Default → nothing changes (no fade)
@@ -5364,7 +5382,12 @@ export async function createPlayer(options = {}) {
         camera.position.sub(controls.target).applyAxisAngle(THREE.Object3D.DEFAULT_UP, 2 * Math.PI * dt / splatSpin.period).add(controls.target);
     }
     // throttled rendering during import (see render loop)
-    const loadRender = { active: false, dirty: false, force: false, last: 0, cost: 0 };   // cost: main-thread ms of the last frame
+    // cost: main-thread ms of the last frame; force/dirty (a frame is needed) also wake a frozen player
+    const loadRender = {
+        active: false, last: 0, cost: 0, _force: false, _dirty: false,
+        get force() { return this._force; }, set force(v) { this._force = v; if (v) wake('force'); },
+        get dirty() { return this._dirty; }, set dirty(v) { this._dirty = v; if (v) wake('dirty'); },
+    };
     const IMPORT_RENDER_WAIT = 4;   // during an import: pause after a frame ≥ 4 × its main-thread cost (renderFrame)
     // during an import the batcher groups the parts so far at the latest every IMPORT_BATCH_MS (render-batcher.js maxWait) –
     // otherwise it waits for a quiet moment, which streaming never has: every part a draw call of its own until the end
@@ -6087,6 +6110,7 @@ export async function createPlayer(options = {}) {
         return triangles * BYTES_PER_TRIANGLE;
     }
     function runLoad(kind) {
+        wake('load');
         if (kind && (!pending || LOAD_RANK[kind] > LOAD_RANK[pending])) pending = kind;
         if (loading) return loadLoop;
         loadLoop = (async () => {
@@ -7053,7 +7077,7 @@ export async function createPlayer(options = {}) {
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel?.thumbs, def)),
         // all library presets (categories loaded on demand) – tests bake their node graphs
         presets: () => loadLibraryPresets().then(() => MATERIAL_PRESETS),
-        get skeletonView() { return skeletonView; }, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, get clouds() { return clouds; }, get grass() { return grass; }, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats: (...args) => loadSplatLoader().then(m => m.loadSplats(...args)), lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, canvas: canvasEl, player, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = canvasTarget.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, getPlan: () => currentPlan, setViewMode: m => setViewMode(m), getViewMode: () => viewMode, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+        get skeletonView() { return skeletonView; }, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, get clouds() { return clouds; }, get grass() { return grass; }, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats: (...args) => loadSplatLoader().then(m => m.loadSplats(...args)), lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, canvas: canvasEl, player, getRest: () => ({ ...rest }), pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = canvasTarget.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, getPlan: () => currentPlan, setViewMode: m => setViewMode(m), getViewMode: () => viewMode, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 
     // --- Resize ---
     // device pixel ratio changed (window moved to a screen with another scaling, browser zoom): the canvas follows – it was
@@ -7081,6 +7105,8 @@ export async function createPlayer(options = {}) {
         camera.updateProjectionMatrix();
         usePlayer(player);
         renderer.setSize(width, height);
+        // a resized player whose HQ picture stayed while another player has the engine: drawn anew, waits for HQ again
+        if (viewMode === 'hq' && pathTracing.enabled && !pathTracing.owner && playerCount() > 1) updatePathTracingScene();
         // the path tracer handles the render size itself, the projection (aspect ratio) only here
         pathTracing.updateCamera();
     });
@@ -7412,6 +7438,7 @@ export async function createPlayer(options = {}) {
         loadRender.dirty = false;
         loadRender.force = false;
         let rasterDrawn = false;
+        frameRaster = false;
         // camera effects: raster/path tracing linear into the HDR target, end() outputs to the canvas with effects
         // lens effects (bloom, glare, chromatic aberration, shafts, flare) in all view modes – image effects on the
         // HDR image; only depth of field stays HQ (a raster approximation deviated too much from path tracing)
@@ -7515,7 +7542,7 @@ export async function createPlayer(options = {}) {
         const rasterize = () => {
             if (rasterFisheye.active) rasterFisheye.render(renderer, camera, drawRaster, { shadowLights: lightsGroup.children });
             else drawRaster(camera);
-            rasterDrawn = true;
+            rasterDrawn = frameRaster = true;
         };
         // while parts are still fading in, raster view (the path tracer does not know the mask)
         if (fading.size || !pathTracing.render(rasterize)) rasterize();
@@ -7635,6 +7662,24 @@ export async function createPlayer(options = {}) {
             preloaderFrames = renderer.info.render.drawCalls - frameInfo.drawCalls > 0 ? preloaderFrames + 1 : 0;
             if (preloaderFrames >= 2 || performance.now() - preloaderStart > 4000) { preloaderGone = true; hidePreloader(); }
         }
+        settleCheck();
+    }
+    let frameRaster = false;   // this frame drew the raster view (its batches and occlusion count for settling)
+    // several players: frozen once nothing has changed for QUIET_FRAMES frames and QUIET_MS (wake() starts over) – nothing
+    // loading, fading, moving, playing, compiling or baking, the HQ picture of the owner done (another player's HQ: its
+    // picture stays or the raster view until it gets the engine)
+    function settleCheck() {
+        if (playerCount() < 2) return;
+        const hqBusy = viewMode === 'hq' && pathTracing.enabled && pathTracing.owner && pathTracing.getStatus().phase !== 'done';
+        const busy = hqBusy ? 'hq' : loading ? 'loading' : loadRender.active ? 'import' : fading.size ? 'fading' : grass.fading ? 'grass'
+            : flight ? 'flight' : animPlaying || poseBlend ? 'animation' : exploder.anim ? 'explode' : splatSpin.active ? 'spin'
+            : !preloaderGone ? 'preloader' : optimizeWait ? 'optimize' : frameRaster && (!batcher.synced || batcher.pending) ? 'batcher'
+            : graphApplier.pending.size || graphApplier.waiting.size ? 'bake' : screenFade.active ? 'transition'
+            : pathTracing._dragging ? 'drag' : frameRaster && rasterAO.on && rasterAO.dirty ? 'ao' : splatEnv.busy ? 'splats' : null;
+        const now = performance.now();
+        if (busy) { rest.quiet = 0; rest.why = busy; return; }
+        if (rest.quiet++ === 0) rest.since = now;
+        if (rest.quiet >= QUIET_FRAMES && now - rest.since >= QUIET_MS) rest.frozen = true;
     }
     // the renderer's counters cover every player drawn in this tick: this player's share is the difference
     const frameInfo = { drawCalls: 0, triangles: 0 };
@@ -7657,7 +7702,24 @@ export async function createPlayer(options = {}) {
     };
     // working with this player's interface (panels, keys): its values in the page's shared state before any handler
     // writes them (several players – runtime.js usePlayer; nothing to do for a single one)
-    if (playerEl) for (const type of ['pointerdown', 'keydown', 'input', 'change', 'wheel']) playerEl.addEventListener(type, () => usePlayer(player), { capture: true, passive: true });
+    if (playerEl) {
+        for (const type of ['pointerdown', 'keydown', 'input', 'change', 'wheel', 'drop']) {
+            playerEl.addEventListener(type, () => { usePlayer(player); wake('input'); }, { capture: true, passive: true });
+        }
+        // hovering wakes too (highlights) – not a player whose HQ picture stays while another player has the engine
+        for (const type of ['pointermove', 'dragover']) {
+            playerEl.addEventListener(type, () => { if (!(viewMode === 'hq' && pathTracing.enabled && !pathTracing.owner)) wake('hover'); }, { capture: true, passive: true });
+        }
+        // out of sight: no frames; HQ goes to a player that can be seen (pathtracer.js)
+        if (!pageScope && typeof IntersectionObserver !== 'undefined') {
+            new IntersectionObserver(entries => {
+                const visible = entries[entries.length - 1].isIntersecting;
+                if (visible === rest.visible) return;
+                rest.visible = visible;
+                pathTracing.setVisible(visible);
+            }, { rootMargin: '100px' }).observe(playerEl);
+        }
+    }
     addPlayer(player);
 
     // --- Distributed rendering (docs/distributed.md) ---
