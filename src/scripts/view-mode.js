@@ -34,7 +34,8 @@ export const VIEW_MODES = [
     },
 ];
 // the analysis views behind key 1 (in this order)
-export const ANALYSIS_KEYS = ['basic', 'uv', 'wire'];
+import { ANALYSIS_KEYS } from './analysis-modes.js';
+export { ANALYSIS_KEYS };
 
 const ball = background => {
     const b = document.createElement('span');

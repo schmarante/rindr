@@ -10,7 +10,7 @@
 // like the file's nodes, meshes `<source key>~<tag>` – stable across reloads when the blocks are replayed in order
 // (scene state `duplicates`, root.userData.duplicates).
 import * as THREE from 'three/webgpu';
-import { applyTransform } from './transform.js';
+import { applyTransform } from './transform-state.js';
 import { cloneInstanced } from './model-instances.js';
 
 /** first object of an instance family (the original) */

@@ -9,7 +9,7 @@
 // (parent's scene matrix⁻¹ · new pose), the bone keeps its scale.
 import * as THREE from 'three/webgpu';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
-import { widenDragPlane } from './transform.js';
+import { widenDragPlane } from './transform-state.js';
 
 const JOINT_PX = 4;          // joint radius on screen (px), the selected one larger
 const PICK_PX = 10;          // a click this close to a joint selects it

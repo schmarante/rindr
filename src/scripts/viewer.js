@@ -1,7 +1,6 @@
 import { eventTarget, layerFor } from './shadow-dom.js';
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { ViewCube } from './view-cube.js';
 import { ContourPass } from './materials/contour.js';
 import { ScreenFade } from './screen-fade.js';
 import { HdriRenderService } from './hdri/hdri-service.js';
@@ -10,7 +9,6 @@ import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
 import { TESS_PRESETS, normalizeQuality, ImportLimitError } from './step-shared.js';
 import { UvMapper } from './uv-mapping.js';
 import { Displacer } from './displacement.js';
-import { floatWindow } from './float-window.js';
 import { duplicateNode, removeDuplicate, linkedMembers, familyOf, isLinked, makeUnique } from './duplicate.js';
 import { IMPORT, KI, SPLATS, RASTER, SCENE, TRANSITION, LOD, SKELETON } from './config.js';
 import { MissingFilesError, MESH_EXTENSIONS } from './mesh-formats.js';
@@ -34,14 +32,12 @@ import { createStudioEnvironment, renderStudioEnvironment, loadHdri, listHdris, 
 import { PathTracingView } from './pathtracer.js';
 import { SceneGraph } from './scene-graph.js';
 import { Highlighter } from './highlight.js';
-import { ObjectTransformer, applyTransform, ensureTransform, restoreTransform, captureTransform } from './transform.js';
+import { applyTransform, ensureTransform, restoreTransform, captureTransform } from './transform-state.js';
 import { History } from './history.js';
 import { DepthOfField } from './dof.js';
 import { LensEffects } from './lens-effects.js';
 import { t, getLocale, getLanguage, setLanguage } from './i18n.js';
-import { QuadMenu } from './quad-menu.js';
 import { Exploder } from './explode.js';
-import { kiSettings } from './ki-gemini.js';
 import { PhysicalCamera } from 'three-gpu-pathtracer/src/objects/PhysicalCamera.js';
 import { captureState, applyState, matchesModel, sceneModels, SCENE_FORMAT } from './scene-state.js';
 import { encodePng } from './png-encode.js';
@@ -62,16 +58,13 @@ import { GROUND_SURFACE } from './ground-reflection.js';
 import { BackgroundDome } from './background-dome.js';
 import { ContactShadow } from './contact-shadow.js';
 import { ModelAnimation, createPlaybar } from './animation.js';
-import { SkeletonView, setBoneState } from './skeleton-view.js';
 import { confirmDialog, choiceDialog, dialogOpen } from './dialog.js';
 import { showNotice } from './notice.js';
 import { gpuLabel, looksIntegrated } from './gpu-info.js';
 import { triangleLimits, deviceMemoryGB, memoryBudget, BYTES_PER_TRIANGLE, formatBytes, setSafeMode } from './memory-budget.js';
 import { beginLoad, endLoad, crashedLoad, markSafe, isSafe, clearSafe } from './load-guard.js';
 import { findOutliers, formatLength } from './outliers.js';   // patches the path tracer's background lookup – import before it is created
-import { ViewModeBar, ANALYSIS_KEYS } from './view-mode.js';
-import { SetupMenu } from './setup-menu.js';
-import { buildAbout } from './about.js';
+import { ANALYSIS_KEYS } from './analysis-modes.js';
 import { SPLAT_EXTENSIONS } from './splat/splat-extensions.js';
 import { debugLog } from './log.js';
 import { isRemoteTexture } from './remote-textures.js';
@@ -302,10 +295,19 @@ export async function createPlayer(options = {}) {
     // the interface parts this player has (player/features.js; the app: all): their modules load alongside the GPU start
     // and are built at the same spot as before – the order of listeners, toolbar buttons and elements stays
     const features = resolveFeatures(options.features ?? (playerEl ? '' : 'all'));
+    const has = f => features.has(f);
+    // derived: undo/redo/reset with any editing part, the hide-UI key/button with any panel, the toolbar with any of its tools
+    const editing = ['properties', 'materials', 'transform', 'explode', 'section', 'views'].some(has);
+    const panels = ['scene-graph', 'properties', 'materials', 'view-cube', 'setup'].some(has);
+    const toolbarWanted = APP_MODE || editing || panels || ['view-modes', 'render', 'ki', 'save', 'open', 'setup', 'fullscreen'].some(has);
     const uiLoading = Promise.all([
-        features.has('properties') ? import('./properties.js') : null,
-        features.has('materials') ? Promise.all([import('./material-panel.js'), import('./material-thumbs.js')]) : null,
-    ]).then(([propertiesModule, materialModules]) => ({ propertiesModule, materialModules }));
+        has('properties') ? import('./properties.js') : null,
+        has('materials') ? Promise.all([import('./material-panel.js'), import('./material-thumbs.js')]) : null,
+        has('setup') ? Promise.all([import('./setup-menu.js'), import('./about.js'), import('./ki-gemini.js'), import('./float-window.js')]).then(m => Object.assign({}, ...m)) : null,
+        toolbarWanted ? import('./view-mode.js') : null,
+        has('view-cube') ? import('./view-cube.js') : null,
+        has('transform') ? Promise.all([import('./transform.js'), import('./quad-menu.js')]).then(m => Object.assign({}, ...m)) : null,
+    ]).then(([propertiesModule, materialModules, setupModules, toolbarModule, viewCubeModule, transformModules]) => ({ propertiesModule, materialModules, setupModules, toolbarModule, viewCubeModule, transformModules }));
     let runtime;
     try {
         runtime = await getRuntime({
@@ -1094,52 +1096,65 @@ export async function createPlayer(options = {}) {
     highlighter.fisheye = rasterFisheye;
 
     // Move/rotate objects (gizmo in its own overlay scene) + properties panel
-    const transformer = new ObjectTransformer(camera, renderer.domElement);
-    patchRaycaster(transformer.controls.getRaycaster());
-    transformer.addEventListener('dragstart', () => { controls.enabled = false; pathTracing.pauseForEdit(); });
+    // overlay drawn over the picture: gizmo, section plane handle, light helper, camera markers, skeleton
+    const overlayScene = new THREE.Scene();
+    // gizmo for move/rotate/scale (feature 'transform') – without it null: every call below is optional
+    const transformer = uiModules.transformModules && new uiModules.transformModules.ObjectTransformer(camera, renderer.domElement, overlayScene);
+    if (transformer) patchRaycaster(transformer.controls.getRaycaster());
+    transformer?.addEventListener('dragstart', () => { controls.enabled = false; pathTracing.pauseForEdit(); });
     let fieldDragging = false;   // a number field of the panel is being dragged (properties.js draggable)
-    transformer.addEventListener('dragend', e => { controls.enabled = true; pathTracing.resumeAfterEdit(e.detail.kind); });
-    transformer.overlayScene.add(slicer.helper);
+    transformer?.addEventListener('dragend', e => { controls.enabled = true; pathTracing.resumeAfterEdit(e.detail.kind); });
+    overlayScene.add(slicer.helper);
     // the selected directional light: its rays through the scene (light-helper.js)
     const lightHelper = new LightHelper();
-    transformer.overlayScene.add(lightHelper.object);
+    overlayScene.add(lightHelper.object);
     // own cameras other than the active one, while the camera or a camera is selected: a frustum where each stands
     const cameraMarkers = new CameraMarkers();
-    transformer.overlayScene.add(cameraMarkers.object);
+    overlayScene.add(cameraMarkers.object);
     // skeleton of an animated/skinned model (skeleton-view.js): joints clickable, own gizmo; dragging shows the puppet live
     // (GPU skinning), release bakes the pose (like scrubbing) + one undo step per drag
-    const skeletonView = new SkeletonView(camera, renderer.domElement, transformer.overlayScene);
-    patchRaycaster(skeletonView.controls.getRaycaster());
-    skeletonView.addEventListener('dragstart', e => {
-        finishPoseBlend();
-        controls.enabled = false;
-        if (animPlaying) setAnimPlaying(false);
-        pathTracing.pauseForEdit();
-        goLive(e.detail.anim);
-    });
-    skeletonView.addEventListener('change', () => { loadRender.dirty = true; });
-    skeletonView.addEventListener('dragend', e => {
-        controls.enabled = true;
-        settleAnimation([{ anim: e.detail.anim }]);
-        loadRender.dirty = true;
-        properties?.show(selection);   // "reset pose" appears
-    });
-    skeletonView.addEventListener('edit', e => {
-        const { anim, bone, before, after } = e.detail;
-        anim.handPosed = true;
-        anim.activePose = null;
-        const set = state => { stopAnimation(); setBoneState(bone, state); settleAnimation([{ anim }]); loadRender.dirty = true; };
-        history.record({ label: t('viewer.undo.bone', { name: bone.name }), undo: () => set(before), redo: () => set(after) });
-    });
-    transformer.addEventListener('change', e => {
+    // – loaded with the first skeleton shown (until then a stand-in: nothing selected, nothing visible)
+    let skeletonView = {
+        stub: true, selected: -1, selectedBone: null, visible: false, anim: null, busy: false, mode: null,
+        update() {}, hide() {}, select() {}, setMode() {}, pick: () => -1,
+        show(anim) { ensureSkeletonView().then(() => { skeletonView.show(anim); loadRender.dirty = true; refreshSceneGraph(); }); },
+    };
+    let skeletonLoading = null;
+    const ensureSkeletonView = () => (skeletonLoading ??= import('./skeleton-view.js').then(({ SkeletonView, setBoneState }) => {
+        const view = new SkeletonView(camera, renderer.domElement, overlayScene);
+        patchRaycaster(view.controls.getRaycaster());
+        view.addEventListener('dragstart', e => {
+            finishPoseBlend();
+            controls.enabled = false;
+            if (animPlaying) setAnimPlaying(false);
+            pathTracing.pauseForEdit();
+            goLive(e.detail.anim);
+        });
+        view.addEventListener('change', () => { loadRender.dirty = true; });
+        view.addEventListener('dragend', e => {
+            controls.enabled = true;
+            settleAnimation([{ anim: e.detail.anim }]);
+            loadRender.dirty = true;
+            properties?.show(selection);   // "reset pose" appears
+        });
+        view.addEventListener('edit', e => {
+            const { anim, bone, before, after } = e.detail;
+            anim.handPosed = true;
+            anim.activePose = null;
+            const set = state => { stopAnimation(); setBoneState(bone, state); settleAnimation([{ anim }]); loadRender.dirty = true; };
+            history.record({ label: t('viewer.undo.bone', { name: bone.name }), undo: () => set(before), redo: () => set(after) });
+        });
+        skeletonView = view;
+    }));
+    transformer?.addEventListener('change', e => {
         if (e.detail.kind === 'slicer') { slicer.update(); return; }   // also live while dragging
         if (e.detail.kind === 'light') aimLight(e.detail.object);   // spot / area light: on its target, also live
-        if (transformer.controls.dragging || fieldDragging) return;   // while dragging (gizmo or number field), update only at the end
+        if (transformer?.controls.dragging || fieldDragging) return;   // while dragging (gizmo or number field), update only at the end
         if (e.detail.kind === 'light') { rememberLightDirection(e.detail.object); pathTracing.updateLights(); }
         else pathTracing.updateTransforms();
     });
     // completed move/rotation (gizmo or panel) -> undo
-    transformer.addEventListener('edit', e => {
+    transformer?.addEventListener('edit', e => {
         const { object, kind, before, after } = e.detail;
         if (pendingInstances) { recordInstances(pendingInstances, after); pendingInstances = null; return; }
         if (kind === 'light') { aimLight(object); rememberLightDirection(object); }   // a refit (model size) keeps the new direction
@@ -1188,7 +1203,7 @@ export async function createPlayer(options = {}) {
         history.record({ label: t(locked ? 'viewer.undo.lock' : 'viewer.undo.unlock'), undo: () => apply(before), redo: () => apply(after) });
     }
     function afterLockChange() {
-        if (selection && selection.kind !== 'slicer') transformer.attach(gizmoTarget(selection), selection.kind);
+        if (selection && selection.kind !== 'slicer') transformer?.attach(gizmoTarget(selection), selection.kind);
         properties?.show(selection);
     }
     const gizmoTarget = entry => (isHiddenEntry(entry) || isLockedEntry(entry) ? null
@@ -1252,8 +1267,8 @@ export async function createPlayer(options = {}) {
         onFieldDrag: (key, active) => {
             if (key === 'cp' || key === 'cr') { if (active) pathTracing.beginInteraction(); else pathTracing.endInteraction(); return; }
             fieldDragging = active;
-            if (active) { transformer.beginFieldEdit(); pathTracing.pauseForEdit(); }
-            else { transformer.endFieldEdit(); pathTracing.resumeAfterEdit(transformer.kind); }
+            if (active) { transformer?.beginFieldEdit(); pathTracing.pauseForEdit(); }
+            else { transformer?.endFieldEdit(); pathTracing.resumeAfterEdit(transformer?.kind); }
         },
         sceneSize: () => environment.modelSize || 1000,
         onCameraChange: () => pathTracing.updateCamera(),
@@ -1421,11 +1436,11 @@ export async function createPlayer(options = {}) {
         }
         // a selected joint (skeleton view): its gizmo
         if ((e.key === 'w' || e.key === 'W') && skeletonView.selected >= 0) skeletonView.setMode('translate');
-        else if (e.key === 'w' || e.key === 'W') { transformer.setMode('translate'); properties?.show(selection); }
+        else if (e.key === 'w' || e.key === 'W') { transformer?.setMode('translate'); properties?.show(selection); }
         if ((e.key === 'e' || e.key === 'E') && skeletonView.selected >= 0) skeletonView.setMode('rotate');
-        else if (e.key === 'e' || e.key === 'E') { transformer.setMode('rotate'); properties?.show(selection); }
+        else if (e.key === 'e' || e.key === 'E') { transformer?.setMode('rotate'); properties?.show(selection); }
         // S: scale (was R – R is the right view now, user's choice)
-        if (key === 's' && !e.ctrlKey && !e.metaKey && !e.altKey) { transformer.setMode('scale'); properties?.show(selection); }
+        if (key === 's' && !e.ctrlKey && !e.metaKey && !e.altKey) { transformer?.setMode('scale'); properties?.show(selection); }
         // views like the view cube: T top, F front, B back, D bottom (down), L left, R right
         const view = !e.ctrlKey && !e.metaKey && !e.altKey && VIEW_KEYS[key];
         if (view) flyToDirection(new THREE.Vector3(...view));
@@ -1889,8 +1904,10 @@ export async function createPlayer(options = {}) {
     }
 
     // --- Quad menu (right click without movement, like MAX) ---
-    const quadMenu = new QuadMenu(layerFor(dom.getElementById('viewport')));
+    // quad menu (right click; feature 'transform': show/hide and the gizmo modes)
+    const quadMenu = uiModules.transformModules && new uiModules.transformModules.QuadMenu(layerFor(dom.getElementById('viewport')));
     function openQuadMenu(x, y) {
+        if (!quadMenu) return;
         if (!rootGroup) return;
         const hasSel = isModelEntry(selection);   // without a selection: only "Show all"
         // a selected joint (skeleton view): the transform panel switches its gizmo – move/rotate, no scaling
@@ -1905,9 +1922,9 @@ export async function createPlayer(options = {}) {
         } : {
             label: t(`quadMenu.${m}`),
             shortcut: { translate: 'W', rotate: 'E', scale: 'S' }[m],
-            active: canTransform && transformer.mode === m,
+            active: canTransform && transformer?.mode === m,
             disabled: !canTransform,
-            onClick: () => { transformer.setMode(m); properties?.show(selection); },
+            onClick: () => { transformer?.setMode(m); properties?.show(selection); },
         };
         quadMenu.open(x, y, [
             {
@@ -1947,7 +1964,7 @@ export async function createPlayer(options = {}) {
         if (entry?.kind === 'missing') {
             e.preventDefault();
             sceneGraph.select(entry, { reveal: false });
-            quadMenu.open(e.clientX, e.clientY, [{ title: t('quadMenu.display'), quadrant: 'tr', items: [
+            quadMenu?.open(e.clientX, e.clientY, [{ title: t('quadMenu.display'), quadrant: 'tr', items: [
                 { label: t('properties?.missing.relink'), onClick: () => assetsWindow.show() },
                 { label: t('quadMenu.delete'), shortcut: t('quadMenu.deleteKey'), onClick: () => removeMissingModel(entry) },
             ] }]);
@@ -2220,6 +2237,9 @@ export async function createPlayer(options = {}) {
 
     let selection = null;   // selected Scene Graph entry
     let hovered = null;     // entry under the mouse in the Scene Graph
+    // the scene's objects – selection, hidden/locked/deleted parts – always (scene files, picking); its panel only with the
+    // feature 'scene-graph' (stays hidden otherwise)
+    if (!has('scene-graph')) dom.getElementById('scene-graph').style.display = 'none';
     const sceneGraph = new SceneGraph(dom.getElementById('scene-graph'), {
         onVisibility: changed => {
             const kinds = new Set(changed.map(e => e.kind));
@@ -2229,7 +2249,7 @@ export async function createPlayer(options = {}) {
             // selection hidden or shown again: remove or restore the gizmo, update the panel
             if (selection && selection.kind !== 'slicer') {
                 const target = gizmoTarget(selection);
-                if (target !== transformer.object) transformer.attach(target, selection.kind);
+                if (target !== transformer?.object) transformer?.attach(target, selection.kind);
                 properties?.show(selection);
             }
             updateHighlight();
@@ -2238,7 +2258,7 @@ export async function createPlayer(options = {}) {
             if (entry?.kind === 'view') activateCamera(entry.view);   // click on a camera: it becomes the active one
             selection = entry;
             if (skeletonView.selected >= 0) skeletonView.select(-1);
-            transformer.attach(gizmoTarget(entry), entry?.kind ?? null);
+            transformer?.attach(gizmoTarget(entry), entry?.kind ?? null);
             properties?.show(entry);
             updateSlicerHelper();
             materialPanel?.setSelection(isModelEntry(entry) ? entry.object : null);
@@ -3002,8 +3022,8 @@ export async function createPlayer(options = {}) {
     function selectBone(index) {
         skeletonView.select(index);
         // the model gizmo makes room for the joint's
-        if (index >= 0) transformer.attach(null, null);
-        else transformer.attach(gizmoTarget(selection), selection?.kind ?? null);
+        if (index >= 0) transformer?.attach(null, null);
+        else transformer?.attach(gizmoTarget(selection), selection?.kind ?? null);
         properties?.show(selection);
         loadRender.dirty = true;
     }
@@ -3420,12 +3440,12 @@ export async function createPlayer(options = {}) {
     // --- Undo / redo ---
     function undoRedo(redo) {
         if (loading) { flashStatus(t('status.busyLoading')); return; }
-        if (transformer.controls.dragging) return;
+        if (transformer?.controls.dragging) return;
         const label = redo ? history.redo() : history.undo();
         if (!label) { flashStatus(t(redo ? 'status.nothingToRedo' : 'status.nothingToUndo')); return; }
         // update the display to the restored state
         sceneGraph.render();
-        transformer.sync();
+        transformer?.sync();
         properties?.show(selection);
         materialPanel?.refresh(isModelEntry(selection) ? selection.object : null);
         updateHighlight();
@@ -3701,7 +3721,8 @@ export async function createPlayer(options = {}) {
         camera.position.copy(controls.target).add(offset.setFromSpherical(_orbit));
         controls.update();   // 'change' → path tracing reduced like orbiting with the mouse
     }
-    const viewCube = new ViewCube(dom.getElementById('view-cube'), {
+    // view cube (feature 'view-cube'); the view keys T/F/B/D/L/R work without it
+    const viewCube = uiModules.viewCubeModule && new uiModules.viewCubeModule.ViewCube(dom.getElementById('view-cube'), {
         onSelect: dir => flyToDirection(dir),
         onOrbitStart: () => { cancelFlight(); controls.dispatchEvent({ type: 'start' }); },
         onOrbit: orbitCamera,
@@ -3740,7 +3761,7 @@ export async function createPlayer(options = {}) {
 
     let pointerDown = null;
     renderer.domElement.addEventListener('pointerdown', e => {
-        pointerDown = transformer.busy || skeletonView.busy ? null : { x: e.clientX, y: e.clientY };   // a click on the gizmo is not a selection
+        pointerDown = transformer?.busy || skeletonView.busy ? null : { x: e.clientX, y: e.clientY };   // a click on the gizmo is not a selection
     });
     renderer.domElement.addEventListener('pointerup', e => {
         if (!pointerDown || e.button !== 0) return;
@@ -3776,7 +3797,7 @@ export async function createPlayer(options = {}) {
     function splatsOnly() { return !!splatMesh && !extraModels.length; }
     function applySplatUi() {
         const on = splatsOnly();
-        viewModeBar.setHidden({ modes: false, groups: on ? ['start'] : [] });   // 'start' = explosion
+        viewModeBar?.setHidden({ modes: !has('view-modes'), groups: on ? ['start'] : [] });   // 'start' = explosion
         refreshSceneGraph();
         properties?.show(selection);
     }
@@ -3842,8 +3863,9 @@ export async function createPlayer(options = {}) {
     // --- GUI ---
     // Setup menu (gear in the bar, setSetupOpen): path tracing + tessellation
     const setupMenu = dom.getElementById('setup-menu');
-    const setup = new SetupMenu(setupMenu, t('setup.title'), { onClose: () => setSetupOpen(false) });   // sections left, options right
-    setup.onChange = smoothChange;
+    // feature 'setup' – without it null (no settings window; the settings keep their defaults)
+    const setup = uiModules.setupModules && new uiModules.setupModules.SetupMenu(setupMenu, t('setup.title'), { onClose: () => setSetupOpen(false) });   // sections left, options right
+    if (setup) setup.onChange = smoothChange;
     const settings = {
         meshQuality: 'medium',
         partQuality: {},   // quality per part (STEP node index -> level), also applies to child nodes
@@ -4282,7 +4304,11 @@ export async function createPlayer(options = {}) {
     ground.material.allowOverride = false;
     // start view: <rindr-player mode> – otherwise config.js (PATHTRACING.enabled → HQ, else Default)
     let viewMode = ['default', 'hq'].includes(options.mode) ? options.mode : (pathTracing.enabled ? 'hq' : 'default');
-    const viewModeBar = new ViewModeBar(dom.getElementById('view-mode'), mode => setViewMode(mode));
+    // bottom toolbar (view-mode.js): with any of its tools – each tool only with its feature, the mode picker with 'view-modes'
+    const viewModeBar = uiModules.toolbarModule && new uiModules.toolbarModule.ViewModeBar(dom.getElementById('view-mode'), mode => setViewMode(mode));
+    if (viewModeBar && !has('view-modes')) viewModeBar?.setHidden({ modes: true });
+    // a tool the player does not have: a setter that does nothing, with a detached button (its icon/visibility calls go nowhere)
+    const addTool = (on, opts) => (viewModeBar && on ? viewModeBar.addTool(opts) : Object.assign(() => {}, { button: document.createElement('button') }));
 
     // --- AI rendering (ki-render.js → Gemini directly from the browser, ki-gemini.js) ---
     let captureRequest = null;   // render loop delivers the next frame as a data: URL
@@ -4554,7 +4580,7 @@ export async function createPlayer(options = {}) {
                 ...m, parts: [...partSet].slice(0, 6), partCount: partSet.size,
             }));
         },
-        openSettings: () => { setup.show('ki'); setSetupOpen(true); },
+        openSettings: () => { setup?.show('ki'); setSetupOpen(true); },
         getEnvironment: () => {
             const env = captureState(sceneStateContext).environment;
             const light = env.hdri ? t('viewer.ki.environment.lightHdri', { name: env.customName(env.hdri) ?? env.hdri.replace(/\.[^.]+$/, '') }) : t('viewer.ki.environment.lightStudio');
@@ -4562,7 +4588,7 @@ export async function createPlayer(options = {}) {
             return t(env.ground ? 'viewer.ki.environment.sentenceGround' : 'viewer.ki.environment.sentence', { light, background });
         },
     }); });
-    viewModeBar.addAction({
+    if (viewModeBar && has('ki')) viewModeBar.addAction({
         label: t('toolbar.ki'), title: t('toolbar.kiTitle'),
         // sparkle icon (large + small star), stroke style like the tool icons
         icon: icon('ai', 'size-4'),
@@ -4603,17 +4629,17 @@ export async function createPlayer(options = {}) {
         distributed: renderMaster && {
             ready: () => ({ clients: renderMaster.list().filter(c => c.online && !c.busyOther).length, local: distSettings.renderLocal }),
             render: (scale, samples, transparent) => renderDistributedImage(scale, samples, transparent),
-            manage: () => { setSetupOpen(true); setup.show('distributed'); },
+            manage: () => { setSetupOpen(true); setup?.show('distributed'); },
         },
         // EXR/PSD with a layer per light pass: rendered as buckets – on this computer or distributed – then saved
         renderPasses: renderMaster && pathTracing.lightPassesSupported && ((scale, samples, distributed, format) => renderLightPasses(scale, samples, distributed, format)),
     }));
     // render (teapot) right next to the view choice
-    viewModeBar.addCompanion({ icon: ICON_TEAPOT, title: t('toolbar.render'), onClick: () => { if (rootGroup) imageExport.get().then(dialog => dialog.open()); else showStatus(t('status.loadModelFirst')); } });
+    if (viewModeBar && has('render')) viewModeBar.addCompanion({ icon: ICON_TEAPOT, title: t('toolbar.render'), onClick: () => { if (rootGroup) imageExport.get().then(dialog => dialog.open()); else showStatus(t('status.loadModelFirst')); } });
     // save/open scene: hidden for now (config.js SCENE.saveOpen)
     if (SCENE.saveOpen) {
-        viewModeBar.addTool({ icon: ICON_SAVE, title: t('toolbar.saveScene'), onClick: () => saveScene(), group: 'scene' });
-        viewModeBar.addTool({ icon: ICON_OPEN, title: t('toolbar.loadScene'), onClick: () => sceneFileInput.click(), group: 'scene' });
+        addTool(has('save'), { icon: ICON_SAVE, title: t('toolbar.saveScene'), onClick: () => saveScene(), group: 'scene' });
+        addTool(has('save'), { icon: ICON_OPEN, title: t('toolbar.loadScene'), onClick: () => sceneFileInput.click(), group: 'scene' });
     }
     // asset window (links): which files the scene uses, relink missing ones
     // asset window (assets.js): loaded with its first opening. Until then the calls that only matter for an open window do
@@ -4632,7 +4658,7 @@ export async function createPlayer(options = {}) {
         get isOpen() { return !!assetsModule.now?.isOpen; },
     };
     const ICON_ASSETS = icon('assets', 'size-4');
-    const setAssetsTool = viewModeBar.addTool({ icon: ICON_ASSETS, title: t('toolbar.assets'), onClick: () => (assetsWindow.isOpen ? assetsWindow.hide() : assetsWindow.show()), group: 'scene' });
+    const setAssetsTool = addTool(has('save') || has('open'), { icon: ICON_ASSETS, title: t('toolbar.assets'), onClick: () => (assetsWindow.isOpen ? assetsWindow.hide() : assetsWindow.show()), group: 'scene' });
     updateAssetsTool = () => {
         const missing = assetRows().filter(r => r.status === 'missing').length;
         setAssetsTool(false, missing ? t('toolbar.assetsMissing', { count: missing }) : t('toolbar.assets'));
@@ -4651,7 +4677,7 @@ export async function createPlayer(options = {}) {
             open: () => bcfFileInput.click(),
             save: doc => saveBcf(doc, format),
             author: () => bcfAuthor.get(),
-            openSettings: () => { setup.show('bim'); setSetupOpen(true); },
+            openSettings: () => { setup?.show('bim'); setSetupOpen(true); },
             onShow: open => { setBcfTool(open, t('toolbar.bcf')); updateBcfTool(); },
         });
         return { format, panel: bcfPanel };
@@ -4660,7 +4686,7 @@ export async function createPlayer(options = {}) {
     bcfFileInput.onchange = () => { const f = bcfFileInput.files[0]; bcfFileInput.value = ''; if (f) openBcfFile(f); };
     host.append(bcfFileInput);
     const ICON_BCF = icon('bcf', 'size-4');
-    const setBcfTool = viewModeBar.addTool({ icon: ICON_BCF, title: t('toolbar.bcf'), onClick: async () => (await loadBcf()).panel.toggle(), group: 'scene' });
+    const setBcfTool = addTool(APP_MODE, { icon: ICON_BCF, title: t('toolbar.bcf'), onClick: async () => (await loadBcf()).panel.toggle(), group: 'scene' });
     // only with BIM: an IFC model is loaded (issues can be created and saved) or a BCF file is open
     function updateBcfTool() {
         const ifc = [rootGroup, ...extraModels.map(x => x.root)].some(r => r?.userData.bim);
@@ -4867,26 +4893,27 @@ export async function createPlayer(options = {}) {
     // Setup menu: gear left of the UI button, panel centred in the window
     const ICON_GEAR = icon('settings', 'size-4');
     let setupOpen = false;
-    const setGearTool = viewModeBar.addTool({ icon: ICON_GEAR, title: t('toolbar.setup'), onClick: () => setSetupOpen(!setupOpen) });
+    const setGearTool = addTool(has('setup'), { icon: ICON_GEAR, title: t('toolbar.setup'), onClick: () => setSetupOpen(!setupOpen) });
     // a free window like the HDRI editor or the asset window (user's wish: move and resize it like the others) – stays open
     // until ✕, Esc or the gear (a click beside it no longer closes it: it may stand next to the picture, e.g. while
     // distributed rendering shows its buckets)
-    const setupWindow = floatWindow(setupMenu, setup.header, { storeKey: 'rindr.setup.window', width: 560, height: 420, minWidth: 440, minHeight: 240 });
+    const setupWindow = setup && uiModules.setupModules.floatWindow(setupMenu, setup.header, { storeKey: 'rindr.setup.window', width: 560, height: 420, minWidth: 440, minHeight: 240 });
     function setSetupOpen(open) {
+        if (!setup) return;
         setupOpen = open;
         setGearTool(open);
         setupMenu.hidden = !open;
         if (open) setupWindow.apply();
     }
     window.addEventListener('keydown', e => { if (e.key === 'Escape' && setupOpen && !dialogOpen() && ownsEvent(e)) { e.stopPropagation(); setSetupOpen(false); } }, true);
-    const setUiTool = viewModeBar.addTool({ icon: ICON_UI, title: t('toolbar.hideUi'), onClick: () => toggleUi() });
+    const setUiTool = addTool(panels, { icon: ICON_UI, title: t('toolbar.hideUi'), onClick: () => toggleUi() });
     function toggleUi(hidden = !uiHidden) {
         uiHidden = hidden;
         if (hidden) setSetupOpen(false);
         uiRoot.classList.toggle('ui-hidden', hidden);
         setUiTool(hidden, t(hidden ? 'toolbar.showUi' : 'toolbar.hideUi'));
     }
-    const setFullTool = viewModeBar.addTool({
+    const setFullTool = addTool(has('fullscreen'), {
         icon: ICON_FULL, title: t('toolbar.fullscreen'),
         onClick: () => (document.fullscreenElement ? document.exitFullscreen() : fullscreenEl.requestFullscreen()).catch(() => {}),
     });
@@ -4894,15 +4921,15 @@ export async function createPlayer(options = {}) {
     // animation, then update the path tracing scene once (rebuilding it every frame would be too expensive).
     const exploder = new Exploder(() => [...currentNodeGroups, ...extraModels.flatMap(x => x.nodeGroups)].filter(g => g.children.some(c => c.isMesh && !c.isSplat)));
     const ICON_EXPLODE = icon('explode', 'size-4');
-    const setExplodeTool = viewModeBar.addTool({ icon: ICON_EXPLODE, label: t('toolbar.explodeLabel'), title: t('toolbar.explode'), onClick: () => toggleExplode(), start: true });
+    const setExplodeTool = addTool(has('explode'), { icon: ICON_EXPLODE, label: t('toolbar.explodeLabel'), title: t('toolbar.explode'), onClick: () => toggleExplode(), start: true });
     // Undo/redo far left (start group created later = further left)
     const ICON_UNDO = icon('undo', 'size-4');
     const ICON_REDO = icon('redo', 'size-4');
-    const setUndoTool = viewModeBar.addTool({ icon: ICON_UNDO, title: t('toolbar.undo'), onClick: () => undoRedo(false), start: true, group: 'history' });
-    const setRedoTool = viewModeBar.addTool({ icon: ICON_REDO, title: t('toolbar.redo'), onClick: () => undoRedo(true), start: true, group: 'history' });
+    const setUndoTool = addTool(editing, { icon: ICON_UNDO, title: t('toolbar.undo'), onClick: () => undoRedo(false), start: true, group: 'history' });
+    const setRedoTool = addTool(editing, { icon: ICON_REDO, title: t('toolbar.redo'), onClick: () => undoRedo(true), start: true, group: 'history' });
     // reset all model changes (materials, moves/rotations/scaling, visibility, explosion) – one undo step
     const ICON_RESET = icon('reset', 'size-4');
-    viewModeBar.addTool({ icon: ICON_RESET, title: t('toolbar.resetModel'), onClick: () => resetModel(), start: true, group: 'history' });
+    addTool(editing, { icon: ICON_RESET, title: t('toolbar.resetModel'), onClick: () => resetModel(), start: true, group: 'history' });
     function resetModel() {
         if (!rootGroup || loading) return;
         history.transaction(t('viewer.undo.resetModel'), () => {
@@ -4924,7 +4951,7 @@ export async function createPlayer(options = {}) {
             if (changed.length) {
                 const before = changed.map(g => captureTransform(g, 'node'));
                 const identity = { offset: new THREE.Vector3(), rotation: new THREE.Euler(), scale: new THREE.Vector3(1, 1, 1) };
-                const apply = states => { changed.forEach((g, i) => restoreTransform(g, 'node', states ? states[i] : identity)); pathTracing.updateTransforms(); transformer.sync(); properties?.show(selection); };
+                const apply = states => { changed.forEach((g, i) => restoreTransform(g, 'node', states ? states[i] : identity)); pathTracing.updateTransforms(); transformer?.sync(); properties?.show(selection); };
                 apply(null);
                 history.record({ label: t('viewer.undo.resetModel'), undo: () => apply(before), redo: () => apply(null) });
             }
@@ -4955,12 +4982,12 @@ export async function createPlayer(options = {}) {
     exploder.addEventListener('start', () => pathTracing.pauseForEdit());
     let explodeDragging = false;
     exploder.addEventListener('update', () => {
-        transformer.sync();
+        transformer?.sync();
         loadRender.dirty = true;
         // set immediately (number field): update the path tracing scene; animation/slider do it at the end
         if (!exploder.anim && !explodeDragging) pathTracing.updateTransforms();
     });
-    exploder.addEventListener('end', () => { transformer.sync(); pathTracing.resumeAfterEdit('node'); });
+    exploder.addEventListener('end', () => { transformer?.sync(); pathTracing.resumeAfterEdit('node'); });
     exploder.addEventListener('change', () => setExplodeTool(exploder.active, t(exploder.active ? 'toolbar.collapse' : 'toolbar.explode')));
     document.addEventListener('fullscreenchange', () => {
         const full = document.fullscreenElement === fullscreenEl;
@@ -5013,8 +5040,8 @@ export async function createPlayer(options = {}) {
         pathTracing.setEnabled(mode === 'hq');
         if (mode === 'hq') checkPathTracingScene();
         updatePathTracingScene();
-        viewModeBar.set(mode, { unavailable: pathTracing.supported ? [] : ['hq'] });
-        setup.refresh();   // "Active" checkbox in the path tracing folder
+        viewModeBar?.set(mode, { unavailable: pathTracing.supported ? [] : ['hq'] });
+        setup?.refresh();   // "Active" checkbox in the path tracing folder
         loadRender.force = true;
         // first Basic/Default with these batches: compiles their shader variants → "taking over scene" first
         const variant = `${mode}:${batcher.generation}`;
@@ -5154,7 +5181,7 @@ export async function createPlayer(options = {}) {
             if (toneMappingBeforeSplats !== null && renderer.toneMapping === splatToneSet) renderer.toneMapping = toneMappingBeforeSplats;
             toneMappingBeforeSplats = splatToneSet = null;
             applySplatUi();
-            viewModeBar.set(viewMode, { unavailable: pathTracing.supported ? [] : ['hq'] });   // HQ possible again
+            viewModeBar?.set(viewMode, { unavailable: pathTracing.supported ? [] : ['hq'] });   // HQ possible again
         }
         if (!rootGroup) return;
         invalidatePathTracing();
@@ -5661,7 +5688,7 @@ export async function createPlayer(options = {}) {
             updatePathTracingScene();
 
             setupGUI();
-            qualityController.enable(model.type === 'step');
+            qualityController?.enable(model.type === 'step');
             await releaseLargeStep();
         } catch (err) {
             hideProgress();
@@ -5808,7 +5835,7 @@ export async function createPlayer(options = {}) {
             // without it the path traced image had no splats and the raster overlay stopped once the image was done
             if (viewMode === 'hq') prepareSplatVolume();
             setupGUI();
-            qualityController.enable(false);
+            qualityController?.enable(false);
             assetsWindow.refresh();
             debugLog(`[Splats] ${model.name}: ${data.count} splats (${data.format}), SH coefficients ${data.shCoeffs}/${data.fileShCoeffs}`);
             flashProgress(t('status.splatsLoaded', { count: formatCount(data.count) }), 4000);   // progress display bottom left
@@ -5826,6 +5853,8 @@ export async function createPlayer(options = {}) {
     // --- GUI (set up once) ---
     let qualityController = null;
     function setupGUI() {
+        if (!setup) return;
+        const { buildAbout, kiSettings } = uiModules.setupModules;
         if (qualityController) return;
         const pt = setup.addSection('pathtracing', t('setup.pathtracing'));
         pt.toggle(pathTracing.supported ? t('setup.active') : t('setup.activeNoWebGpu'),
@@ -6261,7 +6290,7 @@ export async function createPlayer(options = {}) {
             const view = active != null && cameraViews.find(v => v.id === active);
             if (view) { activeView = view; sceneGraph.render(); }
         },
-        retessellate: async () => { qualityController.refresh(); await runLoad('reload'); },
+        retessellate: async () => { qualityController?.refresh(); await runLoad('reload'); },
         retessellateParts: () => runLoad('parts'),
         getViewMode: () => viewMode,
         exploder,
@@ -6276,7 +6305,7 @@ export async function createPlayer(options = {}) {
                 const doc = environment.custom.get(hdriEditor.now.docId);
                 if (doc) hdriEditor.now.setDoc(doc); else hdriEditor.now.close();
             }
-            setup.refresh();
+            setup?.refresh();
             pathTracing.updateTransforms();
             pathTracing.updateLights();
             pathTracing.updateCamera();
@@ -6700,7 +6729,7 @@ export async function createPlayer(options = {}) {
     function applyImportedRender(render) {
         if (render.glassShadow) pathTracing.setGlassShadow({ mode: render.glassShadow });
         if (render.refractionBounces > pathTracing.refractionBounces) pathTracing.setRefractionBounces(render.refractionBounces);
-        setup.refresh();
+        setup?.refresh();
     }
 
     // models in the scene (main, added, splat scene)?
@@ -6835,7 +6864,7 @@ export async function createPlayer(options = {}) {
     initDistributed();
     setupGUI();
     setViewMode(viewMode);   // start mode (config: PATHTRACING.enabled -> HQ, otherwise Default)
-    qualityController.enable(false);
+    qualityController?.enable(false);
     // fill the setup menu even without a model; open at start with ?debug
     setupGUI();
     if (new URLSearchParams(location.search).has('debug')) requestAnimationFrame(() => setSetupOpen(true));
@@ -6924,7 +6953,7 @@ export async function createPlayer(options = {}) {
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel?.thumbs, def)),
         // all library presets (categories loaded on demand) – tests bake their node graphs
         presets: () => loadLibraryPresets().then(() => MATERIAL_PRESETS),
-        skeletonView, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, get clouds() { return clouds; }, get grass() { return grass; }, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats: (...args) => loadSplatLoader().then(m => m.loadSplats(...args)), lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, getPlan: () => currentPlan, setViewMode: m => setViewMode(m), getViewMode: () => viewMode, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+        get skeletonView() { return skeletonView; }, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, get clouds() { return clouds; }, get grass() { return grass; }, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats: (...args) => loadSplatLoader().then(m => m.loadSplats(...args)), lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, getPlan: () => currentPlan, setViewMode: m => setViewMode(m), getViewMode: () => viewMode, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 
     // --- Resize ---
     // device pixel ratio changed (window moved to a screen with another scaling, browser zoom): the canvas follows – it was
@@ -7230,7 +7259,7 @@ export async function createPlayer(options = {}) {
         updateOrthoView();
         controls.update();
         applyCameraRoll();
-        viewCube.update(camera);
+        viewCube?.update(camera);
         syncViewDependents();
         // distributed rendering: a render client draws nothing (its page is the status) – except while a model loads (the
         // import streams through the render loop); the master shows the assembled image with the labelled buckets
@@ -7476,19 +7505,19 @@ export async function createPlayer(options = {}) {
         }
         rayCost?.draw(camera);   // ?debug heat map over the picture (not into captures/exports above)
         highlighter.render();
-        lightHelper.update(selection?.kind === 'light' && transformer.object ? selection.object : null, lightSize);
+        lightHelper.update(selection?.kind === 'light' && transformer?.object ? selection.object : null, lightSize);
         updateCameraDirty();   // active camera: "(not saved)" once the view differs from it
         cameraMarkers.update(selection?.kind === 'camera' || selection?.kind === 'view' || selection?.kind === 'views' ? cameraViews.filter(v => v !== activeView) : [], { aspect: camera.aspect, size: environment.modelSize });
         skeletonView.update();
         // gizmo (and skeleton) on top of everything
-        const overlay = transformer.object || skeletonView.visible || cameraMarkers.object.visible;
+        const overlay = transformer?.object || skeletonView.visible || cameraMarkers.object.visible;
         if (overlay && rasterFisheye.active) {
-            rasterFisheye.render(renderer, camera, cam => renderer.render(transformer.overlayScene, cam), { overlay: true });
+            rasterFisheye.render(renderer, camera, cam => renderer.render(overlayScene, cam), { overlay: true });
         } else if (overlay) {
             const autoClear = renderer.autoClear;
             renderer.autoClear = false;
             renderer.clearDepth();
-            renderer.render(transformer.overlayScene, camera);
+            renderer.render(overlayScene, camera);
             renderer.autoClear = autoClear;
         }
         prepare.shown = false;   // the blocking frame is done
@@ -8052,7 +8081,7 @@ export async function createPlayer(options = {}) {
     window.addEventListener('blur', () => { shiftHeld = false; });
     renderer.domElement.addEventListener('pointerdown', e => { shiftHeld = e.shiftKey; }, true);   // the drag's own modifier
     let pendingInstances = null;   // blocks made by the drag in progress
-    transformer.onBeforeDrag = (object, kind) => {
+    if (transformer) transformer.onBeforeDrag = (object, kind) => {
         if (!shiftHeld || (kind !== 'node' && kind !== 'selection')) return null;
         const groups = kind === 'node' ? [object] : object.members;
         if (!groups.every(g => g.isGroup && !holdsSplat(g))) return null;

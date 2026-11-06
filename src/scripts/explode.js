@@ -8,7 +8,7 @@
 // Centres are determined in the collapsed state during preparation (prepare). Stray objects (userData.stray, see
 // outliers.js) count for no centre: a part made only of them keeps its place.
 import * as THREE from 'three/webgpu';
-import { applyTransform, ensureTransform } from './transform.js';
+import { applyTransform, ensureTransform } from './transform-state.js';
 import { localBox } from './model-instances.js';
 
 const _box = new THREE.Box3();
