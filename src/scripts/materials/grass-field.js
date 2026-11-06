@@ -204,7 +204,7 @@ export function grassBlades({ positions, index, height, density, dry = 0, maxBla
 }
 
 // vertex normals averaged over all faces at the same position (area-weighted), one per vertex
-function smoothNormals(p, index) {
+export function smoothNormals(p, index) {
     const vertices = p.length / 3, count = index ? index.length / 3 : vertices / 3;
     let min = Infinity, max = -Infinity;
     for (let i = 0; i < p.length; i++) { min = Math.min(min, p[i]); max = Math.max(max, p[i]); }

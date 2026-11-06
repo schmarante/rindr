@@ -258,7 +258,19 @@
             "transmissionScatter": "Haze",
             "transmissionScatterAnisotropy": "Scatter direction",
             "subsurfaceMode": "Accurate (HQ)",
-            "subsurfaceAnisotropy": "Scatter direction"
+            "subsurfaceAnisotropy": "Scatter direction",
+            "hair": "Hair",
+            "hairGrow": "Grow from the surface",
+            "hairTipColor": "Tip colour",
+            "hairThickness": "Fibre thickness (mm)",
+            "hairDensity": "Density",
+            "hairLength": "Length (mm, when growing)",
+            "hairSpread": "Spread",
+            "hairTaper": "Taper",
+            "hairCurl": "Curl",
+            "hairClump": "Clumps",
+            "hairVariation": "Length variation",
+            "hairDroop": "Droop (when growing)"
         },
         "types": {
             "standard": "Standard",
@@ -267,7 +279,8 @@
             "wool": "Wool",
             "grass": "Grass",
             "soap": "Soap film",
-            "marble": "Glowing marble"
+            "marble": "Glowing marble",
+            "hair": "Hair & bristles"
         },
         "paramGroups": {
             "base": "Base",
@@ -284,7 +297,8 @@
             "soap": "Soap film",
             "edges": "Rounded edges (shader)",
             "textures": "Textures",
-            "surface": "Relief & displacement"
+            "surface": "Relief & displacement",
+            "hair": "Hair"
         },
         "categories": {
             "metal": "Metal",
@@ -555,7 +569,11 @@
             "wood-cork": "Cork",
             "wood-floor-planks": "Oak plank floor",
             "wood-floor-herringbone": "Herringbone parquet",
-            "wood-floor-basket": "Basket-weave parquet walnut"
+            "wood-floor-basket": "Basket-weave parquet walnut",
+            "hair-badger": "Badger hair (brush)",
+            "bristles-white": "White bristles",
+            "fur-grey": "Grey fur",
+            "hair-brown-long": "Long brown hair"
         },
         "defaultNames": {
             "material": "Material",
@@ -2725,7 +2743,8 @@
         "renderingHdri": "Rendering HDRI…",
         "iesFailed": "IES file “{name}” not readable",
         "lockedNoMaterial": "Locked – material not assigned",
-        "lockedPartial": "Material only on unlocked parts – {count} locked ones left out"
+        "lockedPartial": "Material only on unlocked parts – {count} locked ones left out",
+        "growingHair": "Growing hair …"
     },
     "viewCube": {
         "title": "Choose a view: click a face, edge or corner – drag to orbit the camera. Keys: T top, F front, B back, D bottom, L left, R right",

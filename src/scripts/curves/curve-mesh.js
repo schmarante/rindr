@@ -35,10 +35,12 @@ export function setupCurveMesh(mesh) {
     lineGeometry.setAttribute('position', geometry.getAttribute('position'));
     lineGeometry.setAttribute('tangent', geometry.getAttribute('tangent'));
     lineGeometry.setAttribute('uv', geometry.getAttribute('uv'));
+    const tinted = !!geometry.getAttribute('color');   // colours per point (material hair, root → tip – materials/hair.js)
+    if (tinted) lineGeometry.setAttribute('color', geometry.getAttribute('color'));
     lineGeometry.setIndex(new THREE.BufferAttribute(lineIndex, 1));
     lineGeometry.boundingBox = geometry.boundingBox?.clone() ?? null;
     lineGeometry.boundingSphere = geometry.boundingSphere?.clone() ?? null;
-    const look = hairRasterMaterial();
+    const look = hairRasterMaterial(tinted);
     const lines = new THREE.LineSegments(lineGeometry, look.material);
     lines.name = 'hair lines';
     lines.userData.ptHidden = true;          // the path tracer has the mesh
@@ -63,7 +65,7 @@ export function updateHairLight(light) {
 // and light, a highlight band where the half vector stands across the fibre (width from the roughness), the ambient
 // part, both dimmed for the hairs shading each other (the lines know no neighbours – fully lit they glowed); each hair
 // lighter or darker (uv.y). Unlit line material: the lit standard material gave a flat sheet
-function hairRasterMaterial() {
+function hairRasterMaterial(tinted = false) {
     const color = uniform(new THREE.Color(0.5, 0.5, 0.5)), roughness = uniform(0.5);
     const material = new THREE.LineBasicNodeMaterial();
     const T = normalize(modelWorldMatrix.mul(vec4(attribute('tangent').xyz, 0)).xyz);
@@ -76,7 +78,8 @@ function hairRasterMaterial() {
     const SELF_SHADOW = 0.8;
     // the hair colour is what light shows after many passes through fibres; the lines see it once – brighter for the
     // preview (HQ of blond hair came out about the square root of its colour)
-    const base = pow(color, vec3(0.5)).mul(strand);
+    const tint = tinted ? attribute('color').xyz : vec3(1);
+    const base = pow(color.mul(tint), vec3(0.5)).mul(strand);
     const diffuse = base.mul(HAIR_LIGHT.color).mul(across(dot(T, L))).mul(1 / Math.PI);
     const specular = HAIR_LIGHT.color.mul(pow(across(dot(T, H)), exponent)).mul(exponent.add(2).div(8 * Math.PI)).mul(0.04);
     material.colorNode = diffuse.add(base.mul(HAIR_LIGHT.ambient)).mul(SELF_SHADOW).add(specular);

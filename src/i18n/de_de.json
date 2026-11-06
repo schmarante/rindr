@@ -258,7 +258,19 @@
             "transmissionScatter": "Trübung",
             "transmissionScatterAnisotropy": "Streurichtung",
             "subsurfaceMode": "Genau (HQ)",
-            "subsurfaceAnisotropy": "Streurichtung"
+            "subsurfaceAnisotropy": "Streurichtung",
+            "hair": "Haar",
+            "hairGrow": "Aus der Fläche wachsen",
+            "hairTipColor": "Farbe Spitze",
+            "hairThickness": "Faserdicke (mm)",
+            "hairDensity": "Dichte",
+            "hairLength": "Länge (mm, beim Wachsen)",
+            "hairSpread": "Auffächern",
+            "hairTaper": "Verjüngung",
+            "hairCurl": "Locken",
+            "hairClump": "Büschel",
+            "hairVariation": "Längen-Streuung",
+            "hairDroop": "Hängen (beim Wachsen)"
         },
         "types": {
             "standard": "Standard",
@@ -267,7 +279,8 @@
             "wool": "Wolle",
             "grass": "Gras",
             "soap": "Seifenhaut",
-            "marble": "Leuchtmarmor"
+            "marble": "Leuchtmarmor",
+            "hair": "Haar & Borsten"
         },
         "paramGroups": {
             "base": "Basis",
@@ -284,7 +297,8 @@
             "soap": "Seifenhaut",
             "edges": "Kanten abrunden (Shader)",
             "textures": "Texturen",
-            "surface": "Relief & Displacement"
+            "surface": "Relief & Displacement",
+            "hair": "Haar"
         },
         "categories": {
             "metal": "Metall",
@@ -555,7 +569,11 @@
             "wood-cork": "Kork",
             "wood-floor-planks": "Dielenboden Eiche",
             "wood-floor-herringbone": "Fischgrätparkett",
-            "wood-floor-basket": "Flechtparkett Nussbaum"
+            "wood-floor-basket": "Flechtparkett Nussbaum",
+            "hair-badger": "Dachshaar (Pinsel)",
+            "bristles-white": "Borsten weiß",
+            "fur-grey": "Fell grau",
+            "hair-brown-long": "Langes Haar braun"
         },
         "defaultNames": {
             "material": "Material",
@@ -2725,7 +2743,8 @@
         "renderingHdri": "Berechne HDRI…",
         "iesFailed": "IES-Datei „{name}“ nicht lesbar",
         "lockedNoMaterial": "Gesperrt – Material nicht zugewiesen",
-        "lockedPartial": "Material nur auf entsperrte Teile – {count} gesperrte ausgelassen"
+        "lockedPartial": "Material nur auf entsperrte Teile – {count} gesperrte ausgelassen",
+        "growingHair": "Haare wachsen …"
     },
     "viewCube": {
         "title": "Ansicht wählen: Fläche, Kante oder Ecke anklicken – ziehen dreht die Kamera. Tasten: T oben, F vorne, B hinten, D unten, L links, R rechts",

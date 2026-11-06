@@ -231,6 +231,19 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
     }
 
     /**
+     * Hair (hair.js): on (> 0) → real fibres – fill: the mesh is only the shape the fibres fill (hidden here; the path
+     * tracer leaves it out – userData.ptHidden), grow: they stand on the surface, which stays. hair = { mode, thickness,
+     * taper, density, length, spread, curl, clump, variation, droop, tipColor } (lengths in mm)
+     */
+    setHair(on, hair) {
+        if (on > 0) this.userData.hair = { ...hair };
+        else delete this.userData.hair;
+        // (after setCloud – a cloud hides its mesh the same way: left as it is)
+        if (on > 0 && hair?.mode === 'fill') this.visible = false;
+        else if (!this.userData.cloud) this.visible = true;
+    }
+
+    /**
      * Soap film (soap.js): on (> 0) → a thin film matched to air (the material's ior should be 1: nothing refracts),
      * coloured by thin-film interference – iridescence 1, film ior 1.33; film = mean thickness (nm), swirl 0…1 =
      * how much it varies, scale = swirl size (× share of the scene size). Double sided (front and back skin).
@@ -542,6 +555,7 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
         this.setWool(source.userData.wool ? 1 : 0, source.userData.wool?.length ?? 0.012);
         const grass = source.userData.grass;
         this.setGrass(grass ? 1 : 0, grass?.height ?? 0.03, grass?.density ?? 1, grass?.dry ?? 0);
+        this.setHair(source.userData.hair ? 1 : 0, source.userData.hair);
         this.soap = false;
         const s = source._soap;
         this.setSoap(source.soap ? 1 : 0, s.film.value, s.swirl.value, s.scale.value);

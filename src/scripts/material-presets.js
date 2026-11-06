@@ -90,6 +90,12 @@ export const MATERIAL_PRESETS = [
     // grass: real blades (grass.js); colour = the blades, the surface below a dark shade of it
     { libraryId: 'grass-lawn', category: 'special', params: { color: '#4f8a2c', metalness: 0, roughness: 0.6, grass: 1, grassHeight: 0.025, grassDensity: 1, grassDry: 0 } },
     { libraryId: 'grass-meadow', category: 'special', params: { color: '#6a9634', metalness: 0, roughness: 0.6, grass: 1, grassHeight: 0.045, grassDensity: 0.6, grassDry: 0.12 } },
+    // hair and bristles: real fibres (hair.js) – fill a shape (brush knot, a bundle) or grow from the surface (fur); colour =
+    // at the root, the tip colour towards the end
+    { libraryId: 'hair-badger', category: 'special', params: { color: '#3b3029', hairTipColor: '#ece6da', roughness: 0.35, hair: 1, hairGrow: 0, hairThickness: 0.1, hairDensity: 0.45, hairSpread: 0.35, hairTaper: 0.7, hairCurl: 0.03, hairClump: 0.2, hairVariation: 0.15 } },
+    { libraryId: 'bristles-white', category: 'special', params: { color: '#f2f0ea', hairTipColor: '#ffffff', roughness: 0.25, hair: 1, hairGrow: 0, hairThickness: 0.15, hairDensity: 0.5, hairSpread: 0.2, hairTaper: 0.4, hairCurl: 0, hairClump: 0.05, hairVariation: 0.05 } },
+    { libraryId: 'fur-grey', category: 'special', params: { color: '#5a554f', hairTipColor: '#b4ada3', roughness: 0.4, hair: 1, hairGrow: 1, hairThickness: 0.06, hairDensity: 0.25, hairLength: 12, hairTaper: 0.8, hairCurl: 0.1, hairClump: 0.3, hairVariation: 0.3, hairDroop: 0.25 } },
+    { libraryId: 'hair-brown-long', category: 'special', params: { color: '#4a3020', hairTipColor: '#6b4a30', roughness: 0.3, hair: 1, hairGrow: 1, hairThickness: 0.07, hairDensity: 0.3, hairLength: 60, hairTaper: 0.6, hairCurl: 0.15, hairClump: 0.35, hairVariation: 0.25, hairDroop: 0.6 } },
     // soap film (soap.js): thin-film colours, light passes straight through (ior 1, matched to air)
     { libraryId: 'soap-bubble', category: 'special', params: { color: '#ffffff', metalness: 0, roughness: 0, transmission: 1, ior: 1, iridescence: 1, soap: 1, soapFilm: 380, soapSwirl: 0.7, soapScale: 1 } },
     { libraryId: 'cloud-white', category: 'special', params: { color: '#ffffff', metalness: 0, roughness: 1, cloud: 1, cloudColor: '#ffffff', cloudPuff: 0.05 } },

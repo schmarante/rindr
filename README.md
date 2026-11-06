@@ -31,7 +31,7 @@ Drop a CAD model, a mesh, a BIM file or a Gaussian splat into the window and get
   - **MaterialX (.mtlx)** with OpenPBR: materials in and out – a material as a package with textures, glTF sphere and preview
   - **Gaussian splats** (PLY, SOG)
 - **Node-based materials** (three.js TSL) and a material library – drag & drop onto parts in the viewport or the scene graph; UV mapping per object (box, planar, cylinder, sphere).
-- **Special materials** – toon and contour styles, subsurface scattering (jelly, wax), glowing marble, a **cloud** as real volume, **wool** with fibres, **grass** with real blades, **soap bubbles** with thin-film colours; scattering media for cloudy liquids – juice, milk, honey, beer and more in the library.
+- **Special materials** – toon and contour styles, subsurface scattering (jelly, wax), glowing marble, a **cloud** as real volume, **wool** with fibres, **grass** with real blades, **hair and bristles** as real fibres (shaving brush, fur), **soap bubbles** with thin-film colours; scattering media for cloudy liquids – juice, milk, honey, beer and more in the library.
 - **Studio tools** – scene graph with hover outlines, move/rotate/scale gizmo, MAX-style quad menu, view cube, animated **exploded view**, section plane, animations with skeleton view.
 - **Lighting** – HDRI environments (drop your own .hdr/.exr into the window) with a flattened ground dome, shadow catcher and contact shadows, ground reflections and rain puddles; an **HDRI editor** for your own procedural environments with sun & sky and movable light pins.
 - **Camera like a real lens** – depth of field with bokeh blades, fisheye up to 240°, bloom, glare, lens flare and **volumetric god rays**; style filters from pixel art and scanlines to sketch and ASCII.
@@ -167,7 +167,22 @@ files). The common ones:
 | `opacity` | 0–1 (1) | cut-out transparency |
 | `edgeRadius` | 0–20 (0) | rounded edges in the shading (scene units) |
 
-Missing parameters take their defaults. Special materials (toon, cloud, wool, grass, soap film, glowing marble) come
+**Hair and bristles** – real fibres, traced as such in path tracing (hair scattering model) and drawn as lines in the
+raster view. Assign the material to a part: by default its shape is *filled* with fibres running upwards from where the
+shape begins to its surface – the part itself is only the outline (a shaving brush: model the knot as a bulb; a cylinder
+becomes a bundle of hair). `hairGrow: 1` lets them *grow* from the surface instead (fur). Library: `hair-badger`,
+`bristles-white` (fill), `fur-grey`, `hair-brown-long` (grow). Parameters: `color` (at the root), `hairTipColor`,
+`hairThickness` (mm, 0.12), `hairDensity` (share of the area the fibres cover, 0.35), `hairLength` (mm, growing),
+`hairSpread` (fill: the roots drawn towards the middle – fanning out), `hairTaper`, `hairCurl`, `hairClump`,
+`hairVariation` (shorter fibres at random), `hairDroop` (growing: tips bend down), `roughness` (the fibres' sheen). The
+number of fibres follows the device's memory – above it fewer, thicker ones.
+
+```js
+await p.setMaterial('Brush/Knot', 'hair-badger');
+await p.setMaterial('Brush/Knot', { name: 'Knot', params: { hair: 1, color: '#2b211b', hairTipColor: '#f2ede4', hairThickness: 0.08, hairSpread: 0.4 } });
+```
+
+Missing parameters take their defaults. Special materials (toon, cloud, wool, grass, hair, soap film, glowing marble) come
 from the library; their parameters and the full list are in `src/scripts/material-manager.js` (`PARAMS`) and
 `src/scripts/material-types.js`. The scene keeps every assignment by part names (`getScene()`), together with the materials
 themselves.

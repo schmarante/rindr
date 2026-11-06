@@ -99,6 +99,20 @@ export const PARAMS = [
     { key: 'grassHeight', type: 'number', min: 0.005, max: 0.15, default: 0.03, group: 'grass' },
     { key: 'grassDensity', type: 'number', min: 0.1, max: 2, default: 1, group: 'grass' },
     { key: 'grassDry', type: 'number', min: 0, max: 1, default: 0, group: 'grass' },
+    // hair and bristles (hair.js): real fibres – fill the shape (brush knot, a cylinder of hair: the mesh is only the outline)
+    // or grow from the surface (fur); thickness and length in mm, density = how much of the area the fibres cover
+    { key: 'hair', type: 'number', min: 0, max: 1, default: 0, group: 'hair' },
+    { key: 'hairGrow', type: 'number', min: 0, max: 1, step: 1, toggle: true, default: 0, group: 'hair' },
+    { key: 'hairTipColor', type: 'color', default: '#e8e0d0', group: 'hair' },
+    { key: 'hairThickness', type: 'number', min: 0.01, max: 2, step: 0.005, default: 0.12, group: 'hair' },
+    { key: 'hairDensity', type: 'number', min: 0.02, max: 1, default: 0.35, group: 'hair' },
+    { key: 'hairLength', type: 'number', min: 0.5, max: 300, step: 0.5, default: 15, group: 'hair' },
+    { key: 'hairSpread', type: 'number', min: 0, max: 1, default: 0.3, group: 'hair' },
+    { key: 'hairTaper', type: 'number', min: 0, max: 1, default: 0.6, group: 'hair' },
+    { key: 'hairCurl', type: 'number', min: 0, max: 1, default: 0.05, group: 'hair' },
+    { key: 'hairClump', type: 'number', min: 0, max: 1, default: 0.15, group: 'hair' },
+    { key: 'hairVariation', type: 'number', min: 0, max: 1, default: 0.2, group: 'hair' },
+    { key: 'hairDroop', type: 'number', min: 0, max: 1, default: 0.15, group: 'hair' },
     // soap film (soap.js): thin-film colours, film = mean thickness in nm, swirl = how much it varies, swirl size ×
     // share of the scene size; the glass params stay (soap bubble preset: transmission 1, ior 1)
     { key: 'soap', type: 'number', min: 0, max: 1, default: 0, group: 'soap' },
@@ -642,6 +656,8 @@ function applyParams(material, params) {
     material.setCloud(p.cloud, p.cloudColor, p.cloudPuff);
     material.setWool(p.wool, p.woolLength);
     material.setGrass(p.grass, p.grassHeight, p.grassDensity, p.grassDry);
+    material.setHair(p.hair, { mode: p.hairGrow > 0 ? 'grow' : 'fill', thickness: p.hairThickness, taper: p.hairTaper, density: p.hairDensity, length: p.hairLength,
+        spread: p.hairSpread, curl: p.hairCurl, clump: p.hairClump, variation: p.hairVariation, droop: p.hairDroop, tipColor: p.hairTipColor });
     material.setSoap(p.soap, p.soapFilm, p.soapSwirl, p.soapScale);   // after setMarble (shares stand-in fields)
     if (!material.soap) {
         // thin film (the soap film sets its own)

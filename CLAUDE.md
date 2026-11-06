@@ -138,6 +138,7 @@ Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anleg
 [X] Wolke: das Objekt als fluffige Wolke – quillt über die Form, Raster per Raymarching, HQ als echtes Volumen (Details: `docs/materials.md`)
 [X] Wolle: flauschige Fasern – Raster als Fell-Schichten, HQ mit echten Fasern im Strahltest (Details: `docs/materials.md`)
 [X] Gras: echte Halm-Geometrie (Worker samt BVH, nach Speicher-Budget), Raster und HQ gleich, blendet ein, Fortschritt unten links (Details: `docs/materials.md`)
+[X] Haar & Borsten: echte Fasern – füllen die Form (Rasierpinsel, Haarbündel) oder wachsen aus der Fläche (Fell); HQ mit dem Haar-Streumodell, Raster als Linien (Details: `docs/materials.md`)
 [X] Seifenblase: dünne Seifenhaut mit Schillerfarben und Schlieren (Dünnschicht-Interferenz, Licht geht gerade durch), Raster und HQ (Details: `docs/materials.md`)
 
 ### BODEN

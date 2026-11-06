@@ -931,26 +931,48 @@ export async function createPlayer(options = {}) {
         grass.invalidate();
         loadRender.force = true;
     }));
-    // a stand-in's system needed now? (cloud/grass material on a model – checked in the render loop after a change)
+    // hair material (materials/hair.js): real fibres filling the shape or growing from the surface – the path tracer traces
+    // them with the hair model, the raster draws lines (curves/curve-mesh.js); system with the first hair material
+    const hairSlot = new THREE.Group();
+    hairSlot.name = 'hair slot';
+    scene.add(hairSlot);
+    let hair = { stub: true, group: hairSlot, update() {}, invalidate() { specialScan = true; }, previewFor: () => null };
+    let hairLoading = null;
+    const ensureHair = () => (hairLoading ??= import('./materials/hair.js').then(({ HairSystem }) => {
+        const system = new HairSystem(hairSlot, modelRoots);
+        system.onChange = () => { pathTracing.updateMaterials(); pathTracing.reset(); };
+        system.onMove = () => { pathTracing.updateTransforms(); markShadowsDirty(); };
+        system.onGeometry = () => { invalidatePathTracing(); updatePathTracingScene(); markShadowsDirty(); loadRender.dirty = true; };
+        system.onMesh = mesh => hairMeshes.add(mesh);   // the raster lines' light (hairShown)
+        system.attach(renderer);
+        system.onProgress = hairProgressHook;
+        hair = system;
+        hair.invalidate();
+        loadRender.force = true;
+    }));
+    // a stand-in's system needed now? (cloud/grass/hair material on a model – checked in the render loop after a change)
     function checkSpecialSystems() {
         if (!specialScan) return;
         specialScan = false;
-        let cloud = !clouds.stub, grassy = !grass.stub;
-        if (cloud && grassy) return;
+        let cloud = !clouds.stub, grassy = !grass.stub, hairy = !hair.stub;
+        if (cloud && grassy && hairy) return;
         for (const root of modelRoots()) root?.traverse(o => {
             const m = o.isMesh && !Array.isArray(o.material) ? o.material : null;
             if (!m) return;
             cloud ||= !!m.userData?.cloud;
             grassy ||= !!m.userData?.grass;
+            hairy ||= !!m.userData?.hair;
         });
         if (cloud && clouds.stub) ensureClouds();
         if (grassy && grass.stub) ensureGrass();
+        if (hairy && hair.stub) ensureHair();
     }
-    // a material preview (material-thumbs.js) of a cloud/grass material: its system first
+    // a material preview (material-thumbs.js) of a cloud/grass/hair material: its system first
     async function specialPreview(material, radius) {
         if (material.userData?.cloud && clouds.stub) await ensureClouds();
         if (material.userData?.grass && grass.stub) await ensureGrass();
-        return clouds.previewFor(material, radius) ?? wool.previewFor(material, radius) ?? grass.previewFor(material, radius);
+        if (material.userData?.hair && hair.stub) await ensureHair();
+        return clouds.previewFor(material, radius) ?? wool.previewFor(material, radius) ?? grass.previewFor(material, radius) ?? hair.previewFor(material, radius);
     }
     // rounded edges (edges.js): per-geometry edge data (worker) for materials with an edge radius – new data = new
     // material buffers; rotated triangle corners (first build of a geometry) = new path tracer scene
@@ -959,6 +981,14 @@ export async function createPlayer(options = {}) {
         if (rebuild) { invalidatePathTracing(); updatePathTracingScene(); }
         else { pathTracing.updateMaterials(); pathTracing.reset(); }
     };
+    // growing fibres (worker): progress bottom left, as the grass
+    let hairProgress = false;
+    function hairProgressHook(fraction) {
+        const label = t('status.growingHair');
+        if (fraction !== null && (!progressEl.hidden && progressLabel.textContent !== label)) return;
+        if (fraction !== null) { hairProgress = true; showProgress(label, fraction); }
+        else if (hairProgress) { hairProgress = false; if (progressLabel.textContent === label) hideProgress(); }
+    }
     // growing blades (worker): progress bottom left – unless a load or another task already shows its own
     let grassProgress = false;
     function grassProgressHook(fraction) {
@@ -2231,8 +2261,8 @@ export async function createPlayer(options = {}) {
     materialManager.onApply = entry => graphApplier.apply(entry);
     materialManager.addEventListener('change', () => pathTracing.updateMaterials());
     materialManager.addEventListener('update', () => pathTracing.updateMaterials());
-    materialManager.addEventListener('change', () => { clouds.invalidate(); wool.invalidate(); grass.invalidate(); edges.invalidate(); });
-    materialManager.addEventListener('update', () => { clouds.invalidate(); wool.invalidate(); grass.invalidate(); edges.invalidate(); });
+    materialManager.addEventListener('change', () => { clouds.invalidate(); wool.invalidate(); grass.invalidate(); hair.invalidate(); edges.invalidate(); });
+    materialManager.addEventListener('update', () => { clouds.invalidate(); wool.invalidate(); grass.invalidate(); hair.invalidate(); edges.invalidate(); });
     // edited material (alpha map, side …) can change the shadow; assignments are seen by the batcher's comparison
     materialManager.addEventListener('update', () => markShadowsDirty());
     // UV mapping per object: new geometries in place of the import ones (BVH + tangents in the import workers)
@@ -3141,6 +3171,7 @@ export async function createPlayer(options = {}) {
     function settleAnimation(list = clipAnims(), options) {
         list.forEach(a => a.anim.settle(options));
         grass.invalidate();   // deformed meshes: blades for the new pose
+        hair.invalidate();
         pathTracing.resumeAfterEdit('node');
         contactShadow.markDirty();
         if (list.some(a => a.anim.deforms)) { pathTracing.invalidate(); updatePathTracingScene(); }
@@ -7284,7 +7315,7 @@ export async function createPlayer(options = {}) {
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel?.thumbs, def)),
         // all library presets (categories loaded on demand) – tests bake their node graphs
         presets: () => loadLibraryPresets().then(() => MATERIAL_PRESETS),
-        get skeletonView() { return skeletonView; }, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, get clouds() { return clouds; }, get grass() { return grass; }, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats: (...args) => loadSplatLoader().then(m => m.loadSplats(...args)), lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, tone, canvas: canvasEl, player, getRest: () => ({ ...rest }), pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = canvasTarget.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, getPlan: () => currentPlan, setViewMode: m => setViewMode(m), getViewMode: () => viewMode, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+        get skeletonView() { return skeletonView; }, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, get clouds() { return clouds; }, get grass() { return grass; }, get hair() { return hair; }, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats: (...args) => loadSplatLoader().then(m => m.loadSplats(...args)), lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, tone, canvas: canvasEl, player, getRest: () => ({ ...rest }), pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = canvasTarget.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, getPlan: () => currentPlan, setViewMode: m => setViewMode(m), getViewMode: () => viewMode, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 
     // --- Resize ---
     // device pixel ratio changed (window moved to a screen with another scaling, browser zoom): the canvas follows – it was
@@ -7591,6 +7622,7 @@ export async function createPlayer(options = {}) {
         if (hairShown()) updateHairLight(gridVolumeLight());   // raster hair lines: the same key light (curves/curve-mesh.js)
         wool.update();
         grass.update();
+        hair.update();
         edges.update();
         if (grass.fading) { loadRender.dirty = true; markShadowsDirty(); }   // blades fading in: frames, their shadow
         updateOrthoView();
@@ -8541,6 +8573,7 @@ export async function createPlayer(options = {}) {
         clouds.invalidate();
         wool.invalidate();
         grass.invalidate();
+        hair.invalidate();
         markShadowsDirty();
         contactShadow.markDirty();
         for (const g of tops) if (uvMapper.effective(g).mapping) uvMapper.apply(g);
