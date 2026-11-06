@@ -3,6 +3,7 @@
 // opened more sparingly, the last load ended by the browser … (blocking questions: dialog.js choiceDialog).
 //   showNotice({ id, icon: 'warning'|'info', title, message, actions: [{ label, onClick, primary }], timeout })
 // The same id replaces its card instead of stacking it. Returns { close }.
+import { layerFor } from './shadow-dom.js';
 import { icon } from './icons.js';
 
 const BUTTON = 'rounded px-2.5 py-1 outline-none transition-colors';
@@ -12,15 +13,18 @@ const ICONS = {
 };
 const ICON_CLOSE = icon('close', 'size-3.5');
 
-let stack = null;
+const stacks = new WeakMap();   // layer (page or player, shadow-dom.js) -> its stack of notices
 const open = new Map();   // id -> { el, close }
 
 function container() {
+    const layer = layerFor();
+    let stack = stacks.get(layer);
     if (stack) return stack;
     stack = document.createElement('div');
     stack.className = 'pointer-events-none fixed top-5 left-1/2 z-40 flex w-[min(26rem,calc(100vw-2.5rem))] -translate-x-1/2 flex-col gap-2 text-xs text-white/90';
     stack.setAttribute('aria-live', 'polite');
-    document.body.append(stack);
+    layer.append(stack);
+    stacks.set(layer, stack);
     return stack;
 }
 

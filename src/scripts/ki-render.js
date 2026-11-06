@@ -9,6 +9,7 @@
 // The prompt comes from the language file (ki.prompt.*), so it is written in the UI language.
 // Errors carry a machine-readable code → ki.errors.<CODE>, otherwise the English message.
 
+import { eventTarget, layerFor } from './shadow-dom.js';
 import { confirmDialog, messageDialog, dialogOpen } from './dialog.js';
 import { t, has, getLocale } from './i18n.js';
 import { kiSettings, render, history, removeRender } from './ki-gemini.js';
@@ -85,11 +86,11 @@ export class KiRender {
         // the area around it lets clicks through, a click next to the panel closes it
         this.root = el('div', 'pointer-events-none fixed inset-0 z-40 flex items-center justify-center p-5 text-xs text-white/90');
         this.root.hidden = true;
-        document.body.append(this.root);
+        layerFor().append(this.root);
         document.addEventListener('pointerdown', e => {
             const panel = this.root.firstElementChild;
             if (dialogOpen()) return;   // question dialog on top (e.g. delete)
-            if (this.isOpen && !this.busy && panel && !panel.contains(e.target)) this.close();
+            if (this.isOpen && !this.busy && panel && !panel.contains(eventTarget(e))) this.close();
         }, true);
         window.addEventListener('keydown', e => { if (e.key === 'Escape' && !this.root.hidden && !this.busy && !dialogOpen()) { e.stopPropagation(); this.close(); } }, true);
     }

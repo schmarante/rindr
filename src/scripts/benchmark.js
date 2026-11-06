@@ -5,6 +5,7 @@
 //   Resolution: renderScale
 // Result: table in a window (copyable) + console.table.
 // Result rows/header use stable English keys; column titles are translated when shown (benchmark.columns.*).
+import { layerFor } from './shadow-dom.js';
 import { Vector2 } from 'three/webgpu';
 import { t } from './i18n.js';
 
@@ -151,7 +152,7 @@ export function showBenchmarkResult({ header, results }) {
         catch { e.target.textContent = t('benchmark.copyFailed'); }
     };
     box.querySelector('[data-close]').onclick = () => box.remove();
-    document.body.append(box);
+    layerFor().append(box);
     return text;
 }
 

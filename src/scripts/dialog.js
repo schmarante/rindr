@@ -1,6 +1,7 @@
 // Dialogs inside the interface instead of the browser's confirm()/alert(): same style as the other panels
 // (black, translucent, blur, rounded, no outline), centred, without darkening the viewer.
 // Enter = confirm, Esc or a click next to it = cancel. Returns a promise.
+import { layerFor } from './shadow-dom.js';
 import { t } from './i18n.js';
 import { icon } from './icons.js';
 
@@ -95,7 +96,7 @@ function show({ title, message, buttons, icon, facts, cancelValue, list = false 
         }
         panel.append(head, body, foot);
         root.append(panel);
-        document.body.append(root);
+        layerFor().append(root);
 
         const dismissed = cancelValue !== undefined ? cancelValue : buttons.length > 1 ? false : true;
         const onKey = e => {

@@ -8,6 +8,7 @@
 //  - Clicking a link deletes it; × deletes a node
 //  - Unconnected inputs show their value directly in the node
 //  - Image files dropped onto a texture node become its picture
+import { focusedIn, elementFromPointIn } from './shadow-dom.js';
 import {
     NODE_TYPES, NODE_CATEGORIES, IMPORT_SLOTS, createGraph, createImportGraph, defaultParams,
     nodeLabel, portLabel, paramLabel, optionLabel, categoryLabel, sliderRange, hasImage, graphDrivenParams,
@@ -87,7 +88,7 @@ export class NodeEditor {
         this.world = root.querySelector('[data-world]');
         this.wires = root.querySelector('[data-wires]');
         this.window = floatWindow(root, root.querySelector('[data-head]'), { storeKey: 'rindr.nodeEditor.window', width: 1100, height: 580, minWidth: 480, minHeight: 240,
-            clearOf: () => document.getElementById('materials') });
+            clearOf: () => this.hooks.clearOf?.() ?? null });
         this.window.apply();
 
         // node list on the left, by category (click = add, drag onto the canvas = add at the drop point); the groups
@@ -481,7 +482,8 @@ export class NodeEditor {
 
     /** the baked values of the node graph are there (graph-apply.js): the locked fields of the output show them */
     refreshValues(id) {
-        if (id !== this.materialId || !this.isOpen || this.root.contains(document.activeElement) && document.activeElement !== document.body) return;
+        const focused = focusedIn(this.root);
+        if (id !== this.materialId || !this.isOpen || this.root.contains(focused) && focused !== document.body) return;
         const out = this.graph?.nodes.find(n => n.type === 'output');
         if (out) this._redrawNode(out);
     }
@@ -851,7 +853,7 @@ export class NodeEditor {
         // position only: stored with the graph (undo, saving) – the material and the previews stay as they are
         if (d.kind === 'node') { if (this.materialId) this.manager.setGraph(this.materialId, structuredClone(this.graph)); return; }
         if (d.kind !== 'link') return;
-        const port = document.elementFromPoint(e.clientX, e.clientY)?.closest('[data-port][data-dir="in"]');
+        const port = elementFromPointIn(this.root, e.clientX, e.clientY)?.closest('[data-port][data-dir="in"]');
         if (port && port.dataset.portNode !== d.from.node) {
             const to = { node: port.dataset.portNode, port: port.dataset.port };
             this.graph.links = this.graph.links.filter(l => !(l.to.node === to.node && l.to.port === to.port));

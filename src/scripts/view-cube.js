@@ -5,6 +5,7 @@
 // pass, does not touch the raster/path tracing pipeline; the browser hit-tests the 3D faces itself.
 // Every face is a 3×3 grid: centre = the face's view, sides = edge views, corners = corner views – 26 directions,
 // cells with the same direction (an edge appears on two faces, a corner on three) highlight together.
+import { elementFromPointIn } from './shadow-dom.js';
 import * as THREE from 'three/webgpu';
 import { t } from './i18n.js';
 
@@ -85,7 +86,7 @@ export class ViewCube {
     // click it flies away; per-cell enter/leave events left the old cell highlighted)
     _hover() {
         const p = this._pointer;
-        const el = p && document.elementFromPoint(p.x, p.y)?.closest('[data-dir]');
+        const el = p && elementFromPointIn(this.root, p.x, p.y)?.closest('[data-dir]');
         this._highlight(el && this.root.contains(el) ? el.dataset.dir : null);
     }
 

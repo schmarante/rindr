@@ -1,5 +1,6 @@
 // Settings page "Distributed Rendering" (setup menu) and the status page of a render client
 // (docs/distributed.md).
+import { layerFor } from '../shadow-dom.js';
 import { t } from '../i18n.js';
 import { INPUT } from '../ui-controls.js';
 import { LOCAL_ID, CLIENT_COLORS } from './master.js';
@@ -180,7 +181,7 @@ export function clientView(name, gpu) {
     pair.append(el('div', 'text-white/70', t('distributed.client.answerLabel')), code, copyButton(() => code.value));
     box.append(title, who, state, bar, count, pair);
     page.append(box);
-    document.body.append(page);
+    layerFor().append(page);
     return {
         update({ state: s, bucket, progress = 0, done = 0, message, size = '' }) {
             state.textContent = t(`distributed.client.${s}`, { id: bucket?.id ?? '', message: message || '', percent: Math.round(progress * 100), size });

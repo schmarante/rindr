@@ -5,17 +5,20 @@
 // Labels and titles arrive already translated (caller uses t()).
 
 // Same style as the other panels (Scene Graph, materials): dark translucent with blur, no border
+import { eventTarget, layerRect } from './shadow-dom.js';
+
 const PANEL = 'pointer-events-auto absolute min-w-44 rounded-lg bg-black/60 p-1 text-xs text-white/90 backdrop-blur-sm';
 const TITLE = 'px-2 pt-1 pb-1 text-[10px] font-medium tracking-wide text-white/40 uppercase';
 const ITEM = 'flex w-full items-center justify-between gap-4 rounded px-2 py-1 text-left outline-none hover:bg-white/10 focus-visible:bg-white/10';
 
 export class QuadMenu {
     constructor(container = document.body) {
+        this.container = container;
         this.root = document.createElement('div');
         this.root.className = 'pointer-events-none fixed inset-0 z-30';
         this.root.hidden = true;
         container.append(this.root);
-        this._onDown = e => { if (!this.root.contains(e.target) || e.target === this.root) this.close(); };
+        this._onDown = e => { const target = eventTarget(e); if (!this.root.contains(target) || target === this.root) this.close(); };
         this._onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); this.close(); } };
         this._onWheel = () => this.close();
     }
@@ -61,8 +64,10 @@ export class QuadMenu {
         }
         this.root.replaceChildren(frag);
         this.root.hidden = false;
-        // size is only known after insertion: place panels at the click point, mirror at the edge
-        const W = window.innerWidth, H = window.innerHeight, gap = 2;
+        // size is only known after insertion: place panels at the click point, mirror at the edge (of the player's
+        // layer – the click point in its coordinates)
+        const L = layerRect(this.container), W = L.width, H = L.height, gap = 2;
+        x -= L.left; y -= L.top;
         for (const [panel, q] of placed) {
             const { width: w, height: h } = panel.getBoundingClientRect();
             let right = q.endsWith('r'), top = q.startsWith('t');

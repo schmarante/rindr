@@ -1,3 +1,4 @@
+import { eventTarget, layerFor } from './shadow-dom.js';
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { ViewCube } from './view-cube.js';
@@ -1281,12 +1282,12 @@ export async function createPlayer(options = {}) {
     window.addEventListener('keydown', e => {
         const key = e.key.toLowerCase();
         if ((e.ctrlKey || e.metaKey) && !e.altKey && (key === 'z' || key === 'y')) {
-            if (isTextField(e.target)) return;
+            if (isTextField(eventTarget(e))) return;
             e.preventDefault();
             undoRedo(key === 'y' || e.shiftKey);
             return;
         }
-        if (e.target.closest?.('input, textarea, select')) return;
+        if (eventTarget(e).closest?.('input, textarea, select')) return;
         // Ctrl+A (Cmd+A): select all visible parts (in text fields it stays select-all text)
         if ((e.ctrlKey || e.metaKey) && !e.altKey && key === 'a') {
             e.preventDefault();
@@ -1782,7 +1783,7 @@ export async function createPlayer(options = {}) {
     }
 
     // --- Quad menu (right click without movement, like MAX) ---
-    const quadMenu = new QuadMenu();
+    const quadMenu = new QuadMenu(layerFor(dom.getElementById('viewport')));
     function openQuadMenu(x, y) {
         if (!rootGroup) return;
         const hasSel = isModelEntry(selection);   // without a selection: only "Show all"
@@ -2043,6 +2044,8 @@ export async function createPlayer(options = {}) {
     // Loaded with its first opening (lazy).
     const nodeEditor = lazy(async () => new (await import('./node-editor.js')).NodeEditor(dom.getElementById('node-editor'), materialManager, {
         preview: (def, nodeId, port, size) => graphApplier.previewNode(def, nodeId, port, size),
+        // the material list the editor window must not cover when it opens (float-window.js clearOf)
+        clearOf: () => dom.getElementById('materials'),
         materialThumb: (id, size) => materialPanel.thumbUrl(id, size),
         onThumbReady: cb => materialPanel.thumbs?.addEventListener('ready', cb),
         // an image from the file that is missing: from its server (on click, like the asset window) or a chosen file

@@ -3,6 +3,7 @@
 // via a file dialog, or by dropping files/folders anywhere while it is open (matched by file name).
 // Free window in the style of the panels (movable, resizable – float-window.js); opened via the toolbar or
 // automatically when a scene with missing files is opened.
+import { layerFor } from './shadow-dom.js';
 import { t } from './i18n.js';
 import { floatWindow } from './float-window.js';
 import { icon } from './icons.js';
@@ -107,7 +108,7 @@ export function createAssetsWindow({ rows, onFiles, remote = null }) {
     foot.append(hint, pick, pickFolder, input, folderInput);
     panel.append(head, remoteBar, list, foot);
     const placement = floatWindow(root, head, { storeKey: 'rindr.assets.window', width: 544, height: 520, minWidth: 360, minHeight: 220 });
-    document.body.append(root);
+    layerFor().append(root);
 
     // dropping files: the viewer's global drop handler relinks while the window is open (anywhere in the
     // window, the replace/add plane is not shown then)

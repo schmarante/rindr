@@ -3,6 +3,8 @@
 // number format; colour field with an own picker in the panel style (colorField).
 // One implementation – every input looks and behaves the same.
 
+import { eventTarget, focusedIn, layerFor, layerRect } from './shadow-dom.js';
+
 /** number/text field (right-aligned numbers) */
 export const INPUT = 'w-full min-w-0 rounded bg-white/10 px-1.5 py-0.5 text-right tabular-nums text-white outline-none focus:bg-white/20';
 /** select (like INPUT, left-aligned) */
@@ -17,7 +19,7 @@ export const CHECKBOX = 'size-3.5 shrink-0 cursor-pointer accent-sky-400';
 export function draggable(input, { perPixel, min = -Infinity, max = Infinity, step = 0, onDrag, onStart, onEnd }) {
     input.classList.add('cursor-ew-resize', 'focus:cursor-text');
     input.addEventListener('pointerdown', e => {
-        if (document.activeElement === input || e.button !== 0) return;
+        if (focusedIn(input) === input || e.button !== 0) return;
         if (e.offsetX > input.clientWidth - 14) return;   // the step arrows at the right edge (index.astro) stay native
         e.preventDefault();   // no focus yet: a click focuses on release, a drag never
         let last = e.clientX, value = Number(input.value) || 0, dragging = false, moved = 0;
@@ -113,7 +115,7 @@ function openPicker(anchor, value, callbacks) {
             <div data-prev class="size-6 shrink-0 rounded ring-1 ring-white/20"></div>
             <input data-hex maxlength="7" spellcheck="false" class="${INPUT.replace('text-right tabular-nums', 'text-left font-mono')}" />
         </div>`;
-    document.body.append(root);
+    layerFor(anchor).append(root);
     const $ = s => root.querySelector(s);
     const p = picker = { root, anchor, value, callbacks, hsv: hexToHsv(value), dirty: false, sv: $('[data-sv]'), svh: $('[data-svh]'), hue: $('[data-hue]'), hueh: $('[data-hueh]'), prev: $('[data-prev]'), hex: $('[data-hex]') };
     paintPicker();
@@ -122,7 +124,7 @@ function openPicker(anchor, value, callbacks) {
     const emit = () => {
         const hex = p.value = hsvToHex(p.hsv);
         p.prev.style.background = hex;
-        if (document.activeElement !== p.hex) p.hex.value = hex;
+        if (focusedIn(p.hex) !== p.hex) p.hex.value = hex;
         p.dirty = true;
         callbacks.onInput?.(hex);
     };
@@ -154,7 +156,7 @@ function openPicker(anchor, value, callbacks) {
     p.hex.onchange = commit;
 
     // close: pointer down outside, Escape, scroll of the page
-    p.outside = e => { if (!root.contains(e.target) && e.target !== anchor) closePicker(); };
+    p.outside = e => { const target = eventTarget(e); if (!root.contains(target) && target !== anchor) closePicker(); };
     p.key = e => { if (e.key === 'Escape') { e.stopPropagation(); closePicker(); } };
     window.addEventListener('pointerdown', p.outside, true);
     window.addEventListener('keydown', p.key, true);
@@ -183,12 +185,12 @@ function paintPicker() {
     p.prev.style.background = hsvToHex(p.hsv);
 }
 
-// below the field, above it if there is no room; inside the window
+// below the field, above it if there is no room; inside the window (the player's layer – positions relative to it)
 function placePicker() {
-    const p = picker, r = p.anchor.getBoundingClientRect(), pr = p.root.getBoundingClientRect();
-    let top = r.bottom + 6;
-    if (top + pr.height > window.innerHeight - 8) top = Math.max(8, r.top - pr.height - 6);
-    const left = Math.min(Math.max(8, r.left), window.innerWidth - pr.width - 8);
+    const p = picker, L = layerRect(layerFor(p.anchor)), r = p.anchor.getBoundingClientRect(), pr = p.root.getBoundingClientRect();
+    let top = r.bottom - L.top + 6;
+    if (top + pr.height > L.height - 8) top = Math.max(8, r.top - L.top - pr.height - 6);
+    const left = Math.min(Math.max(8, r.left - L.left), L.width - pr.width - 8);
     p.root.style.left = `${left}px`;
     p.root.style.top = `${top}px`;
 }

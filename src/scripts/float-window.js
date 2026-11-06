@@ -4,6 +4,8 @@
 // one too.
 
 // stacking order of all free windows (last = front); z-index 30 + position, below dialogs and menus
+import { layerFor, layerRect } from './shadow-dom.js';
+
 const stack = [];
 function toFront(root) {
     const i = stack.indexOf(root);
@@ -38,11 +40,12 @@ export function floatWindow(root, head, { storeKey, width, height, minWidth = 52
     root.addEventListener('pointerdown', () => toFront(root), true);
     head.addEventListener('pointerdown', e => {
         if (e.button !== 0 || e.target.closest('input, select, button, textarea')) return;
-        const r = root.getBoundingClientRect(), sx = e.clientX, sy = e.clientY;
+        // positions are relative to the layer the window lives in (the page or the player, shadow-dom.js)
+        const o = layerRect(layerFor(root)), r = root.getBoundingClientRect(), sx = e.clientX, sy = e.clientY;
         head.setPointerCapture(e.pointerId);
         const move = ev => {
-            win.left = Math.min(Math.max(r.left + ev.clientX - sx, 0), window.innerWidth - 80);
-            win.top = Math.min(Math.max(r.top + ev.clientY - sy, 0), window.innerHeight - 40);
+            win.left = Math.min(Math.max(r.left - o.left + ev.clientX - sx, 0), o.width - 80);
+            win.top = Math.min(Math.max(r.top - o.top + ev.clientY - sy, 0), o.height - 40);
             root.style.left = `${win.left}px`; root.style.top = `${win.top}px`;
         };
         const up = () => { head.removeEventListener('pointermove', move); head.removeEventListener('pointerup', up); save(); };
@@ -57,15 +60,16 @@ export function floatWindow(root, head, { storeKey, width, height, minWidth = 52
             if (e.button !== 0) return;
             e.preventDefault();
             e.stopPropagation();
-            const r = root.getBoundingClientRect(), sx = e.clientX, sy = e.clientY;
+            const o = layerRect(layerFor(root)), R = root.getBoundingClientRect(), sx = e.clientX, sy = e.clientY;
+            const r = { left: R.left - o.left, right: R.right - o.left, top: R.top - o.top, bottom: R.bottom - o.top };
             h.setPointerCapture(e.pointerId);
             const move = ev => {
                 const dx = ev.clientX - sx, dy = ev.clientY - sy;
                 let { left, top, right, bottom } = r;
                 if (dir.includes('w')) left = Math.min(Math.max(r.left + dx, 0), r.right - minWidth);
-                if (dir.includes('e')) right = Math.max(Math.min(r.right + dx, window.innerWidth), r.left + minWidth);
+                if (dir.includes('e')) right = Math.max(Math.min(r.right + dx, o.width), r.left + minWidth);
                 if (dir.includes('n')) top = Math.min(Math.max(r.top + dy, 0), r.bottom - minHeight);
-                if (dir.includes('s')) bottom = Math.max(Math.min(r.bottom + dy, window.innerHeight), r.top + minHeight);
+                if (dir.includes('s')) bottom = Math.max(Math.min(r.bottom + dy, o.height), r.top + minHeight);
                 Object.assign(win, { left, top, width: right - left, height: bottom - top });
                 Object.assign(root.style, { left: `${left}px`, top: `${top}px`, width: `${right - left}px`, height: `${bottom - top}px` });
             };
@@ -80,18 +84,20 @@ export function floatWindow(root, head, { storeKey, width, height, minWidth = 52
         apply() {
             root.className = WINDOW_CLASS;
             root.dataset.ui = 'float';
-            let w = Math.min(win.width || width, window.innerWidth - 20);
-            const h = Math.min(win.height || height, window.innerHeight - 20);
-            let left = win.left ?? Math.max(10, (window.innerWidth - w) / 2);
+            const o = layerRect(layerFor(root));   // the page or the player (shadow-dom.js) – positions relative to it
+            let w = Math.min(win.width || width, o.width - 20);
+            const h = Math.min(win.height || height, o.height - 20);
+            let left = win.left ?? Math.max(10, (o.width - w) / 2);
             // fully inside the browser window (a stored position from a larger window must not hang out at the bottom)
-            const top = Math.max(10, Math.min(win.top ?? (window.innerHeight - h) / 2, window.innerHeight - h - 10));
+            const top = Math.max(10, Math.min(win.top ?? (o.height - h) / 2, o.height - h - 10));
             // keep clear of the panel: end left of it (moved, narrower if needed – down to the minimum width)
-            const panel = clearOf?.(), p = panel && !panel.hidden && panel.getBoundingClientRect();
+            const panel = clearOf?.(), P = panel && !panel.hidden && panel.getBoundingClientRect();
+            const p = P && { left: P.left - o.left, top: P.top - o.top, bottom: P.bottom - o.top, width: P.width };
             if (p?.width && left + w > p.left - 8 && top < p.bottom && top + h > p.top && p.left - 8 - minWidth >= 10) {
                 left = Math.max(10, Math.min(left, p.left - 8 - w));
                 w = Math.min(w, p.left - 8 - left);
             }
-            root.style.cssText = `left:${Math.min(left, window.innerWidth - 80)}px;top:${top}px;width:${w}px;height:${h}px;min-width:${minWidth}px;min-height:${minHeight}px;`;
+            root.style.cssText = `left:${Math.min(left, o.width - 80)}px;top:${top}px;width:${w}px;height:${h}px;min-width:${minWidth}px;min-height:${minHeight}px;`;
             root.append(...handles);   // (again) on top of the content
             if (!root.hidden) toFront(root);   // opened: in front of the other windows
         },

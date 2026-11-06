@@ -5,6 +5,7 @@
 //    flatten ground (+ capture height)
 //  - Camera: focal length (FOV)
 //  - Section plane: position + rotation, axis X/Y/Z, flip side, colour of the cut surface
+import { focusedIn } from './shadow-dom.js';
 import { viewAngle, setViewAngle, PERSPECTIVE_LIMIT, MAX_VIEW_ANGLE, MIN_VIEW_ANGLE } from './fisheye.js';
 import { Euler, Box3, Matrix4, Vector3, Quaternion } from 'three/webgpu';
 import { t, has, getLocale } from './i18n.js';
@@ -134,7 +135,7 @@ export class PropertiesPanel {
         if (!values) return;
         const set = (name, v) => {
             const el = this.fields[name];
-            if (el && document.activeElement !== el) el.value = fmt(v);
+            if (el && focusedIn(el) !== el) el.value = fmt(v);
         };
         values.position?.forEach((v, i) => set('p' + i, v));
         values.rotation?.forEach((v, i) => set('r' + i, v));
@@ -509,7 +510,7 @@ export class PropertiesPanel {
             const setTarget = this._tracked(t('properties.light.undo.target'), 'light-target:' + light.uuid, () => JSON.stringify(meta.target), v => {
                 meta.target = JSON.parse(v);
                 api.aim(light);
-                meta.target.forEach((x, i) => { if (this.fields['lt' + i] && document.activeElement !== this.fields['lt' + i]) this.fields['lt' + i].value = fmt(x); });
+                meta.target.forEach((x, i) => { if (this.fields['lt' + i] && focusedIn(this.fields['lt' + i]) !== this.fields['lt' + i]) this.fields['lt' + i].value = fmt(x); });
                 changed();
             });
             meta.target.forEach((x, i) => { this.fields['lt' + i].value = fmt(x); });
@@ -1142,7 +1143,7 @@ export class PropertiesPanel {
         const e = new Euler().setFromQuaternion(camera.quaternion, 'YXZ');
         const set = (name, v) => {
             const field = this.fields[name];
-            if (field && document.activeElement !== field) field.value = fmt(v);
+            if (field && focusedIn(field) !== field) field.value = fmt(v);
         };
         camera.position.toArray().forEach((v, i) => set('cp' + i, v));
         // tilt/pan from the orientation, roll from its own value (this runs inside the orbit update, before the
@@ -1151,7 +1152,7 @@ export class PropertiesPanel {
         set('cr2', camera.userData.roll || 0);
         // view angle: the side views of the view cube change it (in their flight, and back when turning away)
         const angle = viewAngle(camera);
-        if (this.fields.fovRange && document.activeElement !== this.fields.fovRange) this.fields.fovRange.value = angle;
+        if (this.fields.fovRange && focusedIn(this.fields.fovRange) !== this.fields.fovRange) this.fields.fovRange.value = angle;
         set('fovNum', angle);
     }
 
@@ -1160,8 +1161,8 @@ export class PropertiesPanel {
         const { focusRange, focusNum } = this.fields;
         if (!dof || !focusRange) return;
         focusRange.max = Math.max(Number(focusRange.max), dof.focusDistance);
-        if (document.activeElement !== focusRange) focusRange.value = dof.focusDistance;
-        if (document.activeElement !== focusNum) focusNum.value = fmt(dof.focusDistance);
+        if (focusedIn(focusRange) !== focusRange) focusRange.value = dof.focusDistance;
+        if (focusedIn(focusNum) !== focusNum) focusNum.value = fmt(dof.focusDistance);
     }
 
     // --- Building blocks ---

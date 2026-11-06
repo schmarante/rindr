@@ -6,6 +6,7 @@
 //
 // Rendering in the worker (hdri-service.js): while dragging/sliding a low resolution for canvas + scene, on release
 // the canvas preview (1024) and the full resolution for the scene. One undo step per finished change.
+import { eventTarget, focusedIn } from '../shadow-dom.js';
 import { t } from '../i18n.js';
 import { createPin, cloneHdri, RESOLUTIONS, direction } from './hdri-model.js';
 import { LatestRender, makeEnvTexture } from './hdri-service.js';
@@ -308,11 +309,11 @@ export class HdriEditor {
     // inside it), otherwise the key keeps its meaning in the viewer (delete the selected parts)
     _setupKeys() {
         this._active = false;
-        window.addEventListener('pointerdown', e => { this._active = !this.root.hidden && this.root.contains(e.target); }, true);
+        window.addEventListener('pointerdown', e => { this._active = !this.root.hidden && this.root.contains(eventTarget(e)); }, true);
         window.addEventListener('keydown', e => {
             if (!this._active || this.root.hidden || !this.sel || !this.doc) return;
             if (e.key !== 'Delete' && e.key !== 'Del' && e.key !== 'Backspace') return;
-            if (e.target.closest?.('input, textarea, select, [contenteditable]')) return;
+            if (eventTarget(e).closest?.('input, textarea, select, [contenteditable]')) return;
             e.preventDefault();
             e.stopPropagation();
             this._deletePin(this.sel);
@@ -342,7 +343,7 @@ export class HdriEditor {
     // values that dragging on the canvas changes, without rebuilding the sidebar
     _syncSideValues() {
         for (const input of this.root.querySelectorAll('[data-bind]')) {
-            if (document.activeElement === input) continue;
+            if (focusedIn(input) === input) continue;
             const v = readPath(this.doc, input.dataset.bind, this.sel);
             if (v === undefined) continue;
             if (input.type === 'range' || input.type === 'number') input.value = input.type === 'number' ? fmt(v) : v;

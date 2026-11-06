@@ -7,6 +7,7 @@
 // The image itself comes from the viewer (ctx.exportImage → canvas; transparency: exportImage/composeMatte in viewer.js;
 // ctx.distributed.render). EXR/PSD: one layer per light pass – ctx.renderPasses renders and saves them; with it the
 // transparent PNG too (one render, alpha from the transparency pass – returned, saved here).
+import { eventTarget, layerFor } from './shadow-dom.js';
 import { t } from './i18n.js';
 import { dialogOpen } from './dialog.js';
 import { icon } from './icons.js';
@@ -30,12 +31,12 @@ export function createImageExport(ctx) {
     const root = document.createElement('div');
     root.className = 'pointer-events-none fixed inset-0 z-40 flex items-center justify-center p-4 text-xs text-white/90';
     root.hidden = true;
-    document.body.append(root);
+    layerFor().append(root);
 
     const close = () => { root.hidden = true; state.busy = false; };
     document.addEventListener('pointerdown', e => {
         if (root.hidden || dialogOpen()) return;
-        if (!root.firstElementChild?.contains(e.target)) close();
+        if (!root.firstElementChild?.contains(eventTarget(e))) close();
     }, true);
     window.addEventListener('keydown', e => { if (e.key === 'Escape' && !root.hidden && !dialogOpen()) { e.stopPropagation(); close(); } }, true);
 

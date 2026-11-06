@@ -2,6 +2,7 @@
 // detail view to edit a topic (title, status, type, priority, assignee, due date, labels, description),
 // viewpoints (click = apply: camera, visibility, selection; "+ current view" adds one), comments (with optional
 // current view). New topic from the current view, open/export .bcfzip. Author for new entries: settings → BIM.
+import { layerFor } from '../shadow-dom.js';
 import { t, getLocale } from '../i18n.js';
 import { uuid } from './bcf-format.js';
 import { icon } from '../icons.js';
@@ -31,7 +32,7 @@ export function createBcfPanel({ apply, capture, open, save, author, openSetting
     root.className = 'pointer-events-auto fixed top-5 right-5 bottom-20 z-30 flex w-[min(24rem,calc(100vw-2.5rem))] flex-col overflow-hidden rounded-lg bg-black/70 text-xs text-white/90 shadow-2xl backdrop-blur-sm';
     root.hidden = true;
     root.dataset.ui = 'right';
-    document.body.append(root);
+    layerFor().append(root);
 
     const el = (tag, className = '', text) => { const e = document.createElement(tag); if (className) e.className = className; if (text != null) e.textContent = text; return e; };
     const button = (label, onClick, extra = '') => { const b = el('button', BUTTON + ' ' + extra, label); b.onclick = onClick; return b; };
@@ -124,8 +125,10 @@ export function createBcfPanel({ apply, capture, open, save, author, openSetting
             i.value = type === 'date' ? (topic[key] || '').slice(0, 10) : topic[key] ?? '';
             if (list) {
                 const id = 'bcf-list-' + key;
-                let dl = document.getElementById(id);
-                if (!dl) { dl = el('datalist'); dl.id = id; document.body.append(dl); }
+                // the list must sit in the input's tree (ids are per document / shadow root)
+                const layer = layerFor(), tree = layer.getRootNode();
+                let dl = tree.getElementById?.(id) ?? null;
+                if (!dl) { dl = el('datalist'); dl.id = id; layer.append(dl); }
                 dl.replaceChildren(...list.map(v => Object.assign(el('option'), { value: v })));
                 i.setAttribute('list', id);
             }

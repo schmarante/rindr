@@ -8,6 +8,7 @@
 // The button shows the current mode (ball + name + arrow), a click opens the choice above the bar; addCompanion puts a
 // button right next to it (the teapot – rendering).
 
+import { eventTarget } from './shadow-dom.js';
 import { t } from './i18n.js';
 import { uvBall, wireBall } from './view-balls.js';
 import { icon } from './icons.js';
@@ -105,7 +106,7 @@ export class ViewModeBar {
         anchor.append(menu);
         this._menu = menu;
         // close on a click elsewhere or Esc
-        this._outside = e => { if (!menu.contains(e.target)) this._closeMenu(); };
+        this._outside = e => { if (!menu.contains(eventTarget(e))) this._closeMenu(); };
         this._esc = e => { if (e.key === 'Escape') this._closeMenu(); };
         setTimeout(() => { document.addEventListener('pointerdown', this._outside); document.addEventListener('keydown', this._esc); });
     }

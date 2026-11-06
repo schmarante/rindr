@@ -9,6 +9,7 @@
 //    Only swatches in view of the list (+ one row) are rendered, a queued one that scrolls away is dropped again –
 //    the library's 200+ presets were all queued on its first opening, each a shader compile that blocks the GPU
 //    process (the whole browser window froze now and then)
+import { eventTarget, focusedIn } from './shadow-dom.js';
 import { messageDialog } from './dialog.js';
 import { materialDragData, libraryDragData } from './material-transfer.js';
 import { buildMaterial } from './material-manager.js';
@@ -138,7 +139,7 @@ export class MaterialPanel {
             if (!row) return;
             this.listPressed = true;   // no list rebuild until released (the row stays a drag source)
             // commit a field still being edited (number, name) to the material it belongs to before switching
-            if (this.editor.contains(document.activeElement)) document.activeElement.blur();
+            const focused = focusedIn(this.editor); if (this.editor.contains(focused)) focused.blur();
             this._select(row.dataset.id);
         });
         this.list.addEventListener('dblclick', e => {
@@ -167,7 +168,7 @@ export class MaterialPanel {
         // material previews keep their image; the new one is rendered on release (wish of the user)
         // (not on selects: their list is native – the pointerup goes there and the hold stayed on, the type change kept
         // the old picture)
-        window.addEventListener('pointerdown', e => { if (!e.target.closest?.('select, option')) this.holdThumbs = true; }, true);
+        window.addEventListener('pointerdown', e => { if (!eventTarget(e).closest?.('select, option')) this.holdThumbs = true; }, true);
         // after the click/drag ended (next task): previews held back meanwhile, a list rebuild that waited
         const release = () => {
             const thumbs = this.holdThumbs && this.thumbsStale;
@@ -237,7 +238,7 @@ export class MaterialPanel {
             b.className = 'rounded p-1' + (b.dataset.view === this.view ? ' bg-sky-500/40 text-white' : ' text-white/60 hover:bg-white/15');
         });
         this.list.className = LIST + (this.view === 'grid' ? ' grid grid-cols-4 content-start gap-1' : '');
-        if (this.listPressed) { this.listStale = true; if (!keepEditor || !this.editor.contains(document.activeElement)) this._renderEditor(); return; }
+        if (this.listPressed) { this.listStale = true; if (!keepEditor || !this.editor.contains(focusedIn(this.editor))) this._renderEditor(); return; }
         this.categorySelect.hidden = this.tab !== 'library';
         if (this.newButton) this.newButton.hidden = this.tab === 'library';
         // the rows are built anew: the previews asked for by the old ones are dropped (another category or tab – its
@@ -245,7 +246,7 @@ export class MaterialPanel {
         this.thumbObserver?.disconnect();
         if (this.thumbs) for (const sw of this.list.querySelectorAll('[data-thumb]')) this.thumbs.cancel(sw.dataset.group, sw.dataset.thumb);
         if (this.tab === 'scene') this._renderScene(); else this._renderLibrary();
-        if (!keepEditor || !this.editor.contains(document.activeElement)) this._renderEditor();
+        if (!keepEditor || !this.editor.contains(focusedIn(this.editor))) this._renderEditor();
     }
 
     // --- Lists ---
@@ -553,7 +554,7 @@ export class MaterialPanel {
 
     /** the baked values of the node graph are there (graph-apply.js): the locked fields show them */
     refreshValues(id) {
-        if (id !== this.current || this.tab !== 'scene' || this.editor.contains(document.activeElement)) return;
+        if (id !== this.current || this.tab !== 'scene' || this.editor.contains(focusedIn(this.editor))) return;
         this._renderEditor();
     }
 

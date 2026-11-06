@@ -14,6 +14,7 @@
 //   menu.onChange: called right before a switch, dropdown or text field applies a value (viewer: soft transition
 //   of the picture, screen-fade.js) – not for sliders, they apply live while dragging.
 
+import { focusedIn } from './shadow-dom.js';
 import { t } from './i18n.js';
 import { icon } from './icons.js';
 
@@ -153,7 +154,7 @@ class Section {
         const refresh = () => {
             const v = Number(get());
             slider.value = v;
-            if (document.activeElement !== number) number.value = v.toFixed(decimals);
+            if (focusedIn(number) !== number) number.value = v.toFixed(decimals);
         };
         const apply = v => {
             if (!Number.isFinite(v)) return;
@@ -187,7 +188,7 @@ class Section {
         if (mask) input.setAttribute('data-1p-ignore', '');   // no password manager suggestions
         const row = this._row(label, input);
         const shown = () => (mask ? mask(get()) : get()) || '';
-        const refresh = () => { if (document.activeElement !== input) input.value = shown(); };
+        const refresh = () => { if (focusedIn(input) !== input) input.value = shown(); };
         if (mask) input.addEventListener('focus', () => { input.value = ''; });
         input.addEventListener('keydown', e => {
             if (e.key === 'Enter') input.blur();
