@@ -118,14 +118,17 @@ export async function createPlayer(options = {}) {
     if (playerCreated) throw new Error('createPlayer: only one player per page so far (docs/player.md)');
     playerCreated = true;
 
-    // Model: ?model=<file name from public/models> in the URL, otherwise empty scene (open a file via drag & drop)
-    const MODEL_FILE = new URLSearchParams(location.search).get('model');
-    // ?samplescene: the sample scene in public/samplescene (scene file + its model, openSampleScene)
-    const SAMPLE_SCENE = new URLSearchParams(location.search).has('samplescene');
+    // where the app's files lie (models/, hdr/, oidn/, samplescene/): the page's base path; an embedded player gets its
+    // own (docs/player.md)
+    const ASSET_BASE = options.assetBase ?? import.meta.env.BASE_URL;
+    // model at the start: file name from public/models (app.js: ?model=…), otherwise empty scene (open a file via drag & drop)
+    const MODEL_FILE = options.model ?? null;
+    // the sample scene in public/samplescene at the start (app.js: ?samplescene; scene file + its model, openSampleScene)
+    const SAMPLE_SCENE = !!options.sampleScene;
     // sub folders allowed (e.g. ?model=folder/scene.gltf – .bin/textures are resolved relative to it)
-    const MODEL_URL = `${import.meta.env.BASE_URL}models/${(MODEL_FILE || '').split('/').map(encodeURIComponent).join('/')}`;
+    const MODEL_URL = `${ASSET_BASE}models/${(MODEL_FILE || '').split('/').map(encodeURIComponent).join('/')}`;
     // OIDN weights (Apache 2.0, from RenderKit/oidn-weights)
-    const DENOISE_WEIGHTS_URL = `${import.meta.env.BASE_URL}oidn/rt_hdr_alb_nrm.tza`;
+    const DENOISE_WEIGHTS_URL = `${ASSET_BASE}oidn/rt_hdr_alb_nrm.tza`;
 
     const loadingEl = document.getElementById('loading');
     function showStatus(text) {
@@ -859,7 +862,7 @@ export async function createPlayer(options = {}) {
                 } else if (name) {
                     // relinked HDRI (asset window): blob URL of the dropped file, otherwise public/hdr
                     progress({});
-                    texture = await loadHdri(this.hdriUrls[name] || `${import.meta.env.BASE_URL}hdr/${encodeURIComponent(name)}`, progress);
+                    texture = await loadHdri(this.hdriUrls[name] || `${ASSET_BASE}hdr/${encodeURIComponent(name)}`, progress);
                     if (this.mirror) { const loaded = texture; texture = mirroredHdri(loaded); loaded.dispose(); }
                     // path tracer's importance-sampling table in a worker first: raster and HQ switch together
                     if (id === this._loadId) await pathTracing.prepareEnvironment(texture);
@@ -950,8 +953,8 @@ export async function createPlayer(options = {}) {
     }
     (window.requestIdleCallback || (fn => setTimeout(fn, 500)))(() => { if (!environment.hdri) upgradeStudio(); }, { timeout: 1500 });
 
-    // HDRI via URL: ?hdr=<file from public/hdr>
-    const HDR_PARAM = new URLSearchParams(location.search).get('hdr');
+    // HDRI at the start: file from public/hdr (app.js: ?hdr=…)
+    const HDR_PARAM = options.hdr ?? null;
     if (HDR_PARAM) environment.select(HDR_PARAM).catch(e => console.error(`HDRI ${HDR_PARAM}: ${e.message}`));
 
     // --- Scene Graph ---
@@ -1396,7 +1399,7 @@ export async function createPlayer(options = {}) {
         if (incomplete) return { ...incomplete, files: [...(incomplete.files || []), ...extras], incomplete: true };
         const match = pool.find(f => baseName(f.path) === info.name.toLowerCase());
         if (match) return modelFromFiles([match, ...extras]);
-        const url = `${import.meta.env.BASE_URL}models/${encodeURIComponent(info.name)}`;
+        const url = `${ASSET_BASE}models/${encodeURIComponent(info.name)}`;
         try {
             const res = await fetch(url, { method: 'HEAD' });
             if (!res.ok) return null;
@@ -6619,7 +6622,7 @@ export async function createPlayer(options = {}) {
     /** The sample scene (public/samplescene: samplescene.json naming samplescene.usda – coarse meshes the USD import
      *  subdivides) – fetched and opened like the two files dropped together */
     async function openSampleScene() {
-        const base = `${import.meta.env.BASE_URL}samplescene/`;
+        const base = `${ASSET_BASE}samplescene/`;
         showProgress(t('status.loadingSample'));
         try {
             const files = await Promise.all(['samplescene.json', 'samplescene.usda'].map(async name => {
