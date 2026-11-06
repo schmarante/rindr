@@ -260,17 +260,18 @@
             "subsurfaceMode": "Genau (HQ)",
             "subsurfaceAnisotropy": "Streurichtung",
             "hair": "Haar",
-            "hairGrow": "Aus der Fläche wachsen",
+            "hairGrow": "Wachsen",
             "hairTipColor": "Farbe Spitze",
-            "hairThickness": "Faserdicke (mm)",
+            "hairThickness": "Dicke (mm)",
             "hairDensity": "Dichte",
-            "hairLength": "Länge (mm, beim Wachsen)",
+            "hairLength": "Länge (mm)",
             "hairSpread": "Auffächern",
             "hairTaper": "Verjüngung",
             "hairCurl": "Locken",
             "hairClump": "Büschel",
-            "hairVariation": "Längen-Streuung",
-            "hairDroop": "Hängen (beim Wachsen)"
+            "hairVariation": "Streuung",
+            "hairDroop": "Hängen",
+            "hairAxis": "Richtung"
         },
         "types": {
             "standard": "Standard",
@@ -620,6 +621,17 @@
             "reliefHeight": "Höhe des Reliefs in mm: so hoch ist der ganze Bereich des Eingangs Relief (0 → 1) auf dem Modell – daraus die Neigung der Normal-Map, unabhängig von der Auflösung; negativ = vertieft",
             "displacement": "Displacement in cm: verschiebt die Fläche um (Höhe − Mitte) × Wert (Eingang Displacement (Höhe))",
             "displacementMid": "Höhe, bei der das Displacement die Fläche nicht verschiebt (0–1)"
+        },
+        "paramOptions": {
+            "hairAxis": {
+                "up": "Oben (Y)",
+                "down": "Unten (−Y)",
+                "x": "X",
+                "-x": "−X",
+                "z": "Z",
+                "-z": "−Z",
+                "long": "Längste Achse der Form"
+            }
         }
     },
     "nodeEditor": {

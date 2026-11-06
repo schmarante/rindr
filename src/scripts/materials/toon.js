@@ -232,7 +232,7 @@ export class RindrMaterial extends THREE.MeshPhysicalNodeMaterial {
 
     /**
      * Hair (hair.js): on (> 0) → real fibres – fill: the mesh is only the shape the fibres fill (hidden here; the path
-     * tracer leaves it out – userData.ptHidden), grow: they stand on the surface, which stays. hair = { mode, thickness,
+     * tracer leaves it out – userData.ptHidden), grow: they stand on the surface, which stays. hair = { mode, axis, thickness,
      * taper, density, length, spread, curl, clump, variation, droop, tipColor } (lengths in mm)
      */
     setHair(on, hair) {

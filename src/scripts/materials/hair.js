@@ -99,7 +99,9 @@ export class HairSystem {
         const wanted = found.map(o => {
             const h = hairOf(o.material);
             const s = minScale(o.matrixWorld);
-            const up = new THREE.Vector3(0, 1, 0).transformDirection(new THREE.Matrix4().copy(o.matrixWorld).invert()).toArray();
+            // the fibres' direction in the mesh's own units: fill – the chosen axis of the scene (as seen) or the shape's
+            // longest extent; grow – world up (the droop pulls the other way)
+            const up = (h.mode === 'fill' ? fillAxis(o, h.axis) : new THREE.Vector3(0, 1, 0).transformDirection(new THREE.Matrix4().copy(o.matrixWorld).invert())).toArray();
             const thickness = h.thickness / Math.max(s, 1e-9);
             const area = hairArea(positionsOf(o.geometry), o.geometry.index?.array ?? null, h.mode, up);
             const fibres = fibresFor(area, thickness, h.density);
@@ -285,6 +287,21 @@ function sphereRays(r) {
         const s = Math.sqrt(disc);
         return [-b - s, -b + s].filter(t => t > 0);
     };
+}
+
+// fill direction (mesh units): a scene axis turned into the mesh's frame, or the longest side of its own box
+const AXES = { up: [0, 1, 0], down: [0, -1, 0], x: [1, 0, 0], '-x': [-1, 0, 0], z: [0, 0, 1], '-z': [0, 0, -1] };
+function fillAxis(mesh, axis) {
+    if (axis === 'long') {
+        mesh.geometry.computeBoundingBox();
+        const size = mesh.geometry.boundingBox.getSize(new THREE.Vector3());
+        // measured in the scene (a mesh scaled unevenly): the box's sides through the mesh's scale
+        const e = mesh.matrixWorld.elements;
+        const world = [size.x * Math.hypot(e[0], e[1], e[2]), size.y * Math.hypot(e[4], e[5], e[6]), size.z * Math.hypot(e[8], e[9], e[10])];
+        const k = world.indexOf(Math.max(...world));
+        return new THREE.Vector3(k === 0 ? 1 : 0, k === 1 ? 1 : 0, k === 2 ? 1 : 0);
+    }
+    return new THREE.Vector3(...(AXES[axis] ?? AXES.up)).transformDirection(new THREE.Matrix4().copy(mesh.matrixWorld).invert());
 }
 
 // the shape's own mesh: out of the path tracer while it is only the outline of fill hair

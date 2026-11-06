@@ -170,7 +170,9 @@ files). The common ones:
 **Hair and bristles** – real fibres, traced as such in path tracing (hair scattering model) and drawn as lines in the
 raster view. Assign the material to a part: by default its shape is *filled* with fibres running upwards from where the
 shape begins to its surface – the part itself is only the outline (a shaving brush: model the knot as a bulb; a cylinder
-becomes a bundle of hair). `hairGrow: 1` lets them *grow* from the surface instead (fur). Library: `hair-badger`,
+becomes a bundle of hair). `hairAxis` sets the direction the fibres run when filling (roots → tips): `up` (default), `down`, `x`, `-x`, `z`, `-z` (the
+scene's axes as seen, Y up) or `long` (the shape's longest extent – a cylinder lying on its side). `hairGrow: 1` lets them
+*grow* from the surface instead (fur). Library: `hair-badger`,
 `bristles-white` (fill), `fur-grey`, `hair-brown-long` (grow). Parameters: `color` (at the root), `hairTipColor`,
 `hairThickness` (mm, 0.12), `hairDensity` (share of the area the fibres cover, 0.35), `hairLength` (mm, growing),
 `hairSpread` (fill: the roots drawn towards the middle – fanning out), `hairTaper`, `hairCurl`, `hairClump`,

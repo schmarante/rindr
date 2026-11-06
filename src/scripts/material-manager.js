@@ -103,6 +103,8 @@ export const PARAMS = [
     // or grow from the surface (fur); thickness and length in mm, density = how much of the area the fibres cover
     { key: 'hair', type: 'number', min: 0, max: 1, default: 0, group: 'hair' },
     { key: 'hairGrow', type: 'number', min: 0, max: 1, step: 1, toggle: true, default: 0, group: 'hair' },
+    // fill: the direction the fibres run (roots → tips) – the scene's axes as seen (Y up), or the shape's longest extent
+    { key: 'hairAxis', type: 'select', options: ['up', 'down', 'x', '-x', 'z', '-z', 'long'], default: 'up', group: 'hair' },
     { key: 'hairTipColor', type: 'color', default: '#e8e0d0', group: 'hair' },
     { key: 'hairThickness', type: 'number', min: 0.01, max: 2, step: 0.005, default: 0.12, group: 'hair' },
     { key: 'hairDensity', type: 'number', min: 0.02, max: 1, default: 0.35, group: 'hair' },
@@ -656,7 +658,7 @@ function applyParams(material, params) {
     material.setCloud(p.cloud, p.cloudColor, p.cloudPuff);
     material.setWool(p.wool, p.woolLength);
     material.setGrass(p.grass, p.grassHeight, p.grassDensity, p.grassDry);
-    material.setHair(p.hair, { mode: p.hairGrow > 0 ? 'grow' : 'fill', thickness: p.hairThickness, taper: p.hairTaper, density: p.hairDensity, length: p.hairLength,
+    material.setHair(p.hair, { mode: p.hairGrow > 0 ? 'grow' : 'fill', axis: p.hairAxis, thickness: p.hairThickness, taper: p.hairTaper, density: p.hairDensity, length: p.hairLength,
         spread: p.hairSpread, curl: p.hairCurl, clump: p.hairClump, variation: p.hairVariation, droop: p.hairDroop, tipColor: p.hairTipColor });
     material.setSoap(p.soap, p.soapFilm, p.soapSwirl, p.soapScale);   // after setMarble (shares stand-in fields)
     if (!material.soap) {

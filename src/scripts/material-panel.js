@@ -645,6 +645,12 @@ export class MaterialPanel {
         const set = v => this.manager.setParams(def.id, { [p.key]: v });
         if (p.type === 'color') {
             ctl.append(colorField(value, { onInput: set }));
+        } else if (p.type === 'select') {
+            // one of a list (stored as its key; labels materials.paramOptions.<param>.<key>)
+            const s = el('select', SELECT);
+            for (const o of p.options) s.append(new Option(t(`materials.paramOptions.${p.key}.${o}`), o, false, o === value));
+            s.onchange = () => set(s.value);
+            ctl.append(s);
         } else if (p.toggle) {
             // on/off (stored as 0 / 1 like the other values)
             const cb = el('input', CHECKBOX);

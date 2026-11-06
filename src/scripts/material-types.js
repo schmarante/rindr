@@ -23,7 +23,7 @@ export const MATERIAL_TYPES = {
     grass: { keys: ['color', 'roughness', 'grassHeight', 'grassDensity', 'grassDry'], graph: true, template: 'grass-lawn', on: { grass: 1 }, inputs: [] },
     soap: { keys: ['soapFilm', 'soapSwirl', 'soapScale'], graph: false, template: 'soap-bubble', on: { soap: 1 } },
     // hair and bristles (hair.js): real fibres filling the shape or growing from the surface; the colour = at the root
-    hair: { keys: ['color', 'hairTipColor', 'roughness', 'hairGrow', 'hairThickness', 'hairDensity', 'hairLength', 'hairSpread', 'hairTaper', 'hairCurl', 'hairClump', 'hairVariation', 'hairDroop'],
+    hair: { keys: ['color', 'hairTipColor', 'roughness', 'hairGrow', 'hairAxis', 'hairThickness', 'hairDensity', 'hairLength', 'hairSpread', 'hairTaper', 'hairCurl', 'hairClump', 'hairVariation', 'hairDroop'],
         graph: false, template: 'hair-badger', on: { hair: 1 } },
     marble: { keys: ['color', 'roughness', 'clearcoat', 'clearcoatRoughness', 'marble', 'marbleColor', 'marbleScale'], graph: true, template: 'marble-glow-green',
         inputs: ['normal', 'height', 'ao', 'coatNormal', 'coatHeight', 'alpha', 'displacementHeight'] },
@@ -32,7 +32,7 @@ export const MATERIAL_TYPES = {
 // parameters only a special type has (hidden for Standard)
 const SPECIAL_KEYS = new Set(['toon', 'flat', 'contour', 'contourColor', 'contourWidth', 'cloud', 'cloudColor', 'cloudPuff', 'wool', 'woolLength', 'grass', 'grassHeight',
     'grassDensity', 'grassDry', 'soap', 'soapFilm', 'soapSwirl', 'soapScale', 'marble', 'marbleColor', 'marbleScale',
-    'hair', 'hairGrow', 'hairTipColor', 'hairThickness', 'hairDensity', 'hairLength', 'hairSpread', 'hairTaper', 'hairCurl', 'hairClump', 'hairVariation', 'hairDroop']);
+    'hair', 'hairGrow', 'hairAxis', 'hairTipColor', 'hairThickness', 'hairDensity', 'hairLength', 'hairSpread', 'hairTaper', 'hairCurl', 'hairClump', 'hairVariation', 'hairDroop']);
 
 /** Type of a material's params: stored, else from the values */
 export function materialType(params = {}) {
