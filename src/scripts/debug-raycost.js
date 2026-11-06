@@ -301,7 +301,7 @@ class RayCostKernel {
  * @param {{ renderer, pathTracing, pickHit: (event) => object, startHQ: () => void }} ctx
  * @returns {{ readonly active: boolean, draw(camera): void }}
  */
-export function attachRayCostDebug(root, { renderer, pathTracing, pickHit, startHQ }) {
+export function attachRayCostDebug(root, { renderer, canvas = renderer.domElement, pathTracing, pickHit, startHQ }) {
     const kernel = new RayCostKernel();
     const metric = uniform(0, 'uint');
     const scale = uniform(64);
@@ -364,7 +364,7 @@ export function attachRayCostDebug(root, { renderer, pathTracing, pickHit, start
     orderSel.addEventListener('change', () => { kernel.setOrder(orderSel.value); dirty = true; });
     // values under the mouse: the counts there + the part (raster picking), at most ~10× per second
     let pickAt = 0;
-    renderer.domElement.addEventListener('pointermove', e => {
+    canvas.addEventListener('pointermove', e => {
         if (!active) return;
         mouse = { clientX: e.clientX, clientY: e.clientY };
         const now = performance.now();
@@ -376,7 +376,7 @@ export function attachRayCostDebug(root, { renderer, pathTracing, pickHit, start
     });
     const readMouse = () => {
         if (!mouse || !kernel.kernel) return;
-        const rect = renderer.domElement.getBoundingClientRect();
+        const rect = canvas.getBoundingClientRect();
         const w = kernel.counts.image.width, h = kernel.counts.image.height;
         const x = Math.floor((mouse.clientX - rect.left) / rect.width * w), y = Math.floor((mouse.clientY - rect.top) / rect.height * h);
         if (x < 0 || y < 0 || x >= w || y >= h) { pixel = null; return; }

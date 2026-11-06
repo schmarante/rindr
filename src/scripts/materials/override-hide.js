@@ -8,11 +8,13 @@
 
 const entries = [];
 let wrapped = null;
-let plain = () => false;   // (scene) => the Basic view draws this scene
+const plainViews = new Set();   // (scene) => the Basic view draws this scene – one per player
+const plain = scene => { for (const f of plainViews) if (f(scene)) return true; return false; };
 
 /** Basic view: groups without keepPlain are hidden in renders of the scenes for which plainView(scene) is true */
 export function setPlainView(plainView) {
-    plain = plainView;
+    plainViews.add(plainView);
+    return () => plainViews.delete(plainView);
 }
 
 /**

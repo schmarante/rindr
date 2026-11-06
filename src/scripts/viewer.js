@@ -73,7 +73,7 @@ import { RasterAO } from './ambient-occlusion.js';
 import { OcclusionCuller } from './occlusion-culling.js';
 import { instancedModelMesh, localBox, lowestInstanced } from './model-instances.js';
 import { icon } from './icons.js';
-import { getRuntime } from './runtime.js';
+import { getRuntime, claimCanvasTarget, usePlayer, currentPlayer, addPlayer, onRendererError, onDeviceLost as onRendererLost } from './runtime.js';
 import { resolveFeatures } from './player/features.js';
 
 // a part of the UI whose module is loaded on first use: get() → Promise of the instance (created once), now → the
@@ -329,6 +329,28 @@ export async function createPlayer(options = {}) {
     const { adapter, renderer, webgpuBlocked, gpuRecovering } = runtime;
     const dist = distributedLoading ? await distributedLoading : null;   // distributed rendering (app only)
     const uiModules = await uiLoading;
+    // default tone curve Neutral (user, Oct. 2026): material colours come out as set up – ACES bent mid tones and hues (a
+    // 25 % black floor needed the lights at 0.55 to read right); ACES, AgX & co. stay selectable in the camera panel
+    const DEFAULT_TONE_MAPPING = THREE.NeutralToneMapping;
+    // this player's tone curve and exposure (camera panel, scene, views, splats): kept here and on the shared renderer only
+    // while this player is the current one (runtime.js usePlayer → enter) – same names as on the renderer
+    const tone = {
+        curve: DEFAULT_TONE_MAPPING, exposure: 1.0,
+        get toneMapping() { return this.curve; },
+        set toneMapping(v) { this.curve = v; if (currentPlayer() === player) renderer.toneMapping = v; },
+        get toneMappingExposure() { return this.exposure; },
+        set toneMappingExposure(v) { this.exposure = v; if (currentPlayer() === player) renderer.toneMappingExposure = v; },
+    };
+    // this player on the page's renderer (runtime.js): its canvas – the first player takes the renderer's own, every later
+    // one a canvas target of its own – and its state on the renderer, applied when it becomes the current player. Calls
+    // that act on the canvas outside the render loop (size, pixel ratio) make it the current one first (usePlayer).
+    const canvasTarget = claimCanvasTarget(renderer) ?? new THREE.CanvasTarget(THREE.createCanvasElement());
+    const canvasEl = canvasTarget.domElement;
+    const player = {
+        renderer, ct: canvasTarget, frame: null,
+        enter() { renderer.toneMapping = tone.curve; renderer.toneMappingExposure = tone.exposure; },
+    };
+    usePlayer(player);
     renderer.setSize(viewSize().width, viewSize().height);
     renderer.setPixelRatio(window.devicePixelRatio);
     // ambient occlusion of the raster view: its hook into the materials' lighting goes in before any shader is built
@@ -337,11 +359,6 @@ export async function createPlayer(options = {}) {
     // Basic view: each model material drawn as a plain twin with its base colour (basic-view.js, swapped while drawing)
     const basicView = new BasicView(renderer, scene);
     setPlainView(s => basicView.active && s === scene);   // helper groups (wool fibres) out of Basic
-    // default tone curve Neutral (user, Oct. 2026): material colours come out as set up – ACES bent mid tones and hues (a
-    // 25 % black floor needed the lights at 0.55 to read right); ACES, AgX & co. stay selectable in the camera panel
-    const DEFAULT_TONE_MAPPING = THREE.NeutralToneMapping;
-    renderer.toneMapping = DEFAULT_TONE_MAPPING;
-    renderer.toneMappingExposure = 1.0;
     // tone mapping curves selectable in the camera panel ("Image"); key = stored value. "none" = linear: the exposure times
     // the value, clipped – as a render's plain image (pbrt). three's NoToneMapping skips the exposure (the slider did
     // nothing with this curve), so it is LinearToneMapping; splat scenes still switch to NoToneMapping themselves (their
@@ -350,17 +367,17 @@ export async function createPlayer(options = {}) {
         aces: THREE.ACESFilmicToneMapping, agx: THREE.AgXToneMapping, neutral: THREE.NeutralToneMapping,
         reinhard: THREE.ReinhardToneMapping, cineon: THREE.CineonToneMapping, none: THREE.LinearToneMapping,
     };
-    const toneMappingKey = () => (renderer.toneMapping === THREE.NoToneMapping ? 'none'
-        : Object.keys(TONE_MAPPINGS).find(k => TONE_MAPPINGS[k] === renderer.toneMapping) || 'neutral');
+    const toneMappingKey = () => (tone.toneMapping === THREE.NoToneMapping ? 'none'
+        : Object.keys(TONE_MAPPINGS).find(k => TONE_MAPPINGS[k] === tone.toneMapping) || 'neutral');
     // Bloom / chromatic aberration (camera panel): the image then goes through an HDR target
     const lens = new LensEffects(renderer);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap; // PCFSoftShadowMap does not exist under WebGPU
-    dom.getElementById('viewport').appendChild(renderer.domElement);
+    dom.getElementById('viewport').appendChild(canvasEl);
     // an embedded player takes keys while focused: a click into the view focuses it (the app: keys for the whole page)
-    if (!pageScope) renderer.domElement.addEventListener('pointerdown', () => playerEl.focus({ preventScroll: true }));
+    if (!pageScope) canvasEl.addEventListener('pointerdown', () => playerEl.focus({ preventScroll: true }));
 
-    const controls = new OrbitControls(camera, renderer.domElement);
+    const controls = new OrbitControls(camera, canvasEl);
     controls.enableDamping = false;
 
     // Environment shared by rasterizer and path tracer
@@ -580,7 +597,7 @@ export async function createPlayer(options = {}) {
     // GPU errors (e.g. model too large for the buffer limits): switch path tracing off instead of
     // flooding the console with follow-up errors. Print each message only once.
     const loggedGpuErrors = new Set();
-    renderer.onError = info => {
+    onRendererError(renderer, info => {
         if (!info.message?.includes('due to a previous error') && !loggedGpuErrors.has(info.message)) {
             loggedGpuErrors.add(info.message);
             console.error(`WebGPU ${info.type}: ${info.message}`);
@@ -589,7 +606,7 @@ export async function createPlayer(options = {}) {
         // buffer ("Vertex buffer slot 0 … was not set" of an overlay pass switched HQ off)
         const message = info.message || '';
         if (pathTracing.ready && /buffer|binding size|out of memory/i.test(message) && !/vertex buffer slot|index buffer/i.test(message)) pathTracing.fail(message);
-    };
+    });
     // During movement (mouse pressed, zoom) rasterizer, afterwards path tracing again
     controls.addEventListener('start', () => { releaseExportScale(); releaseRenderView(); pathTracing.beginInteraction(); });
     // near plane of a file camera's clip start (flyToView) – given up when the user moves the camera
@@ -1107,7 +1124,7 @@ export async function createPlayer(options = {}) {
     // overlay drawn over the picture: gizmo, section plane handle, light helper, camera markers, skeleton
     const overlayScene = new THREE.Scene();
     // gizmo for move/rotate/scale (feature 'transform') – without it null: every call below is optional
-    const transformer = uiModules.transformModules && new uiModules.transformModules.ObjectTransformer(camera, renderer.domElement, overlayScene);
+    const transformer = uiModules.transformModules && new uiModules.transformModules.ObjectTransformer(camera, canvasEl, overlayScene);
     if (transformer) patchRaycaster(transformer.controls.getRaycaster());
     transformer?.addEventListener('dragstart', () => { controls.enabled = false; pathTracing.pauseForEdit(); });
     let fieldDragging = false;   // a number field of the panel is being dragged (properties.js draggable)
@@ -1129,7 +1146,7 @@ export async function createPlayer(options = {}) {
     };
     let skeletonLoading = null;
     const ensureSkeletonView = () => (skeletonLoading ??= import('./skeleton-view.js').then(({ SkeletonView, setBoneState }) => {
-        const view = new SkeletonView(camera, renderer.domElement, overlayScene);
+        const view = new SkeletonView(camera, canvasEl, overlayScene);
         patchRaycaster(view.controls.getRaycaster());
         view.addEventListener('dragstart', e => {
             finishPoseBlend();
@@ -1319,10 +1336,10 @@ export async function createPlayer(options = {}) {
         // image look: exposure (EV, renderer) and tone mapping curve; white balance etc. live in lens.look
         look: {
             toneMappings: Object.keys(TONE_MAPPINGS),
-            get exposure() { return Math.log2(renderer.toneMappingExposure); },
-            set exposure(ev) { renderer.toneMappingExposure = 2 ** ev; },
+            get exposure() { return Math.log2(tone.toneMappingExposure); },
+            set exposure(ev) { tone.toneMappingExposure = 2 ** ev; },
             get toneMapping() { return toneMappingKey(); },
-            set toneMapping(key) { renderer.toneMapping = TONE_MAPPINGS[key] ?? DEFAULT_TONE_MAPPING; },
+            set toneMapping(key) { tone.toneMapping = TONE_MAPPINGS[key] ?? DEFAULT_TONE_MAPPING; },
         },
         focusRange: () => Math.ceil(Math.max(camera.position.distanceTo(controls.target) * 3, dof.focusDistance * 1.5, 1)),
         focusOnTarget: ({ record = true } = {}) => setFocus(dof.depthOf(controls.target), { label: t('viewer.undo.focusOnPivot'), record }),
@@ -1388,12 +1405,12 @@ export async function createPlayer(options = {}) {
     let focusPick = false;   // next click into the 3D view sets the focus plane
     function startFocusPick() {
         focusPick = true;
-        renderer.domElement.style.cursor = 'crosshair';
+        canvasEl.style.cursor = 'crosshair';
         showStatus(t('status.focusPick'));
     }
     function endFocusPick() {
         focusPick = false;
-        renderer.domElement.style.cursor = '';
+        canvasEl.style.cursor = '';
         hideStatus();
     }
     controls.addEventListener('change', () => {
@@ -1950,9 +1967,9 @@ export async function createPlayer(options = {}) {
         ]);
     }
     let rightDown = null;
-    renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
-    renderer.domElement.addEventListener('pointerdown', e => { if (e.button === 2) rightDown = { x: e.clientX, y: e.clientY }; });
-    renderer.domElement.addEventListener('pointerup', e => {
+    canvasEl.addEventListener('contextmenu', e => e.preventDefault());
+    canvasEl.addEventListener('pointerdown', e => { if (e.button === 2) rightDown = { x: e.clientX, y: e.clientY }; });
+    canvasEl.addEventListener('pointerup', e => {
         if (e.button !== 2 || !rightDown) return;
         const moved = Math.hypot(e.clientX - rightDown.x, e.clientY - rightDown.y);
         rightDown = null;
@@ -2554,11 +2571,11 @@ export async function createPlayer(options = {}) {
     // a camera's state: pose, angle, roll, depth of field and its picture – exposure, tone curve, lens effects, colour
     // grading, style filter (user: "DOF, bloom etc. belong to the context of each camera")
     const captureView = () => ({ position: camera.position.toArray(), target: controls.target.toArray(), fov: viewAngle(camera), roll: camera.userData.roll || 0, dof: dof.toJSON(),
-        exposure: renderer.toneMappingExposure, toneMapping: toneMappingKey(), lens: lens.toJSON() });
+        exposure: tone.toneMappingExposure, toneMapping: toneMappingKey(), lens: lens.toJSON() });
     // the picture settings of a camera state (cameras saved before had none: the current ones stay)
     function applyViewLook(view) {
-        if (view.exposure != null) renderer.toneMappingExposure = view.exposure;
-        if (view.toneMapping) renderer.toneMapping = TONE_MAPPINGS[view.toneMapping] ?? renderer.toneMapping;
+        if (view.exposure != null) tone.toneMappingExposure = view.exposure;
+        if (view.toneMapping) tone.toneMapping = TONE_MAPPINGS[view.toneMapping] ?? tone.toneMapping;
         if (view.lens) { lens.fromJSON(view.lens); lens.apply(); }
     }
 
@@ -3474,7 +3491,7 @@ export async function createPlayer(options = {}) {
     const isMaterialDrag = e => e.dataTransfer?.types.includes(MATERIAL_MIME);
     // dragover fires continuously (~every 50 ms) even without moving: pick only when the pointer/Alt changed
     let dragPick = '', dropLocked = false;
-    renderer.domElement.addEventListener('dragover', e => {
+    canvasEl.addEventListener('dragover', e => {
         if (!isMaterialDrag(e)) return;
         e.preventDefault();
         const key = `${e.clientX},${e.clientY},${e.altKey}`;
@@ -3486,8 +3503,8 @@ export async function createPlayer(options = {}) {
         }
         e.dataTransfer.dropEffect = dropLocked ? 'none' : 'copy';
     });
-    renderer.domElement.addEventListener('dragleave', () => { dragPick = ''; setDropTarget(null); });
-    renderer.domElement.addEventListener('drop', e => {
+    canvasEl.addEventListener('dragleave', () => { dragPick = ''; setDropTarget(null); });
+    canvasEl.addEventListener('drop', e => {
         if (!isMaterialDrag(e)) return;
         e.preventDefault();
         const target = dropTarget;
@@ -3530,7 +3547,7 @@ export async function createPlayer(options = {}) {
     const pickSelectable = event => { const mesh = pickMesh(event); return mesh?.userData.environment ? null : mesh; };
     function pickHit(event) {
         if (!rootGroup) return null;
-        const rect = renderer.domElement.getBoundingClientRect();
+        const rect = canvasEl.getBoundingClientRect();
         const ndc = new THREE.Vector2(
             ((event.clientX - rect.left) / rect.width) * 2 - 1,
             -((event.clientY - rect.top) / rect.height) * 2 + 1,
@@ -3760,7 +3777,7 @@ export async function createPlayer(options = {}) {
         flightInteraction = true;
         pathTracing.beginInteraction();
     }
-    renderer.domElement.addEventListener('dblclick', e => {
+    canvasEl.addEventListener('dblclick', e => {
         if (splatMesh) {
             const hit = pickHit(e);
             if (hit?.object.isSplat) { flyToPoint(hit.point); return; }
@@ -3774,10 +3791,10 @@ export async function createPlayer(options = {}) {
     });
 
     let pointerDown = null;
-    renderer.domElement.addEventListener('pointerdown', e => {
+    canvasEl.addEventListener('pointerdown', e => {
         pointerDown = transformer?.busy || skeletonView.busy ? null : { x: e.clientX, y: e.clientY };   // a click on the gizmo is not a selection
     });
-    renderer.domElement.addEventListener('pointerup', e => {
+    canvasEl.addEventListener('pointerup', e => {
         if (!pointerDown || e.button !== 0) return;
         const moved = Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y);
         pointerDown = null;
@@ -3823,10 +3840,10 @@ export async function createPlayer(options = {}) {
     function updateSplatMix() {
         if (!splatMesh) return;
         const mixed = extraModels.length > 0;
-        if (mixed && renderer.toneMapping === THREE.NoToneMapping && splatToneSet === THREE.NoToneMapping) {
-            renderer.toneMapping = splatToneSet = toneMappingBeforeSplats ?? DEFAULT_TONE_MAPPING;
-        } else if (!mixed && renderer.toneMapping === splatToneSet && splatToneSet !== THREE.NoToneMapping) {
-            renderer.toneMapping = splatToneSet = THREE.NoToneMapping;
+        if (mixed && tone.toneMapping === THREE.NoToneMapping && splatToneSet === THREE.NoToneMapping) {
+            tone.toneMapping = splatToneSet = toneMappingBeforeSplats ?? DEFAULT_TONE_MAPPING;
+        } else if (!mixed && tone.toneMapping === splatToneSet && splatToneSet !== THREE.NoToneMapping) {
+            tone.toneMapping = splatToneSet = THREE.NoToneMapping;
         }
         markShadowsDirty();   // splat shadow maps, environment, models' bounds
         if (!mixed) splatEnv.reset();
@@ -4332,7 +4349,7 @@ export async function createPlayer(options = {}) {
     let exportRequest = null;
     const exportFrame = () => new Promise(resolve => { exportRequest = resolve; loadRender.force = true; });
     function grabCanvas() {
-        const src = renderer.domElement, c = document.createElement('canvas');
+        const src = canvasEl, c = document.createElement('canvas');
         c.width = src.width; c.height = src.height;
         c.getContext('2d').drawImage(src, 0, 0);
         return c;
@@ -4400,7 +4417,7 @@ export async function createPlayer(options = {}) {
         }
     }
     async function exportScaled(transparent, onProgress, isOpen, scale) {
-        const ratio = renderer.getPixelRatio();
+        const ratio = canvasTarget.getPixelRatio();
         applyExportScale(ratio, scale);
         loadRender.force = true;
         await nextFrame(); await nextFrame();   // path tracer noticed the new size and restarted
@@ -4424,9 +4441,10 @@ export async function createPlayer(options = {}) {
     // sizeFactor); held like the scale until the view changes
     function applyExportScale(ratio, scale) {
         pathTracing.fullResolution = true;
-        if (scale !== 1) { renderer.setPixelRatio(ratio * scale); lens.setPixelScale(scale); }
+        if (scale !== 1) { usePlayer(player); renderer.setPixelRatio(ratio * scale); lens.setPixelScale(scale); }
     }
     function restoreExportScale(ratio) {
+        usePlayer(player);
         renderer.setPixelRatio(ratio);
         lens.setPixelScale(1);
         pathTracing.fullResolution = false;
@@ -4457,14 +4475,14 @@ export async function createPlayer(options = {}) {
     // alpha of the transparent export is computed back through the ACES curve without the image look: those
     // captures are taken with ACES + neutral look (only the output changes – the path traced image stays)
     async function captureNeutral() {
-        const curve = renderer.toneMapping;
-        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        const curve = tone.toneMapping;
+        tone.toneMapping = THREE.ACESFilmicToneMapping;
         lens.neutralLook = true;
         lens.apply();
         try {
             return await exportFrame();
         } finally {
-            renderer.toneMapping = curve;
+            tone.toneMapping = curve;
             lens.neutralLook = false;
             lens.apply();
         }
@@ -4472,8 +4490,8 @@ export async function createPlayer(options = {}) {
     // grey background of the second matte pass in scene units: the ACES input is colour · exposure / 0.6 (rounded to 8 bit –
     // the path tracer stores colour backgrounds as 8-bit texture); greyY = its value before the ACES fit (composeMatte)
     function matteGrey() {
-        const grey = Math.round(MATTE_GREY_Y * 0.6 / renderer.toneMappingExposure * 255) / 255;
-        return { grey, greyY: grey * renderer.toneMappingExposure / 0.6 };
+        const grey = Math.round(MATTE_GREY_Y * 0.6 / tone.toneMappingExposure * 255) / 255;
+        return { grey, greyY: grey * tone.toneMappingExposure / 0.6 };
     }
     // plain background for the matte passes (grey value) or null = the view's own – also per bucket on a render client
     // (job.matte); true if it changed (the path tracer restarted with it)
@@ -4636,7 +4654,7 @@ export async function createPlayer(options = {}) {
     const imageExport = lazy(async () => (await import('./image-export.js')).createImageExport({
         exportImage,
         getName: () => (sceneFileName?.replace(/\.scene\.json$|\.json$/i, '') || model?.name.replace(/\.[^.]+$/, '') || 'rindr'),
-        getSize: () => ({ width: renderer.domElement.width, height: renderer.domElement.height }),
+        getSize: () => ({ width: canvasEl.width, height: canvasEl.height }),
         maxSize: maxExportSize,
         samples: () => pathTracing.maxSamples,
         onError: err => showError(err),
@@ -5193,7 +5211,7 @@ export async function createPlayer(options = {}) {
             splatMesh = null;
             splatVolume.attach(null);
             // tone mapping switched off for the splats: back to the previous curve (unless changed meanwhile)
-            if (toneMappingBeforeSplats !== null && renderer.toneMapping === splatToneSet) renderer.toneMapping = toneMappingBeforeSplats;
+            if (toneMappingBeforeSplats !== null && tone.toneMapping === splatToneSet) tone.toneMapping = toneMappingBeforeSplats;
             toneMappingBeforeSplats = splatToneSet = null;
             applySplatUi();
             viewModeBar?.set(viewMode, { unavailable: pathTracing.supported ? [] : ['hq'] });   // HQ possible again
@@ -5779,9 +5797,9 @@ export async function createPlayer(options = {}) {
                 solidQualityUsed = [];
                 fitCamera(bbox.clone().translate(root.position), { animate: false, direction: DEFAULT_VIEW });
                 streamFit.active = true;   // refit to the final bounds unless the user moves the camera meanwhile
-                if (renderer.toneMapping !== THREE.NoToneMapping) {
-                    toneMappingBeforeSplats = renderer.toneMapping;
-                    renderer.toneMapping = THREE.NoToneMapping;
+                if (tone.toneMapping !== THREE.NoToneMapping) {
+                    toneMappingBeforeSplats = tone.toneMapping;
+                    tone.toneMapping = THREE.NoToneMapping;
                 }
                 splatToneSet = THREE.NoToneMapping;
                 splatVolume.attach(splat);
@@ -6281,7 +6299,7 @@ export async function createPlayer(options = {}) {
         setModelAnimation,
         setModelPose,
         setModelPoses,
-        scene, camera, controls, renderer, environment, lightsGroup, pathTracing, slicer, sceneGraph, materialManager, settings, dof, lens, toneMappings: TONE_MAPPINGS, toneMappingKey,
+        scene, camera, controls, renderer, environment, lightsGroup, pathTracing, slicer, sceneGraph, materialManager, settings, dof, lens, toneMappings: TONE_MAPPINGS, toneMappingKey, tone,
         lights: () => lightsGroup.children.filter(l => l.isLight),
         meshes: () => currentMeshes,
         nodeGroups: () => currentNodeGroups,
@@ -6909,16 +6927,14 @@ export async function createPlayer(options = {}) {
         let triangles = 0;
         for (const m of currentMeshes || []) if (m.visible) triangles += (m.geometry.index ? m.geometry.index.count : m.geometry.attributes.position.count) / 3;
         return {
-            ...pathTracing.diagnostics(), viewMode, triangles, canvas: `${renderer.domElement.width}x${renderer.domElement.height}`,
+            ...pathTracing.diagnostics(), viewMode, triangles, canvas: `${canvasEl.width}x${canvasEl.height}`,
             pixelRatio: window.devicePixelRatio, gpu: adapter?.info ? `${adapter.info.vendor} ${adapter.info.architecture} ${adapter.info.description || ''}`.trim() : null,
             userAgent: navigator.userAgent,
         };
     };
     let gpuTrail = null;
     setInterval(() => { try { gpuTrail = gpuDiagnostics(); } catch { /* not ready yet */ } }, 1000);
-    const threeDeviceLost = renderer.onDeviceLost.bind(renderer);   // marks the renderer as lost (stops rendering)
-    renderer.onDeviceLost = info => {
-        threeDeviceLost(info);
+    onRendererLost(renderer, info => {   // three marked the renderer as lost before (stops rendering)
         try {
             sessionStorage.setItem('rindr.gpuLost', '1');
             sessionStorage.setItem('rindr.gpuLostInfo', JSON.stringify({ message: info?.message || null, reason: info?.reason || null, at: new Date().toISOString(), before: gpuTrail }));
@@ -6928,8 +6944,8 @@ export async function createPlayer(options = {}) {
             // reloading is the app's business – an embedded player must not reload the page it sits in
             actions: APP_MODE ? [{ label: t('gpu.lost.reload'), primary: true, onClick: () => location.reload() }] : [],
         });
-    };
-    // state before the last GPU reset (see renderer.onDeviceLost): console + copy button
+    });
+    // state before the last GPU reset (see onRendererLost above): console + copy button
     {
         let info = null;
         try { info = JSON.parse(sessionStorage.getItem('rindr.gpuLostInfo') || 'null'); sessionStorage.removeItem('rindr.gpuLostInfo'); } catch { /* storage blocked */ }
@@ -6985,7 +7001,7 @@ export async function createPlayer(options = {}) {
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel?.thumbs, def)),
         // all library presets (categories loaded on demand) – tests bake their node graphs
         presets: () => loadLibraryPresets().then(() => MATERIAL_PRESETS),
-        get skeletonView() { return skeletonView; }, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, get clouds() { return clouds; }, get grass() { return grass; }, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats: (...args) => loadSplatLoader().then(m => m.loadSplats(...args)), lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, getPlan: () => currentPlan, setViewMode: m => setViewMode(m), getViewMode: () => viewMode, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+        get skeletonView() { return skeletonView; }, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, get clouds() { return clouds; }, get grass() { return grass; }, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats: (...args) => loadSplatLoader().then(m => m.loadSplats(...args)), lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = canvasTarget.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, getPlan: () => currentPlan, setViewMode: m => setViewMode(m), getViewMode: () => viewMode, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 
     // --- Resize ---
     // device pixel ratio changed (window moved to a screen with another scaling, browser zoom): the canvas follows – it was
@@ -6993,6 +7009,7 @@ export async function createPlayer(options = {}) {
     function watchPixelRatio() {
         matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener('change', () => {
             releaseExportScale();
+            usePlayer(player);
             renderer.setPixelRatio(window.devicePixelRatio);
             loadRender.force = true;
             watchPixelRatio();
@@ -7010,6 +7027,7 @@ export async function createPlayer(options = {}) {
         const { width, height } = viewSize();
         camera.aspect = width / height;
         camera.updateProjectionMatrix();
+        usePlayer(player);
         renderer.setSize(width, height);
         // the path tracer handles the render size itself, the projection (aspect ratio) only here
         pathTracing.updateCamera();
@@ -7246,7 +7264,7 @@ export async function createPlayer(options = {}) {
             if (batcher.lods) import('./lod/lod-debug.js').then(m => m.attachLodDebug(debugStats.root, { batcher }));
             // ray cost heat map (BVH work of the path tracer's first hit per pixel – debug-raycost.js)
             import('./debug-raycost.js').then(m => {
-                rayCost = m.attachRayCostDebug(debugStats.root, { renderer, pathTracing, pickHit, startHQ: () => { if (viewMode !== 'hq') setViewMode('hq'); } });
+                rayCost = m.attachRayCostDebug(debugStats.root, { renderer, canvas: canvasEl, pathTracing, pickHit, startHQ: () => { if (viewMode !== 'hq') setViewMode('hq'); } });
             });
         });
     }
@@ -7526,7 +7544,7 @@ export async function createPlayer(options = {}) {
         screenFade.frame(!capture && !exportReq);   // soft transition after a change (not into captured images)
         if (capture) {
             // read in the same task as the rendering (afterwards the canvas image is presented and discarded)
-            capture(renderer.domElement.toDataURL('image/png'));
+            capture(canvasEl.toDataURL('image/png'));
             updatePathTracingStatus();
             return;
         }
@@ -7556,23 +7574,29 @@ export async function createPlayer(options = {}) {
         checkOptimizeWait();
         updatePathTracingStatus();
         loadRender.cost = loadRender.active ? performance.now() - frameStart : 0;
-        debugStats?.frame(performance.now() - frameStart);
+        debugStats?.frame(performance.now() - frameStart, { triangles: renderer.info.render.triangles - frameInfo.triangles, drawCalls: renderer.info.render.drawCalls - frameInfo.drawCalls });
         // the preloader goes once frames really draw (pipelines compiled – until then a frame draws nothing and the page
         // showed flat dark between preloader and picture); at the latest 4 s after the first frame
         if (!preloaderGone) {
             preloaderStart ??= performance.now();
-            preloaderFrames = renderer.info.render.drawCalls > 0 ? preloaderFrames + 1 : 0;
+            preloaderFrames = renderer.info.render.drawCalls - frameInfo.drawCalls > 0 ? preloaderFrames + 1 : 0;
             if (preloaderFrames >= 2 || performance.now() - preloaderStart > 4000) { preloaderGone = true; hidePreloader(); }
         }
     }
-    // a style filter switches the renderer's tone mapping off for the rest of its frame – back on before anything else
-    renderer.setAnimationLoop(() => {
+    // the renderer's counters cover every player drawn in this tick: this player's share is the difference
+    const frameInfo = { drawCalls: 0, triangles: 0 };
+    // one frame of this player (runtime.js calls it in the page's render loop, with this player current); a style filter
+    // switches the renderer's tone mapping off for the rest of its frame – back on before anything else
+    player.frame = () => {
+        frameInfo.drawCalls = renderer.info.render.drawCalls;
+        frameInfo.triangles = renderer.info.render.triangles;
         try {
             renderFrame();
         } finally {
             lens.restoreToneMapping();
         }
-    });
+    };
+    addPlayer(player);
 
     // --- Distributed rendering (docs/distributed.md) ---
     // ?render-client[=name]: this page is a render client (status page, renders buckets for a master); otherwise this page
@@ -7786,7 +7810,7 @@ export async function createPlayer(options = {}) {
             ? await pathTracing.snapshotImage().catch(() => null) : null;
         pathTracing.holdKernel = true;   // the view traces nothing until the picture comes (this computer's buckets: renderRegion)
         try { await ensurePathTracer(); await pathTracerApplied(); } catch (err) { pathTracing.holdKernel = false; throw err; }
-        const ratio = renderer.getPixelRatio();
+        const ratio = canvasTarget.getPixelRatio();
         applyExportScale(ratio, scale);
         const { grey, greyY } = matteGrey();
         const passes = transparent ? [0, grey] : [null];
@@ -7868,7 +7892,7 @@ export async function createPlayer(options = {}) {
         pathTracing.holdKernel = true;   // as renderDistributedImage
         try { await ensurePathTracer(); await pathTracerApplied(); } catch (err) { pathTracing.holdKernel = false; pathTracing.holdPassKernel(false); throw err; }
         const renderHere = !distributed || renderMaster.renderLocal;
-        const ratio = renderer.getPixelRatio();
+        const ratio = canvasTarget.getPixelRatio();
         applyExportScale(ratio, scale);
         let outcome = null, release = null;
         const render = distRender = { cancelled: false };
@@ -8111,7 +8135,7 @@ export async function createPlayer(options = {}) {
     window.addEventListener('keydown', e => { if (e.key === 'Shift') shiftHeld = true; });
     window.addEventListener('keyup', e => { if (e.key === 'Shift') shiftHeld = false; });
     window.addEventListener('blur', () => { shiftHeld = false; });
-    renderer.domElement.addEventListener('pointerdown', e => { shiftHeld = e.shiftKey; }, true);   // the drag's own modifier
+    canvasEl.addEventListener('pointerdown', e => { shiftHeld = e.shiftKey; }, true);   // the drag's own modifier
     let pendingInstances = null;   // blocks made by the drag in progress
     if (transformer) transformer.onBeforeDrag = (object, kind) => {
         if (!shiftHeld || (kind !== 'node' && kind !== 'selection')) return null;

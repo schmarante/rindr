@@ -193,8 +193,8 @@ export function captureState(ctx) {
             lens: ctx.lens?.toJSON(),
         },
         renderer: {
-            exposure: ctx.renderer.toneMappingExposure,
-            toneMapping: ctx.toneMappingKey?.() ?? (Object.keys(ctx.toneMappings || {}).find(k => ctx.toneMappings[k] === ctx.renderer.toneMapping) || 'aces'),
+            exposure: (ctx.tone ?? ctx.renderer).toneMappingExposure,
+            toneMapping: ctx.toneMappingKey?.() ?? (Object.keys(ctx.toneMappings || {}).find(k => ctx.toneMappings[k] === (ctx.tone ?? ctx.renderer).toneMapping) || 'aces'),
         },
         environment: {
             on: env.on, hdri: env.hdri || null,
@@ -299,9 +299,11 @@ export async function applyState(ctx, state) {
         controls.update();
     }
     if (state.renderer) {
-        ctx.renderer.toneMappingExposure = state.renderer.exposure ?? 1;
+        // the player's tone curve and exposure (viewer.js tone – on the shared renderer while the player is current)
+        const tone = ctx.tone ?? ctx.renderer;
+        tone.toneMappingExposure = state.renderer.exposure ?? 1;
         // older states: ACES (the only curve back then)
-        ctx.renderer.toneMapping = ctx.toneMappings?.[state.renderer.toneMapping] ?? ctx.toneMappings?.aces ?? ctx.renderer.toneMapping;
+        tone.toneMapping = ctx.toneMappings?.[state.renderer.toneMapping] ?? ctx.toneMappings?.aces ?? tone.toneMapping;
     }
 
     // lights (viewer.js restoreLights): by name and kind, otherwise the next of the same kind, missing ones created,

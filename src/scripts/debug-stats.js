@@ -79,9 +79,11 @@ export class DebugStats {
         this._measurePage();
     }
 
-    /** call at the end of every frame of the render loop (cpuMs = duration of the pass) */
-    frame(cpuMs) {
+    /** call at the end of every frame of the render loop (cpuMs = duration of the pass; drawn = this player's triangles
+     *  and draw calls in it – the renderer's counters cover every player of the page's tick) */
+    frame(cpuMs, drawn) {
         this.frames++;
+        this.drawn = drawn;
         this.cpu += cpuMs;
         // breakdown of this frame (ctx.getTiming: renders of the scene incl. shadow maps, comparison)
         const tm = this.getTiming?.();
@@ -201,7 +203,8 @@ export class DebugStats {
             lines.push(t('debugStats.triangles', { total: fmtN(p.total), visible: fmtN(p.visible) }));
             lines.push(t('debugStats.unique', { unique: fmtN(p.unique), meshes: fmtN(p.meshes) }));
         }
-        lines.push(t('debugStats.frame', { triangles: fmtN(info.render.triangles), drawCalls: info.render.drawCalls }));
+        const drawn = this.drawn ?? info.render;
+        lines.push(t('debugStats.frame', { triangles: fmtN(drawn.triangles), drawCalls: drawn.drawCalls }));
         this.text.textContent = lines.join('\n');
         this._renderWorkers();
     }

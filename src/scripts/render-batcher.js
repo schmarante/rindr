@@ -57,6 +57,21 @@ const TINT_STEPS = 8;   // debug colours: share of triangles kept, one colour pe
 
 export const BATCH_LAYER = 30;
 
+// one renderer.render wrapper per renderer: the batcher of the scene being drawn (several players share the renderer –
+// docs/player.md); other scenes go straight through
+const batchers = new Map();   // scene → RenderBatcher
+let wrappedRenderer = null;
+function installRenderWrapper(renderer, batcher) {
+    batchers.set(batcher.scene, batcher);
+    if (wrappedRenderer === renderer) return;
+    wrappedRenderer = renderer;
+    const render = renderer.render.bind(renderer);
+    renderer.render = (s, camera) => {
+        const b = batchers.get(s);
+        return b ? b._renderWrapped(render, s, camera) : render(s, camera);
+    };
+}
+
 export class RenderBatcher {
     /**
      * @param {{ renderer, scene, parent: THREE.Object3D, roots: () => THREE.Object3D[], minInstances?: number, delay?: number,
@@ -116,50 +131,51 @@ export class RenderBatcher {
         this._occOn = false;
         this._shown = [];                // shown meshes of the models in this sync
 
-        const render = renderer.render.bind(renderer);
         // timing (debug display): CPU time of all renders of `scene` per frame, nested ones = shadow maps
         // (three.js renders them via renderer.render from inside the main render), comparison (sync)
         this.timing = { render: 0, nested: 0, sync: 0 };
         this.beforeDraw = null;   // (camera) => void, called inside the next outer render of `scene` (see below)
         this.compilePasses = [];  // (compile) => Promise: sets its renderer/scene state, calls compile(), restores
-        renderer.render = (s, camera) => {
-            if (s !== this.scene) return render(s, camera);
-            const t0 = performance.now();
-            const outer = this._depth++ === 0;
-            const auto = s.matrixWorldAutoUpdate;
-            let swapped = null, tinted = null, culled = null;
-            const main = outer && this.enabled && camera === (this.lodCamera?.() ?? camera);
-            let held = null;
-            if (outer && this.enabled) {
-                // world matrices once per frame (sync does it), all renders of this frame use them
-                if (this._matrixFrame !== this.frame) { this._matrixFrame = this.frame; s.updateMatrixWorld(); }
-                this._attach(camera);   // syncs: sees the models before a hold hides them
-                // hold (huge import): the models stay out of this render until their first grouping – the batches hang
-                // outside the model roots
-                if (this.holdUngrouped) { held = this.roots().filter(r => r?.visible); for (const r of held) r.visible = false; }
-                s.matrixWorldAutoUpdate = false;
-                swapped = this._swapSingles();
-                if (this.lod.tint) tinted = this._tint();
-                if (main && this._occOn) culled = this._cullSingles();
-            }
-            try {
-                // pass that must see exactly what this render draws (ambient-occlusion.js pre-pass): batches attached,
-                // LOD cuts swapped in; its renders of `scene` count as nested
-                if (outer && this.beforeDraw) this.beforeDraw(camera);
-                // occlusion culling: a new depth image of what is drawn + test, when due (main view only)
-                const occ = this.occlusion;
-                if (main && occ?.valid && occ.due(camera, this.frame)) occ.capture({ scene: s, camera, keep: this.parent, frame: this.frame });
-                return render(s, camera);
-            } finally {
-                if (held) for (const r of held) r.visible = true;
-                if (culled) for (const m of culled) m.layers.enable(0);
-                if (tinted) for (const [o, m] of tinted) o.material = m;
-                if (swapped) this._restoreSingles(swapped);
-                if (outer) s.matrixWorldAutoUpdate = auto;
-                if (--this._depth === 0) this._detach();
-                this.timing[outer ? 'render' : 'nested'] += performance.now() - t0;
-            }
-        };
+        installRenderWrapper(renderer, this);
+    }
+
+    // renderer.render of this batcher's scene (render = the renderer's own render, see installRenderWrapper)
+    _renderWrapped(render, s, camera) {
+        const t0 = performance.now();
+        const outer = this._depth++ === 0;
+        const auto = s.matrixWorldAutoUpdate;
+        let swapped = null, tinted = null, culled = null;
+        const main = outer && this.enabled && camera === (this.lodCamera?.() ?? camera);
+        let held = null;
+        if (outer && this.enabled) {
+            // world matrices once per frame (sync does it), all renders of this frame use them
+            if (this._matrixFrame !== this.frame) { this._matrixFrame = this.frame; s.updateMatrixWorld(); }
+            this._attach(camera);   // syncs: sees the models before a hold hides them
+            // hold (huge import): the models stay out of this render until their first grouping – the batches hang
+            // outside the model roots
+            if (this.holdUngrouped) { held = this.roots().filter(r => r?.visible); for (const r of held) r.visible = false; }
+            s.matrixWorldAutoUpdate = false;
+            swapped = this._swapSingles();
+            if (this.lod.tint) tinted = this._tint();
+            if (main && this._occOn) culled = this._cullSingles();
+        }
+        try {
+            // pass that must see exactly what this render draws (ambient-occlusion.js pre-pass): batches attached,
+            // LOD cuts swapped in; its renders of `scene` count as nested
+            if (outer && this.beforeDraw) this.beforeDraw(camera);
+            // occlusion culling: a new depth image of what is drawn + test, when due (main view only)
+            const occ = this.occlusion;
+            if (main && occ?.valid && occ.due(camera, this.frame)) occ.capture({ scene: s, camera, keep: this.parent, frame: this.frame });
+            return render(s, camera);
+        } finally {
+            if (held) for (const r of held) r.visible = true;
+            if (culled) for (const m of culled) m.layers.enable(0);
+            if (tinted) for (const [o, m] of tinted) o.material = m;
+            if (swapped) this._restoreSingles(swapped);
+            if (outer) s.matrixWorldAutoUpdate = auto;
+            if (--this._depth === 0) this._detach();
+            this.timing[outer ? 'render' : 'nested'] += performance.now() - t0;
+        }
     }
 
     /** compileAsync() (shader-compile.js) with the current batches attached: compiles the shaders of what render()

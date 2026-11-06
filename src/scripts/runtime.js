@@ -59,3 +59,90 @@ let runtime = null;
 export function getRuntime(hooks) {
     return (runtime ??= createRuntime(hooks));
 }
+
+// --- Players on the page (docs/player.md, stage 3) ---
+// One animation loop for the shared renderer; each player draws into its own canvas (a CanvasTarget – the first player
+// takes the renderer's own, so a single player – the app – draws exactly as before). usePlayer(p) makes p the current
+// player: its canvas, its renderer state (p.enter: tone mapping, exposure …).
+const players = [];
+let current = null;
+let defaultTargetClaimed = false;
+let loopRenderer = null;
+
+/** The renderer's own canvas target for the first player on the page, null for every later one (an own CanvasTarget) */
+export function claimCanvasTarget(renderer) {
+    if (defaultTargetClaimed) return null;
+    defaultTargetClaimed = true;
+    return renderer.getCanvasTarget();
+}
+
+/** Make p the renderer's current player (nothing to do when it already is) */
+export function usePlayer(p) {
+    if (current === p) return;
+    const renderer = p.renderer;
+    if (renderer.getCanvasTarget() !== p.ct) renderer.setCanvasTarget(p.ct);
+    if (current) { renderer.setRenderTarget(null); renderer.setMRT?.(null); }   // nothing of the previous one carries over
+    current = p;
+    p.enter?.();
+}
+export const currentPlayer = () => current;
+export const playerCount = () => players.length;
+
+/** A player joins the loop (p.frame(time) draws one picture into its canvas) */
+export function addPlayer(p) {
+    players.push(p);
+    if (loopRenderer) return;
+    loopRenderer = p.renderer;
+    loopRenderer.setAnimationLoop(tick);
+}
+
+export function removePlayer(p) {
+    const i = players.indexOf(p);
+    if (i >= 0) players.splice(i, 1);
+    if (current === p) current = null;
+}
+
+function tick(time) {
+    // a single player (the app): exactly the earlier loop – errors stay uncaught (console, test harness)
+    if (players.length === 1) {
+        const p = players[0];
+        usePlayer(p);
+        p.frame(time);
+        return;
+    }
+    for (const p of players) {
+        if (p.awake && !p.awake()) continue;
+        usePlayer(p);
+        try { p.frame(time); } catch (err) { reportError(err); }   // one player's error does not stop the others
+    }
+}
+
+// GPU errors and a lost device concern the renderer, not one player: the handlers are installed once and every player
+// gets the message (each decides whether it is meant – e.g. its path tracer's buffers)
+const errorHandlers = new Set();
+const lostHandlers = new Set();
+let hooked = null;
+function hookRenderer(renderer) {
+    if (hooked === renderer) return;
+    hooked = renderer;
+    renderer.onError = info => { for (const fn of errorHandlers) fn(info); };
+    const threeDeviceLost = renderer.onDeviceLost.bind(renderer);   // marks the renderer as lost (stops rendering)
+    renderer.onDeviceLost = info => {
+        threeDeviceLost(info);
+        for (const fn of lostHandlers) fn(info);
+    };
+}
+
+/** fn(info) for every GPU error of the renderer (returns the remover) */
+export function onRendererError(renderer, fn) {
+    hookRenderer(renderer);
+    errorHandlers.add(fn);
+    return () => errorHandlers.delete(fn);
+}
+
+/** fn(info) when the renderer's device is lost (after three marked the renderer as lost; returns the remover) */
+export function onDeviceLost(renderer, fn) {
+    hookRenderer(renderer);
+    lostHandlers.add(fn);
+    return () => lostHandlers.delete(fn);
+}

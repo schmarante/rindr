@@ -14,16 +14,30 @@
 import * as THREE from 'three/webgpu';
 import { FADE_MASK } from './material-manager.js';
 
+// one wrapper per renderer, the view of the scene being drawn found by its scene (several players share the renderer –
+// docs/player.md)
+const views = new Map();   // scene → BasicView
+let wrapped = null;
+
 export class BasicView {
     /** @param {THREE.WebGPURenderer} renderer @param {THREE.Scene} scene the main scene */
     constructor(renderer, scene) {
         this.scene = scene;
         this.active = false;
         this.twins = new WeakMap();   // source material → twin
+        views.set(scene, this);
+        if (wrapped === renderer) return;
+        wrapped = renderer;
         const renderObject = renderer.renderObject.bind(renderer);
-        renderer.renderObject = (object, s, camera, geometry, material, ...rest) => renderObject(object, s, camera, geometry,
-            this.active && s === this.scene && material?.userData?.materialId !== undefined ? this.twin(material) : material, ...rest);
+        renderer.renderObject = (object, s, camera, geometry, material, ...rest) => {
+            const view = views.get(s);
+            return renderObject(object, s, camera, geometry,
+                view?.active && material?.userData?.materialId !== undefined ? view.twin(material) : material, ...rest);
+        };
     }
+
+    /** the player is gone: its scene no longer swaps */
+    dispose() { views.delete(this.scene); }
 
     /** Plain twin of a model material – structure synced when the source's version changes, values every draw */
     twin(src) {
