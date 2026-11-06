@@ -83,7 +83,7 @@ function show({ title, message, buttons, icon, facts, cancelValue, list = false 
             body.append(grid);
         }
         const foot = document.createElement('div');
-        foot.className = list ? 'flex max-h-[50vh] flex-col gap-1 overflow-y-auto px-4 pb-3' : 'flex justify-end gap-2 px-4 pb-3';
+        foot.className = list ? 'flex max-h-[50cqh] flex-col gap-1 overflow-y-auto px-4 pb-3' : 'flex justify-end gap-2 px-4 pb-3';
         let primary = null;
         for (const b of buttons) {
             const el = document.createElement('button');

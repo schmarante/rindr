@@ -156,12 +156,13 @@ export async function createPlayer(options = {}) {
     // where the app's files lie (models/, hdr/, oidn/, samplescene/): the page's base path; an embedded player gets its
     // own (docs/player.md)
     const ASSET_BASE = options.assetBase ?? import.meta.env.BASE_URL;
-    // model at the start: file name from public/models (app.js: ?model=…), otherwise empty scene (open a file via drag & drop)
-    const MODEL_FILE = options.model ?? null;
+    // model at the start: file name from public/models (app.js: ?model=…) or a URL (<rindr-player src>), otherwise empty
+    // scene (open a file via drag & drop)
+    const MODEL_FILE = options.model ?? (options.modelUrl ? decodeURIComponent(new URL(options.modelUrl, location.href).pathname.split('/').pop()) : null);
     // the sample scene in public/samplescene at the start (app.js: ?samplescene; scene file + its model, openSampleScene)
     const SAMPLE_SCENE = !!options.sampleScene;
     // sub folders allowed (e.g. ?model=folder/scene.gltf – .bin/textures are resolved relative to it)
-    const MODEL_URL = `${ASSET_BASE}models/${(MODEL_FILE || '').split('/').map(encodeURIComponent).join('/')}`;
+    const MODEL_URL = options.modelUrl ?? `${ASSET_BASE}models/${(MODEL_FILE || '').split('/').map(encodeURIComponent).join('/')}`;
     // OIDN weights (Apache 2.0, from RenderKit/oidn-weights)
     const DENOISE_WEIGHTS_URL = `${ASSET_BASE}oidn/rt_hdr_alb_nrm.tza`;
 
@@ -197,7 +198,7 @@ export async function createPlayer(options = {}) {
     // the preloader of the page (index.astro): complete the sweep from where its animation stands, fade out, remove
     let preloaderFrames = 0, preloaderStart = null, preloaderGone = false;
     function hidePreloader() {
-        const el = dom.getElementById('preloader');
+        const el = options.preloader ?? dom.getElementById('preloader');   // the page's (app) – an embedded player has none
         if (!el || el.dataset.closing) return;
         el.dataset.closing = '1';
         const fill = el.querySelector('[data-fill]');
@@ -335,6 +336,8 @@ export async function createPlayer(options = {}) {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap; // PCFSoftShadowMap does not exist under WebGPU
     dom.getElementById('viewport').appendChild(renderer.domElement);
+    // an embedded player takes keys while focused: a click into the view focuses it (the app: keys for the whole page)
+    if (!pageScope) renderer.domElement.addEventListener('pointerdown', () => playerEl.focus({ preventScroll: true }));
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = false;
@@ -4198,7 +4201,8 @@ export async function createPlayer(options = {}) {
     const ANALYSIS_MATERIALS = { basic: null, uv: uvMaterial, wire: wireFillMaterial };   // Basic: no override (basic-view.js)
     const isAnalysis = mode => mode in ANALYSIS_MATERIALS;
     ground.material.allowOverride = false;
-    let viewMode = pathTracing.enabled ? 'hq' : 'default';
+    // start view: <rindr-player mode> – otherwise config.js (PATHTRACING.enabled → HQ, else Default)
+    let viewMode = ['default', 'hq'].includes(options.mode) ? options.mode : (pathTracing.enabled ? 'hq' : 'default');
     const viewModeBar = new ViewModeBar(dom.getElementById('view-mode'), mode => setViewMode(mode));
 
     // --- AI rendering (ki-render.js → Gemini directly from the browser, ki-gemini.js) ---

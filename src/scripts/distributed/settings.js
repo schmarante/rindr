@@ -163,7 +163,7 @@ export function buildDistributedSection(section, api) {
 /** full page of a render client: who it is, whom it works for, what it renders; while pairing its answer code */
 export function clientView(name, gpu) {
     const page = el('div', 'fixed inset-0 z-50 flex items-center justify-center bg-[#171717] text-sm text-white');
-    const box = el('div', 'w-96 max-w-[calc(100vw-2rem)] rounded-lg bg-black/60 p-4 backdrop-blur');
+    const box = el('div', 'w-96 max-w-[calc(100cqw-2rem)] rounded-lg bg-black/60 p-4 backdrop-blur');
     const title = el('div', 'mb-1 font-medium', t('distributed.client.title'));
     const who = el('div', 'mb-3 text-white/50', [name, gpu].filter(Boolean).join(' · '));
     const state = el('div', 'text-white/80');

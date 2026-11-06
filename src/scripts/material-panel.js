@@ -62,8 +62,8 @@ const ACTION_ICONS = {
     delete: icon('delete', 'size-4'),
 };
 const TAB = 'rounded px-2 py-0.5';
-// the list keeps its height (up to 30vh) – the material's settings below scroll instead of squeezing it away
-const LIST = 'max-h-[30vh] min-h-12 shrink-0 overflow-auto px-1 pb-1 select-none';
+// the list keeps its height (up to 30 % of the player's height) – the material's settings below scroll instead of squeezing it away
+const LIST = 'max-h-[30cqh] min-h-12 shrink-0 overflow-auto px-1 pb-1 select-none';
 const VIEW_KEY = 'rindr.materials.view';
 const CATEGORY_KEY = 'rindr.materials.category';   // category filter of the library ('' = all)
 const VIEW_ICONS = {

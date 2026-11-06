@@ -29,7 +29,7 @@ export function createBcfPanel({ apply, capture, open, save, author, openSetting
     const urls = new Map();  // snapshot Blob → object URL
 
     const root = document.createElement('div');
-    root.className = 'pointer-events-auto fixed top-5 right-5 bottom-20 z-30 flex w-[min(24rem,calc(100vw-2.5rem))] flex-col overflow-hidden rounded-lg bg-black/70 text-xs text-white/90 shadow-2xl backdrop-blur-sm';
+    root.className = 'pointer-events-auto fixed top-5 right-5 bottom-20 z-30 flex w-[min(24rem,calc(100cqw-2.5rem))] flex-col overflow-hidden rounded-lg bg-black/70 text-xs text-white/90 shadow-2xl backdrop-blur-sm';
     root.hidden = true;
     root.dataset.ui = 'right';
     layerFor().append(root);

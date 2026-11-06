@@ -415,7 +415,7 @@ const ICON_PAUSE = icon('pause', 'size-3.5');
  * @param {{ onPlay(playing: boolean), onScrub(t: number), onScrubEnd(), onClip(index: number) }} handlers
  */
 export function createPlaybar(root, { onPlay, onScrub, onScrubEnd, onClip }, { t }) {
-    root.className = 'pointer-events-auto absolute bottom-16 left-1/2 flex w-[min(36rem,calc(100vw-2rem))] -translate-x-1/2 items-center gap-2 rounded-full bg-black/60 py-1 pr-4 pl-1 text-xs text-white/80 backdrop-blur-sm';
+    root.className = 'pointer-events-auto absolute bottom-16 left-1/2 flex w-[min(36rem,calc(100cqw-2rem))] -translate-x-1/2 items-center gap-2 rounded-full bg-black/60 py-1 pr-4 pl-1 text-xs text-white/80 backdrop-blur-sm';
     const play = document.createElement('button');
     play.className = 'flex size-7 shrink-0 items-center justify-center rounded-full outline-none transition-colors hover:bg-white/10 hover:text-white';
     const slider = document.createElement('input');

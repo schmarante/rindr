@@ -1,0 +1,102 @@
+/* Styles of <rindr-player> (rindr-player.js, docs/player.md): Tailwind for the player's shadow root – one shared
+   stylesheet for every player (adoptedStyleSheets, imported as text with ?inline). Classes come from src/scripts (panels,
+   windows, the player's markup in player/template.js).
+   The page's styles do not reach into the shadow root, and the page must not leak in either: the host starts from
+   `all: initial` (lowest layer – Tailwind's preflight then sets font, line height … on :host as usual) and takes what
+   the app's <body> used to give: dark background, no text selection. */
+@layer rindr-reset;
+@import "tailwindcss" source(none);
+@source "../scripts";
+
+@layer rindr-reset {
+    :host { all: initial; }
+}
+
+@layer base {
+    :host {
+        display: block;
+        position: relative;
+        overflow: hidden;
+        /* the size container: cqw/cqh are its width/height; without a height from the page the player is 480px high.
+           Layout containment makes it the containing block of fixed parts too (windows, menus, notices stay in the
+           player) – container-type alone no longer does that */
+        container-type: size;
+        contain: layout;
+        contain-intrinsic-block-size: 480px;
+        background-color: var(--color-neutral-900);
+        -webkit-user-select: none;
+        user-select: none;
+    }
+    /* keyboard focus of an embedded player (it takes keys only while focused) */
+    :host(:focus-visible) {
+        outline: 2px solid var(--color-sky-400);
+        outline-offset: -2px;
+    }
+}
+
+/* Select lists: dark popup (otherwise white text on white background, since the fields inherit text-white) */
+select {
+    color-scheme: dark;
+}
+select option,
+select optgroup {
+    background-color: #262626;
+    color: #f5f5f5;
+}
+
+/* UI hidden (button in the view-mode bar, key U): the bar stays, subdued.
+   Panels slide smoothly out of the player (data-ui = direction) and back in; afterwards invisible so nothing hidden
+   catches clicks (visibility only after sliding out). The logo stays (user, Nov. 2026). */
+[data-ui] {
+    transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease, visibility 0s linear 0s;
+}
+.ui-hidden [data-ui] {
+    opacity: 0;
+    visibility: hidden;
+    transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease 0.1s, visibility 0s linear 0.4s;
+}
+.ui-hidden [data-ui='left'] { transform: translateX(calc(-100% - 2rem)); }
+.ui-hidden [data-ui='right'] { transform: translateX(calc(100% + 2rem)); }
+.ui-hidden [data-ui='down'] { transform: translateY(calc(100% + 2rem)); }
+@media (prefers-reduced-motion: reduce) {
+    [data-ui], .ui-hidden [data-ui] { transition: none; }
+}
+#view-mode { transition: opacity 0.2s; }
+.ui-hidden #view-mode:not(:hover) { opacity: 0.35; }
+
+/* Scrollbars: thin, light grey, rounded, no background (matching the panels).
+   Chromium/Safari via ::-webkit-scrollbar; Firefox only knows scrollbar-width/-color.
+   Set scrollbar-color for Firefox only – otherwise Chromium ignores ::-webkit-scrollbar. */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb {
+    background-color: rgb(255 255 255 / 0.18);
+    border: 2px solid transparent;
+    border-radius: 9999px;
+    background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: rgb(255 255 255 / 0.32); }
+::-webkit-scrollbar-button { display: none; }
+@-moz-document url-prefix() {
+    * { scrollbar-width: thin; scrollbar-color: rgb(255 255 255 / 0.22) transparent; }
+}
+
+/* Number fields: the browser's spin buttons (grey box) replaced by two slim arrows without background,
+   shown on hover/focus; clicking the upper/lower half still steps the value (Chromium/Safari).
+   Firefox: no spin buttons (cannot be styled) – dragging the number replaces them. */
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    appearance: none;
+    margin: 0 0 0 2px;
+    width: 8px;
+    align-self: stretch;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 14'%3E%3Cpath d='M1.5 5.5L4 3l2.5 2.5M1.5 8.5L4 11l2.5-2.5' fill='none' stroke='white' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat center / 8px 14px;
+    opacity: 0;
+    cursor: pointer;
+    transition: opacity 0.15s;
+}
+input[type='number']:hover::-webkit-inner-spin-button,
+input[type='number']:focus::-webkit-inner-spin-button { opacity: 0.55; }
+input[type='number']::-webkit-inner-spin-button:hover { opacity: 0.9; }
+input[type='number'] { -moz-appearance: textfield; }

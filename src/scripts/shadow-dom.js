@@ -39,6 +39,9 @@ export function layerRect(layer = layerFor()) {
     if (!layer || layer === document.body || layer === document.documentElement) {
         return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
     }
-    const r = layer.getBoundingClientRect();
+    // a player's layer has no box of its own (display: contents): its player element is the size container
+    const root = layer.getRootNode();
+    const box = typeof ShadowRoot !== 'undefined' && root instanceof ShadowRoot ? root.host : layer;
+    const r = box.getBoundingClientRect();
     return { left: r.left, top: r.top, width: r.width, height: r.height };
 }

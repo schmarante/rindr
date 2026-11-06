@@ -21,7 +21,7 @@ function container() {
     let stack = stacks.get(layer);
     if (stack) return stack;
     stack = document.createElement('div');
-    stack.className = 'pointer-events-none fixed top-5 left-1/2 z-40 flex w-[min(26rem,calc(100vw-2.5rem))] -translate-x-1/2 flex-col gap-2 text-xs text-white/90';
+    stack.className = 'pointer-events-none fixed top-5 left-1/2 z-40 flex w-[min(26rem,calc(100cqw-2.5rem))] -translate-x-1/2 flex-col gap-2 text-xs text-white/90';
     stack.setAttribute('aria-live', 'polite');
     layer.append(stack);
     stacks.set(layer, stack);

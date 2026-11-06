@@ -132,7 +132,7 @@ export function showBenchmarkResult({ header, results }) {
         ...results.map(r => cols.map(c => r[c] ?? '').join('\t')),
     ].join('\n');
     const box = document.createElement('div');
-    box.className = 'absolute left-1/2 top-1/2 z-30 max-h-[80dvh] w-[min(56rem,95vw)] -translate-x-1/2 -translate-y-1/2 overflow-auto rounded-lg bg-neutral-900/95 p-4 text-xs text-white/90 shadow-2xl ring-1 ring-white/15';
+    box.className = 'absolute left-1/2 top-1/2 z-30 max-h-[80cqh] w-[min(56rem,95cqw)] -translate-x-1/2 -translate-y-1/2 overflow-auto rounded-lg bg-neutral-900/95 p-4 text-xs text-white/90 shadow-2xl ring-1 ring-white/15';
     const best = Math.max(...results.map(r => r.samplesPerSecond || 0));
     box.innerHTML = `
         <div class="mb-2 flex items-center justify-between gap-2">
