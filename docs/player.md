@@ -1,6 +1,6 @@
 # RINDR-Player – Einbettung und Whitelabel
 
-**Stand (06.11.2026):** Stufe 1 umgesetzt – die App läuft als ein Player (`createPlayer` in `viewer.js`) auf einer seitenweiten Runtime (`runtime.js`). Stufe 2 fertig: `<rindr-player>` mit Shadow DOM, Funktionen per Attribut (Code nur bei Bedarf geladen), Attribute `src`, `scene`, `hdr`, `mode`, `features` – siehe „Stufe 2“. Stufe 3 fertig: mehrere Player auf einer Seite (ein Renderer, ein HQ-Motor, Einfrieren/Schlafen, `activate`/`poster`) – siehe „Stufe 3“. Stufe 4 offen. Wunsch des Nutzers: „RINDR als Whitelabel-Lösung in PIM-Systeme und Shops … eine Minimal-Konfiguration, Material-Editor, Scene Graph, Explosion, Laden/Speichern etc. sind alles Optionen, die man über Attribute aktivieren könnte … es sollte natürlich auch möglich sein, dass man in einem PIM mehrere RINDR-Player gleichzeitig anzeigen kann“. Anlass: ein Produktkonfigurator, der GLB, STEP oder gleich die RINDR-Szene ausgibt.
+**Stand (06.11.2026):** Stufe 1 umgesetzt – die App läuft als ein Player (`createPlayer` in `viewer.js`) auf einer seitenweiten Runtime (`runtime.js`). Stufe 2 fertig: `<rindr-player>` mit Shadow DOM, Funktionen per Attribut (Code nur bei Bedarf geladen), Attribute `src`, `scene`, `hdr`, `mode`, `features` – siehe „Stufe 2“. Stufe 3 fertig: mehrere Player auf einer Seite (ein Renderer, ein HQ-Motor, Einfrieren/Schlafen, `activate`/`poster`) – siehe „Stufe 3“. Stufe 4 fertig: Host-Schnittstelle (Methoden, Ereignisse, Teile per Namen, Laden/Speichern übers Host-System, eigener versionierter Build, Farben, iframe-Rückfall) – siehe „Stufe 4“, **Kunden-Anleitung `docs/player-embed.md`**. Wunsch des Nutzers: „RINDR als Whitelabel-Lösung in PIM-Systeme und Shops … eine Minimal-Konfiguration, Material-Editor, Scene Graph, Explosion, Laden/Speichern etc. sind alles Optionen, die man über Attribute aktivieren könnte … es sollte natürlich auch möglich sein, dass man in einem PIM mehrere RINDR-Player gleichzeitig anzeigen kann“. Anlass: ein Produktkonfigurator, der GLB, STEP oder gleich die RINDR-Szene ausgibt.
 
 ## Entscheidungen
 
@@ -36,24 +36,13 @@ Viele Player (PIM-Raster mit 30 Produkten): nur sichtbare zeichnen (`Intersectio
 - `src` Modell-URL, `scene` Szenen-Datei (RINDR-JSON, ihre Modelle liegen daneben – Dateinamen aus der Szene), `hdr` HDRI-URL (gewinnt gegen das HDRI der Szene), `mode` `default` (Standard) / `hq`, `features` (Liste, `all`), `activate` `auto` (Standard, sofort) / `visible` (sobald der Player in die Nähe des sichtbaren Bereichs kommt) / `click` (Start-Knopf), `poster` Bild-URL bis der Player sein Modell zeigt (Stufe 3). Alle Attribute werden einmal beim Start gelesen. `element.ready` = Promise der (Debug-)Schnittstelle (bei `activate` erst nach dem Start erfüllt).
 - Ohne Höhe von der Seite ist der Player 480 px hoch; Breite wie ein Block-Element.
 
-**Entwurf für Stufen 3/4:**
+**Umgesetzt (Stufe 4):** Methoden (`load`, `getParts`, `setMaterial`, `setVisible`, `select`, `frame`, `setView`, `setMode`, `render`, `getScene`, `getPackage`, `save`, `start` …), Ereignisse (`rindr-ready`, `-progress`, `-load`, `-select`, `-change`, `-mode`, `-error`, `-save` abbrechbar), Teile per Namenspfad, `element.resolveAsset`, `--rindr-*`-Farben, `RINDR.configure`, Attribut `frame` – vollständig mit Beispielen in **`docs/player-embed.md`**. Aus dem Entwurf entfallen: `hq`-Attribut (`mode` reicht), `logo` (das Logo bleibt immer – Entscheidung des Nutzers), `maxLive` (Obergrenze lebender Player – offen, Stufe 3).
 
-```html
-<script type="module" src="…/player/1.0.0/rindr-player.js"></script>
-<rindr-player src="/media/4711.glb" scene="/media/4711.json"
-              features="scene-graph materials explode save"
-              poster="/media/4711.jpg" activate="visible" lang="de"></rindr-player>
-```
-
-- `src` Modell oder Paket, `scene` Szenen-Datei, `features` (Token-Liste), `poster`, `activate` (`visible` | `click` | `auto`), `hq` (`auto` | `off`), `lang` (global).
-- Ohne `features` = minimal: Bild, Drehen, Vorschau beim Bewegen, HQ bei Stillstand. Kandidaten: `scene-graph`, `materials` (Bibliothek, zuweisen), `material-editor` (Parameter + Nodes), `explode`, `transform`, `views`, `section`, `hdri`, `open` (Dateien/Drop), `save`, `render` (Bild-Export).
-- Seitenweit einmal: `RINDR.configure({ theme, logo, maxLive, base })`.
-- Methoden (Promises): `load`, `setMaterial`, `setVisible`, `setView`, `render`. Ereignisse: `rindr-ready`, `rindr-progress`, `rindr-select`, `rindr-change`, `rindr-save`, `rindr-error`. **Laden/Speichern über das Host-System:** `rindr-save` liefert die Szene, das PIM legt sie ab (kein Datei-Download).
-- **Adressierung über Namen/IDs:** das Szenen-Format hängt Zuweisungen an die Mesh-Reihenfolge (`<i>/all`) und Transformationen an Knotennummern (`n<i>`) – bei Varianten eines Konfigurators zu brüchig. Schnittstelle über Namenspfade oder stabile IDs aus der Datei (glTF `extras`, STEP-Produktname); Material-IDs gibt es schon.
 - Rollen: STEP importieren und Materialien setzen im PIM (alle Funktionen), der Shop lädt das fertige Ergebnis (minimal) – braucht dann weder STEP-Worker noch SharedArrayBuffer.
 
 ## Hosting – beide Wege
 
+- **Umgesetzt (Stufe 4):** eigener Build `dist/player/<version>/` (`vite.player.config.mjs`), Basis aus dem Skript (`player-entry.js` → `playerDefaults.assetBase`), Worker aus fremdem Ursprung über `blob:`, CORS/CORP in `.htaccess`; geprüft von fremdem Ursprung, nicht isoliert und isoliert (`tools/player-check/crossorigin.js`). Die folgenden Punkte waren die Vorüberlegung.
 - Basis aller Laufzeit-Dateien aus dem Skript (`import.meta.url`), nicht aus der Seite: heute 5 Stellen mit `import.meta.env.BASE_URL` (alle in `viewer.js`); Worker laden schon über `new URL(…, import.meta.url)`.
 - **Unser Dienst (fremder Ursprung):** Module brauchen CORS – GitHub Pages sendet `Access-Control-Allow-Origin: *` (geprüft 06.11.2026), eigener Server per `.htaccess`. `new Worker` mit fremdem Ursprung verbietet der Browser → Umweg über `blob:` (nur dann; gleicher Ursprung direkt). Host-Seite mit COEP `require-corp` → unsere Dateien brauchen `Cross-Origin-Resource-Policy: cross-origin`. Version fest in der URL (ein Update darf keinen Shop brechen), Chunks mit Hash + lange Cache-Zeit. Datenschutz: Laden von unserem Server überträgt die IP der Shop-Besucher – gehört in die Datenschutzerklärung des Kunden (Selbst-Hosten vermeidet das).
 - **CSP der Host-Seite** muss erlauben: `script-src` (unser Ursprung), `worker-src blob:`, `'wasm-unsafe-eval'`, `connect-src`, `img-src blob: data:` → Einbau-Anleitung.
@@ -62,7 +51,7 @@ Viele Player (PIM-Raster mit 30 Produkten): nur sichtbare zeichnen (`Intersectio
 
 ## Whitelabel
 
-- Farben: die Tailwind-Variablen (`--color-*`) liegen auf `:host` und lassen sich von der Seite am Element überschreiben (Regeln der Seite schlagen `:host`); eigene `--rindr-*`-Namen kommen mit Stufe 4.
+- Farben: die Tailwind-Variablen (`--color-*`) liegen auf `:host` und lassen sich von der Seite am Element überschreiben (Regeln der Seite schlagen `:host`); seit Stufe 4 eigene Namen `--rindr-accent`, `--rindr-panel`, `--rindr-background`, `--rindr-font` und `RINDR.configure({ theme })` (`docs/player-embed.md` „Farben“).
 - Das RINDR-Logo bleibt sichtbar (Entscheidung des Nutzers); der Preloader der App gehört zur Seite, eingebettete Player zeigen den Lade-Text.
 
 ## Stufen
@@ -70,7 +59,7 @@ Viele Player (PIM-Raster mit 30 Produkten): nur sichtbare zeichnen (`Intersectio
 1. **Instanzen:** `viewer.js` (8.000 Zeilen, 92 Imports) in Runtime + Player teilen; die App läuft als ein Player und verhält sich genau wie vorher – **umgesetzt 06.11.2026**, siehe „Stufe 1“ unten.
 2. **`<rindr-player>`** mit Shadow DOM, `features`, schlank – **umgesetzt 06.11.2026**, siehe „Stufe 2“ unten.
 3. **Mehrere Player:** gemeinsamer Renderer, Schlafen, ein HQ zur Zeit, gemeinsames Budget, Poster – **umgesetzt 06.11.2026**, siehe „Stufe 3“ unten.
-4. **Host-Schnittstelle:** Ereignisse, Laden/Speichern übers Host-System, Namens-Adressierung, Einbau-Anleitung (Hosting, CSP), iframe-Rückfall.
+4. **Host-Schnittstelle:** Ereignisse, Laden/Speichern übers Host-System, Namens-Adressierung, Einbau-Anleitung (Hosting, CSP), iframe-Rückfall – **umgesetzt 06.11.2026**, siehe „Stufe 4“ unten.
 
 ## Stufe 1 – umgesetzt (06.11.2026)
 
@@ -151,9 +140,34 @@ Entscheidungen des Nutzers (06.11.2026): **HQ wandert** zum zuletzt bedienten Pl
 
 **Offen (Stufe 3, bewusst später):** Schlafende Player geben ihre Raster-Ziele (Frame-Buffer, Überblend-Kopien, Linsen-/AO-Ziele) noch nicht frei; Obergrenze lebender Player (weit entfernte freigeben, letztes Bild behalten); schnelles Fortsetzen (beim Abgeben das Bild sichern, bei unveränderter Szene einspielen statt neu rechnen); die Schleife läuft auch ohne wachen Player weiter (kostet nur den leeren Tick); `activate` lädt das Skript des Players trotzdem sofort (nur GPU und Modell warten).
 
+## Stufe 4 – umgesetzt (06.11.2026)
+
+Nutzer (06.11.2026): „hört sich alles gut an, kannst alles durchziehen“ – die offenen Fragen nach dem Vorschlag entschieden: volle Methoden-/Ereignisliste, Namen auch im Szenen-Format, Speichern als JSON und als Paket, versionierter Build gleich, iframe-Rückfall gleich. **Kunden-Anleitung: `docs/player-embed.md`.** Umgesetzt in sieben Schritten, je A/B geprüft und committet:
+
+- **S1 – Methoden und Ereignisse** (`player/host-api.js` auf den Interna von viewer.js – `hostApi = createHostApi({ … })` vor dem ersten Laden; `rindr-player.js` bietet sie als Methoden des Elements, `debugApi.host`): `load`, `getParts`, `getMaterials`, `getLibrary`, `setMaterial`, `setVisible`, `select`, `frame`, `getViews`, `setView`, `setMode`, `getMode`, `render`, `getScene`, `start`. Ein wartender Player (`activate`) startet beim ersten Aufruf; Methoden warten aufs Modell (`idle()`: erste Ladung und `load()` über `track()`). **Teile per Namenspfad** (`player/part-paths.js`): Kette der Knotennamen aus der Datei, gleichnamige Geschwister `Name[2]` (ohne Index: alle), `*` im Namen, `**` beliebig tief, `\` vor Sonderzeichen; ein einzelner unbenannter oberster Knoten (Wurzel der Datei) fällt weg. Der glTF-Lader macht doppelte Namen selbst eindeutig (`Wheel`, `Wheel_1`). Ereignisse über `options.emit` → `rindr-<typ>` am Element (bubbles, composed): `ready`, `progress` (`showProgress`/`hideProgress`), `load` (Ende von `runLoad`; eine Szene einmal am Ende von `openSceneFile`; nicht nach einem Ladefehler), `select` (nur bei Änderung), `change` (History-Ereignis mit `action`/`label` – `History._emit` gibt sie jetzt mit), `mode`, `error` (`showError`). Fehler der Methoden mit `code` (`no-part`, `no-material`, `no-view`, `bad-argument`, `load-failed`, `render-failed`). `render`: `exportImage` (Pathtracing, `width` → Faktor auf die Bildschirmgröße, vorher `releaseExportScale`) oder `hq: false` = Raster-Bild, nachdem Überblendungen/Flüge fertig sind (`rasterSettled` über `busyReason` – aus `settleCheck` herausgelöst). Bibliotheks-Material anlegen + zuweisen = ein Rückgängig-Schritt. `src`/`scene`/`hdr`/`mode` folgen Attribut-Änderungen nach dem Start (`_shows`: was der Player zeigt – Frameworks setzen unveränderte Attribute erneut).
+- **S2 – Namen im Szenen-Format** (`scene-state.js`): `models[].paths` = Pfad je Knoten-/Mesh-Schlüssel, den die Einträge benutzen (Mesh: Knotenpfad + `#k`); beim Laden über die Namen (`keyRemap`), ohne Treffer die alte Nummer nur bei gleich großem Baum. Szenen ohne Namen wie bisher. Geprüft mit zwei Varianten eines Produkts (`tools/player-check/gen-variants.cjs`: Knoten umsortiert, einer davor): mit Namen landen Material und Ausblendung richtig, ohne (vorher) auf falschen Teilen.
+- **S3 – Laden/Speichern übers Host-System:** `rindr-save` (abbrechbar: `{ scene, json, name, package() }`) vor dem Datei-Dialog; `load({ scene: Daten|URL, files, package, hdr })`, `getPackage()` (`scenePackage`: Szene + Modell-Dateien samt mitgegebener Dateien, .gltf per URL mit Puffern/Bildern, HDRI; `unpackScene` liest es); `element.resolveAsset(name, kind)` für Modelle (`resolveModelSource`, `openSceneUrl`) und das HDRI einer Szene (`environment.hdriUrls`). Ohne `open` öffnet ein fehlendes Modell kein Asset-Fenster (die Seite bekommt `missing`).
+- **S4 – eigener Player-Build** (`vite.player.config.mjs`, Plugins/Patches aus `astro.config.mjs`; `npm run build` baut beide, `npm run build:player` nur ihn): `dist/player/<version>/` mit relativen Pfaden, Entrauscher-Gewichten, Workern. Einstieg `player-entry.js` setzt `playerDefaults.assetBase` auf den eigenen Ordner, `RINDR.version`. Das Element lädt den Viewer erst beim Start (`loadViewer` – ein Promise für alle, damit `createPlayer` in Seitenreihenfolge läuft); die App importiert ihn weiter direkt (`app.js`). Worker aus fremdem Ursprung: `renderChunk` ersetzt `new Worker(` durch eine Klasse, die bei fremdem Ursprung über einen `blob:` mit `import` startet. `.htaccess`: CORS/CORP für `/player/`.
+- **S5 – Whitelabel-Farben:** `--rindr-accent` (Sky-Töne 200/300/400/700 per `color-mix` daraus), `--rindr-panel` (`--color-black`), `--rindr-background`, `--rindr-font`; ohne Wert exakt Tailwinds Werte (Hilfsvariable mit ungesetzter Variable ist ungültig → Rückfall `--theme(--color-sky-500 inline)`). `RINDR.configure({ theme, base })` über ein gemeinsames Stylesheet (Werte werden zusammengeführt, `null` entfernt, ungültige mit Warnung abgelehnt).
+- **S6 – iframe-Rückfall:** `player/<version>/frame.html` + `frame.js` (Brücke: Protokoll im Kopf von `player/frame.js`), `<rindr-player frame>` über `player/frame-proxy.js` mit derselben Schnittstelle (Methoden, Ereignisse, `resolveAsset` hin und zurück, `rindr-save` – nicht abgebrochen: Download im Rahmen über `save({ event: false })`; `--rindr-*` als `theme-*` im Hash → `RINDR.configure`); `.htaccess` erlaubt das Einbetten von `frame.html`. Methode `save()` (wie der Knopf).
+- **S7 – Doku:** `docs/player-embed.md` (Kunden-Anleitung), dieser Abschnitt, CLAUDE.md.
+
+**Nebenbei behoben:** das Stylesheet des Players stand doppelt im Bundle (der Minifier setzte den 70-KB-Text an beiden Verwendungen ein) – Einstieg jetzt ≈ 78 KB, auch die App ≈ 70 KB kleiner. Methoden, Rückgängig-Schritte und Fortschritt wecken einen eingefrorenen Player (vorher zeigte er eine Änderung über die Schnittstelle nicht, „Optimiere Darstellung …“ blieb stehen). Das Leeren der Szene weckt ihn ebenfalls.
+
+**Prüfweg** (`tools/player-check`): `api.js` (Methoden, Ereignisse, Fehler, Live-Attribute, Start per Aufruf), `paths-test.mjs` (Pfade ohne Browser), `names.js` + `gen-variants.cjs` (Namen im Szenen-Format), `save.js` (Speichern übernommen, Paket, `resolveAsset`, `files`, fehlendes Modell), `crossorigin.js` + `cdn-server.js` + `host-server.js` (Player von fremdem Ursprung, nicht isoliert / isoliert, Klick-Seite: vor dem Start ≈ 250 KB, danach ≈ 4 MB), `theme.js` (Farben, `configure`), `frametest.js` (iframe). Dazu nach jedem Schritt die volle App-A/B, embed, multi, activate.
+
+**Fallen:**
+- Ein Player ohne Eingabe (Methode, Ereignis von außen) wird nicht durch die Capture-Listener geweckt – jede Methode macht ihn aktuell und weckt ihn (`ctx.touch`).
+- Ein Szenen-Modell gleichen Namens, das schon geladen ist, wird wiederverwendet (`resolveModelSource`) – Prüfungen mit Varianten vorher ein anderes Modell laden.
+- Getrennte `import()`-Aufrufe desselben Moduls lösen nicht in Aufrufreihenfolge auf – Reihenfolge-abhängiger Start über ein gemeinsames Promise.
+- Node auf dem Host ist v16: kein `fetch` in Prüfskripten (`http.get`).
+- Resource Timing misst fremde Ursprünge ohne `Timing-Allow-Origin` mit 0 Byte – Größen über das Server-Log.
+
+**Offen (Stufe 4):** Versionen auf dem Server behalten (GitHub Pages veröffentlicht `dist/` neu – alte `player/<version>/` verschwinden; eigener Server: Ordner liegen lassen); Elementname fürs Whitelabel frei wählbar; Lizenz/Schlüssel je Kunde; Szenen-Pakete beim Ablegen in die App (heute behandelt die App eine .zip als Material-Paket).
+
 ## Offen
 
-- Paket „Szene + Modelle in einer Datei“ (`zip.js` gibt es; heute bewusst kein „Szene verpacken“, docs/scene-state.md).
+- Paket „Szene + Modelle in einer Datei“: für die Host-Seite seit Stufe 4 (`getPackage()`, `load({ package })`, `rindr-save` → `package()`); in der App selbst weiter kein „Szene verpacken“ (docs/scene-state.md) – eine abgelegte .zip ist dort ein Material-Paket.
 - Elementname fürs Whitelabel frei wählbar (Unterklasse unter eigenem Namen registrieren)?
 - Lizenz/Schlüssel je Kunde beim Dienst, Bindung an Domains.
 - WebGL2-Rückfall: heute zeigt nur der erste Player ein Bild (Entscheidung des Nutzers); denkbar wäre ein eigener Renderer je Player bis zur Browser-Grenze (~16 Kontexte).
