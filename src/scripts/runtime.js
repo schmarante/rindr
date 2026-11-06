@@ -42,6 +42,9 @@ async function createRuntime({ onWaiting, onWaitEnd } = {}) {
         // the path tracer's kernel with many features at once (rounded edges, traced Gaussians, volumes, buckets …) binds
         // more than the default 8 storage buffers (9 with every feature, ?kernel=all)
         maxStorageBuffersPerShaderStage: adapter.limits.maxStorageBuffersPerShaderStage,
+        // the canvas of a tall embedded player (or a large screen): textures up to what the card can (default 8192;
+        // viewer.js keeps the drawing buffer inside it – bufferRatio)
+        maxTextureDimension2D: adapter.limits.maxTextureDimension2D,
     } : undefined;
     // stencil: closed cut surfaces of the section plane (slicer.js)
     const renderer = new THREE.WebGPURenderer({ antialias: true, stencil: true, ...GPU_OPTIONS, requiredLimits });

@@ -421,8 +421,12 @@ export async function createPlayer(options = {}) {
             && ((rest.visible && !rest.frozen) || !!loading || !!exportRequest || !!captureRequest),
     };
     usePlayer(player);
+    // the canvas' pixels per CSS pixel: the screen's, unless the view is larger than the GPU's biggest texture (a very tall
+    // embedded player – its box is the page's business) – then less, instead of a validation error and no picture
+    const maxTextureSize = () => renderer.backend?.device?.limits?.maxTextureDimension2D || 8192;
+    const bufferRatio = () => { const { width, height } = viewSize(); return Math.min(window.devicePixelRatio || 1, maxTextureSize() / Math.max(width, height)); };
     renderer.setSize(viewSize().width, viewSize().height);
-    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setPixelRatio(bufferRatio());
     // ambient occlusion of the raster view: its hook into the materials' lighting goes in before any shader is built
     const rasterAO = new RasterAO(renderer);
     rasterAO.install();
@@ -4518,7 +4522,7 @@ export async function createPlayer(options = {}) {
     // the screen shows the large image scaled down meanwhile), raster and path tracer render at that size (the path
     // tracer restarts by itself on the size change), effects keep their screen look (lens.setPixelScale); restored
     // afterwards. Limit: maxExportSize (GPU texture limit, at most 8192 px for memory).
-    const maxExportSize = () => Math.min(renderer.backend?.device?.limits?.maxTextureDimension2D || 8192, 8192);
+    const maxExportSize = () => Math.min(maxTextureSize(), 8192);
     // Render window (teapot): always path traced – switches to HQ; samples = the window's choice for this image
     // (0 = as in the settings), restored afterwards
     // A render job of the render window (local): progress in the status bottom left with ✕ (the window is closed); cancelled
@@ -7289,7 +7293,7 @@ export async function createPlayer(options = {}) {
         matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener('change', () => {
             releaseExportScale();
             usePlayer(player);
-            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setPixelRatio(bufferRatio());
             loadRender.force = true;
             watchPixelRatio();
         }, { once: true });
@@ -7307,6 +7311,7 @@ export async function createPlayer(options = {}) {
         camera.aspect = width / height;
         camera.updateProjectionMatrix();
         usePlayer(player);
+        if (renderer.getPixelRatio() !== bufferRatio()) renderer.setPixelRatio(bufferRatio());   // (a view grown beyond the GPU's limit)
         renderer.setSize(width, height);
         // a resized player whose HQ picture stayed while another player has the engine: drawn anew, waits for HQ again
         if (viewMode === 'hq' && pathTracing.enabled && !pathTracing.owner && playerCount() > 1) updatePathTracingScene();
