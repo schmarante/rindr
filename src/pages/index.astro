@@ -297,8 +297,9 @@ const CSP = [
         <script>
             import "../scripts/app.js";
         </script>
-        <!-- brand line bottom left (slides out with the UI); progress/PT status sit above it -->
-        <div data-ui="left" class="pointer-events-none absolute bottom-3 left-5 flex items-center gap-1.5 text-[11px] tracking-wide text-white select-none">
+        <!-- brand line bottom left – always visible, also with the UI hidden (user, Nov. 2026: the logo is always shown);
+             progress/PT status sit above it -->
+        <div class="pointer-events-none absolute bottom-3 left-5 flex items-center gap-1.5 text-[11px] tracking-wide text-white select-none">
             <!-- logo white: filled (dark) areas → opaque white, light details (eyes, spots) → transparent;
                  alpha = alpha − luminance, colour = white (the SVG file stays as exported) -->
             <svg width="0" height="0" class="absolute" aria-hidden="true">

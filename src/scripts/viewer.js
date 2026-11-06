@@ -124,9 +124,34 @@ export async function createPlayer(options = {}) {
     // the player is the whole page (the RINDR app, app.js): it may reload the page and change its URL (language switch,
     // GPU reset, render client pairing) and offers distributed rendering – an embedded player never touches the page
     const APP_MODE = !!options.appMode;
-    // size of the view in CSS pixels: the window for now (stage 2: the player's element – docs/player.md)
-    function viewSize() { return { width: window.innerWidth, height: window.innerHeight }; }
+    // the player's own element (<rindr-player>) – keys and file drops count for the whole page with the app (keyScope
+    // 'page') or without an element; an embedded player only reacts to events inside it (focus / pointer over it)
+    const playerEl = options.element ?? null;
+    const pageScope = !playerEl || options.keyScope === 'page';
+    const ownsEvent = e => pageScope || e.composedPath().includes(playerEl);
+    // the element that takes `ui-hidden` (key U): the page body for the app, an inner root in <rindr-player>
+    const uiRoot = options.uiRoot ?? document.body;
+    // what fullscreen shows: the whole page for the app, the player's element when embedded
+    const fullscreenEl = options.fullscreenElement ?? document.documentElement;
+    // size of the view in CSS pixels: the player's view element (for the app as large as the window)
+    const viewportEl = dom.getElementById('viewport');
+    function viewSize() { return { width: Math.max(1, viewportEl.clientWidth), height: Math.max(1, viewportEl.clientHeight) }; }
     function viewAspect() { const { width, height } = viewSize(); return width / height; }
+    // size changes: the window's resize event for the app (timing as before); an embedded player watches its element
+    // and applies a new size before its next frame (resizing inside the observer would clear the already drawn canvas –
+    // a black frame while dragging)
+    const sizeHandlers = [];
+    let sizePending = false;
+    function onViewSizeChange(fn) {
+        if (APP_MODE || !playerEl) window.addEventListener('resize', fn);
+        else sizeHandlers.push(fn);
+    }
+    if (!APP_MODE && playerEl) new ResizeObserver(() => { sizePending = true; }).observe(viewportEl);
+    function applyPendingSize() {
+        if (!sizePending) return;
+        sizePending = false;
+        for (const fn of sizeHandlers) fn();
+    }
 
     // where the app's files lie (models/, hdr/, oidn/, samplescene/): the page's base path; an embedded player gets its
     // own (docs/player.md)
@@ -1280,6 +1305,7 @@ export async function createPlayer(options = {}) {
     // text fields keep their own Ctrl+Z (sliders, colour pickers, checkboxes do not)
     const isTextField = el => !!el.closest?.('textarea, select, input:not([type=range]):not([type=color]):not([type=checkbox]):not([type=button])');
     window.addEventListener('keydown', e => {
+        if (!ownsEvent(e)) return;
         const key = e.key.toLowerCase();
         if ((e.ctrlKey || e.metaKey) && !e.altKey && (key === 'z' || key === 'y')) {
             if (isTextField(eventTarget(e))) return;
@@ -4769,17 +4795,17 @@ export async function createPlayer(options = {}) {
         setupMenu.hidden = !open;
         if (open) setupWindow.apply();
     }
-    window.addEventListener('keydown', e => { if (e.key === 'Escape' && setupOpen && !dialogOpen()) { e.stopPropagation(); setSetupOpen(false); } }, true);
+    window.addEventListener('keydown', e => { if (e.key === 'Escape' && setupOpen && !dialogOpen() && ownsEvent(e)) { e.stopPropagation(); setSetupOpen(false); } }, true);
     const setUiTool = viewModeBar.addTool({ icon: ICON_UI, title: t('toolbar.hideUi'), onClick: () => toggleUi() });
     function toggleUi(hidden = !uiHidden) {
         uiHidden = hidden;
         if (hidden) setSetupOpen(false);
-        document.body.classList.toggle('ui-hidden', hidden);
+        uiRoot.classList.toggle('ui-hidden', hidden);
         setUiTool(hidden, t(hidden ? 'toolbar.showUi' : 'toolbar.hideUi'));
     }
     const setFullTool = viewModeBar.addTool({
         icon: ICON_FULL, title: t('toolbar.fullscreen'),
-        onClick: () => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()).catch(() => {}),
+        onClick: () => (document.fullscreenElement ? document.exitFullscreen() : fullscreenEl.requestFullscreen()).catch(() => {}),
     });
     // Exploded view (key X, button in the bar, strength in the model panel). Raster preview during the
     // animation, then update the path tracing scene once (rebuilding it every frame would be too expensive).
@@ -4854,7 +4880,7 @@ export async function createPlayer(options = {}) {
     exploder.addEventListener('end', () => { transformer.sync(); pathTracing.resumeAfterEdit('node'); });
     exploder.addEventListener('change', () => setExplodeTool(exploder.active, t(exploder.active ? 'toolbar.collapse' : 'toolbar.explode')));
     document.addEventListener('fullscreenchange', () => {
-        const full = !!document.fullscreenElement;
+        const full = document.fullscreenElement === fullscreenEl;
         setFullTool(full, t(full ? 'toolbar.exitFullscreen' : 'toolbar.fullscreen'));
         setFullTool.button.innerHTML = full ? ICON_FULL_EXIT : ICON_FULL;
     });
@@ -5172,7 +5198,7 @@ export async function createPlayer(options = {}) {
     // otherwise it waits for a quiet moment, which streaming never has: every part a draw call of its own until the end
     const IMPORT_BATCH_MS = 2000;
     controls.addEventListener('change', () => { if (!flight) loadRender.force = true; else loadRender.dirty = true; });
-    window.addEventListener('resize', () => { loadRender.force = true; });
+    onViewSizeChange(() => { loadRender.force = true; });
     window.addEventListener('pointermove', () => { if (loadRender.active) loadRender.dirty = true; });
 
     // --- Load and process the model (STEP: tessellate; glTF/FBX: take over meshes) ---
@@ -6409,8 +6435,10 @@ export async function createPlayer(options = {}) {
         return !!types && types.includes('Files') && !types.includes('text/html') && !types.includes(MATERIAL_MIME);
     };
     let dragDepth = 0;
+    // left half of the view = replace, right half = add (measured from the view's own left edge)
+    const leftHalf = e => e.clientX - viewportEl.getBoundingClientRect().left < viewSize().width / 2;
     window.addEventListener('dragenter', e => {
-        if (!isFileDrag(e)) return;
+        if (!ownsEvent(e) || !isFileDrag(e)) return;
         dragDepth++;
         // asset window open: it is the drop target (relink) – no replace/add plane behind it
         if (assetsWindow.isOpen) assetsWindow.setDragActive(true);
@@ -6419,13 +6447,14 @@ export async function createPlayer(options = {}) {
         else setDropOverlay(true);
     });
     window.addEventListener('dragleave', e => {
-        if (!isFileDrag(e)) return;
+        if (!ownsEvent(e) || !isFileDrag(e)) return;
         if (--dragDepth <= 0) { dragDepth = 0; setDropOverlay(false); assetsWindow.setDragActive(false); }
     });
     // anything carrying files that we do not accept: still prevent the browser from opening it itself
     // (navigating away from the viewer) – the drop is simply ignored
     const hasFiles = e => !!e.dataTransfer?.types.includes('Files');
     window.addEventListener('dragover', e => {
+        if (!ownsEvent(e)) return;   // embedded: drags elsewhere on the page are none of the player's business
         if (!isFileDrag(e)) {
             if (hasFiles(e) && !isMaterialDrag(e)) { e.preventDefault(); e.dataTransfer.dropEffect = 'none'; }
             return;
@@ -6433,16 +6462,17 @@ export async function createPlayer(options = {}) {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'copy';
         if (isAssetDrag(e) && !hasMissingAssets() && !assetsWindow.isOpen) { e.dataTransfer.dropEffect = 'none'; return; }
-        if (rootGroup && !assetsWindow.isOpen && dropMode === 'split') highlightDropZone(e.clientX < viewSize().width / 2 ? 'replace' : 'add');
+        if (rootGroup && !assetsWindow.isOpen && dropMode === 'split') highlightDropZone(leftHalf(e) ? 'replace' : 'add');
     });
     window.addEventListener('drop', async e => {
+        if (!ownsEvent(e)) return;
         if (!isFileDrag(e)) {
             if (hasFiles(e) && !isMaterialDrag(e)) e.preventDefault();
             return;
         }
         e.preventDefault();
         dragDepth = 0;
-        const side = rootGroup ? (e.clientX < viewSize().width / 2 ? 'replace' : 'add') : 'add';
+        const side = rootGroup ? (leftHalf(e) ? 'replace' : 'add') : 'add';
         setDropOverlay(false);
         const relink = assetsWindow.isOpen;
         assetsWindow.setDragActive(false);
@@ -6823,7 +6853,7 @@ export async function createPlayer(options = {}) {
         }, { once: true });
     }
     watchPixelRatio();
-    window.addEventListener('resize', () => {
+    onViewSizeChange(() => {
         releaseExportScale();
         // rendering is cancelled like with ✕ (user: "on resize everything should be cancelled, the rendering is started again"
         // – a job going on at the old size showed a stretched picture); a finished distributed picture (shown until the view
@@ -7095,6 +7125,7 @@ export async function createPlayer(options = {}) {
         dome.update(camera);   // dome background: camera position relative to the projection centre
     }
     function renderFrame() {
+        applyPendingSize();
         const frameStart = performance.now();
         batcher.newFrame();
         batcher.maxWait = loadRender.active ? IMPORT_BATCH_MS : 0;
@@ -7585,7 +7616,7 @@ export async function createPlayer(options = {}) {
     // Esc cancels rendering like the ✕ (user's wish) – before the other Esc actions (deselect …); an open window or dialog
     // takes the Esc first (their own capture listeners)
     window.addEventListener('keydown', e => {
-        if (e.key !== 'Escape' || e.repeat || dialogOpen()) return;
+        if (e.key !== 'Escape' || e.repeat || dialogOpen() || !ownsEvent(e)) return;
         if (distRender || renderJob) cancelRendering();
         else if (renderMaster?.running) cancelDistributed();
         else if (distDisplay?.active) endDistributedView();
