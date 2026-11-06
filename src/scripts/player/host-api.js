@@ -111,6 +111,13 @@ export function createHostApi(ctx) {
             if (spec.hdr) await ctx.selectHdrUrl(absolute(spec.hdr));
             return { models: ctx.runtimeModels().map(rm => rm.file?.name ?? null), missing: ctx.missing(), parts: allParts().length };
         },
+        /** save as the save button does: 'rindr-save' (the page may take the scene), otherwise the file dialog / download;
+         *  event: false = straight to the file (the iframe fallback after the page left it) */
+        async save({ event = true } = {}) {
+            await ctx.idle();
+            ctx.touch();
+            await ctx.saveScene({ event });
+        },
         /** the scene with its files as one zip (Blob) – load({ package }) opens it again */
         async getPackage() {
             await ctx.idle();

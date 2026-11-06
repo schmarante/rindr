@@ -71,3 +71,12 @@ AddType application/wasm .wasm
     Header always set Referrer-Policy "strict-origin-when-cross-origin"
     Header always set Permissions-Policy "accelerometer=(), autoplay=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), serial=(), usb=(), xr-spatial-tracking=(), fullscreen=(self), clipboard-write=(self)"
 </IfModule>
+
+# The player's iframe fallback (player/<version>/frame.html) is meant to be embedded by other sites
+<IfModule mod_headers.c>
+    <If "%{REQUEST_URI} =~ m#/player/[^/]+/frame\.html$#">
+        Header always set Content-Security-Policy "frame-ancestors *"
+        Header always unset X-Frame-Options
+        Header always set Permissions-Policy "fullscreen=*, clipboard-write=*"
+    </If>
+</IfModule>

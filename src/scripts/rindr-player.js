@@ -86,7 +86,7 @@ function playerSheet(source = css) {
 // The element's methods for the host page (docs/player.md, stage 4 – player/host-api.js; load() has its own below): each
 // returns a promise; a player still waiting for its activation (activate="click" / "visible") starts on the first call
 const HOST_METHODS = ['getParts', 'getMaterials', 'getLibrary', 'setMaterial', 'setVisible', 'select', 'frame', 'getViews', 'setView',
-    'setMode', 'getMode', 'render', 'getScene', 'getPackage'];
+    'setMode', 'getMode', 'render', 'getScene', 'getPackage', 'save'];
 // attributes the player follows when the page changes them after the start (the others count once, at the start)
 const LIVE_ATTRIBUTES = ['src', 'scene', 'hdr', 'mode'];
 
@@ -98,6 +98,8 @@ export class RindrPlayer extends HTMLElement {
         if (this.ready) return;
         const options = this.rindrOptions || {};
         const root = this.attachShadow({ mode: 'open' });
+        // <rindr-player frame>: the player in an iframe of the player build, same interface (player/frame-proxy.js)
+        if (this.hasAttribute('frame') && !options.appMode) { this._startFrame(root); return; }
         root.adoptedStyleSheets = [playerSheet(), themeSheet];
         root.innerHTML = playerTemplate();
         const layer = root.querySelector('[data-rindr-layer]');
@@ -143,6 +145,30 @@ export class RindrPlayer extends HTMLElement {
         });
         // a player that cannot start says so in its box (no renderer, without WebGPU only the first player) – the page may
         // still await `ready`; no unhandled rejection in the console otherwise
+        this.ready.catch(() => {});
+    }
+
+    _startFrame(root) {
+        root.adoptedStyleSheets = [playerSheet(), themeSheet];
+        // (the address after the import: elements in the page upgrade while this module runs – before player-entry.js has set
+        // the player's folder)
+        const started = import('./player/frame-proxy.js').then(({ startFrame }) => {
+            const url = this.getAttribute('frame') || (playerDefaults.assetBase && `${playerDefaults.assetBase}frame.html`);
+            if (!url) throw new Error('rindr-player frame: needs the player build (or frame="<URL of frame.html>")');
+            const frame = startFrame(this, root, url, (type, detail, cancelable) => this._emit(type, detail, cancelable));
+            this._startNow = () => { this._startNow = null; frame.start().catch(() => {}); };
+            return frame.started;
+        });
+        this._startAttributes = Object.fromEntries(LIVE_ATTRIBUTES.map(name => [name, this.getAttribute(name)]));
+        this._shows = { src: this._startAttributes.src, scene: this._startAttributes.scene, hdr: this._startAttributes.hdr };
+        this.ready = started.then(api => {
+            this._api = api;
+            this._emit('ready', {});
+            return api;
+        }, err => {
+            this._emit('error', { message: err?.message || String(err), name: null, title: null, start: true });
+            throw err;
+        });
         this.ready.catch(() => {});
     }
 

@@ -6501,7 +6501,7 @@ export async function createPlayer(options = {}) {
     // "Save as": the browser's save dialog (File System Access API – Chrome/Edge) with the name of the last
     // opened/saved scene file as suggestion; other browsers (Firefox, Safari) download the file as before.
     let sceneFileName = null;   // last opened/saved scene file (suggestion in the dialog)
-    async function saveScene() {
+    async function saveScene({ event = true } = {}) {
         // BIM (IFC loaded or issues open): one .bcfzip with the issues and the scene
         if (bimActive()) {
             const { format } = await loadBcf();
@@ -6514,7 +6514,7 @@ export async function createPlayer(options = {}) {
         const firstName = state.models[0]?.file?.name || model?.name || 'scene';
         const suggested = sceneFileName || firstName.replace(/\.[^.]+$/, '') + '.scene.json';
         // the host page keeps the scene itself (PIM – docs/player.md stage 4): 'rindr-save' cancelled = taken over, no file
-        if (!emit('save', { scene: state, json, name: suggested, package: () => scenePackage(state, suggested) }, { cancelable: true })) return;
+        if (event && !emit('save', { scene: state, json, name: suggested, package: () => scenePackage(state, suggested) }, { cancelable: true })) return;
         if (window.showSaveFilePicker) {
             let handle;
             try {
@@ -7200,6 +7200,7 @@ export async function createPlayer(options = {}) {
         openScene: (state, files) => track(openSceneFile(state, files, { reload: true })),
         unpackScene,
         scenePackage: () => scenePackage(),
+        saveScene: o => saveScene(o),
         missing: () => missingModels.map(m => m.name),
         openUrl: url => track(openModel(sourceForUrl(decodeURIComponent(new URL(url).pathname.split('/').pop()), url))),
         selectHdrUrl: url => {

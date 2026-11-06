@@ -35,11 +35,22 @@ function copyDenoiserWeights() {
     };
 }
 
+// the iframe fallback's page (player/frame.js): one player over the whole frame – no inline script (CSP)
+const FRAME_HTML = `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>RINDR</title>
+<style>html,body{margin:0;height:100%;background:#171717;overflow:hidden}rindr-player{position:fixed;inset:0;width:auto;height:auto}</style>
+<script type="module" src="./rindr-player.js"></script><script type="module" src="./frame.js"></script>
+</head><body></body></html>
+`;
+function framePage() {
+    return { name: 'rindr-player-frame', generateBundle() { this.emitFile({ type: 'asset', fileName: 'frame.html', source: FRAME_HTML }); } };
+}
+
 const app = astroConfig.vite;
 export default defineConfig({
     base: './',
     publicDir: false,
-    plugins: [...app.plugins, crossOriginWorkers(), copyDenoiserWeights()],
+    plugins: [...app.plugins, crossOriginWorkers(), copyDenoiserWeights(), framePage()],
     worker: { ...app.worker, plugins: () => [crossOriginWorkers()] },
     define: app.define,
     optimizeDeps: app.optimizeDeps,
@@ -50,8 +61,8 @@ export default defineConfig({
         modulePreload: { polyfill: false },
         rolldownOptions: {
             ...app.build.rolldownOptions,
-            input: 'src/scripts/player-entry.js',
-            output: { entryFileNames: 'rindr-player.js', chunkFileNames: 'chunks/[name].[hash].js', assetFileNames: 'assets/[name].[hash][extname]' },
+            input: { 'rindr-player': 'src/scripts/player-entry.js', frame: 'src/scripts/player/frame.js' },
+            output: { entryFileNames: '[name].js', chunkFileNames: 'chunks/[name].[hash].js', assetFileNames: 'assets/[name].[hash][extname]' },
         },
     },
 });
