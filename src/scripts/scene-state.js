@@ -16,6 +16,8 @@
 //   assets         list of the external files the scene needs (models, HDRI, missing textures) – the asset
 //                  window checks it when opening
 //   materials      all materials of the scene (like the material export)
+//   models[].paths (stage 4, docs/player.md) the node path (player/part-paths.js) of every node and mesh key the model's
+//                  entries use – a variant of the file (nodes added or reordered) still finds its parts by name
 //
 // Mesh keys (mesh.userData.key) and material origin (def.origin) are stable across reloads and
 // quality levels; material IDs of STEP/import materials, however, are not.
@@ -25,6 +27,7 @@ import { normalizeHdri } from './hdri/hdri-model.js';
 import { normalizeQuality } from './step-shared.js';
 import { t } from './i18n.js';
 import { debugLog } from './log.js';
+import { partPaths } from './player/part-paths.js';
 
 export const SCENE_FORMAT = 'step-viewer-scene';
 const VERSION = 2;
@@ -37,6 +40,26 @@ const vec = v => v.toArray().map(x => +x.toFixed(6));
 // keys of a model in the Scene Graph sets: 'model', 'n<i>', 's<mesh key>' – additional models carry a prefix
 const stripKey = (key, prefix) => (!prefix ? key : key.startsWith('s' + prefix) ? 's' + key.slice(1 + prefix.length) : key.startsWith(prefix) ? key.slice(prefix.length) : null);
 const addKey = (key, prefix) => (!prefix ? key : key[0] === 's' ? 's' + prefix + key.slice(1) : prefix + key);
+
+// Names of a model's keys (stage 4): node 'n<i>' → its path, mesh key → path of its node + '#' + its place among the
+// node's meshes. Keys without the runtime prefix, as in the scene file. Without import nodes (e.g. splats): none.
+function keyPaths(rm) {
+    if (!rm.importNodes?.length) return null;
+    const paths = partPaths(rm.importNodes).map(p => (p.root ? null : p.path));
+    const node = new Map(), mesh = new Map();
+    rm.nodeGroups.forEach((g, i) => { if (g && paths[i] != null) node.set('n' + i, paths[i]); });
+    const index = new Map(rm.nodeGroups.map((g, i) => [g, i]));
+    const counts = new Map();
+    for (const m of rm.meshes) {
+        let i;
+        for (let o = m.parent; o && i === undefined; o = o.parent) i = index.get(o);
+        if (i === undefined || paths[i] == null || !m.userData.key) continue;
+        const k = counts.get(i) || 0;
+        counts.set(i, k + 1);
+        mesh.set(stripKey(m.userData.key, rm.prefix), `${paths[i]}#${k}`);
+    }
+    return { node, mesh };
+}
 
 /** State of one loaded model (ctx.runtimeModels() entry) */
 function modelState(rm, sceneGraph) {
@@ -63,6 +86,15 @@ function modelState(rm, sceneGraph) {
     // instances (duplicate.js): the blocks in their order and the nodes made unique – replayed first when loading
     const duplicates = rm.root.userData.duplicates?.length ? rm.root.userData.duplicates.map(d => ({ ...d })) : null;
     const unique = rm.nodeGroups.flatMap((g, i) => (g?.userData.unique ? [i] : []));
+    // the names of every key used above
+    const named = keyPaths(rm);
+    const paths = {};
+    if (named) {
+        const name = k => { const n = k[0] === 'n' ? named.node.get(k) : named.mesh.get(k[0] === 's' ? k.slice(1) : k); if (n != null) paths[k[0] === 's' ? k.slice(1) : k] = n; };
+        [...Object.keys(transforms), ...Object.keys(mappings)].filter(k => k !== 'model').forEach(name);
+        [...own(sceneGraph.hiddenModel), ...own(sceneGraph.deleted), ...own(sceneGraph.lockedModel)].filter(k => k !== 'model').forEach(name);
+        Object.values(assignments).flat().forEach(name);
+    }
     return {
         file: rm.file,
         placement: rm.holder ? vecs(rm.holder.position) : null,
@@ -81,8 +113,27 @@ function modelState(rm, sceneGraph) {
         ...(rm.poses ? { poses: rm.poses } : {}),   // skeleton: own poses of the pose list [{ name, values }]
         ...(rm.splatLook ? { splatLook: rm.splatLook } : {}),   // Gaussian splats: light (baked/surface/volume), override material
         ...(rm.volumeLooks ? { volumes: rm.volumeLooks } : {}),   // grid volumes: density, colour, anisotropy, glow (volume-look.js)
+        ...(Object.keys(paths).length ? { paths: sortKeys(paths) } : {}),
     };
 }
+
+// Saved keys → keys of the loaded model (stage 4). With names (chunk.paths): by name first; a key whose name is not found
+// keeps its number only while the tree has the same size. Without names: as before – transforms only with the same tree
+// size, mesh keys and hidden/deleted/locked keys as they are.
+function keyRemap(rm, chunk) {
+    const sameTree = chunk.count == null || chunk.count === rm.nodeGroups.length;
+    if (!chunk.paths) return { named: false, sameTree, node: k => (sameTree ? k : null), mesh: k => k };
+    const named = keyPaths(rm);
+    const byPath = new Map();
+    if (named) {
+        for (const [k, path] of named.node) byPath.set(path, k);
+        for (const [k, path] of named.mesh) byPath.set(path, k);
+    }
+    const look = k => { const path = chunk.paths[k]; return path != null && byPath.has(path) ? byPath.get(path) : sameTree ? k : null; };
+    return { named: true, sameTree, node: look, mesh: look };
+}
+// a hidden/deleted/locked key ('model', 'n<i>', 's<mesh key>') through the remap
+const remapKey = (remap, k) => (k === 'model' ? k : k[0] === 'n' ? remap.node(k) : k[0] === 's' ? (m => (m == null ? null : 's' + m))(remap.mesh(k.slice(1))) : k);
 
 /** Models of a state (version 1: only the main model at the top level) */
 export function sceneModels(state) {
@@ -104,11 +155,12 @@ export function applyModelState(ctx, rm, chunk, idMap, warnings) {
     // materials: defaults first, then the saved deviations
     const byKey = new Map(rm.meshes.map(m => [m.userData.key, m]));
     for (const m of rm.meshes) { const def = materialManager.get(m.userData.defaultMaterialId); if (def) m.material = def.material; }
+    const remap = keyRemap(rm, chunk);
     let missing = 0;
     for (const [id, keys] of Object.entries(chunk.assignments || {})) {
         const entry = materialManager.get(idMap?.get(id) ?? id);
         if (!entry) { missing += keys.length; continue; }
-        for (const k of keys) { const mesh = byKey.get(addKey(k, rm.prefix)); if (mesh) mesh.material = entry.material; else missing++; }
+        for (const k of keys) { const to = remap.mesh(k); const mesh = to == null ? null : byKey.get(addKey(to, rm.prefix)); if (mesh) mesh.material = entry.material; else missing++; }
     }
     if (missing) warnings.push(t('sceneState.missingAssignments', { count: missing }));
     // morph targets (blend shapes); all others back to 0
@@ -125,12 +177,21 @@ export function applyModelState(ctx, rm, chunk, idMap, warnings) {
     // placement (additional models)
     if (rm.holder && chunk.placement) { rm.holder.position.fromArray(chunk.placement); rm.holder.updateMatrixWorld(true); }
     // transforms
-    if (chunk.count != null && chunk.count !== rm.nodeGroups.length) warnings.push(t('sceneState.treeMismatch'));
+    if (!remap.named && !remap.sameTree) warnings.push(t('sceneState.treeMismatch'));
     else {
         const all = [['model', rm.root], ...rm.nodeGroups.map((g, i) => ['n' + i, g])];
+        // the saved transforms and mappings on the keys of the loaded model (a name not found: told as a changed tree)
+        let lost = 0;
+        const onLoaded = saved => {
+            const out = {};
+            for (const [k, v] of Object.entries(saved || {})) { const to = k === 'model' ? k : remap.node(k); if (to == null) lost++; else out[to] = v; }
+            return out;
+        };
+        const transforms = onLoaded(chunk.transforms), mappings = onLoaded(chunk.mappings);
+        if (lost) warnings.push(t('sceneState.treeMismatch'));
         for (const [key, o] of all) {
             if (!o) continue;
-            const tr = chunk.transforms?.[key];
+            const tr = transforms[key];
             if (!tr && !o.userData.xf) continue;
             ctx.ensureTransform(o);
             const xf = o.userData.xf;
@@ -147,7 +208,6 @@ export function applyModelState(ctx, rm, chunk, idMap, warnings) {
             ctx.applyTransform(o);
         }
         // UV mappings (older scenes: none) – projected once for the whole model
-        const mappings = chunk.mappings || {};
         let mapped = false;
         for (const [key, o] of all) {
             if (!o) continue;
@@ -156,11 +216,9 @@ export function applyModelState(ctx, rm, chunk, idMap, warnings) {
         }
         if (mapped) ctx.applyMappings?.(rm.root);
     }
-    return {
-        hidden: (chunk.hidden || []).map(k => addKey(k, rm.prefix)),
-        deleted: (chunk.deleted || []).map(k => addKey(k, rm.prefix)),
-        locked: (chunk.locked || []).map(k => addKey(k, rm.prefix)),
-    };
+    // (without names as before: the saved keys as they are)
+    const keys = list => (list || []).map(k => (remap.named ? remapKey(remap, k) : k)).filter(k => k != null).map(k => addKey(k, rm.prefix));
+    return { hidden: keys(chunk.hidden), deleted: keys(chunk.deleted), locked: keys(chunk.locked) };
 }
 
 /**
