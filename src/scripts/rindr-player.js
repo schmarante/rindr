@@ -85,10 +85,10 @@ function playerSheet(source = css) {
 
 // The element's methods for the host page (docs/player.md, stage 4 – player/host-api.js; load() has its own below): each
 // returns a promise; a player still waiting for its activation (activate="click" / "visible") starts on the first call
-const HOST_METHODS = ['getParts', 'getMaterials', 'getLibrary', 'setMaterial', 'setVisible', 'select', 'frame', 'getViews', 'setView',
-    'setMode', 'getMode', 'render', 'getScene', 'getPackage', 'save'];
+const HOST_METHODS = ['getParts', 'getMaterials', 'getLibrary', 'setMaterial', 'updateMaterial', 'setVisible', 'select', 'frame', 'getViews', 'setView',
+    'setMode', 'getMode', 'setBackground', 'render', 'getScene', 'getPackage', 'save'];
 // attributes the player follows when the page changes them after the start (the others count once, at the start)
-const LIVE_ATTRIBUTES = ['src', 'scene', 'hdr', 'mode'];
+const LIVE_ATTRIBUTES = ['src', 'scene', 'hdr', 'mode', 'background'];
 
 export class RindrPlayer extends HTMLElement {
     static get observedAttributes() { return LIVE_ATTRIBUTES; }
@@ -125,6 +125,7 @@ export class RindrPlayer extends HTMLElement {
                 ...(attrs.scene ? { sceneUrl: url(attrs.scene) } : {}),
                 ...(attrs.hdr ? { hdrUrl: url(attrs.hdr) } : {}),
                 ...(attrs.mode ? { mode: attrs.mode } : {}),
+                ...(attrs.background ? { background: attrs.background } : {}),
                 features: options.features ?? this.getAttribute('features') ?? '',
                 emit: (type, detail, { cancelable = false } = {}) => this._emit(type, detail, cancelable),
                 // files a scene names, from the host page: element.resolveAsset = (name, kind) => URL | Blob | null
@@ -177,6 +178,7 @@ export class RindrPlayer extends HTMLElement {
         const done = p => p.catch(err => { if (err?.code !== 'load-failed') console.warn(`[rindr-player] ${name}: ${err.message}`); });   // load errors: 'rindr-error'
         // src / scene / hdr: load when it is not what the player shows already (frameworks set unchanged attributes again)
         if (name === 'mode') { if (previous !== value) done(this.setMode(value || 'default')); }
+        else if (name === 'background') { if (previous !== value) done(this.setBackground(value || 'default')); }
         else if (value && value !== this._shows?.[name]) done(this.load({ [name]: value }));
     }
 

@@ -67,13 +67,14 @@ script per page, as many players as you like:
 | `src` | model URL (any format RINDR opens) |
 | `scene` | RINDR scene (JSON from "Save scene" or `getScene()`); its models lie next to it or come from `resolveAsset` |
 | `hdr` | HDRI URL (.hdr/.exr) – wins over the scene's HDRI |
+| `background` | what is shown behind the model: `hdri`, a colour (`#ffffff`), `linear(top, bottom)`, `radial(centre, edge)`, `default` (the dark gradient) – wins over the scene's background |
 | `mode` | `default` (raster) or `hq` (path tracing as soon as the camera stands still); also `basic`, `uv`, `wire` |
 | `features` | interface parts, separated by spaces or commas: `scene-graph`, `properties`, `materials`, `material-editor`, `explode`, `transform`, `section`, `views`, `view-cube`, `view-modes`, `open`, `save`, `render`, `ki`, `animation`, `setup`, `fullscreen` – `all` = everything. Without `features`: the 3D view only (orbit, zoom, key 3 for path tracing) |
 | `activate` | `auto` (at once, default), `visible` (when the player comes near the visible part of the page), `click` (a start button) |
 | `poster` | picture shown until the player shows its model |
 | `frame` | run the player in an iframe (see below) |
 
-`src`, `scene`, `hdr` and `mode` may change after the start (the player loads or switches), the others count from the
+`src`, `scene`, `hdr`, `mode` and `background` may change after the start (the player loads or switches), the others count from the
 start. All names are plain HTML attributes (valid, no `data-` prefix).
 
 ### Methods
@@ -85,13 +86,15 @@ first call; methods that look at parts wait until the model is loaded.
 |---|---|
 | `load(url)` / `load({ src, scene, hdr, files, package })` | load a model or a scene; `scene` as URL or as data (`getScene()`), `files` = `{ fileName: URL or Blob }` for the files the scene names, `package` = zip from `getPackage()`. Resolves to `{ models, missing, parts }` |
 | `getParts(pattern?)` | parts: `[{ path, name, model, visible, materials }]` |
-| `setMaterial(parts, material)` | assign a material (one undo step); `material` = id of a scene material, library id (e.g. `'metal-chrome'`), name, or `{ library }`, `{ id }`, `{ name }`, `{ name, params }` (new material) – resolves to the material id |
+| `setMaterial(parts, material)` | assign a material to parts or surfaces (one undo step) – resolves to the material id; see [Materials](#materials) |
+| `updateMaterial(material, params)` | change parameters of a scene material (id or name) – every part with it follows |
 | `getMaterials()` / `getLibrary()` | materials of the scene / of the library |
 | `setVisible(parts, visible)` | show or hide |
 | `select(parts \| null)` | select, as a click does |
 | `frame(parts?)` | fly the camera to the parts (or everything) |
 | `getViews()` / `setView(name \| { position, target, fov })` | saved views / set the camera |
 | `setMode(mode)` / `getMode()` | view mode |
+| `setBackground(background)` | as the attribute, or `{ type: 'radial' \| 'linear' \| 'solid', colors }` |
 | `render({ width, scale, transparent, samples, hq, type, quality })` | an image as Blob: path traced (default) or the raster view (`hq: false`); `type` `image/png` (default) or `image/jpeg` |
 | `getScene()` | the scene as data (the same JSON as "Save scene") |
 | `getPackage()` | the scene with its model files (and HDRI) as a zip |
@@ -104,12 +107,70 @@ first call; methods that look at parts wait until the model is loaded.
 - `'Wheel'` – every node of that name on this level; `'Wheel[2]'` only the second one (in file order)
 - `'Housing/*'` – every child; `*` inside a name matches any characters (`'Screw*'`)
 - `'**/Screw*'` – at any depth
-- Names containing `/ [ ] * \` get a backslash in front of that character. Several patterns as a list: `['Lid', 'Base']`.
+- `'Housing/Lid#1'` – the second surface of Lid (its own meshes, e.g. the colour groups of a STEP part; 0-based, listed in
+  `getParts()` as `surfaces`) – for materials, selection and framing; hiding works on whole parts
+- Names containing `/ [ ] * # \` get a backslash in front of that character. Several patterns as a list: `['Lid', 'Base']`.
 
 Saved scenes remember these names: when a configurator exports a variant of the model (nodes added or reordered),
 materials, hidden parts and transforms still find their parts.
 
 Errors carry a `code`: `no-part`, `no-material`, `no-view`, `bad-argument`, `load-failed`, `render-failed`.
+
+### Materials
+
+Every part and surface has a material. The materials of the scene come from the model file (its colours and materials)
+or were added later; `getMaterials()` lists them (`{ id, name, library, source }`). The library holds about 250 ready
+materials (`getLibrary()` → `{ library, name, category }`).
+
+**Assigning** – `setMaterial(parts, material)`: `parts` is a path pattern or a list of them (see "Parts by name" – a part
+gives the material to everything below it, `'Path#k'` to one surface). `material` is one of:
+
+| `material` | |
+|---|---|
+| `'metal-chrome'` | a library material by its id – added to the scene the first time it is used |
+| `'mat-…'` | a material of the scene by its id (`getMaterials()`, or the id `setMaterial` returned) |
+| `'Lacquer'` | a material of the scene by its name |
+| `{ library: 'metal-chrome' }`, `{ id: 'mat-…' }`, `{ name: 'Lacquer' }` | the same, explicitly |
+| `{ name: 'Lacquer', params: { … } }` | a new material from parameters (below) |
+| an entry of a material export | `{ name, params, graph }` from RINDR's material export (JSON) – node graph included |
+
+It resolves to the material's id. Assign that id to more parts to share the material; `updateMaterial(id or name,
+params)` then changes all of them at once – for a configurator: create the material once, then change its colour.
+
+```js
+const lacquer = await p.setMaterial('Housing', { name: 'Lacquer', params: { color: '#e30613', roughness: 0.3, clearcoat: 1 } });
+await p.setMaterial(['Lid', 'Door*'], lacquer);           // the same material on more parts
+colour.oninput = () => p.updateMaterial(lacquer, { color: colour.value });
+await p.setMaterial('Housing/Lid#1', 'metal-alu-brushed'); // one surface of a part
+```
+
+**Parameters** (physically based, after OpenPBR; colours as hex, sRGB; lengths in scene units – millimetres for CAD
+files). The common ones:
+
+| Parameter | Range (default) | |
+|---|---|---|
+| `color` | hex (`#808080`) | base colour |
+| `metalness` | 0–1 (0) | 0 = dielectric (plastic, paint), 1 = metal |
+| `roughness` | 0–1 (0.5) | 0 = mirror-like, 1 = matte |
+| `specularIntensity`, `specularColor` | 0–1 (1), hex (`#ffffff`) | strength and tint of the reflection (metals: edge tint) |
+| `anisotropy`, `anisotropyRotation` | 0–1 (0), −180–180° (0) | brushed metal |
+| `clearcoat`, `clearcoatRoughness` | 0–1 (0), 0–1 (0) | lacquer layer on top (car paint) |
+| `clearcoatColor`, `clearcoatIor` | hex (`#ffffff`), 1–3 (1.5) | tint and index of the lacquer |
+| `transmission`, `ior` | 0–1 (0), 1–3.5 (1.5) | glass and clear plastics, index of refraction |
+| `thickness`, `thinWalled` | 0–50 (0), 0/1 (0) | glass thickness; thin-walled = a sheet without inside |
+| `attenuationColor`, `attenuationDistance` | hex (`#ffffff`), 0.1–100 (100) | tinted glass: colour reached after that distance |
+| `dispersion`, `dispersionAbbe` | 0–1 (0), 2–91 (20) | rainbow fringes in glass |
+| `sheen`, `sheenColor`, `sheenRoughness` | 0–1 (0), hex, 0–1 (1) | velvet, fabric |
+| `subsurface`, `subsurfaceColor`, `subsurfaceRadius` | 0–1 (0), hex, 0.05–50 (2) | wax, skin, jelly – light scattering inside |
+| `iridescence`, `iridescenceThickness`, `iridescenceIOR` | 0–1 (0), 50–1200 nm (400), 1–2.5 (1.3) | thin-film colours (soap, oil) |
+| `emissive`, `emissiveIntensity` | hex (`#000000`), 0–20 (1) | self-illumination |
+| `opacity` | 0–1 (1) | cut-out transparency |
+| `edgeRadius` | 0–20 (0) | rounded edges in the shading (scene units) |
+
+Missing parameters take their defaults. Special materials (toon, cloud, wool, grass, soap film, glowing marble) come
+from the library; their parameters and the full list are in `src/scripts/material-manager.js` (`PARAMS`) and
+`src/scripts/material-types.js`. The scene keeps every assignment by part names (`getScene()`), together with the materials
+themselves.
 
 ### Events
 
@@ -162,7 +223,7 @@ On the element (or an ancestor) – or for every player of the page with `RINDR.
 rindr-player {
   --rindr-accent: #e30613;      /* accent (buttons, selection, sliders) – lighter and darker shades are mixed from it */
   --rindr-panel: #001a33;       /* base tone of panels and windows (shown at their opacity) */
-  --rindr-background: #202020;  /* behind the 3D view */
+  --rindr-background: #202020;  /* behind the canvas, while the player starts (the 3D background: attribute background) */
   --rindr-font: system-ui, sans-serif;
 }
 ```
@@ -171,7 +232,7 @@ rindr-player {
 RINDR.configure({ theme: { accent: '#e30613' } });   // null removes a value; a rule of the page on the element wins
 ```
 
-The RINDR logo always stays visible. `RINDR.configure({ base })` – where the player's files lie (default: the script's
+`--rindr-background` is the page colour behind the player's canvas (seen while it starts); the 3D background is the `background` attribute. Its colours look exactly as picked with the exposure and tone curve of that moment; afterwards they are part of the scene – another exposure or tone curve changes them like the model. The RINDR logo always stays visible. `RINDR.configure({ base })` – where the player's files lie (default: the script's
 folder); `RINDR.version` – the exact version.
 
 ### Hosting

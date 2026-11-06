@@ -2065,8 +2065,8 @@
             "rotation": "Drehung °",
             "mirror": "Spiegeln",
             "mirrorTitle": "HDRI seitenverkehrt – für Szenen aus Renderern, die Panoramen gespiegelt lesen",
-            "background": "Hintergrund anzeigen",
-            "backgroundTitle": "HDRI als Hintergrund",
+            "background": "Hintergrund",
+            "backgroundTitle": "Was hinter dem Modell zu sehen ist",
             "reflection": "Spiegelung",
             "reflectionTitle": "Boden spiegelt Modell und Umgebung (nur HQ)",
             "reflectionStrength": "Stärke",
@@ -2084,7 +2084,7 @@
                 "intensity": "Umgebungs-Intensität",
                 "rotation": "Umgebung drehen",
                 "mirror": "HDRI spiegeln",
-                "background": "HDRI-Hintergrund",
+                "background": "Hintergrund",
                 "reflection": "Bodenspiegelung",
                 "reflectionStrength": "Spiegelung",
                 "reflectionBlur": "Unschärfe der Spiegelung",
@@ -2115,7 +2115,23 @@
             "newHdriTitle": "Eigenes HDRI im HDRI-Editor anlegen (Vorlage: Studio)",
             "editHdriTitle": "Im HDRI-Editor bearbeiten",
             "previewTitle": "Aktuelles HDRI (Vorschau)",
-            "creditTitle": "Copyright laut HDRI-Datei: {credit}"
+            "creditTitle": "Copyright laut HDRI-Datei: {credit}",
+            "backgroundModes": {
+                "hdri": "HDRI",
+                "gradient": "Verlauf",
+                "color": "Farbe"
+            },
+            "gradientShape": "Form",
+            "gradientShapes": {
+                "radial": "Radial (Mitte → Rand)",
+                "linear": "Linear (oben → unten)"
+            },
+            "gradientInner": "Mitte",
+            "gradientOuter": "Rand",
+            "gradientTop": "Oben",
+            "gradientBottom": "Unten",
+            "backgroundColor": "Farbe",
+            "backgroundColorTitle": "Erscheint beim Wählen genau so (mit der eingestellten Belichtung und Tonkurve) – danach wirken Belichtung und Tonkurve auf den Hintergrund wie auf das Modell; sehr satte Farben so nah, wie die Tonkurve es erlaubt"
         },
         "slicer": {
             "axis": "Achse",

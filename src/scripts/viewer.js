@@ -16,7 +16,7 @@ import { MaterialManager, FADE_MASK } from './material-manager.js';
 import { BasicView } from './basic-view.js';
 import { setPlainView } from './materials/override-hide.js';
 import { MATERIAL_PRESETS, presetName, loadLibraryPresets } from './material-presets.js';
-import { createHostApi } from './player/host-api.js';
+import { createHostApi, parseBackground } from './player/host-api.js';
 import { requestField, clearFields } from './materials/sss-field.js';
 import { MATERIAL_MIME } from './material-mime.js';
 import { initMaterialTransfer, materialFromTransfer } from './material-transfer.js';
@@ -30,6 +30,7 @@ import { GraphApplier } from './graph-apply.js';
 import { uvLengthHistogram, UvMetric } from './uv-metric.js';
 import { isUvMode } from './material-graph.js';
 import { createStudioEnvironment, renderStudioEnvironment, loadHdri, listHdris, VignetteBackground, mirroredHdri, releaseEnvironment } from './environment.js';
+import { backgroundRamp } from './tone-inverse.js';
 import { PathTracingView } from './pathtracer.js';
 import { SceneGraph } from './scene-graph.js';
 import { Highlighter } from './highlight.js';
@@ -994,6 +995,10 @@ export async function createPlayer(options = {}) {
         mirror: false,       // HDRI mirrored left ↔ right (setMirror – panoramas of renderers that read them the other way round)
         hdris: listHdris(),  // files in public/hdr
         hdri: '',            // '' = procedural studio, 'editor:<id>' = own HDRI of the HDRI editor
+        // background when the HDRI is not shown: null = the built-in dark vignette, otherwise { type: 'radial' | 'linear' |
+        // 'solid', colors: [hex, hex], look: { curve, exposure } } – shown as picked with the look of the moment it was
+        // picked, afterwards part of the scene (backdropLook)
+        backdrop: null,
         custom: new Map(),   // HDRI editor (hdri/): id -> description (hdri-model.js), rendered in a worker
         /** display name of an own HDRI ('editor:<id>'), otherwise null */
         customName(name) {
@@ -1102,7 +1107,7 @@ export async function createPlayer(options = {}) {
             scene.environmentIntensity = this.intensity * this.lightBoost;
             scene.backgroundIntensity = showHdri ? this.intensity * this.lightBoost : 1;
             if (showHdri) scene.backgroundRotation.copy(scene.environmentRotation);
-            else if (!this.matte) vignette.update(camera, scene);
+            else if (!this.matte) vignette.update(camera, scene, backdropLook());
             pathTracing.backgroundFollowsCamera = !showHdri && !this.matte;
             contactShadow.markDirty();
             splatOpacity.markDirty();   // ground shadow of the splats (height, on/off)
@@ -1132,6 +1137,23 @@ export async function createPlayer(options = {}) {
             if (geometry || groundWas !== ground.enabled || (params && ground.enabled)) pathTracing.updateTransforms();
         },
     };
+    // The picked background (environment.backdrop): its colours look exactly as picked with the tone curve and exposure of
+    // the moment they were picked (backdrop.look – tone-inverse.js turns them into scene values along the gradient); after
+    // that they are part of the scene like the model: another curve or exposure changes the background too (user, Nov. 2026:
+    // "wenn ich anderes tonemapping will soll sich auch der hintergrund anpassen")
+    const currentLook = () => ({ curve: toneMappingKey(), exposure: tone.exposure });
+    let backdropCache = { key: null, look: null };
+    function backdropLook() {
+        const b = environment.backdrop;
+        if (!b) return null;
+        const look = b.look ?? { curve: 'aces', exposure: 1 };
+        const key = `${b.type}|${b.colors.join(',')}|${look.curve}|${look.exposure}`;
+        if (backdropCache.key !== key) {
+            const ramp = backgroundRamp(b.type === 'solid' ? b.colors.slice(0, 1) : b.colors, TONE_MAPPINGS[look.curve] ?? tone.curve, look.exposure);
+            backdropCache = { key, look: { type: b.type, key, ramp } };
+        }
+        return backdropCache.look;
+    }
     // Built-in studio in full resolution (4k – sharp as a visible background and in reflections): rendered in a worker
     // after the start, then swapped in (only while it is chosen, otherwise once it is chosen)
     let studioUpgrade = null;
@@ -1153,6 +1175,18 @@ export async function createPlayer(options = {}) {
     if (options.hdrUrl && HDR_PARAM) environment.hdriUrls[HDR_PARAM] = options.hdrUrl;
     const selectHdrParam = () => environment.select(HDR_PARAM).catch(e => console.error(`HDRI ${HDR_PARAM}: ${e.message}`));
     let hdrAfterScene = false;   // the scene file of <rindr-player scene> is restored first (afterRestore applies it)
+    // <rindr-player background>: at the start, and again over a scene's own (afterRestore)
+    let backgroundAfterScene = !!options.background && !!options.sceneUrl;
+    // the background: { hdri, backdrop } (host-api.js parseBackground) – one undo step, the panel follows
+    function applyBackground(parsed, { record = true } = {}) {
+        if (!parsed) return;
+        const before = { background: environment.background, backdrop: environment.backdrop };
+        const set = v => { environment.background = v.background; environment.backdrop = v.backdrop; environment.apply(); if (selection?.kind === 'environment') properties?.show(selection); };
+        const after = { background: parsed.hdri, backdrop: parsed.backdrop && { ...parsed.backdrop, look: parsed.backdrop.look ?? currentLook() } };
+        if (JSON.stringify(before) === JSON.stringify(after)) return;
+        set(after);
+        if (record) history.record({ label: t('properties.environment.undo.background'), undo: () => set(before), redo: () => set(after) });
+    }
     // with a scene file (<rindr-player scene>) after it – the attribute wins over the scene's own HDRI
     if (HDR_PARAM && !options.sceneUrl) selectHdrParam();
 
@@ -1364,6 +1398,7 @@ export async function createPlayer(options = {}) {
         environment,
         onLightChange: () => { pathTracing.updateLights(); if (ground.enabled) environment.apply({ params: true }); pathTracing.updateCamera(); },
         onEnvironmentChange: opts => { environment.apply(opts); if (opts?.params) pathTracing.updateCamera(); },
+        currentLook: () => currentLook(),   // the tone curve + exposure a picked background colour is made for
         // slider being dragged (environment, light): reduced path tracing like when orbiting the camera
         onSliderDrag: active => {
             sliderDragging = active;
@@ -6482,6 +6517,7 @@ export async function createPlayer(options = {}) {
         setSlicerEnabled: v => { slicer.enabled = v; pathTracing.setSuspended(v); updateSlicerHelper(); },
         afterRestore: () => {
             if (hdrAfterScene) { hdrAfterScene = false; selectHdrParam(); }   // <rindr-player hdr> over the scene's HDRI
+            if (backgroundAfterScene) { backgroundAfterScene = false; applyBackground(parseBackground(options.background), { record: false }); }   // and its background
             // HDRI editor: show the restored description of the edited HDRI, close it if that one is gone
             if (hdriEditor.now?.isOpen) {
                 const doc = environment.custom.get(hdriEditor.now.docId);
@@ -7214,6 +7250,7 @@ export async function createPlayer(options = {}) {
         viewModes: ['default', 'hq', ...Object.keys(ANALYSIS_MATERIALS)],
         setViewMode: mode => setViewMode(mode),
         getViewMode: () => viewMode,
+        setBackground: parsed => applyBackground(parsed),
         bufferWidth: () => { releaseExportScale(); return canvasTarget.getDrawingBufferSize(new THREE.Vector2()).x; },   // (not the size a last export left)
         maxExportSize,
         exportImage,
@@ -7221,6 +7258,7 @@ export async function createPlayer(options = {}) {
         captureState: () => captureState(sceneStateContext),
     });
 
+    if (options.background) applyBackground(parseBackground(options.background), { record: false });   // <rindr-player background>
     if (SAMPLE_SCENE) track(openSampleScene());
     else if (options.sceneUrl) { hdrAfterScene = !!HDR_PARAM; track(openSceneUrl(options.sceneUrl)); }
     else if (MODEL_FILE && !(crashed?.url && crashed.name === MODEL_FILE)) {
@@ -7238,7 +7276,7 @@ export async function createPlayer(options = {}) {
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel?.thumbs, def)),
         // all library presets (categories loaded on demand) – tests bake their node graphs
         presets: () => loadLibraryPresets().then(() => MATERIAL_PRESETS),
-        get skeletonView() { return skeletonView; }, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, get clouds() { return clouds; }, get grass() { return grass; }, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats: (...args) => loadSplatLoader().then(m => m.loadSplats(...args)), lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, canvas: canvasEl, player, getRest: () => ({ ...rest }), pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = canvasTarget.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, getPlan: () => currentPlan, setViewMode: m => setViewMode(m), getViewMode: () => viewMode, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+        get skeletonView() { return skeletonView; }, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, get clouds() { return clouds; }, get grass() { return grass; }, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats: (...args) => loadSplatLoader().then(m => m.loadSplats(...args)), lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, tone, canvas: canvasEl, player, getRest: () => ({ ...rest }), pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = canvasTarget.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, getPlan: () => currentPlan, setViewMode: m => setViewMode(m), getViewMode: () => viewMode, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 
     // --- Resize ---
     // device pixel ratio changed (window moved to a screen with another scaling, browser zoom): the canvas follows – it was
@@ -7525,7 +7563,7 @@ export async function createPlayer(options = {}) {
             camera.updateProjectionMatrix();
         }
         // vignette follows the camera (the path tracer takes over the rotation at the next camera restart)
-        if (scene.background === vignette.texture && !environment.matte && vignette.update(camera, scene)) pathTracing.updateEnvironment();
+        if (scene.background === vignette.texture && !environment.matte && vignette.update(camera, scene, backdropLook())) pathTracing.updateEnvironment();
         dome.update(camera);   // dome background: camera position relative to the projection centre
     }
     function renderFrame() {

@@ -606,10 +606,7 @@ export class PropertiesPanel {
             env.hdri && env.setMirror && this._checkRow(t('properties.environment.mirror'), t('properties.environment.mirrorTitle'), env.mirror, v => {
                 this._tracked(t('properties.environment.undo.mirror'), null, () => env.mirror, m => env.setMirror(m))(v);
             }),
-            this._checkRow(t('properties.environment.background'), t('properties.environment.backgroundTitle'), env.background, v => {
-                this._tracked(t('properties.environment.undo.background'), null, () => env.background, bg => { env.background = bg; this.ctx.onEnvironmentChange(); })(v);
-                this.show(this.entry);
-            }),
+            ...this._backgroundRows(env),
         ];
         // ground shadow, flattened ground, reflection, bad weather: each a collapsible section with its sliders
         // (sliders of a section that is off stay reachable, dimmed). Size + softness = soft edge of the ground disc –
@@ -667,6 +664,63 @@ export class PropertiesPanel {
     }
 
     // HDRI choice: procedural studio, a file from public/hdr or an own HDRI of the HDRI editor (+ new / edit)
+    // Background: the HDRI, a gradient (radial: centre → edge, linear: top → bottom) or one colour – colours shown as picked
+    // (viewer.js backdropLook); env.backdrop null = the built-in dark vignette (shown as the default gradient)
+    _backgroundRows(env) {
+        const DEFAULT = { type: 'radial', colors: ['#3a3a3a', '#000000'] };
+        const state = () => JSON.stringify({ background: env.background, backdrop: env.backdrop });
+        const restore = json => { const v = JSON.parse(json); env.background = v.background; env.backdrop = v.backdrop; this.ctx.onEnvironmentChange(); };
+        // one undo step per change (colour drags merge)
+        const change = (mutate, mergeKey = null, redraw = false) => {
+            const before = state();
+            mutate();
+            this.ctx.onEnvironmentChange();
+            const after = state();
+            if (before !== after) this.ctx.record?.({ label: t('properties.environment.undo.background'), mergeKey: mergeKey || undefined, undo: () => restore(before), redo: () => restore(after) });
+            if (redraw) this.show(this.entry);
+        };
+        const gradient = env.backdrop && env.backdrop.type !== 'solid' ? env.backdrop : DEFAULT;
+        const mode = env.background ? 'hdri' : env.backdrop?.type === 'solid' ? 'color' : 'gradient';
+        const select = (value, options, onChange) => {
+            const s = el('select', INPUT.replace('text-right', 'text-left') + ' cursor-pointer');
+            for (const [v, label] of options) s.append(new Option(label, v));
+            s.value = value;
+            s.onchange = () => onChange(s.value);
+            return s;
+        };
+        const modes = ['hdri', 'gradient', 'color'].map(m => [m, t(`properties.environment.backgroundModes.${m}`)]);
+        const look = () => this.ctx.currentLook?.();   // colours look as picked with the current tone curve + exposure
+        const modeSelect = select(mode, modes, m => change(() => {
+            env.background = m === 'hdri';
+            if (m === 'color') env.backdrop = env.backdrop?.type === 'solid' ? env.backdrop : { type: 'solid', colors: ['#ffffff'], look: look() };
+            else if (m === 'gradient' && env.backdrop?.type === 'solid') env.backdrop = null;
+        }, null, true));
+        modeSelect.title = t('properties.environment.backgroundTitle');
+        const rows = [this._row(t('properties.environment.background'), modeSelect)];
+        const colour = (label, i, value) => {
+            const field = colorField(value, {
+                title: t('properties.environment.backgroundColorTitle'),
+                onInput: hex => change(() => {
+                    const b = env.backdrop ?? { ...DEFAULT, colors: [...DEFAULT.colors] };
+                    const colors = [...b.colors];
+                    colors[i] = hex;
+                    env.backdrop = { type: b.type, colors, look: look() };
+                }, `env-backdrop-${i}`),
+            });
+            return this._row(label, field);
+        };
+        if (mode === 'gradient') {
+            const shapes = ['radial', 'linear'].map(v => [v, t(`properties.environment.gradientShapes.${v}`)]);
+            rows.push(this._row(t('properties.environment.gradientShape'), select(gradient.type, shapes, type => change(() => { env.backdrop = { type, colors: [...gradient.colors], look: env.backdrop?.look ?? look() }; }, null, true))));
+            const linear = gradient.type === 'linear';
+            rows.push(colour(t(linear ? 'properties.environment.gradientTop' : 'properties.environment.gradientInner'), 0, gradient.colors[0]));
+            rows.push(colour(t(linear ? 'properties.environment.gradientBottom' : 'properties.environment.gradientOuter'), 1, gradient.colors[1]));
+        } else if (mode === 'color') {
+            rows.push(colour(t('properties.environment.backgroundColor'), 0, env.backdrop.colors[0]));
+        }
+        return rows;
+    }
+
     _hdriRow(env) {
         const select = el('select', INPUT.replace('text-right', 'text-left') + ' cursor-pointer');
         select.title = t('properties.environment.hdriTitle');

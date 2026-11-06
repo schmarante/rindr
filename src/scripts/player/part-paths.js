@@ -6,11 +6,23 @@
 //   'Wheel[2]'             … or only the second one (1-based, in file order)
 //   'Housing/*'            every child of Housing ('*' inside a name: any characters, e.g. 'Screw*')
 //   '**/Screw*'            Screw… at any depth ('**' = any number of nodes, also none)
-// Names containing / [ ] * \ are written with a backslash before that character. Unnamed nodes have an empty name; a single
+//   'Housing/Lid#1'        the second surface of Lid (its own meshes – e.g. the colour groups of a STEP part – 0-based,
+//                          in file order; the same numbering as the scene format)
+// Names containing / [ ] * # \ are written with a backslash before that character. Unnamed nodes have an empty name; a single
 // unnamed top node (the file's root, e.g. a glTF scene without a name) is left out – its children are the top.
 
 /** a node name as a path segment (special characters escaped) */
-export const escapeName = name => String(name ?? '').replace(/[\\/[\]*]/g, c => '\\' + c);
+export const escapeName = name => String(name ?? '').replace(/[\\/[\]*#]/g, c => '\\' + c);
+
+/** 'Path#k' → { pattern: 'Path', surface: k }; without an (unescaped) #k at the end surface is null */
+export function splitSurface(pattern) {
+    const text = String(pattern ?? '');
+    const m = /#(\d+)$/.exec(text);
+    if (!m) return { pattern: text, surface: null };
+    let slashes = 0;
+    for (let i = m.index - 1; i >= 0 && text[i] === '\\'; i--) slashes++;
+    return slashes % 2 ? { pattern: text, surface: null } : { pattern: text.slice(0, m.index), surface: +m[1] };
+}
 
 /**
  * Paths of the nodes of one model. nodes: [{ name, parent }] (parent = index, -1 = top; children after their parent).

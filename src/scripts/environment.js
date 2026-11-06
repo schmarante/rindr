@@ -75,11 +75,16 @@ export class VignetteBackground {
         this._key = '';
     }
 
-    /** adapt to the camera; true if the texture was regenerated */
-    update(camera, scene) {
+    /**
+     * Adapt to the camera; true if the texture was regenerated. look (the background picked in the environment panel –
+     * viewer.js backdropLook): null = the built-in dark vignette (a scene value, as always), otherwise { type: 'radial'
+     * (centre → edge) | 'linear' (top → bottom) | 'solid', ramp: scene colours along the gradient (tone-inverse.js
+     * backgroundRamp, flat RGB), key }.
+     */
+    update(camera, scene, look = null) {
         scene.backgroundRotation.setFromQuaternion(camera.quaternion);
         const angle = viewAngle(camera);
-        const key = angle.toFixed(1) + '/' + camera.aspect.toFixed(2);
+        const key = angle.toFixed(1) + '/' + camera.aspect.toFixed(2) + (look ? '/' + look.key : '');
         if (key === this._key) return false;
         this._key = key;
         // screen radius (half height = 1) of a direction at angle θ from the view axis: perspective
@@ -87,18 +92,39 @@ export class VignetteBackground {
         const k = Math.max(1, angle / PERSPECTIVE_LIMIT);
         const tanEdge = Math.tan(THREE.MathUtils.degToRad(Math.min(angle, PERSPECTIVE_LIMIT) / 2));
         const corner = Math.hypot(1, camera.aspect);
+        const ramp = look?.ramp, steps = ramp ? ramp.length / 3 : 0;
+        // a colour along the ramp (t 0…1, linear between its entries)
+        const fromRamp = (t, color) => {
+            const f = Math.min(Math.max(t, 0), 1) * (steps - 1), i = Math.min(Math.floor(f), steps - 2), w = f - i;
+            if (steps < 2) { color.setRGB(ramp[0], ramp[1], ramp[2]); return; }
+            color.setRGB(ramp[i * 3] + (ramp[i * 3 + 3] - ramp[i * 3]) * w, ramp[i * 3 + 1] + (ramp[i * 3 + 4] - ramp[i * 3 + 1]) * w, ramp[i * 3 + 2] + (ramp[i * 3 + 5] - ramp[i * 3 + 2]) * w);
+        };
         this.texture.generationCallback = (polar, uv, coord, color) => {
             // direction as in three.js equirectUV (u = atan2(z, x) / 2π + 0.5) – setFromSpherical(polar)
             // would be rotated by 90° around y; uv.x is already u - 0.5 here
             const a = uv.x * 2 * Math.PI;
             const c = -Math.sin(a) * Math.sin(polar.phi);   // -z = cos of the angle to the view direction
             const half = Math.acos(Math.min(Math.max(c, -1), 1)) / k;
-            let v = 0;
-            if (half < Math.PI / 2 - 1e-4) {
-                const r = Math.tan(half) / tanEdge / corner;
-                v = VIGNETTE_CENTER * (1 - THREE.MathUtils.smoothstep(r, 0, 1.25));
+            const ahead = half < Math.PI / 2 - 1e-4;
+            if (!look) {
+                let v = 0;
+                if (ahead) {
+                    const r = Math.tan(half) / tanEdge / corner;
+                    v = VIGNETTE_CENTER * (1 - THREE.MathUtils.smoothstep(r, 0, 1.25));
+                }
+                color.setRGB(v, v, v);
+                return;
             }
-            color.setRGB(v, v, v);
+            if (look.type === 'solid') { fromRamp(0, color); return; }
+            if (look.type === 'linear') {
+                // height on the screen (top +1 … bottom −1): radius × the direction's up share in the image plane
+                const up = Math.cos(polar.phi), side = Math.cos(a) * Math.sin(polar.phi);
+                const across = Math.hypot(up, side);
+                const sy = !ahead ? (up > 0 ? 1 : -1) : across < 1e-9 ? 0 : (Math.tan(half) / tanEdge) * (up / across);
+                fromRamp((1 - sy) / 2, color);
+                return;
+            }
+            fromRamp(ahead ? THREE.MathUtils.smoothstep(Math.tan(half) / tanEdge / corner, 0, 1.25) : 1, color);
         };
         this.texture.update();
         return true;

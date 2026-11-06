@@ -30,6 +30,22 @@ import { debugLog } from './log.js';
 import { partPaths } from './player/part-paths.js';
 
 export const SCENE_FORMAT = 'step-viewer-scene';
+
+/** a background as saved / given by the host page → { type, colors } or null (the built-in dark vignette) */
+export function normalizeBackdrop(b) {
+    if (!b || !['radial', 'linear', 'solid'].includes(b.type) || !Array.isArray(b.colors) || !b.colors.length) return null;
+    // a CSS colour (THREE.Color would turn an unknown one into white with a warning)
+    const hex = c => {
+        if (typeof c !== 'string' || (typeof CSS !== 'undefined' && !CSS.supports('color', c))) return null;
+        try { return '#' + new THREE.Color(c).getHexString(); } catch { return null; }
+    };
+    const colors = b.colors.slice(0, b.type === 'solid' ? 1 : 2).map(hex);
+    if (colors.some(c => !c)) return null;
+    if (b.type !== 'solid' && colors.length < 2) colors.push(colors[0]);
+    // the look the colours were picked with (tone curve key, exposure) – without: given now (viewer.js applyBackground)
+    const look = b.look && typeof b.look.curve === 'string' && Number.isFinite(b.look.exposure) ? { curve: b.look.curve, exposure: b.look.exposure } : undefined;
+    return { type: b.type, colors, ...(look ? { look } : {}) };
+}
 const VERSION = 2;
 
 const vec = v => v.toArray().map(x => +x.toFixed(6));
@@ -257,7 +273,7 @@ export function captureState(ctx) {
         environment: {
             on: env.on, hdri: env.hdri || null,
             intensity: env.intensity, lightBoost: env.lightBoost, rotation: +THREE.MathUtils.radToDeg(scene.environmentRotation.y).toFixed(3), mirror: env.mirror || undefined,
-            background: env.background, ground: env.ground, groundRadius: env.groundRadius, groundSoftness: env.groundSoftness, groundBounce: env.groundBounce, dome: env.dome, domeShift: env.domeShift, groundHeight: env.groundHeight, domeRadius: env.domeRadius,
+            background: env.background, ...(env.backdrop ? { backdrop: { type: env.backdrop.type, colors: [...env.backdrop.colors], ...(env.backdrop.look ? { look: { ...env.backdrop.look } } : {}) } } : {}), ground: env.ground, groundRadius: env.groundRadius, groundSoftness: env.groundSoftness, groundBounce: env.groundBounce, dome: env.dome, domeShift: env.domeShift, groundHeight: env.groundHeight, domeRadius: env.domeRadius,
             // ground reflection + bad weather (ground-reflection.js)
             reflection: env.reflection, reflectionStrength: env.reflectionStrength, reflectionBlur: env.reflectionBlur,
             wet: env.wet, puddles: env.puddles, puddleSize: env.puddleSize,
@@ -415,6 +431,7 @@ export async function applyState(ctx, state) {
         const e = state.environment;
         env.on = e.on !== false;
         env.background = !!e.background;
+        env.backdrop = normalizeBackdrop(e.backdrop);   // (older scenes: the built-in dark vignette)
         env.ground = !!e.ground;
         if (e.groundRadius != null) env.groundRadius = e.groundRadius;
         if (e.groundSoftness != null) env.groundSoftness = e.groundSoftness;

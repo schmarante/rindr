@@ -2,9 +2,31 @@
 // or scene, list and address parts by name (part-paths.js), assign materials, show/hide, select, views, view mode, render
 // an image, the scene as data. viewer.js hands in its internals (ctx); everything here works on them only. Every
 // method returns a promise (the element awaits the player's start first). Errors are thrown as Error with a `code`.
-import { partPaths, pathMatcher } from './part-paths.js';
+import { partPaths, pathMatcher, splitSurface } from './part-paths.js';
+import { normalizeBackdrop } from '../scene-state.js';
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
+
+/**
+ * A background as the host page writes it (attribute `background`, setBackground): 'hdri' (the HDRI), 'default' (the
+ * built-in dark gradient), a CSS colour, 'linear(top, bottom)', 'radial(centre, edge)' – or { type, colors } / { type:
+ * 'hdri' }. → { hdri: boolean, backdrop: { type, colors } | null }, or null when not understood
+ */
+export function parseBackground(spec) {
+    if (spec && typeof spec === 'object') {
+        if (spec.type === 'hdri') return { hdri: true, backdrop: null };
+        const backdrop = normalizeBackdrop(spec);
+        return backdrop ? { hdri: false, backdrop } : null;
+    }
+    const text = String(spec ?? '').trim();
+    if (/^hdri$/i.test(text)) return { hdri: true, backdrop: null };
+    if (!text || /^default$/i.test(text)) return { hdri: false, backdrop: null };
+    const m = /^(linear|radial)\s*\((.*)\)$/i.exec(text);
+    // colours separated by commas outside parentheses (rgb(…) has commas of its own)
+    const split = s => { const out = []; let depth = 0, cur = ''; for (const ch of s) { if (ch === '(') depth++; if (ch === ')') depth--; if (ch === ',' && !depth) { out.push(cur.trim()); cur = ''; } else cur += ch; } out.push(cur.trim()); return out.filter(Boolean); };
+    const backdrop = m ? normalizeBackdrop({ type: m[1].toLowerCase(), colors: split(m[2]) }) : normalizeBackdrop({ type: 'solid', colors: [text] });
+    return backdrop ? { hdri: false, backdrop } : null;
+}
 
 /**
  * @param {object} ctx  internals of one player (viewer.js, `hostContext`)
@@ -12,36 +34,62 @@ const fail = (code, message) => Object.assign(new Error(message), { code });
 export function createHostApi(ctx) {
     const absolute = url => new URL(url, document.baseURI).href;
 
-    // every node of every loaded model with its path (deleted ones and nodes without any mesh below left out)
+    // every node of every loaded model with its path (deleted ones and nodes without any mesh below left out); meshes =
+    // its own surfaces (meshes whose nearest node it is, in file order – 'Path#k', as in the scene format)
     function allParts() {
         const out = [];
         for (const rm of ctx.runtimeModels()) {
             const nodes = ctx.importNodesOf(rm);
             if (!nodes?.length) continue;
+            const index = new Map(rm.nodeGroups.map((g, i) => [g, i]));
+            const own = new Map();
+            for (const m of rm.meshes) {
+                let i;
+                for (let o = m.parent; o && i === undefined; o = o.parent) i = index.get(o);
+                if (i !== undefined) { if (!own.has(i)) own.set(i, []); own.get(i).push(m); }
+            }
             partPaths(nodes).forEach((p, i) => {
                 const group = rm.nodeGroups[i];
                 if (p.root || !group || ctx.isDeleted(rm.prefix + 'n' + i)) return;   // (the file's unnamed root: the whole model)
                 let meshes = 0;
                 group.traverse(o => { if (o.isMesh) meshes++; });
-                if (meshes) out.push({ ...p, group, rm, key: rm.prefix + 'n' + i });
+                if (meshes) out.push({ ...p, group, rm, key: rm.prefix + 'n' + i, meshes: own.get(i) || [] });
             });
         }
         return out;
     }
-    // the parts a pattern names – outermost only (a part inside a matched one is covered by it); none: an error
-    function resolve(target, { all = allParts() } = {}) {
+    // what a pattern (or a list of them) names: parts – outermost only (a part inside a matched one is covered by it) – or,
+    // with #k, the k-th surface of each matched part → [{ part, object (group or mesh), surface }]; nothing: an error
+    function resolve(target, { surfaces = true } = {}) {
         if (target == null) throw fail('no-part', 'No part given');
-        const match = pathMatcher(target);
-        const hits = all.filter(match);
-        const groups = new Set(hits.map(p => p.group));
-        const outer = hits.filter(p => { for (let o = p.group.parent; o; o = o.parent) if (groups.has(o)) return false; return true; });
-        if (!outer.length) throw fail('no-part', `No part matches ${JSON.stringify(Array.isArray(target) ? target : target?.path ?? target)}`);
-        return outer;
+        const all = allParts();
+        const out = [];
+        for (const t of Array.isArray(target) ? target : [target]) {
+            const { pattern, surface } = splitSurface(t && typeof t === 'object' ? t.path : t);
+            const hits = all.filter(pathMatcher(pattern));
+            if (surface !== null) {
+                if (!surfaces) throw fail('bad-argument', 'Surfaces (#k) are not possible here – whole parts only');
+                for (const p of hits) if (p.meshes[surface]) out.push({ part: p, object: p.meshes[surface], surface });
+                continue;
+            }
+            const groups = new Set(hits.map(p => p.group));
+            for (const p of hits) {
+                let inside = false;
+                for (let o = p.group.parent; o && !inside; o = o.parent) inside = groups.has(o);
+                if (!inside) out.push({ part: p, object: p.group, surface: null });
+            }
+        }
+        const unique = [...new Map(out.map(x => [x.object, x])).values()];
+        if (!unique.length) throw fail('no-part', `No part matches ${JSON.stringify(Array.isArray(target) ? target : target?.path ?? target)}`);
+        return unique;
     }
     function describePart(p) {
         const materials = new Set();
         p.group.traverse(o => { const id = o.isMesh && o.material?.userData?.materialId; if (id) materials.add(id); });
-        return { path: p.path, name: p.name, model: p.rm.file?.name ?? null, visible: isShown(p.group), materials: [...materials] };
+        const out = { path: p.path, name: p.name, model: p.rm.file?.name ?? null, visible: isShown(p.group), materials: [...materials] };
+        // several surfaces of its own (e.g. the colour groups of a STEP part): each with its path and material
+        if (p.meshes.length > 1) out.surfaces = p.meshes.map((m, k) => ({ path: `${p.path}#${k}`, name: m.name || null, material: m.material?.userData?.materialId ?? null }));
+        return out;
     }
     const isShown = object => { for (let o = object; o; o = o.parent) if (!o.visible) return false; return true; };
 
@@ -151,16 +199,27 @@ export function createHostApi(ctx) {
             let id = null;
             ctx.history.transaction(ctx.labels.assignMaterial, () => {   // a library material created + assigned = one step
                 id = make().def.id;
-                for (const p of parts) ctx.assignMaterial(p.group, id, { quiet: true });
+                for (const p of parts) ctx.assignMaterial(p.object, id, { quiet: true });
             });
             ctx.afterMaterialChange();
             return id;
+        },
+        /** change parameters of a scene material (id or name) – every part with it follows (one undo step) */
+        async updateMaterial(material, params) {
+            await ctx.idle();
+            ctx.touch();
+            const mm = ctx.materialManager;
+            const entry = (typeof material === 'object' && material ? mm.get(material.id) ?? byName(material.name) : mm.get(String(material)) ?? byName(String(material)));
+            if (!entry) throw fail('no-material', `No scene material ${JSON.stringify(material)}`);
+            if (!params || typeof params !== 'object') throw fail('bad-argument', 'updateMaterial() needs parameters');
+            mm.setParams(entry.def.id, params);
+            return entry.def.id;
         },
         /** show or hide parts (one undo step) */
         async setVisible(target, visible = true) {
             await ctx.idle();
             ctx.touch();
-            const entries = resolve(target).flatMap(entriesOf);
+            const entries = resolve(target, { surfaces: false }).map(x => x.part).flatMap(entriesOf);
             if (entries.length) ctx.sceneGraph.setVisible(entries, !!visible);
         },
         /** select parts (null: nothing) – as a click in the Scene Graph */
@@ -168,16 +227,16 @@ export function createHostApi(ctx) {
             await ctx.idle();
             ctx.touch();
             if (target == null) { ctx.sceneGraph.select(null); return; }
-            const parts = resolve(target);
-            const entries = parts.length === 1 ? entriesOf(parts[0]) : [];
-            if (entries.length === 1 && entries[0].object === parts[0].group) ctx.sceneGraph.select(entries[0]);
-            else ctx.sceneGraph.selectObjects(parts.map(p => p.group));
+            const targets = resolve(target);
+            const own = targets.length === 1 ? ctx.sceneGraph.entryForObject(targets[0].object, { surfaces: true }) : null;
+            if (own?.object === targets[0].object) ctx.sceneGraph.select(own);
+            else ctx.sceneGraph.selectObjects(targets.map(x => x.object));
         },
         /** fly the camera so that the parts (or everything) fill the view */
         async frame(target) {
             await ctx.idle();
             ctx.touch();
-            ctx.frame(target == null ? null : resolve(target).map(p => p.group));
+            ctx.frame(target == null ? null : resolve(target).map(x => x.object));
         },
         /** the saved views (cameras of the scene and of the file) */
         async getViews() {
@@ -198,6 +257,13 @@ export function createHostApi(ctx) {
             ctx.flyTo({ position: view.position, target: view.target, ...(view.fov ? { fov: view.fov } : {}) });
         },
         /** view mode: 'default', 'hq' (path tracing), 'basic', 'uv', 'wire' */
+        /** the background: 'hdri', 'default', a colour, 'linear(top, bottom)', 'radial(centre, edge)' or { type, colors } */
+        async setBackground(spec) {
+            const parsed = parseBackground(spec);
+            if (!parsed) throw fail('bad-argument', `Unknown background ${JSON.stringify(spec)}`);
+            ctx.touch();
+            ctx.setBackground(parsed);
+        },
         async setMode(mode) {
             if (!ctx.viewModes.includes(mode)) throw fail('bad-argument', `mode is one of ${ctx.viewModes.join(', ')}`);
             ctx.touch();
@@ -239,7 +305,15 @@ export function createHostApi(ctx) {
             if (!entry) return null;
             const all = allParts();
             const byGroup = new Map(all.map(p => [p.group, p]));
-            const pathOf = object => { for (let o = object; o; o = o.parent) { const p = byGroup.get(o); if (p) return p.path; } return null; };
+            const pathOf = object => {
+                for (let o = object; o; o = o.parent) {
+                    const p = byGroup.get(o);
+                    if (!p) continue;
+                    const k = object.isMesh ? p.meshes.indexOf(object) : -1;   // a surface of its own: Path#k
+                    return k >= 0 && p.meshes.length > 1 ? `${p.path}#${k}` : p.path;
+                }
+                return null;
+            };
             if (entry.kind === 'selection') return { kind: 'parts', name: entry.name, paths: (entry.object.members || []).map(pathOf).filter(Boolean) };
             if (entry.kind === 'node' || entry.kind === 'surface') return { kind: entry.kind === 'node' ? 'part' : 'surface', name: entry.name, path: pathOf(entry.object) };
             return { kind: entry.kind, name: entry.name ?? null, path: null };

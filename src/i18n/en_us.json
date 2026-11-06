@@ -2065,8 +2065,8 @@
             "rotation": "Rotation °",
             "mirror": "Mirror",
             "mirrorTitle": "HDRI flipped horizontally – for scenes from renderers that read panoramas mirrored",
-            "background": "Show background",
-            "backgroundTitle": "Show the HDRI as background",
+            "background": "Background",
+            "backgroundTitle": "What is shown behind the model",
             "reflection": "Reflection",
             "reflectionTitle": "Ground mirrors model and environment (HQ only)",
             "reflectionStrength": "Strength",
@@ -2084,7 +2084,7 @@
                 "intensity": "Environment intensity",
                 "rotation": "Rotate environment",
                 "mirror": "Mirror HDRI",
-                "background": "HDRI background",
+                "background": "Background",
                 "reflection": "Ground reflection",
                 "reflectionStrength": "Reflection",
                 "reflectionBlur": "Reflection blur",
@@ -2115,7 +2115,23 @@
             "newHdriTitle": "Create a custom HDRI in the HDRI editor (template: studio)",
             "editHdriTitle": "Edit in the HDRI editor",
             "previewTitle": "Current HDRI (preview)",
-            "creditTitle": "Copyright according to the HDRI file: {credit}"
+            "creditTitle": "Copyright according to the HDRI file: {credit}",
+            "backgroundModes": {
+                "hdri": "HDRI",
+                "gradient": "Gradient",
+                "color": "Colour"
+            },
+            "gradientShape": "Shape",
+            "gradientShapes": {
+                "radial": "Radial (centre → edge)",
+                "linear": "Linear (top → bottom)"
+            },
+            "gradientInner": "Centre",
+            "gradientOuter": "Edge",
+            "gradientTop": "Top",
+            "gradientBottom": "Bottom",
+            "backgroundColor": "Colour",
+            "backgroundColorTitle": "Looks exactly like this when picked (with the current exposure and tone curve) – afterwards exposure and tone curve act on the background like on the model; very saturated colours as close as the tone curve allows"
         },
         "slicer": {
             "axis": "Axis",

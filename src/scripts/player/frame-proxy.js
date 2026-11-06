@@ -15,7 +15,7 @@ export function startFrame(element, root, frameUrl, emit) {
     // the attributes for the frame (URLs absolute: the frame lies elsewhere)
     const values = {};
     for (const name of ['src', 'scene', 'hdr', 'poster']) { const v = element.getAttribute(name); if (v) values[name] = new URL(v, document.baseURI).href; }
-    for (const name of ['mode', 'features', 'activate']) { const v = element.getAttribute(name); if (v != null) values[name] = v; }
+    for (const name of ['mode', 'features', 'activate', 'background']) { const v = element.getAttribute(name); if (v != null) values[name] = v; }
     // the page's whitelabel values on the element (--rindr-*) – inside the frame through RINDR.configure
     const style = getComputedStyle(element);
     for (const key of ['accent', 'panel', 'background', 'font']) { const v = style.getPropertyValue(`--rindr-${key}`).trim(); if (v) values[`theme-${key}`] = v; }
