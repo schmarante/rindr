@@ -3,7 +3,7 @@
 import { plyHeaderOf, parsePlyHeader, plyKind, splatPlyLayout, samplePly, keptShCoeffs, SplatBuilder, beginInfo, finishStats } from './splat-formats.js';
 import { debugLog } from '../log.js';
 
-export const SPLAT_EXTENSIONS = ['ply', 'sog'];
+export { SPLAT_EXTENSIONS } from './splat-extensions.js';
 const extOf = name => name.split('.').pop().toLowerCase();
 
 /**

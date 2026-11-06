@@ -241,7 +241,7 @@ export class MaterialThumbs extends EventTarget {
         }
         const n = 2 * (job.size || THUMB_SIZE);
         if (s.target.width !== n) s.target.setSize(n, n);
-        const special = this.special?.(material, RADIUS) ?? null;
+        const special = (await this.special?.(material, RADIUS)) ?? null;   // may load its system first (viewer.js)
         try {
             const r = this.renderer;
             s.mesh.material = material;

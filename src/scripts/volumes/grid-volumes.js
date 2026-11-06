@@ -330,8 +330,4 @@ function within(object, ancestor) {
 }
 
 /** bounds of volumes in their model's space (their unit boxes through their matrices) */
-export function volumeBounds(volumes) {
-    const box = new THREE.Box3(), m = new THREE.Matrix4();
-    for (const v of volumes || []) box.union(new THREE.Box3(new THREE.Vector3(-0.5, -0.5, -0.5), new THREE.Vector3(0.5, 0.5, 0.5)).applyMatrix4(m.fromArray(v.matrix)));
-    return box;
-}
+export { volumeBounds } from './volume-bounds.js';   // (kept here for older imports)

@@ -29,12 +29,10 @@ import { MaterialPanel, MATERIAL_MIME } from './material-panel.js';
 import { TAB_ID, initMaterialTransfer, materialFromTransfer } from './material-transfer.js';
 import { MaterialThumbs } from './material-thumbs.js';
 import { uvCheckerTexture } from './uv-checker.js';
-import { CloudSystem } from './materials/clouds.js';
-import { GridVolumeSystem, volumeBounds } from './volumes/grid-volumes.js';
+import { volumeBounds } from './volumes/volume-bounds.js';
 import { setupCurveMesh, updateHairLight } from './curves/curve-mesh.js';
 import { WoolSystem } from './materials/wool.js';
 import { setSoapSceneSize } from './materials/soap.js';
-import { GrassSystem } from './materials/grass.js';
 import { EdgeSystem } from './materials/edges.js';
 import { GraphApplier } from './graph-apply.js';
 import { uvLengthHistogram, UvMetric } from './uv-metric.js';
@@ -82,7 +80,7 @@ import { findOutliers, formatLength } from './outliers.js';   // patches the pat
 import { ViewModeBar, ANALYSIS_KEYS } from './view-mode.js';
 import { SetupMenu } from './setup-menu.js';
 import { buildAbout } from './about.js';
-import { loadSplats, isSplatSource, SPLAT_EXTENSIONS } from './splat/splat-loader.js';
+import { SPLAT_EXTENSIONS } from './splat/splat-extensions.js';
 import { debugLog } from './log.js';
 import { isRemoteTexture } from './remote-textures.js';
 import { textureMaxSide } from './memory-budget.js';
@@ -107,6 +105,8 @@ function lazy(create) {
 let stepModule = null, meshModule = null;
 const loadStepImporter = () => import('./step-importer.js').then(m => (stepModule = m));
 const loadMeshImporter = () => Promise.all([import('./mesh-importer.js'), loadStepImporter()]).then(([m]) => (meshModule = m));
+// the splat loader (file type check, worker) with the first .ply/.sog
+const loadSplatLoader = () => import('./splat/splat-loader.js');
 
 // BVH-accelerated raycasting for every mesh (picking, focus, material drops) – once per page
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
@@ -555,8 +555,9 @@ export async function createPlayer(options = {}) {
     // --- Pathtracing (three-gpu-pathtracer, WebGPU) ---
     const pathTracing = new PathTracingView(renderer, { denoiseWeightsUrl: DENOISE_WEIGHTS_URL });
     // path tracer modules: not in the start bundle – loaded when the browser is idle after the start, so
-    // switching to HQ later does not wait for the download (setScene() waits for it if HQ comes earlier)
-    (window.requestIdleCallback || (fn => setTimeout(fn, 1500)))(() => {
+    // switching to HQ later does not wait for the download (setScene() waits for it if HQ comes earlier). An embedded
+    // player in the Default view leaves them out (~420 KB): HQ (key 3) then loads them first (docs/player.md "schlank")
+    if (APP_MODE || !playerEl || options.mode === 'hq') (window.requestIdleCallback || (fn => setTimeout(fn, 1500)))(() => {
         pathTracing.load().catch(err => console.warn('[Pathtracer] preload failed:', err));
         pathTracing.prepareEnvironment(scene.environment);   // importance-sampling table in a worker
     }, { timeout: 4000 });
@@ -699,16 +700,43 @@ export async function createPlayer(options = {}) {
         ctx.putImageData(out, 0, 0);
     }
 
+    // Special systems that only matter when the scene uses them – cloud and grass materials, voxel volumes: loaded with
+    // the first such material or volume (docs/player.md "schlank"). Until then a stand-in answers the same calls with
+    // nothing; each keeps its place in the scene (an empty group now, the real system's group hangs in it later – the
+    // drawing order stays as it was).
+    const modelRoots = () => [rootGroup, ...extraModels.map(x => x.root)];
+    let specialScan = false;   // a material changed: look whether a stand-in's system is needed now (render loop)
+    const cloudsSlot = new THREE.Group(), gridSlot = new THREE.Group();
+    cloudsSlot.name = 'clouds slot'; gridSlot.name = 'grid volumes slot';
+    scene.add(cloudsSlot);
     // cloud material (clouds.js): one volume per cloud material over the meshes that carry it (before the environment:
     // apply() hands it the light)
-    const clouds = new CloudSystem(scene, () => [rootGroup, ...extraModels.map(x => x.root)], () => (ground.enabled ? ground.groundY : null), () => lightsGroup.children);
-    clouds.onChange = () => { pathTracing.updateTransforms(); pathTracing.updateMaterials(); markShadowsDirty(); };
-    // override passes (contour, contact shadow, …) leave the boxes out; Basic keeps them
-    clouds.attach(renderer);
+    let cloudLight = null;   // the environment handed to the stand-in (setEnvironment), passed on to the real system
+    let clouds = {
+        stub: true, volumes: [], group: cloudsSlot,
+        update() {}, invalidate() { specialScan = true; }, previewFor: () => null,
+        setEnvironment(...args) { cloudLight = args; },
+    };
+    let cloudsLoading = null;
+    const ensureClouds = () => (cloudsLoading ??= import('./materials/clouds.js').then(({ CloudSystem }) => {
+        const system = new CloudSystem(cloudsSlot, modelRoots, () => (ground.enabled ? ground.groundY : null), () => lightsGroup.children);
+        system.onChange = () => { pathTracing.updateTransforms(); pathTracing.updateMaterials(); markShadowsDirty(); };
+        // override passes (contour, contact shadow, …) leave the boxes out; Basic keeps them
+        system.attach(renderer);
+        if (cloudLight) system.setEnvironment(...cloudLight);
+        clouds = system;
+        clouds.invalidate();
+        loadRender.force = true;
+    }));
     // grid volumes (smoke, clouds, fire from voxel grids – VDB files, pbrt media; volumes/grid-volumes.js): proxies in the
-    // scene, media for the path tracer's volume walk
-    const gridVolumes = new GridVolumeSystem(scene, renderer);
-    gridVolumes.onChange = () => { pathTracing.updateTransforms(); pathTracing.updateMaterials(); loadRender.dirty = true; };
+    // scene, media for the path tracer's volume walk – the system comes with the first model that has volumes
+    scene.add(gridSlot);
+    let gridVolumes = { stub: true, active: false, set() {}, volumesOf: () => [], outline() {}, clear() {}, restyle() {}, update() {} };
+    let gridLoading = null;
+    const ensureGridVolumes = () => (gridLoading ??= import('./volumes/grid-volumes.js').then(({ GridVolumeSystem }) => {
+        gridVolumes = new GridVolumeSystem(gridSlot, renderer);
+        gridVolumes.onChange = () => { pathTracing.updateTransforms(); pathTracing.updateMaterials(); loadRender.dirty = true; };
+    }));
     // the volumes of a loaded model: each on its own Scene Graph node (volume.node – shown, hidden, selected, moved like any
     // object; counted as one part there, otherwise the tree leaves the row out), its box for pivot, size and framing
     // (userData.volumeBox – transform.js meshBox, frameFit, modelBox)
@@ -764,13 +792,45 @@ export async function createPlayer(options = {}) {
     wool.onBounds = () => { invalidatePathTracing(); updatePathTracingScene(); };   // BVH bounds over the fibres (wool-bounds.js)
     wool.attach(renderer);
     // grass material (grass.js): real blades over the meshes that carry it – raster and path tracer draw the same geometry;
-    // new blades = new path tracer scene, moved/hidden ones = its transforms
-    const grass = new GrassSystem(scene, () => [rootGroup, ...extraModels.map(x => x.root)], () => environment?.modelSize ?? 1);
-    grass.onChange = () => { pathTracing.updateMaterials(); pathTracing.reset(); };
-    grass.onMove = () => { pathTracing.updateTransforms(); markShadowsDirty(); };
-    grass.onGeometry = () => { invalidatePathTracing(); updatePathTracingScene(); markShadowsDirty(); };
-    // the blades block the sun in the light shafts' depth passes (volume-shafts.js) like any mesh
-    grass.attach(renderer, () => { try { return [lens.volume.sunDepthMaterial, lens.volume.camDepthMaterial]; } catch { return null; } });
+    // new blades = new path tracer scene, moved/hidden ones = its transforms (system with the first grass material)
+    const grassSlot = new THREE.Group();
+    grassSlot.name = 'grass slot';
+    scene.add(grassSlot);
+    let grass = { stub: true, group: grassSlot, fading: false, update() {}, invalidate() { specialScan = true; }, previewFor: () => null };
+    let grassLoading = null;
+    const ensureGrass = () => (grassLoading ??= import('./materials/grass.js').then(({ GrassSystem }) => {
+        const system = new GrassSystem(grassSlot, modelRoots, () => environment?.modelSize ?? 1);
+        system.onChange = () => { pathTracing.updateMaterials(); pathTracing.reset(); };
+        system.onMove = () => { pathTracing.updateTransforms(); markShadowsDirty(); };
+        system.onGeometry = () => { invalidatePathTracing(); updatePathTracingScene(); markShadowsDirty(); };
+        // the blades block the sun in the light shafts' depth passes (volume-shafts.js) like any mesh
+        system.attach(renderer, () => { try { return [lens.volume.sunDepthMaterial, lens.volume.camDepthMaterial]; } catch { return null; } });
+        system.onProgress = grassProgressHook;
+        grass = system;
+        grass.invalidate();
+        loadRender.force = true;
+    }));
+    // a stand-in's system needed now? (cloud/grass material on a model – checked in the render loop after a change)
+    function checkSpecialSystems() {
+        if (!specialScan) return;
+        specialScan = false;
+        let cloud = !clouds.stub, grassy = !grass.stub;
+        if (cloud && grassy) return;
+        for (const root of modelRoots()) root?.traverse(o => {
+            const m = o.isMesh && !Array.isArray(o.material) ? o.material : null;
+            if (!m) return;
+            cloud ||= !!m.userData?.cloud;
+            grassy ||= !!m.userData?.grass;
+        });
+        if (cloud && clouds.stub) ensureClouds();
+        if (grassy && grass.stub) ensureGrass();
+    }
+    // a material preview (material-thumbs.js) of a cloud/grass material: its system first
+    async function specialPreview(material, radius) {
+        if (material.userData?.cloud && clouds.stub) await ensureClouds();
+        if (material.userData?.grass && grass.stub) await ensureGrass();
+        return clouds.previewFor(material, radius) ?? wool.previewFor(material, radius) ?? grass.previewFor(material, radius);
+    }
     // rounded edges (edges.js): per-geometry edge data (worker) for materials with an edge radius – new data = new
     // material buffers; rotated triangle corners (first build of a geometry) = new path tracer scene
     const edges = new EdgeSystem(() => [rootGroup, ...extraModels.map(x => x.root)]);
@@ -780,12 +840,12 @@ export async function createPlayer(options = {}) {
     };
     // growing blades (worker): progress bottom left – unless a load or another task already shows its own
     let grassProgress = false;
-    grass.onProgress = fraction => {
+    function grassProgressHook(fraction) {
         const label = t('status.growingGrass');
         if (fraction !== null && (!progressEl.hidden && progressLabel.textContent !== label)) return;
         if (fraction !== null) { grassProgress = true; showProgress(label, fraction); }
         else if (grassProgress) { grassProgress = false; if (progressLabel.textContent === label) hideProgress(); }
-    };
+    }
 
     // HDRI editor (hdri/, docs/hdri-editor.md): own procedural HDRIs, rendered in a worker
     const CUSTOM_HDRI = 'editor:';
@@ -1436,7 +1496,7 @@ export async function createPlayer(options = {}) {
     // a .ply without splat properties: plain mesh (mesh-importer.js)
     const meshSourceOf = src => ({ name: src.name, type: 'mesh', main: src.main || null, url: src.url, files: src.files || [], ...(src.url && !src.main ? { baseUrl: src.url } : {}) });
     async function classifyModel(src) {
-        return src?.type === 'splat' && !(await isSplatSource(src)) ? meshSourceOf(src) : src;
+        return src?.type === 'splat' && !(await (await loadSplatLoader()).isSplatSource(src)) ? meshSourceOf(src) : src;
     }
 
     /**
@@ -2060,7 +2120,7 @@ export async function createPlayer(options = {}) {
             return { ...e, id: `${name}|${e.texture?.image?.width ?? 0}|${e.intensity.toFixed(3)}|${e.rotation.toFixed(3)}` };
         },
         // the cloud material has no surface: its preview is a cloud volume around the sphere; wool: the sphere with fibres
-        (material, radius) => clouds.previewFor(material, radius) ?? wool.previewFor(material, radius) ?? grass.previewFor(material, radius),
+        specialPreview,
         // previews wait for the HDRI being loaded / the 4k studio (the small one of the start lit them differently)
         () => Promise.all([environment.pending, environment.on && environment.hdri ? null : upgradeStudio()])),
         // select all meshes with this material (multi-selection, "assign" replaces it on all of them)
@@ -4129,7 +4189,7 @@ export async function createPlayer(options = {}) {
     // volumetric light shafts (volume-shafts.js): scene, camera and what stays out of the depth passes
     lens.sceneContext = () => ({
         scene, camera, bounds: rootGroup ? shaftBounds : null, modelSize: environment.modelSize,
-        hide: splatMesh ? [splatMesh] : [], ground: ground.enabled ? ground.mesh : null, clouds,
+        hide: splatMesh ? [splatMesh] : [], ground: ground.enabled ? ground.mesh : null, clouds: clouds.stub ? null : clouds,
     });
     function updateShaftSource() {
         const dir = environment.on ? brightestDirection(environment.texture) : null;
@@ -5302,7 +5362,7 @@ export async function createPlayer(options = {}) {
     async function loadModel(reload = false, safe = false) {
         if (model.type === 'splat') {
             // a .ply can also be a plain mesh: then the mesh import
-            if (await isSplatSource(model)) return loadSplatScene();
+            if (await (await loadSplatLoader()).isSplatSource(model)) return loadSplatScene();
             model = meshSourceOf(model);
         }
         const root = new THREE.Group();
@@ -5456,6 +5516,7 @@ export async function createPlayer(options = {}) {
                 : await (meshModule ?? await loadMeshImporter()).importMeshFile(model, { renderer, materialManager, onStatus: showProgress, bvh: pathTracing.supported, checkSize: confirmLargeModel,
                     onLarge: basicForSize, largeAbove: importLimits().budget, limit: importLimits().limit, onNodes: setupNodes, onSolid });
             const { geometries, meshes, nodes, missing } = result;
+            if (result.volumes?.length) await ensureGridVolumes();   // smoke, clouds, fire: the volume system with its first volume
             root.userData.bim = result.bim || null;   // IFC: property lookups (worker stays open, closed in disposeRoot)
             root.userData.ifcOrigin = result.bim?.origin || null;   // IFC: shift to the origin (metres) – alignment, BCF
             if (!nodeGroups.length) setupNodes(nodes);
@@ -5675,7 +5736,7 @@ export async function createPlayer(options = {}) {
                 primaryContent = { name, importNodes: [{ name, parent: -1 }], groups: [group], partCounts: [1], root };
                 applySplatUi();   // includes refreshSceneGraph
             };
-            const data = await loadSplats(model, {
+            const data = await (await loadSplatLoader()).loadSplats(model, {
                 signal: loadAbort?.signal, onProgress: f => showProgress(t('status.loadingSplats'), f),
                 onBegin: d => { try { build(d); } catch (err) { buildError = err; loadAbort?.abort(); } },
                 onLoaded: (count, sh) => splat?.setLoaded(count, sh),
@@ -5980,6 +6041,7 @@ export async function createPlayer(options = {}) {
                 importNotices(result, name);
             }
             const { geometries, meshes, nodes } = result;
+            if (result.volumes?.length) await ensureGridVolumes();
             const groups = nodes.map(n => { const g = new THREE.Group(); g.name = n.name; if (n.ifc) g.userData.ifc = n.ifc; return g; });
             root.userData.bim = result.bim || null;   // IFC: property lookups (worker stays open)
             root.userData.ifcOrigin = result.bim?.origin || null;
@@ -6850,7 +6912,7 @@ export async function createPlayer(options = {}) {
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel.thumbs, def)),
         // all library presets (categories loaded on demand) – tests bake their node graphs
         presets: () => loadLibraryPresets().then(() => MATERIAL_PRESETS),
-        skeletonView, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, getPlan: () => currentPlan, setViewMode: m => setViewMode(m), getViewMode: () => viewMode, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+        skeletonView, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, get clouds() { return clouds; }, get grass() { return grass; }, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats: (...args) => loadSplatLoader().then(m => m.loadSplats(...args)), lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, getPlan: () => currentPlan, setViewMode: m => setViewMode(m), getViewMode: () => viewMode, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
 
     // --- Resize ---
     // device pixel ratio changed (window moved to a screen with another scaling, browser zoom): the canvas follows – it was
@@ -7145,6 +7207,7 @@ export async function createPlayer(options = {}) {
         updateFlight();
         updateSplatSpin(frameStart);
         exploder.update(frameStart);
+        checkSpecialSystems();
         clouds.update(camera);
         if (gridVolumes.active) gridVolumes.update(gridVolumeLight());
         if (hairShown()) updateHairLight(gridVolumeLight());   // raster hair lines: the same key light (curves/curve-mesh.js)
