@@ -21,7 +21,7 @@ import { t } from './i18n.js';
 // lie (denoiser weights …) – the player build's entry sets it to its own folder (player-entry.js); the app: its page
 export const playerDefaults = { assetBase: null };
 
-// Page-wide settings (RINDR.configure – docs/player-embed.md): theme = { accent, panel, background, font } as CSS values
+// Page-wide settings (RINDR.configure – README.md "Embedding the RINDR player" → Colours): theme = { accent, panel, background, font } as CSS values
 // for every player of the page (a rule on an element of the page still wins), base = where the player's own files lie
 const themeSheet = new CSSStyleSheet();
 const THEME_KEYS = { accent: 'color', panel: 'color', background: 'color', font: 'font-family' };

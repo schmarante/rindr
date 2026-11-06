@@ -1,6 +1,6 @@
-// The embeddable player as a build of its own (docs/player.md, stage 4; docs/player-embed.md): `npm run build` runs it
+// The embeddable player as a build of its own (docs/player.md, stage 4; README.md "Embedding"): `npm run build` runs it
 // after the app's build → dist/player/<version>/rindr-player.js with its chunks, workers and the denoiser's weights.
-// Self-contained with relative paths: works from any server and folder (our service or the customer's own); the version
+// Self-contained with relative paths: works from any server and folder (a RINDR deployment or the embedding site's own server); the version
 // in the path – a new version never changes what a shop already embeds. The app's Vite patches and plugins come from
 // astro.config.mjs (one place for them).
 import fs from 'node:fs';

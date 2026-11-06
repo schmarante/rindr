@@ -27,7 +27,7 @@
         -webkit-user-select: none;
         user-select: none;
     }
-    /* Whitelabel (docs/player-embed.md): the page sets --rindr-accent (accent colour – lighter and darker shades are mixed
+    /* Whitelabel (README.md "Embedding the RINDR player"): the page sets --rindr-accent (accent colour – lighter and darker shades are mixed
        from it), --rindr-panel (base tone of panels and windows, shown at their opacity), --rindr-background (behind the 3D
        view) and --rindr-font on the element (or RINDR.configure({ theme })). Unset, everything stays Tailwind's: a helper
        using an unset variable is invalid, the var() then falls back to the theme's own value. */

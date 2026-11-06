@@ -48,7 +48,7 @@ AddType application/wasm .wasm
     </If>
 </IfModule>
 
-# The embeddable player (player/<version>/ – docs/player-embed.md): loaded by other sites' pages (scripts, workers via a
+# The embeddable player (player/<version>/ – README.md "Embedding the RINDR player"): loaded by other sites' pages (scripts, workers via a
 # blob, denoiser weights) → CORS; pages isolated with COEP require-corp may load it too; chunks carry content hashes
 <IfModule mod_headers.c>
     <If "%{REQUEST_URI} =~ m#/player/#">

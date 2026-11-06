@@ -1,4 +1,4 @@
-// Entry of the embeddable player build (vite.player.config.mjs → player/<version>/rindr-player.js, docs/player-embed.md):
+// Entry of the embeddable player build (vite.player.config.mjs → player/<version>/rindr-player.js, README.md "Embedding"):
 // defines <rindr-player> – a small script; the viewer (three.js, importers …) loads when the first player starts – and the
 // page-wide `RINDR` object.
 import { playerDefaults, configure } from './rindr-player.js';

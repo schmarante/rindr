@@ -1,4 +1,4 @@
-// <rindr-player frame> (docs/player-embed.md "iframe"): the player runs in an iframe (player/<version>/frame.html, protocol
+// <rindr-player frame> (README.md "Embedding the RINDR player" → iframe): the player runs in an iframe (player/<version>/frame.html, protocol
 // in player/frame.js) and the element keeps its interface – methods go to the frame by postMessage, the frame's events
 // become the element's events, element.resolveAsset is asked across. The fallback for pages whose CSP or framework does
 // not let the player itself in (the frame needs its own GPU device and compiles its own path tracing kernel).
@@ -16,8 +16,6 @@ export function startFrame(element, root, frameUrl, emit) {
     const values = {};
     for (const name of ['src', 'scene', 'hdr', 'poster']) { const v = element.getAttribute(name); if (v) values[name] = new URL(v, document.baseURI).href; }
     for (const name of ['mode', 'features', 'activate']) { const v = element.getAttribute(name); if (v != null) values[name] = v; }
-    const lang = element.closest('[lang]')?.getAttribute('lang');
-    if (lang) values.lang = lang;
     // the page's whitelabel values on the element (--rindr-*) – inside the frame through RINDR.configure
     const style = getComputedStyle(element);
     for (const key of ['accent', 'panel', 'background', 'font']) { const v = style.getPropertyValue(`--rindr-${key}`).trim(); if (v) values[`theme-${key}`] = v; }

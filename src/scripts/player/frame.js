@@ -1,5 +1,5 @@
-// The player inside an iframe (docs/player-embed.md "iframe"): player/<version>/frame.html runs one <rindr-player> over the
-// whole frame, set up from the URL's hash (src, scene, hdr, mode, features, activate, poster, lang – URLs absolute;
+// The player inside an iframe (README.md "Embedding the RINDR player" → iframe): player/<version>/frame.html runs one <rindr-player> over the
+// whole frame, set up from the URL's hash (src, scene, hdr, mode, features, activate, poster – URLs absolute;
 // theme-accent/-panel/-background/-font: the page's whitelabel values, RINDR.configure), and
 // speaks with the embedding page by postMessage – the fallback for pages whose CSP or framework does not let the player
 // in (`<rindr-player frame>` uses it with the same interface; a page can also talk to it directly).
@@ -17,7 +17,7 @@
 
 const params = new URLSearchParams(location.hash.slice(1));
 const player = document.createElement('rindr-player');
-for (const name of ['src', 'scene', 'hdr', 'mode', 'features', 'activate', 'poster', 'lang']) {
+for (const name of ['src', 'scene', 'hdr', 'mode', 'features', 'activate', 'poster']) {
     const value = params.get(name);
     if (value != null) player.setAttribute(name, value);
 }
