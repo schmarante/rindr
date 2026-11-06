@@ -7,8 +7,9 @@
   "scripts": {
     "dev": "astro dev",
     "prebuild": "node scripts/sync-readme.mjs",
-    "build": "astro build",
-    "preview": "astro preview"
+    "build": "astro build && vite build -c vite.player.config.mjs",
+    "preview": "astro preview",
+    "build:player": "vite build -c vite.player.config.mjs"
   },
   "dependencies": {
     "@pmndrs/upscaler": "^0.2.0",

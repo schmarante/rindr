@@ -10,13 +10,21 @@
 // comes near the visible part of the page) or 'click' (a start button), poster = picture shown until the player shows
 // its model. Options of the app (whole page, its preloader …) come in as the property `rindrOptions` before the element
 // is put into the page.
-import { createPlayer } from './viewer.js';
 import css from '../styles/player.css?inline';
 import { playerTemplate } from './player/template.js';
 import { setDefaultLayer } from './shadow-dom.js';
 import { debugLog } from './log.js';
 import { icon } from './icons.js';
 import { t } from './i18n.js';
+
+// What every player of the page starts with unless its options say otherwise: assetBase = where the player's own files
+// lie (denoiser weights …) – the player build's entry sets it to its own folder (player-entry.js); the app: its page
+export const playerDefaults = { assetBase: null };
+// the viewer (three.js, importers …) loads with the first player that starts (the app has it already – app.js); one promise
+// for all: players awaiting it go on in the order they started – createPlayer in page order (without WebGPU the first one
+// gets the picture)
+let viewerModule = null;
+const loadViewer = () => (viewerModule ??= import('./viewer.js'));
 
 // players starting at the same time (GPU set-up, model download, tessellation): a page full of players starts them a few
 // at a time (docs/player.md, stage 3) – a start ends once the player shows its model (or fails)
@@ -75,12 +83,15 @@ export class RindrPlayer extends HTMLElement {
         setDefaultLayer(layer);   // windows and notices without an anchor go here (the player's own get their layer)
         // an embedded player takes keys while it has the focus (click into the view, or Tab)
         if (!options.appMode && !this.hasAttribute('tabindex')) this.tabIndex = 0;
-        const create = () => {
+        const create = async () => {
+            // (a page full of players waiting for a click or for being scrolled to loads only this small element)
+            const { createPlayer } = await loadViewer();
             // the attributes as they are when the player starts (the page may change them while it waits for activation)
             const attrs = this._startAttributes = Object.fromEntries(LIVE_ATTRIBUTES.map(name => [name, this.getAttribute(name)]));
             this._shows = { src: attrs.src, scene: attrs.scene, hdr: attrs.hdr };   // what the player shows (attribute or load())
             const url = value => new URL(value, document.baseURI).href;
             return createPlayer({
+                ...(playerDefaults.assetBase ? { assetBase: playerDefaults.assetBase } : {}),
                 ...options,
                 element: this,
                 dom: root,

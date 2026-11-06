@@ -2,6 +2,8 @@
 // First the debug overlay's worker overview: it replaces `Worker` before anything starts one (only with ?debug, a
 // change of the whole page – the app's business, never an embedded player's).
 import './worker-monitor.js';
+// the viewer right away (the element imports it only when a player starts – for embedding pages; the app needs it at once)
+import './viewer.js';
 import './rindr-player.js';
 import { applyDom } from './i18n.js';
 
