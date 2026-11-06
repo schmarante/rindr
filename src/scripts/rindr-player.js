@@ -13,6 +13,7 @@
 import css from '../styles/player.css?inline';
 import { playerTemplate } from './player/template.js';
 import { setDefaultLayer } from './shadow-dom.js';
+import { splitBackground, backgroundCss, lightBehindText } from './player/backdrop-css.js';
 import { debugLog } from './log.js';
 import { icon } from './icons.js';
 import { t } from './i18n.js';
@@ -86,7 +87,7 @@ function playerSheet(source = css) {
 // The element's methods for the host page (docs/player.md, stage 4 – player/host-api.js; load() has its own below): each
 // returns a promise; a player still waiting for its activation (activate="click" / "visible") starts on the first call
 const HOST_METHODS = ['getParts', 'getMaterials', 'getLibrary', 'setMaterial', 'updateMaterial', 'setVisible', 'select', 'frame', 'getViews', 'setView',
-    'setMode', 'getMode', 'setBackground', 'render', 'getScene', 'getPackage', 'save'];
+    'setMode', 'getMode', 'render', 'getScene', 'getPackage', 'save'];   // (setBackground has its own below)
 // attributes the player follows when the page changes them after the start (the others count once, at the start)
 const LIVE_ATTRIBUTES = ['src', 'scene', 'hdr', 'mode', 'background'];
 
@@ -100,8 +101,10 @@ export class RindrPlayer extends HTMLElement {
         const root = this.attachShadow({ mode: 'open' });
         // <rindr-player frame>: the player in an iframe of the player build, same interface (player/frame-proxy.js)
         if (this.hasAttribute('frame') && !options.appMode) { this._startFrame(root); return; }
-        root.adoptedStyleSheets = [playerSheet(), themeSheet];
+        this._backdropSheet = new CSSStyleSheet();
+        root.adoptedStyleSheets = [playerSheet(), themeSheet, this._backdropSheet];
         root.innerHTML = playerTemplate();
+        this._showBackdrop(this.getAttribute('background'));
         const layer = root.querySelector('[data-rindr-layer]');
         setDefaultLayer(layer);   // windows and notices without an anchor go here (the player's own get their layer)
         // an embedded player takes keys while it has the focus (click into the view, or Tab)
@@ -150,7 +153,9 @@ export class RindrPlayer extends HTMLElement {
     }
 
     _startFrame(root) {
-        root.adoptedStyleSheets = [playerSheet(), themeSheet];
+        this._backdropSheet = new CSSStyleSheet();
+        root.adoptedStyleSheets = [playerSheet(), themeSheet, this._backdropSheet];
+        this._showBackdrop(this.getAttribute('background'));
         // (the address after the import: elements in the page upgrade while this module runs – before player-entry.js has set
         // the player's folder)
         const started = import('./player/frame-proxy.js').then(({ startFrame }) => {
@@ -174,12 +179,27 @@ export class RindrPlayer extends HTMLElement {
     }
 
     attributeChangedCallback(name, previous, value) {
+        if (name === 'background' && this._backdropSheet) this._showBackdrop(value);   // (also while it waits for its start)
         if (!this._api) return;   // before the start: read when it starts
         const done = p => p.catch(err => { if (err?.code !== 'load-failed') console.warn(`[rindr-player] ${name}: ${err.message}`); });   // load errors: 'rindr-error'
         // src / scene / hdr: load when it is not what the player shows already (frameworks set unchanged attributes again)
         if (name === 'mode') { if (previous !== value) done(this.setMode(value || 'default')); }
         else if (name === 'background') { if (previous !== value) done(this.setBackground(value || 'default')); }
         else if (value && value !== this._shows?.[name]) done(this.load({ [name]: value }));
+    }
+
+    /** the background ('hdri', 'default', a colour, 'linear(a, b)', 'radial(a, b)', { type, colors }) – see player/host-api.js */
+    async setBackground(spec) {
+        this._showBackdrop(spec);
+        const api = await this.start();
+        return api.host.setBackground(spec);
+    }
+
+    // the background as CSS of the element until the view draws (player/backdrop-css.js) – and the start text readable on it
+    _showBackdrop(spec) {
+        const bg = spec == null ? null : splitBackground(spec);
+        const css = backgroundCss(bg);
+        this._backdropSheet?.replaceSync(css ? `:host{--rindr-backdrop:${css}}${lightBehindText(bg) ? '#loading{color:#262626}' : ''}` : '');
     }
 
     /** load a model (URL) or { src | scene, hdr } – resolves when it is shown (see player/host-api.js) */

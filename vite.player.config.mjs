@@ -35,10 +35,11 @@ function copyDenoiserWeights() {
     };
 }
 
-// the iframe fallback's page (player/frame.js): one player over the whole frame – no inline script (CSP)
+// the iframe fallback's page (player/frame.js): one player over the whole frame – no inline script (CSP); transparent until
+// its player draws (the element outside shows the background the page asked for)
 const FRAME_HTML = `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>RINDR</title>
-<style>html,body{margin:0;height:100%;background:#171717;overflow:hidden}rindr-player{position:fixed;inset:0;width:auto;height:auto}</style>
+<style>html,body{margin:0;height:100%;background:transparent;overflow:hidden}rindr-player{position:fixed;inset:0;width:auto;height:auto}</style>
 <script type="module" src="./rindr-player.js"></script><script type="module" src="./frame.js"></script>
 </head><body></body></html>
 `;

@@ -17,6 +17,7 @@ import { BasicView } from './basic-view.js';
 import { setPlainView } from './materials/override-hide.js';
 import { MATERIAL_PRESETS, presetName, loadLibraryPresets } from './material-presets.js';
 import { createHostApi, parseBackground } from './player/host-api.js';
+import { lightBehindText } from './player/backdrop-css.js';
 import { requestField, clearFields } from './materials/sss-field.js';
 import { MATERIAL_MIME } from './material-mime.js';
 import { initMaterialTransfer, materialFromTransfer } from './material-transfer.js';
@@ -1108,6 +1109,8 @@ export async function createPlayer(options = {}) {
             scene.backgroundIntensity = showHdri ? this.intensity * this.lightBoost : 1;
             if (showHdri) scene.backgroundRotation.copy(scene.environmentRotation);
             else if (!this.matte) vignette.update(camera, scene, backdropLook());
+            // the status text (start, drop hint …) dark on a light picked background
+            loadingEl.style.color = !showHdri && lightBehindText(this.backdrop) ? '#262626' : '';
             pathTracing.backgroundFollowsCamera = !showHdri && !this.matte;
             contactShadow.markDirty();
             splatOpacity.markDirty();   // ground shadow of the splats (height, on/off)
@@ -1181,7 +1184,8 @@ export async function createPlayer(options = {}) {
     function applyBackground(parsed, { record = true } = {}) {
         if (!parsed) return;
         const before = { background: environment.background, backdrop: environment.backdrop };
-        const set = v => { environment.background = v.background; environment.backdrop = v.backdrop; environment.apply(); if (selection?.kind === 'environment') properties?.show(selection); };
+        // (a frame right away – also while a model imports, when the loop draws only for new parts)
+        const set = v => { environment.background = v.background; environment.backdrop = v.backdrop; environment.apply(); loadRender.force = true; if (selection?.kind === 'environment') properties?.show(selection); };
         const after = { background: parsed.hdri, backdrop: parsed.backdrop && { ...parsed.backdrop, look: parsed.backdrop.look ?? currentLook() } };
         if (JSON.stringify(before) === JSON.stringify(after)) return;
         set(after);

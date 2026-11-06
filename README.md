@@ -67,7 +67,7 @@ script per page, as many players as you like:
 | `src` | model URL (any format RINDR opens) |
 | `scene` | RINDR scene (JSON from "Save scene" or `getScene()`); its models lie next to it or come from `resolveAsset` |
 | `hdr` | HDRI URL (.hdr/.exr) – wins over the scene's HDRI |
-| `background` | what is shown behind the model: `hdri`, a colour (`#ffffff`), `linear(top, bottom)`, `radial(centre, edge)`, `default` (the dark gradient) – wins over the scene's background |
+| `background` | what is shown behind the model: `hdri`, a colour (`#ffffff`), `linear(top, bottom)`, `radial(centre, edge)`, `default` (the dark gradient) – wins over the scene's background; shown from the first moment, while the player still loads |
 | `mode` | `default` (raster) or `hq` (path tracing as soon as the camera stands still); also `basic`, `uv`, `wire` |
 | `features` | interface parts, separated by spaces or commas: `scene-graph`, `properties`, `materials`, `material-editor`, `explode`, `transform`, `section`, `views`, `view-cube`, `view-modes`, `open`, `save`, `render`, `ki`, `animation`, `setup`, `fullscreen` – `all` = everything. Without `features`: the 3D view only (orbit, zoom, key 3 for path tracing) |
 | `activate` | `auto` (at once, default), `visible` (when the player comes near the visible part of the page), `click` (a start button) |

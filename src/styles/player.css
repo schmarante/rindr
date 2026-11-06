@@ -23,7 +23,9 @@
         container-type: size;
         contain: layout;
         contain-intrinsic-block-size: 480px;
-        background-color: var(--rindr-background, var(--color-neutral-900));
+        /* the background the page asked for (attribute background – rindr-player.js sets --rindr-backdrop) until the view
+           has drawn: no dark box first */
+        background: var(--rindr-backdrop, var(--rindr-background, var(--color-neutral-900)));
         -webkit-user-select: none;
         user-select: none;
     }

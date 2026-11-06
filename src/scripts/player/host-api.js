@@ -4,6 +4,7 @@
 // method returns a promise (the element awaits the player's start first). Errors are thrown as Error with a `code`.
 import { partPaths, pathMatcher, splitSurface } from './part-paths.js';
 import { normalizeBackdrop } from '../scene-state.js';
+import { splitBackground } from './backdrop-css.js';
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
 
@@ -13,18 +14,10 @@ const fail = (code, message) => Object.assign(new Error(message), { code });
  * 'hdri' }. → { hdri: boolean, backdrop: { type, colors } | null }, or null when not understood
  */
 export function parseBackground(spec) {
-    if (spec && typeof spec === 'object') {
-        if (spec.type === 'hdri') return { hdri: true, backdrop: null };
-        const backdrop = normalizeBackdrop(spec);
-        return backdrop ? { hdri: false, backdrop } : null;
-    }
-    const text = String(spec ?? '').trim();
-    if (/^hdri$/i.test(text)) return { hdri: true, backdrop: null };
-    if (!text || /^default$/i.test(text)) return { hdri: false, backdrop: null };
-    const m = /^(linear|radial)\s*\((.*)\)$/i.exec(text);
-    // colours separated by commas outside parentheses (rgb(…) has commas of its own)
-    const split = s => { const out = []; let depth = 0, cur = ''; for (const ch of s) { if (ch === '(') depth++; if (ch === ')') depth--; if (ch === ',' && !depth) { out.push(cur.trim()); cur = ''; } else cur += ch; } out.push(cur.trim()); return out.filter(Boolean); };
-    const backdrop = m ? normalizeBackdrop({ type: m[1].toLowerCase(), colors: split(m[2]) }) : normalizeBackdrop({ type: 'solid', colors: [text] });
+    const bg = splitBackground(spec);
+    if (bg === 'hdri') return { hdri: true, backdrop: null };
+    if (bg === 'default') return { hdri: false, backdrop: null };
+    const backdrop = bg && normalizeBackdrop(bg);
     return backdrop ? { hdri: false, backdrop } : null;
 }
 
