@@ -23,6 +23,7 @@ if (appPage) {
     app.rindrOptions = {
         appMode: true,     // the whole page: may reload it, change its URL, offer distributed rendering
         keyScope: 'page',  // keys and file drops anywhere on the page
+        features: 'all',   // every part of the interface
         preloader: document.getElementById('preloader'),
         model: params.get('model'),
         sampleScene: params.has('samplescene'),

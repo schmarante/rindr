@@ -12,12 +12,6 @@ import { UvMapper } from './uv-mapping.js';
 import { Displacer } from './displacement.js';
 import { floatWindow } from './float-window.js';
 import { duplicateNode, removeDuplicate, linkedMembers, familyOf, isLinked, makeUnique } from './duplicate.js';
-import { RenderMaster, LOCAL_ID } from './distributed/master.js';
-import { RenderClient } from './distributed/client.js';
-import { BucketDisplay } from './distributed/display.js';
-import { localTransport, newId, gpuName, formatSize } from './distributed/protocol.js';
-import { hubTransport, channelTransport, answerOffer } from './distributed/rtc.js';
-import { buildDistributedSection, clientView } from './distributed/settings.js';
 import { IMPORT, KI, SPLATS, RASTER, SCENE, TRANSITION, LOD, SKELETON } from './config.js';
 import { MissingFilesError, MESH_EXTENSIONS } from './mesh-formats.js';
 import { MaterialManager, FADE_MASK } from './material-manager.js';
@@ -25,9 +19,8 @@ import { BasicView } from './basic-view.js';
 import { setPlainView } from './materials/override-hide.js';
 import { MATERIAL_PRESETS, presetName, loadLibraryPresets } from './material-presets.js';
 import { requestField, clearFields } from './materials/sss-field.js';
-import { MaterialPanel, MATERIAL_MIME } from './material-panel.js';
+import { MATERIAL_MIME } from './material-mime.js';
 import { TAB_ID, initMaterialTransfer, materialFromTransfer } from './material-transfer.js';
-import { MaterialThumbs } from './material-thumbs.js';
 import { uvCheckerTexture } from './uv-checker.js';
 import { volumeBounds } from './volumes/volume-bounds.js';
 import { setupCurveMesh, updateHairLight } from './curves/curve-mesh.js';
@@ -55,7 +48,6 @@ import { encodePng } from './png-encode.js';
 import { LightHelper, CameraMarkers } from './light-helper.js';
 import { LIGHT_KINDS, LOCAL_KINDS, IES_PROFILES, lightKind, createLight, placeLight, aimLight, refitLight, setStrength, strengthOf, prepareAreaLights, lightState, applyLightState, strengthFromIntensity, setIesProfile, setIesShape, profileValues, planesFromValues } from './scene-lights.js';
 import { setFisheye, RasterFisheye, patchRaycaster, viewAngle, setViewAngle, fisheyeEnabled, fisheyeProject, PERSPECTIVE_LIMIT, MIN_VIEW_ANGLE } from './fisheye.js';
-import { PropertiesPanel } from './properties.js';
 import { Slicer, isClosedGeometry } from './slicer.js';
 import { RenderBatcher, BATCH_LAYER } from './render-batcher.js';
 import { compileAsync } from './shader-compile.js';
@@ -89,6 +81,7 @@ import { OcclusionCuller } from './occlusion-culling.js';
 import { instancedModelMesh, localBox, lowestInstanced } from './model-instances.js';
 import { icon } from './icons.js';
 import { getRuntime } from './runtime.js';
+import { resolveFeatures } from './player/features.js';
 
 // a part of the UI whose module is loaded on first use: get() → Promise of the instance (created once), now → the
 // instance if it exists already (calls that only matter for an open window)
@@ -107,6 +100,13 @@ const loadStepImporter = () => import('./step-importer.js').then(m => (stepModul
 const loadMeshImporter = () => Promise.all([import('./mesh-importer.js'), loadStepImporter()]).then(([m]) => (meshModule = m));
 // the splat loader (file type check, worker) with the first .ply/.sog
 const loadSplatLoader = () => import('./splat/splat-loader.js');
+
+// distributed rendering (docs/distributed.md): the app's only – its modules come with the app's start, an embedded player
+// never loads them (docs/player.md "schlank")
+const loadDistributed = () => Promise.all([
+    import('./distributed/master.js'), import('./distributed/client.js'), import('./distributed/display.js'),
+    import('./distributed/protocol.js'), import('./distributed/rtc.js'), import('./distributed/settings.js'),
+]).then(modules => Object.assign({}, ...modules));
 
 // BVH-accelerated raycasting for every mesh (picking, focus, material drops) – once per page
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
@@ -298,6 +298,14 @@ export async function createPlayer(options = {}) {
 
     // GPU adapter, device and WebGPU renderer (falls back to WebGL2 without WebGPU – then without path tracing): once per
     // page (runtime.js). Waiting for the GPU after a reset is shown here.
+    const distributedLoading = APP_MODE ? loadDistributed() : null;
+    // the interface parts this player has (player/features.js; the app: all): their modules load alongside the GPU start
+    // and are built at the same spot as before – the order of listeners, toolbar buttons and elements stays
+    const features = resolveFeatures(options.features ?? (playerEl ? '' : 'all'));
+    const uiLoading = Promise.all([
+        features.has('properties') ? import('./properties.js') : null,
+        features.has('materials') ? Promise.all([import('./material-panel.js'), import('./material-thumbs.js')]) : null,
+    ]).then(([propertiesModule, materialModules]) => ({ propertiesModule, materialModules }));
     let runtime;
     try {
         runtime = await getRuntime({
@@ -314,6 +322,8 @@ export async function createPlayer(options = {}) {
     // webgpuBlocked: WebGPU present but no adapter – usually the browser withholds the GPU after a reset (until it is
     // restarted completely), otherwise graphics card/driver are not supported; gpuRecovering: a GPU reset in this tab before
     const { adapter, renderer, webgpuBlocked, gpuRecovering } = runtime;
+    const dist = distributedLoading ? await distributedLoading : null;   // distributed rendering (app only)
+    const uiModules = await uiLoading;
     renderer.setSize(viewSize().width, viewSize().height);
     renderer.setPixelRatio(window.devicePixelRatio);
     // ambient occlusion of the raster view: its hook into the materials' lighting goes in before any shader is built
@@ -773,10 +783,10 @@ export async function createPlayer(options = {}) {
             gridVolumes.restyle();
             pathTracing.reset();
             loadRender.force = true;
-            if (refresh && selection) properties.show(selection);
+            if (refresh && selection) properties?.show(selection);
         };
         apply(after, false);
-        if (record) history.record({ label: t('properties.volume.undo'), mergeKey, undo: () => apply(before, true), redo: () => apply(after, true) });
+        if (record) history.record({ label: t('properties?.volume.undo'), mergeKey, undo: () => apply(before, true), redo: () => apply(after, true) });
     }
     // a saved scene: the looks of a model's volumes in their order (volume-look.js loaded on demand)
     async function setVolumeLooks(rm, looks) {
@@ -1112,7 +1122,7 @@ export async function createPlayer(options = {}) {
         controls.enabled = true;
         settleAnimation([{ anim: e.detail.anim }]);
         loadRender.dirty = true;
-        properties.show(selection);   // "reset pose" appears
+        properties?.show(selection);   // "reset pose" appears
     });
     skeletonView.addEventListener('edit', e => {
         const { anim, bone, before, after } = e.detail;
@@ -1179,7 +1189,7 @@ export async function createPlayer(options = {}) {
     }
     function afterLockChange() {
         if (selection && selection.kind !== 'slicer') transformer.attach(gizmoTarget(selection), selection.kind);
-        properties.show(selection);
+        properties?.show(selection);
     }
     const gizmoTarget = entry => (isHiddenEntry(entry) || isLockedEntry(entry) ? null
         : entry?.kind === 'selection'
@@ -1204,7 +1214,8 @@ export async function createPlayer(options = {}) {
         if (kind === 'model' || kind === 'node') return resolveOne(object);
         return () => object;
     }
-    const properties = new PropertiesPanel(dom.getElementById('properties'), {
+    // properties panel (feature 'properties') – without it null: every call below is optional
+    const properties = uiModules.propertiesModule && new uiModules.propertiesModule.PropertiesPanel(dom.getElementById('properties'), {
         transformer, scene, camera, slicer,
         splats: entry => (entry ? !!splatMesh && holdsSplat(entry.object) : !!splatMesh),
         // relighting / override material of the splats (entry holds the splat)
@@ -1271,7 +1282,7 @@ export async function createPlayer(options = {}) {
             }
             controls.update();
             pathTracing.updateCamera();
-            properties.refreshCamera();
+            properties?.refreshCamera();
         },
         record: step => history.record(step),
         dof,
@@ -1335,7 +1346,7 @@ export async function createPlayer(options = {}) {
         },
     });
     // environment changed (HDRI, HDRI editor rendering, intensity, light boost, rotation): preview in the panel
-    environment.onChange = () => properties.refreshEnvironmentPreview();
+    environment.onChange = () => properties?.refreshEnvironmentPreview();
     const nodeOf = entry => Number(entry.key.slice(1));   // Scene Graph key 'n<index>'
 
     // --- Depth of field: set the focus plane (pivot, click into the model, autofocus) ---
@@ -1346,7 +1357,7 @@ export async function createPlayer(options = {}) {
             dof.focusSet = true;
             dof.apply();
             pathTracing.updateCamera();
-            properties.refreshFocus();
+            properties?.refreshFocus();
         };
         apply(distance);
         if (record && before !== distance) history.record({ label, undo: () => apply(before), redo: () => apply(distance) });
@@ -1363,11 +1374,11 @@ export async function createPlayer(options = {}) {
         hideStatus();
     }
     controls.addEventListener('change', () => {
-        if (cameraSelected()) properties.refreshCamera();   // live position/rotation in the panel
+        if (cameraSelected()) properties?.refreshCamera();   // live position/rotation in the panel
         if (!dof.enabled || !dof.autoFocus) return;
         dof.focusDistance = dof.depthOf(controls.target);
         dof.apply();
-        properties.refreshFocus();
+        properties?.refreshFocus();
     });
     // view keys (view cube directions)
     const VIEW_KEYS = { t: [0, 1, 0], f: [0, 0, 1], b: [0, 0, -1], d: [0, -1, 0], l: [-1, 0, 0], r: [1, 0, 0] };
@@ -1410,11 +1421,11 @@ export async function createPlayer(options = {}) {
         }
         // a selected joint (skeleton view): its gizmo
         if ((e.key === 'w' || e.key === 'W') && skeletonView.selected >= 0) skeletonView.setMode('translate');
-        else if (e.key === 'w' || e.key === 'W') { transformer.setMode('translate'); properties.show(selection); }
+        else if (e.key === 'w' || e.key === 'W') { transformer.setMode('translate'); properties?.show(selection); }
         if ((e.key === 'e' || e.key === 'E') && skeletonView.selected >= 0) skeletonView.setMode('rotate');
-        else if (e.key === 'e' || e.key === 'E') { transformer.setMode('rotate'); properties.show(selection); }
+        else if (e.key === 'e' || e.key === 'E') { transformer.setMode('rotate'); properties?.show(selection); }
         // S: scale (was R – R is the right view now, user's choice)
-        if (key === 's' && !e.ctrlKey && !e.metaKey && !e.altKey) { transformer.setMode('scale'); properties.show(selection); }
+        if (key === 's' && !e.ctrlKey && !e.metaKey && !e.altKey) { transformer.setMode('scale'); properties?.show(selection); }
         // views like the view cube: T top, F front, B back, D bottom (down), L left, R right
         const view = !e.ctrlKey && !e.metaKey && !e.altKey && VIEW_KEYS[key];
         if (view) flyToDirection(new THREE.Vector3(...view));
@@ -1896,7 +1907,7 @@ export async function createPlayer(options = {}) {
             shortcut: { translate: 'W', rotate: 'E', scale: 'S' }[m],
             active: canTransform && transformer.mode === m,
             disabled: !canTransform,
-            onClick: () => { transformer.setMode(m); properties.show(selection); },
+            onClick: () => { transformer.setMode(m); properties?.show(selection); },
         };
         quadMenu.open(x, y, [
             {
@@ -1937,7 +1948,7 @@ export async function createPlayer(options = {}) {
             e.preventDefault();
             sceneGraph.select(entry, { reveal: false });
             quadMenu.open(e.clientX, e.clientY, [{ title: t('quadMenu.display'), quadrant: 'tr', items: [
-                { label: t('properties.missing.relink'), onClick: () => assetsWindow.show() },
+                { label: t('properties?.missing.relink'), onClick: () => assetsWindow.show() },
                 { label: t('quadMenu.delete'), shortcut: t('quadMenu.deleteKey'), onClick: () => removeMissingModel(entry) },
             ] }]);
             return;
@@ -2095,12 +2106,13 @@ export async function createPlayer(options = {}) {
         }).catch(err => console.error('[SSS] distance field failed', err));
     }
     const isModelEntry = e => e && (e.kind === 'node' || e.kind === 'model' || e.kind === 'surface' || e.kind === 'selection');
-    const materialPanel = new MaterialPanel(dom.getElementById('materials'), materialManager, {
+    // material list, library and editor (feature 'materials') – without it null: every call below is optional
+    const materialPanel = uiModules.materialModules && new uiModules.materialModules[0].MaterialPanel(dom.getElementById('materials'), materialManager, {
         getSelectionObject: () => (isModelEntry(selection) ? selection.object : null),
         onAssignToSelection: id => {
             if (!isModelEntry(selection)) return;
             assignMaterial(selection.object, id);
-            materialPanel.setSelection(selection.object);
+            materialPanel?.setSelection(selection.object);
         },
         onOpenNodeEditor: (id, nodeId) => openNodeEditor?.(id, nodeId),
         // an open node editor follows the material opened in the panel
@@ -2111,7 +2123,7 @@ export async function createPlayer(options = {}) {
         onImportMaterials: () => materialFileInput.click(),
         graphApplier,
         // rendered previews under the current environment, as bright as in the scene (switched off: the studio)
-        thumbs: new MaterialThumbs(renderer, () => {
+        thumbs: new uiModules.materialModules[1].MaterialThumbs(renderer, () => {
             const e = environment.on
                 ? { texture: environment.texture, intensity: environment.intensity * environment.lightBoost, rotation: scene.environmentRotation.y }
                 : { texture: studioTexture, intensity: 0.8, rotation: 0 };
@@ -2134,15 +2146,15 @@ export async function createPlayer(options = {}) {
     });
     // HQ pauses (shows its picture, traces nothing) while material previews or node graph bakes use the GPU – their
     // readbacks waited behind the samples (user: "pathtracer anhalten wenn sich materials aktualisieren")
-    pathTracing.yieldTo = () => materialPanel.thumbs?.busy || graphApplier.baking.size > 0 || graphApplier.previewing > 0;
+    pathTracing.yieldTo = () => materialPanel?.thumbs?.busy || graphApplier.baking.size > 0 || graphApplier.previewing > 0;
     // node previews: one output baked small in the bake queue; output node = the material's sphere from the panel.
     // Loaded with its first opening (lazy).
     const nodeEditor = lazy(async () => new (await import('./node-editor.js')).NodeEditor(dom.getElementById('node-editor'), materialManager, {
         preview: (def, nodeId, port, size) => graphApplier.previewNode(def, nodeId, port, size),
         // the material list the editor window must not cover when it opens (float-window.js clearOf)
         clearOf: () => dom.getElementById('materials'),
-        materialThumb: (id, size) => materialPanel.thumbUrl(id, size),
-        onThumbReady: cb => materialPanel.thumbs?.addEventListener('ready', cb),
+        materialThumb: (id, size) => materialPanel?.thumbUrl(id, size),
+        onThumbReady: cb => materialPanel?.thumbs?.addEventListener('ready', cb),
         // an image from the file that is missing: from its server (on click, like the asset window) or a chosen file
         downloadTexture: url => loadRemoteTextures([url]),
         linkFiles: files => relinkFiles(files),
@@ -2167,7 +2179,7 @@ export async function createPlayer(options = {}) {
         },
         onSave: doc => {
             environment.custom.set(doc.id, doc);
-            if (selection?.kind === 'environment') properties.show(selection);
+            if (selection?.kind === 'environment') properties?.show(selection);
         },
         onDuplicate: doc => {
             const copy = cloneHdri(doc);
@@ -2180,11 +2192,11 @@ export async function createPlayer(options = {}) {
             hdriEditor.now?.close();
             environment.custom.delete(doc.id);
             if (environment.hdri === CUSTOM_HDRI + doc.id) await environment.select('');
-            if (selection?.kind === 'environment') properties.show(selection);
+            if (selection?.kind === 'environment') properties?.show(selection);
         },
         onDrag: active => (active ? pathTracing.beginInteraction() : pathTracing.endInteraction()),
         record: step => history.record(step),
-        onClose: () => { if (selection?.kind === 'environment') properties.show(selection); },   // pencil no longer active
+        onClose: () => { if (selection?.kind === 'environment') properties?.show(selection); },   // pencil no longer active
     }));
     /** open the HDRI editor for a description (add: new one) – it becomes the environment */
     async function editCustomHdri(doc, { add = false } = {}) {
@@ -2193,9 +2205,9 @@ export async function createPlayer(options = {}) {
         if (environment.hdri !== CUSTOM_HDRI + doc.id) {
             const before = environment.hdri;
             await environment.select(CUSTOM_HDRI + doc.id);
-            history.record({ label: t('properties.environment.undo.hdri'), undo: () => environment.select(before), redo: () => environment.select(CUSTOM_HDRI + doc.id) });
+            history.record({ label: t('properties?.environment.undo.hdri'), undo: () => environment.select(before), redo: () => environment.select(CUSTOM_HDRI + doc.id) });
         }
-        if (selection?.kind === 'environment') properties.show(selection);
+        if (selection?.kind === 'environment') properties?.show(selection);
     }
     const hdriApi = {
         prefix: CUSTOM_HDRI,
@@ -2213,12 +2225,12 @@ export async function createPlayer(options = {}) {
             const kinds = new Set(changed.map(e => e.kind));
             if (kinds.has('node') || kinds.has('model')) pathTracing.updateTransforms();
             if (kinds.has('light') || kinds.has('folder')) { pathTracing.updateLights(); if (ground.enabled) environment.apply({ params: true }); }
-            if (kinds.has('slicer') && selection?.kind === 'slicer') properties.show(selection);
+            if (kinds.has('slicer') && selection?.kind === 'slicer') properties?.show(selection);
             // selection hidden or shown again: remove or restore the gizmo, update the panel
             if (selection && selection.kind !== 'slicer') {
                 const target = gizmoTarget(selection);
                 if (target !== transformer.object) transformer.attach(target, selection.kind);
-                properties.show(selection);
+                properties?.show(selection);
             }
             updateHighlight();
         },
@@ -2227,9 +2239,9 @@ export async function createPlayer(options = {}) {
             selection = entry;
             if (skeletonView.selected >= 0) skeletonView.select(-1);
             transformer.attach(gizmoTarget(entry), entry?.kind ?? null);
-            properties.show(entry);
+            properties?.show(entry);
             updateSlicerHelper();
-            materialPanel.setSelection(isModelEntry(entry) ? entry.object : null);
+            materialPanel?.setSelection(isModelEntry(entry) ? entry.object : null);
             updateHighlight();
         },
         onWarn: () => assetsWindow.show(),
@@ -2237,7 +2249,7 @@ export async function createPlayer(options = {}) {
         onSkeleton: entry => {
             if (selection !== entry) sceneGraph.select(entry);
             skeletonApi.show(entry, !skeletonApi.shown(entry));
-            properties.show(selection);
+            properties?.show(selection);
         },
         onHover: entry => { hovered = entry; updateHighlight(); },
         onActivate: entry => { if (isModelEntry(entry)) frameObject(entry.object); },
@@ -2332,7 +2344,7 @@ export async function createPlayer(options = {}) {
         rename(light, name) {
             const before = light.name;
             if (!name || name === before) return;
-            const apply = n => { light.name = n; sceneGraph.render(); properties.show(selection); };
+            const apply = n => { light.name = n; sceneGraph.render(); properties?.show(selection); };
             apply(name);
             history.record({ label: t('viewer.undo.renameLight'), undo: () => apply(before), redo: () => apply(name) });
         },
@@ -2347,7 +2359,7 @@ export async function createPlayer(options = {}) {
                 await setIesProfile(light, v);
                 fitLocalShadow(light, lightSize);
                 lightsChanged();
-                if (selection?.kind === 'light' && selection.object === light) properties.show(selection);
+                if (selection?.kind === 'light' && selection.object === light) properties?.show(selection);
                 if (iesEditor.now?.isOpen && iesEditor.now.light === light) iesEditor.now.load(light);
             };
             try { await apply(ies); } catch (err) {
@@ -2436,7 +2448,7 @@ export async function createPlayer(options = {}) {
                 fitLocalShadow(light, lightSize);
                 lightsChanged();
                 if (iesEditor.now?.isOpen && iesEditor.now.light === light) iesEditor.now.load(light);
-                if (selection?.kind === 'light' && selection.object === light) properties.show(selection);
+                if (selection?.kind === 'light' && selection.object === light) properties?.show(selection);
             };
             apply(after);
             history.record({ label: t('viewer.undo.iesProfile'), undo: () => apply(before), redo: () => apply(after) });
@@ -2504,7 +2516,7 @@ export async function createPlayer(options = {}) {
         activeView.dirty = dirty;
         sceneGraph.render();
         // only the hint and the Save/Reset buttons – rebuilding the panel broke a slider being dragged (focus distance)
-        if (selection?.kind === 'view' && selection.view === activeView) properties.refreshViewState(activeView);
+        if (selection?.kind === 'view' && selection.view === activeView) properties?.refreshViewState(activeView);
     }
     // a camera's state: pose, angle, roll, depth of field and its picture – exposure, tone curve, lens effects, colour
     // grading, style filter (user: "DOF, bloom etc. belong to the context of each camera")
@@ -2762,7 +2774,7 @@ export async function createPlayer(options = {}) {
         rename(view, name) {
             const before = view.name;
             if (name === before) return;
-            const apply = n => { view.name = n; sceneGraph.render(); properties.show(selection); };
+            const apply = n => { view.name = n; sceneGraph.render(); properties?.show(selection); };
             apply(name);
             history.record({ label: t('viewer.undo.renameView'), undo: () => apply(before), redo: () => apply(name) });
         },
@@ -2775,7 +2787,7 @@ export async function createPlayer(options = {}) {
                 Object.assign(view, state);
                 view.dirty = view === activeView ? !samePose(captureView(), view) : false;
                 sceneGraph.render();
-                if (selection?.kind === 'view' && selection.view === view) properties.show(selection);
+                if (selection?.kind === 'view' && selection.view === view) properties?.show(selection);
             };
             apply(after);
             history.record({ label: t('viewer.undo.overwriteView'), undo: () => apply(before), redo: () => apply(after) });
@@ -2947,7 +2959,7 @@ export async function createPlayer(options = {}) {
     function setMorphValue(anim, name, value) {
         anim.setMorph(name, value);
         settleMorphs(anim);
-        properties.show(selection);
+        properties?.show(selection);
     }
     const morphApi = {
         list(entry) {
@@ -2981,7 +2993,7 @@ export async function createPlayer(options = {}) {
             const names = anim.morphNames(entry.kind === 'model' ? null : meshesOf(entry));
             const before = Object.fromEntries(names.map(n => [n, anim.getMorph(n)]));
             if (!names.some(n => before[n])) return;
-            const apply = values => { names.forEach(n => anim.setMorph(n, values[n] ?? 0)); settleMorphs(anim); properties.show(selection); };
+            const apply = values => { names.forEach(n => anim.setMorph(n, values[n] ?? 0)); settleMorphs(anim); properties?.show(selection); };
             apply({});
             history.record({ label: t('viewer.undo.morphReset'), undo: () => apply(before), redo: () => apply({}) });
         },
@@ -2992,7 +3004,7 @@ export async function createPlayer(options = {}) {
         // the model gizmo makes room for the joint's
         if (index >= 0) transformer.attach(null, null);
         else transformer.attach(gizmoTarget(selection), selection?.kind ?? null);
-        properties.show(selection);
+        properties?.show(selection);
         loadRender.dirty = true;
     }
     function hideSkeleton() {
@@ -3076,7 +3088,7 @@ export async function createPlayer(options = {}) {
             if (!anim) return;
             const before = anim.poseValues({ round: false });
             if (!Object.keys(before).length) return;
-            const apply = values => blendPose(anim, values, { onDone: () => properties.show(selection) });
+            const apply = values => blendPose(anim, values, { onDone: () => properties?.show(selection) });
             apply({});
             history.record({ label: t('viewer.undo.poseReset'), undo: () => apply(before), redo: () => apply({}) });
         },
@@ -3088,17 +3100,17 @@ export async function createPlayer(options = {}) {
     // apply a pose of the list; `before` = the pose to undo to (all bones away from the import pose)
     function usePose(anim, pose) {
         const before = anim.poseValues({ round: false }), beforeActive = anim.activePose;
-        const apply = () => blendPose(anim, pose.values, { partial: !!pose.partial, onDone: () => { anim.activePose = pose.id; properties.show(selection); } });
+        const apply = () => blendPose(anim, pose.values, { partial: !!pose.partial, onDone: () => { anim.activePose = pose.id; properties?.show(selection); } });
         apply();
         history.record({
             label: t('viewer.undo.poseApply', { name: pose.name }),
-            undo: () => blendPose(anim, before, { onDone: () => { anim.activePose = beforeActive; properties.show(selection); } }),
+            undo: () => blendPose(anim, before, { onDone: () => { anim.activePose = beforeActive; properties?.show(selection); } }),
             redo: apply,
         });
     }
     function setUserPoses(anim, list) {
         anim.userPoses = list;
-        properties.show(selection);
+        properties?.show(selection);
     }
     Object.assign(skeletonApi, {
         poses(entry) {
@@ -3116,11 +3128,11 @@ export async function createPlayer(options = {}) {
             const anim = animOf(entry);
             if (!anim) return;
             const before = anim.userPoses;
-            const pose = { id: `user:${++poseSeq}`, name: t('properties.skeleton.poseName', { n: before.length + 1 }), values: anim.poseValues({ round: false }) };
+            const pose = { id: `user:${++poseSeq}`, name: t('properties?.skeleton.poseName', { n: before.length + 1 }), values: anim.poseValues({ round: false }) };
             const after = [...before, pose];
             setUserPoses(anim, after);
             anim.activePose = pose.id;
-            properties.show(selection);
+            properties?.show(selection);
             history.record({ label: t('viewer.undo.poseSave'), undo: () => setUserPoses(anim, before), redo: () => setUserPoses(anim, after) });
             return pose.id;
         },
@@ -3298,10 +3310,10 @@ export async function createPlayer(options = {}) {
             splatOpacity.markDirty();
             splatEnv.markDirty();
             loadRender.force = true;
-            if (refresh && selection) properties.show(selection);
+            if (refresh && selection) properties?.show(selection);
         };
         apply(after, before.mode !== after.mode || !before.material !== !after.material);
-        if (record) history.record({ label: t('properties.splatLook.undo'), mergeKey, undo: () => apply(before, true), redo: () => apply(after, true) });
+        if (record) history.record({ label: t('properties?.splatLook.undo'), mergeKey, undo: () => apply(before, true), redo: () => apply(after, true) });
     }
     // Target of a material drop: if it is in the multi-selection, the drop applies to the whole selection
     // (a sub-surface stays single unless it is marked itself)
@@ -3326,9 +3338,9 @@ export async function createPlayer(options = {}) {
             const mat = materialFromDrop(e);
             if (!mat) return;
             assignMaterial(entry.object, mat.def.id);
-            materialPanel.open(mat.def.id, 'scene');
+            materialPanel?.open(mat.def.id, 'scene');
         });
-        if (selection) materialPanel.setSelection(isModelEntry(selection) ? selection.object : null);
+        if (selection) materialPanel?.setSelection(isModelEntry(selection) ? selection.object : null);
         sceneGraph.render();   // names/colours of the sub-surfaces
     }
 
@@ -3400,8 +3412,8 @@ export async function createPlayer(options = {}) {
                 for (const id of dups) if (materialManager.remove(id)) merged++;
             }
         });
-        if (materialPanel.current && !materialManager.get(materialPanel.current)) materialPanel.current = null;
-        materialPanel.refresh(isModelEntry(selection) ? selection.object : null);
+        if (materialPanel?.current && !materialManager.get(materialPanel.current)) materialPanel.current = null;
+        materialPanel?.refresh(isModelEntry(selection) ? selection.object : null);
         flashStatus(t('materials.merge.done', { count: merged }), 4000);
     }
 
@@ -3414,8 +3426,8 @@ export async function createPlayer(options = {}) {
         // update the display to the restored state
         sceneGraph.render();
         transformer.sync();
-        properties.show(selection);
-        materialPanel.refresh(isModelEntry(selection) ? selection.object : null);
+        properties?.show(selection);
+        materialPanel?.refresh(isModelEntry(selection) ? selection.object : null);
         updateHighlight();
         flashStatus(t(redo ? 'status.redone' : 'status.undone', { label }));
     }
@@ -3741,7 +3753,7 @@ export async function createPlayer(options = {}) {
             endFocusPick();
             if (dof.autoFocus) dof.autoFocus = false;
             setFocus(dof.depthOf(hit.point), { label: t('viewer.undo.focusByClick') });
-            properties.show(selection);
+            properties?.show(selection);
             return;
         }
         // skeleton shown: a joint near the pointer is selected before anything behind it
@@ -3766,7 +3778,7 @@ export async function createPlayer(options = {}) {
         const on = splatsOnly();
         viewModeBar.setHidden({ modes: false, groups: on ? ['start'] : [] });   // 'start' = explosion
         refreshSceneGraph();
-        properties.show(selection);
+        properties?.show(selection);
     }
     let toneMappingBeforeSplats = null;   // splats switch tone mapping off; restored when they are removed
     let splatToneSet = null;              // the curve the splat scene set (restored only if still that one)
@@ -3998,7 +4010,7 @@ export async function createPlayer(options = {}) {
         const apply = q => {
             if (q) settings.partQuality[node] = q; else delete settings.partQuality[node];
             runLoad('parts');
-            properties.show(selection);
+            properties?.show(selection);
         };
         apply(quality);
         if (record) history.record({ label: t('viewer.undo.partQuality'), undo: () => apply(before), redo: () => apply(quality) });
@@ -4069,7 +4081,7 @@ export async function createPlayer(options = {}) {
             if (err instanceof ImportLimitError) {
                 // too fine: back to the part levels the model actually has
                 settings.partQuality = { ...appliedPartQuality };
-                properties.show(selection);
+                properties?.show(selection);
                 showLimitError(err, 'parts');
                 return;
             }
@@ -4912,7 +4924,7 @@ export async function createPlayer(options = {}) {
             if (changed.length) {
                 const before = changed.map(g => captureTransform(g, 'node'));
                 const identity = { offset: new THREE.Vector3(), rotation: new THREE.Euler(), scale: new THREE.Vector3(1, 1, 1) };
-                const apply = states => { changed.forEach((g, i) => restoreTransform(g, 'node', states ? states[i] : identity)); pathTracing.updateTransforms(); transformer.sync(); properties.show(selection); };
+                const apply = states => { changed.forEach((g, i) => restoreTransform(g, 'node', states ? states[i] : identity)); pathTracing.updateTransforms(); transformer.sync(); properties?.show(selection); };
                 apply(null);
                 history.record({ label: t('viewer.undo.resetModel'), undo: () => apply(before), redo: () => apply(null) });
             }
@@ -5940,10 +5952,10 @@ export async function createPlayer(options = {}) {
 
         // distributed rendering: render clients, own computer, start/cancel (docs/distributed.md)
         if (renderMaster) {
-            distSection = buildDistributedSection(setup.addSection('distributed', t('setup.distributed.title')), {
+            distSection = dist.buildDistributedSection(setup.addSection('distributed', t('setup.distributed.title')), {
                 master: renderMaster, settings: distSettings, save: saveDistSettings, cancel: cancelDistributed,
                 openClient: () => window.open(`${location.pathname}?render-client`, '_blank'),
-                addPeer: channel => distHub.add(channelTransport(channel)),
+                addPeer: channel => distHub.add(dist.channelTransport(channel)),
                 get lastResult() { return distLastResult; },
             });
         }
@@ -6269,8 +6281,8 @@ export async function createPlayer(options = {}) {
             pathTracing.updateLights();
             pathTracing.updateCamera();
             sceneGraph.render();
-            properties.show(selection);
-            materialPanel.setSelection(isModelEntry(selection) ? selection.object : null);
+            properties?.show(selection);
+            materialPanel?.setSelection(isModelEntry(selection) ? selection.object : null);
             updateHighlight();
         },
     };
@@ -6349,7 +6361,7 @@ export async function createPlayer(options = {}) {
         if (json?.format === SCENE_FORMAT) { sceneFileName = file.name; return json; }   // suggestion for "save as"
         if (json?.format === 'step-viewer-materials') {
             const entries = materialManager.fromJSON(json);
-            if (entries[0]) materialPanel.open(entries[0].def.id, 'scene');
+            if (entries[0]) materialPanel?.open(entries[0].def.id, 'scene');
             return null;
         }
         showStatus(t('status.notSceneOrMaterials', { name: file.name }));
@@ -6583,7 +6595,7 @@ export async function createPlayer(options = {}) {
         }
         if (res.defs.length) {
             const entries = res.defs.map(d => materialManager.create(d));
-            materialPanel.open(entries[0].def.id, 'scene');
+            materialPanel?.open(entries[0].def.id, 'scene');
             flashStatus(t('materials.mtlx.imported', { count: entries.length }), 4000);
         } else if (res.used.size) {
             showError(new Error(t('materials.mtlx.noMaterial')), { title: t('materials.mtlx.importError') });
@@ -6601,8 +6613,8 @@ export async function createPlayer(options = {}) {
         try {
             await graphApplier.settled(id);   // the maps of its node graph baked
             // the sphere picture of the node editor's size – rendered on request, waited for a few seconds
-            let preview = materialPanel.thumbUrl(id, 256);
-            for (let i = 0; !preview && i < 25; i++) { await new Promise(r => setTimeout(r, 200)); preview = materialPanel.thumbUrl(id, 256); }
+            let preview = materialPanel?.thumbUrl(id, 256);
+            for (let i = 0; !preview && i < 25; i++) { await new Promise(r => setTimeout(r, 200)); preview = materialPanel?.thumbUrl(id, 256); }
             const { exportMaterialPackage } = await import('./materialx.js');
             const graphEnv = entry.def.graph ? await graphApplier.exportEnv(entry.def) : null;   // node graph as MaterialX nodes
             const pkg = await exportMaterialPackage(entry, { preview, json: materialManager.toJSON([id]).materials[0], version: __APP_VERSION__, graphEnv });
@@ -6641,11 +6653,11 @@ export async function createPlayer(options = {}) {
         const load = (name, on, bg) => {
             environment.on = on;
             environment.background = bg;
-            return environment.select(name).catch(err => properties.ctx.onHdriError(name, err));
+            return environment.select(name).catch(err => properties?.ctx.onHdriError(name, err));
         };
-        history.record({ label: t('properties.environment.undo.hdri'), undo: () => load(before, wasOn, bgBefore), redo: () => load(file.name, true, bgAfter) });
+        history.record({ label: t('properties?.environment.undo.hdri'), undo: () => load(before, wasOn, bgBefore), redo: () => load(file.name, true, bgAfter) });
         sceneGraph.render();
-        if (selection?.kind === 'environment') properties.show(selection);
+        if (selection?.kind === 'environment') properties?.show(selection);
         assetsWindow.render();
         updateAssetsTool();
         flashStatus(t('status.hdriDropped', { name: file.name }), 4000);
@@ -6678,7 +6690,7 @@ export async function createPlayer(options = {}) {
             environment.apply({ geometry: true });
         }
         sceneGraph.render();
-        if (selection?.kind === 'environment') properties.show(selection);
+        if (selection?.kind === 'environment') properties?.show(selection);
         assetsWindow.render();
         updateAssetsTool();
     }
@@ -6909,7 +6921,7 @@ export async function createPlayer(options = {}) {
     const debugApi = {
         // material node graphs: bake an input into a PNG / render a description on the thumbnail sphere (debug-graph.js)
         bakeGraph: (graph, opts) => import('./debug-graph.js').then(m => m.bakeGraphImage(graphApplier, graph, opts)),
-        previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel.thumbs, def)),
+        previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel?.thumbs, def)),
         // all library presets (categories loaded on demand) – tests bake their node graphs
         presets: () => loadLibraryPresets().then(() => MATERIAL_PRESETS),
         skeletonView, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, get clouds() { return clouds; }, get grass() { return grass; }, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats: (...args) => loadSplatLoader().then(m => m.loadSplats(...args)), lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, getPlan: () => currentPlan, setViewMode: m => setViewMode(m), getViewMode: () => viewMode, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
@@ -7513,10 +7525,10 @@ export async function createPlayer(options = {}) {
             initRenderClient(param);
             return;
         }
-        distDisplay = new BucketDisplay(renderer, dom.getElementById('viewport'));
-        distHub = hubTransport();
-        if ('BroadcastChannel' in window) distHub.add(localTransport());
-        renderMaster = new RenderMaster(distHub, {
+        distDisplay = new dist.BucketDisplay(renderer, dom.getElementById('viewport'));
+        distHub = dist.hubTransport();
+        if ('BroadcastChannel' in window) distHub.add(dist.localTransport());
+        renderMaster = new dist.RenderMaster(distHub, {
             captureScene: async () => ({ state: captureState(sceneStateContext), files: sceneFiles() }),
             local: {
                 name: t('setup.distributed.thisComputer'),
@@ -7536,7 +7548,7 @@ export async function createPlayer(options = {}) {
                 controls.enabled = true;
                 distJob?.resolve({ data: distDisplay.data, width: distDisplay.width, height: distDisplay.height });
                 distJob = null;
-                const names = [...stats.perClient].map(([id, n]) => `${id === LOCAL_ID ? t('setup.distributed.thisComputer') : renderMaster.clients.get(id)?.name || id}: ${n}`);
+                const names = [...stats.perClient].map(([id, n]) => `${id === dist.LOCAL_ID ? t('setup.distributed.thisComputer') : renderMaster.clients.get(id)?.name || id}: ${n}`);
                 distLastResult = renderMaster.job?.localOnly ? t('setup.distributed.doneLocal', { time: (stats.ms / 1000).toFixed(1), buckets: stats.buckets })
                     : t('setup.distributed.done', { time: (stats.ms / 1000).toFixed(1), buckets: stats.buckets, who: names.join(' · ') });
                 distChanged();
@@ -7549,9 +7561,9 @@ export async function createPlayer(options = {}) {
     // render client: a tab of this browser (BroadcastChannel) or, opened from the master's pairing link
     // (…?render-client#pair=<offer>), a computer in the network – it shows its answer code until the master connects
     function initRenderClient(param) {
-        const id = newId();
+        const id = dist.newId();
         const name = param || t('distributed.client.defaultName', { id });
-        const view = clientView(name, gpuName(renderer));
+        const view = dist.clientView(name, dist.gpuName(renderer));
         clientPage = true;
         hidePreloader();   // the status page is the picture – with the answer code while pairing
         let disconnected = false;
@@ -7584,19 +7596,19 @@ export async function createPlayer(options = {}) {
         };
         const offer = new URLSearchParams(location.hash.slice(1)).get('pair');
         if (offer === null) {
-            if ('BroadcastChannel' in window) renderClient = new RenderClient(localTransport(), hooks);
+            if ('BroadcastChannel' in window) renderClient = new dist.RenderClient(dist.localTransport(), hooks);
             return;
         }
         window.history.replaceState(null, '', location.pathname + location.search);   // an offer serves one connection (history = undo here)
         view.update({ state: 'pairing' });
-        answerOffer(offer).then(async answer => {
+        dist.answerOffer(offer).then(async answer => {
             view.showAnswer(answer.code);
             view.update({ state: 'answer' });
-            const transport = channelTransport(await answer.channel);
+            const transport = dist.channelTransport(await answer.channel);
             view.showAnswer('');
             transport.onprogress = (got, total) => {
                 if (disconnected) return;
-                const size = `${formatSize(got, getLocale())} / ${formatSize(total, getLocale())}`;
+                const size = `${dist.formatSize(got, getLocale())} / ${dist.formatSize(total, getLocale())}`;
                 view.update({ state: 'receiving', progress: got / total, size, done: renderClient?.done || 0 });
             };
             transport.onclose = () => {
@@ -7604,7 +7616,7 @@ export async function createPlayer(options = {}) {
                 renderClient?.dispose();
                 view.update({ state: 'disconnected', done: renderClient?.done || 0 });
             };
-            renderClient = new RenderClient(transport, hooks);
+            renderClient = new dist.RenderClient(transport, hooks);
         }).catch(err => {
             view.showAnswer('');
             const message = err?.message === 'timeout' ? t('distributed.client.timeout') : err?.message === 'invalid code'
@@ -8009,7 +8021,7 @@ export async function createPlayer(options = {}) {
             const p = sending ? sent / total : 1;
             const locale = getLocale();
             return { name: c.name, color: c.color, p, loading: !sending,
-                text: sending ? t('setup.distributed.sending', { percent: Math.floor(p * 100), sent: formatSize(sent, locale), total: formatSize(total, locale) })
+                text: sending ? t('setup.distributed.sending', { percent: Math.floor(p * 100), sent: dist.formatSize(sent, locale), total: dist.formatSize(total, locale) })
                     : t('setup.distributed.loadingScene') };
         }) : [];
         const key = `dist|${label}|${running}|${value}|${detail}|${transfers.map(r => `${r.name}:${r.text}`).join('|')}`;
@@ -8146,8 +8158,8 @@ export async function createPlayer(options = {}) {
     function makeInstanceUnique(entry) {
         const changed = makeUnique(entry.object);
         if (!changed.length) return;
-        const apply = on => { for (const o of changed) { if (on) o.userData.unique = true; else delete o.userData.unique; } properties.show(selection); };
-        properties.show(selection);
+        const apply = on => { for (const o of changed) { if (on) o.userData.unique = true; else delete o.userData.unique; } properties?.show(selection); };
+        properties?.show(selection);
         history.record({ label: t('viewer.undo.makeUnique'), undo: () => apply(false), redo: () => apply(true) });
     }
     // node indices made unique (scene state) and their replay

@@ -42,7 +42,8 @@ function warningIcon(files, badge = false) {
     return w;
 }
 
-export const MATERIAL_MIME = 'application/x-step-viewer-material';
+export { MATERIAL_MIME } from './material-mime.js';
+import { MATERIAL_MIME } from './material-mime.js';
 
 // Display name of a texture map key (materials.maps.<key>, unknown keys as they are)
 export const mapLabel = key => (has(`materials.maps.${key}`) ? t(`materials.maps.${key}`) : key);

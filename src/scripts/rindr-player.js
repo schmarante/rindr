@@ -4,7 +4,8 @@
 //   <rindr-player src="models/chair.glb" mode="hq"></rindr-player>
 //
 // Attributes (read once at the start): src = model URL (relative to the page), mode = 'default' (raster, the default)
-// or 'hq' (path tracing when standing still). Options of the app (whole page, its preloader …) come in as the property
+// or 'hq' (path tracing when standing still), features = the interface parts (player/features.js; none = the 3D view
+// only, 'all' = everything). Options of the app (whole page, its preloader …) come in as the property
 // `rindrOptions` before the element is put into the page.
 import { createPlayer } from './viewer.js';
 import css from '../styles/player.css?inline';
@@ -51,6 +52,7 @@ export class RindrPlayer extends HTMLElement {
             fullscreenElement: options.appMode ? document.documentElement : this,
             ...(src ? { modelUrl: new URL(src, document.baseURI).href } : {}),
             ...(mode ? { mode } : {}),
+            features: options.features ?? this.getAttribute('features') ?? '',
         });
     }
 }
