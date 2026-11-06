@@ -1,0 +1,5 @@
+# Commits that only change formatting – `git blame` skips them
+# (GitHub reads this file itself; locally: git config blame.ignoreRevsFile .git-blame-ignore-revs)
+
+# viewer.js: body of createPlayer() indented (player stage 1B)
+5da2142c75db004f7b3763b6141727a5e2d91d26
