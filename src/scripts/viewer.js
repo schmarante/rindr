@@ -122,6 +122,9 @@ export async function createPlayer(options = {}) {
     // shadow root later), `host` takes the hidden file inputs (docs/player.md)
     const dom = options.dom ?? document;
     const host = options.host ?? document.body;
+    // size of the view in CSS pixels: the window for now (stage 2: the player's element – docs/player.md)
+    function viewSize() { return { width: window.innerWidth, height: window.innerHeight }; }
+    function viewAspect() { const { width, height } = viewSize(); return width / height; }
 
     // where the app's files lie (models/, hdr/, oidn/, samplescene/): the page's base path; an embedded player gets its
     // own (docs/player.md)
@@ -255,7 +258,7 @@ export async function createPlayer(options = {}) {
 
     // PhysicalCamera (PerspectiveCamera + aperture/focus plane) for depth of field in the path tracer
     const DEFAULT_VIEW_ANGLE = 45;   // the start camera's field of view (key P returns to it)
-    const camera = new PhysicalCamera(DEFAULT_VIEW_ANGLE, window.innerWidth / window.innerHeight, 0.01, 1000);
+    const camera = new PhysicalCamera(DEFAULT_VIEW_ANGLE, viewAspect(), 0.01, 1000);
     const dof = new DepthOfField(camera);
     // camera position is computed automatically after loading
 
@@ -277,7 +280,7 @@ export async function createPlayer(options = {}) {
     // webgpuBlocked: WebGPU present but no adapter – usually the browser withholds the GPU after a reset (until it is
     // restarted completely), otherwise graphics card/driver are not supported; gpuRecovering: a GPU reset in this tab before
     const { adapter, renderer, webgpuBlocked, gpuRecovering } = runtime;
-    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setSize(viewSize().width, viewSize().height);
     renderer.setPixelRatio(window.devicePixelRatio);
     // ambient occlusion of the raster view: its hook into the materials' lighting goes in before any shader is built
     const rasterAO = new RasterAO(renderer);
@@ -6426,7 +6429,7 @@ export async function createPlayer(options = {}) {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'copy';
         if (isAssetDrag(e) && !hasMissingAssets() && !assetsWindow.isOpen) { e.dataTransfer.dropEffect = 'none'; return; }
-        if (rootGroup && !assetsWindow.isOpen && dropMode === 'split') highlightDropZone(e.clientX < window.innerWidth / 2 ? 'replace' : 'add');
+        if (rootGroup && !assetsWindow.isOpen && dropMode === 'split') highlightDropZone(e.clientX < viewSize().width / 2 ? 'replace' : 'add');
     });
     window.addEventListener('drop', async e => {
         if (!isFileDrag(e)) {
@@ -6435,7 +6438,7 @@ export async function createPlayer(options = {}) {
         }
         e.preventDefault();
         dragDepth = 0;
-        const side = rootGroup ? (e.clientX < window.innerWidth / 2 ? 'replace' : 'add') : 'add';
+        const side = rootGroup ? (e.clientX < viewSize().width / 2 ? 'replace' : 'add') : 'add';
         setDropOverlay(false);
         const relink = assetsWindow.isOpen;
         assetsWindow.setDragActive(false);
@@ -6824,9 +6827,10 @@ export async function createPlayer(options = {}) {
         if (distRender || renderJob) cancelRendering();
         else if (renderMaster?.running) cancelDistributed();
         else if (distDisplay?.active) endDistributedView();
-        camera.aspect = window.innerWidth / window.innerHeight;
+        const { width, height } = viewSize();
+        camera.aspect = width / height;
         camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setSize(width, height);
         // the path tracer handles the render size itself, the projection (aspect ratio) only here
         pathTracing.updateCamera();
     });
