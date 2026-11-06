@@ -54,7 +54,16 @@ function playerSheet() {
     return sheet;
 }
 
+// The element's methods for the host page (docs/player.md, stage 4 – player/host-api.js; load() has its own below): each
+// returns a promise; a player still waiting for its activation (activate="click" / "visible") starts on the first call
+const HOST_METHODS = ['getParts', 'getMaterials', 'getLibrary', 'setMaterial', 'setVisible', 'select', 'frame', 'getViews', 'setView',
+    'setMode', 'getMode', 'render', 'getScene'];
+// attributes the player follows when the page changes them after the start (the others count once, at the start)
+const LIVE_ATTRIBUTES = ['src', 'scene', 'hdr', 'mode'];
+
 export class RindrPlayer extends HTMLElement {
+    static get observedAttributes() { return LIVE_ATTRIBUTES; }
+
     connectedCallback() {
         // moved or put back into the page (frameworks do that): the running player stays (out of the page it draws nothing)
         if (this.ready) return;
@@ -66,29 +75,70 @@ export class RindrPlayer extends HTMLElement {
         setDefaultLayer(layer);   // windows and notices without an anchor go here (the player's own get their layer)
         // an embedded player takes keys while it has the focus (click into the view, or Tab)
         if (!options.appMode && !this.hasAttribute('tabindex')) this.tabIndex = 0;
-        const src = this.getAttribute('src');
-        const scene = this.getAttribute('scene');
-        const hdr = this.getAttribute('hdr');
-        const mode = this.getAttribute('mode');
-        const create = () => createPlayer({
-            ...options,
-            element: this,
-            dom: root,
-            host: layer,
-            uiRoot: root.querySelector('[data-rindr-root]'),
-            fullscreenElement: options.appMode ? document.documentElement : this,
-            ...(src ? { modelUrl: new URL(src, document.baseURI).href } : {}),
-            ...(scene ? { sceneUrl: new URL(scene, document.baseURI).href } : {}),
-            ...(hdr ? { hdrUrl: new URL(hdr, document.baseURI).href } : {}),
-            ...(mode ? { mode } : {}),
-            features: options.features ?? this.getAttribute('features') ?? '',
+        const create = () => {
+            // the attributes as they are when the player starts (the page may change them while it waits for activation)
+            const attrs = this._startAttributes = Object.fromEntries(LIVE_ATTRIBUTES.map(name => [name, this.getAttribute(name)]));
+            this._shows = { src: attrs.src, scene: attrs.scene, hdr: attrs.hdr };   // what the player shows (attribute or load())
+            const url = value => new URL(value, document.baseURI).href;
+            return createPlayer({
+                ...options,
+                element: this,
+                dom: root,
+                host: layer,
+                uiRoot: root.querySelector('[data-rindr-root]'),
+                fullscreenElement: options.appMode ? document.documentElement : this,
+                ...(attrs.src ? { modelUrl: url(attrs.src) } : {}),
+                ...(attrs.scene ? { sceneUrl: url(attrs.scene) } : {}),
+                ...(attrs.hdr ? { hdrUrl: url(attrs.hdr) } : {}),
+                ...(attrs.mode ? { mode: attrs.mode } : {}),
+                features: options.features ?? this.getAttribute('features') ?? '',
+                emit: (type, detail, { cancelable = false } = {}) => this._emit(type, detail, cancelable),
+            });
+        };
+        const started = options.appMode ? create() : this._deferredStart(root, create, () => !!(this.getAttribute('src') || this.getAttribute('scene')));
+        /** Promise of the player's (internal) interface once it runs – rejects when the browser has no usable renderer */
+        this.ready = started.then(api => {
+            this._api = api;
+            this._emit('ready', {});
+            // attributes changed between the start and now
+            for (const name of LIVE_ATTRIBUTES) if (this.getAttribute(name) !== this._startAttributes?.[name]) this.attributeChangedCallback(name, this._startAttributes?.[name], this.getAttribute(name));
+            return api;
+        }, err => {
+            this._emit('error', { message: err?.message || String(err), name: null, title: null, start: true });
+            throw err;
         });
-        /** Promise of the player's interface (rejects when the browser has no usable renderer) */
-        if (options.appMode) this.ready = create();
-        else this.ready = this._deferredStart(root, create, !!(src || scene));
         // a player that cannot start says so in its box (no renderer, without WebGPU only the first player) – the page may
         // still await `ready`; no unhandled rejection in the console otherwise
         this.ready.catch(() => {});
+    }
+
+    attributeChangedCallback(name, previous, value) {
+        if (!this._api) return;   // before the start: read when it starts
+        const done = p => p.catch(err => { if (err?.code !== 'load-failed') console.warn(`[rindr-player] ${name}: ${err.message}`); });   // load errors: 'rindr-error'
+        // src / scene / hdr: load when it is not what the player shows already (frameworks set unchanged attributes again)
+        if (name === 'mode') { if (previous !== value) done(this.setMode(value || 'default')); }
+        else if (value && value !== this._shows?.[name]) done(this.load({ [name]: value }));
+    }
+
+    /** load a model (URL) or { src | scene, hdr } – resolves when it is shown (see player/host-api.js) */
+    async load(spec) {
+        const api = await this.start();
+        const s = typeof spec === 'string' ? { src: spec } : spec ?? {};
+        if (s.src || s.scene) this._shows = { ...this._shows, src: s.src ?? null, scene: s.src ? null : s.scene };
+        if (s.hdr) this._shows = { ...this._shows, hdr: s.hdr };
+        return api.host.load(spec);
+    }
+
+    /** start a player that waits for its activation (activate="click" / "visible"); resolves like `ready` */
+    start() {
+        if (!this.ready) return Promise.reject(new Error('rindr-player: not in the page yet'));
+        this._startNow?.();
+        return this.ready;
+    }
+
+    // 'rindr-<type>' on the element (bubbles, crosses shadow roots); returns false when a cancelable one was cancelled
+    _emit(type, detail, cancelable = false) {
+        return this.dispatchEvent(new CustomEvent(`rindr-${type}`, { detail, bubbles: true, composed: true, cancelable }));
     }
 
     /**
@@ -98,7 +148,7 @@ export class RindrPlayer extends HTMLElement {
     _deferredStart(root, create, wantsModel) {
         const activate = (this.getAttribute('activate') || 'auto').toLowerCase();
         const posterUrl = this.getAttribute('poster');
-        let poster = null, button = null;
+        let poster = null, button = null, observer = null;
         if (posterUrl) {
             poster = document.createElement('img');
             poster.alt = '';
@@ -107,11 +157,13 @@ export class RindrPlayer extends HTMLElement {
             root.append(poster);
         }
         return new Promise((resolve, reject) => {
-            const start = () => {
+            const start = this._startNow = () => {
+                this._startNow = null;
                 button?.remove();
+                observer?.disconnect();
                 startTurn().then(create).then(api => {
                     resolve(api);
-                    return shown(api, wantsModel);
+                    return shown(api, wantsModel());
                 }, err => { reject(err); }).finally(() => {
                     startDone();
                     if (poster) { poster.style.opacity = '0'; setTimeout(() => poster.remove(), 600); }
@@ -127,15 +179,17 @@ export class RindrPlayer extends HTMLElement {
                 button.onclick = e => { e.stopPropagation(); start(); };
                 root.append(button);
             } else if (activate === 'visible' && typeof IntersectionObserver !== 'undefined') {
-                const observer = new IntersectionObserver(entries => {
-                    if (!entries.some(e => e.isIntersecting)) return;
-                    observer.disconnect();
-                    start();
-                }, { rootMargin: '200px' });
+                observer = new IntersectionObserver(entries => { if (entries.some(e => e.isIntersecting)) start(); }, { rootMargin: '200px' });
                 observer.observe(this);
             } else start();
         });
     }
+}
+for (const name of HOST_METHODS) {
+    Object.defineProperty(RindrPlayer.prototype, name, {
+        async value(...args) { const api = await this.start(); return api.host[name](...args); },
+        writable: true, configurable: true,
+    });
 }
 
 if (!customElements.get('rindr-player')) customElements.define('rindr-player', RindrPlayer);

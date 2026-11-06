@@ -10,7 +10,7 @@
 const MERGE_MS = 1000;
 
 export class History extends EventTarget {
-    /** Events: 'change' (stack changed) */
+    /** Events: 'change' (stack changed; detail { action, label }) */
     constructor({ limit = 50 } = {}) {
         super();
         this.limit = limit;
@@ -34,12 +34,13 @@ export class History extends EventTarget {
         if (step.mergeKey && top && top.mergeKey === step.mergeKey && now - top.time < MERGE_MS && !this.redoStack.length) {
             top.redo = step.redo;
             top.time = now;
+            this._emit('record', step.label);
             return;
         }
         this.undoStack.push({ ...step, time: now });
         if (this.undoStack.length > this.limit) this.undoStack.shift();
         this.redoStack.length = 0;
-        this._emit();
+        this._emit('record', step.label);
     }
 
     /** Run fn; all steps recorded inside it become a single step */
@@ -66,7 +67,7 @@ export class History extends EventTarget {
         if (!step) return null;
         this._run(() => step.undo());
         this.redoStack.push(step);
-        this._emit();
+        this._emit('undo', step.label);
         return step.label;
     }
 
@@ -76,14 +77,14 @@ export class History extends EventTarget {
         this._run(() => step.redo());
         step.time = 0;   // after redo, do not merge with the next change anymore
         this.undoStack.push(step);
-        this._emit();
+        this._emit('redo', step.label);
         return step.label;
     }
 
     clear() {
         this.undoStack.length = 0;
         this.redoStack.length = 0;
-        this._emit();
+        this._emit('clear');
     }
 
     _run(fn) {
@@ -93,7 +94,8 @@ export class History extends EventTarget {
         finally { this.applying = false; }
     }
 
-    _emit() {
-        this.dispatchEvent(new CustomEvent('change'));
+    // detail: what happened ('record', 'undo', 'redo', 'clear') and the step's label (the player's 'rindr-change' event)
+    _emit(action, label = null) {
+        this.dispatchEvent(new CustomEvent('change', { detail: { action, label } }));
     }
 }

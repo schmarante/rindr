@@ -16,6 +16,7 @@ import { MaterialManager, FADE_MASK } from './material-manager.js';
 import { BasicView } from './basic-view.js';
 import { setPlainView } from './materials/override-hide.js';
 import { MATERIAL_PRESETS, presetName, loadLibraryPresets } from './material-presets.js';
+import { createHostApi } from './player/host-api.js';
 import { requestField, clearFields } from './materials/sss-field.js';
 import { MATERIAL_MIME } from './material-mime.js';
 import { initMaterialTransfer, materialFromTransfer } from './material-transfer.js';
@@ -120,6 +121,20 @@ export async function createPlayer(options = {}) {
     const confirmDialog = o => dialogs.confirmDialog({ anchor: host, ...o });
     const choiceDialog = o => dialogs.choiceDialog({ anchor: host, ...o });
     const dialogOpen = () => dialogs.dialogOpen(host);
+    // events for the host page (docs/player.md, stage 4): 'rindr-<type>' on the player's element (options.emit from
+    // rindr-player.js); the host interface (player/host-api.js) is made before the first model loads
+    const emit = options.emit ?? (() => true);
+    let hostApi = null;
+    const errorLog = { count: 0, last: null };   // errors shown – hostApi.load() rejects with the one of its load
+    // loads the host interface waits for before it looks at the parts (the first model, load() calls)
+    const opening = new Set();
+    function track(promise) {
+        const p = Promise.resolve(promise).finally(() => opening.delete(p));
+        opening.add(p);
+        return promise;
+    }
+    async function idle() { while (opening.size || loading) await Promise.allSettled([...opening, loading ? loadLoop : null]); }
+    let lastSelect = 'null';   // the selection last told to the host page (told once per change)
     // the player is the whole page (the RINDR app, app.js): it may reload the page and change its URL (language switch,
     // GPU reset, render client pairing) and offers distributed rendering – an embedded player never touches the page
     const APP_MODE = !!options.appMode;
@@ -231,6 +246,9 @@ export async function createPlayer(options = {}) {
     // drop hint back once the failed model is cleared away
     function showError(err, { name = '', title = '' } = {}) {
         console.error(err);
+        errorLog.count++;
+        errorLog.last = err instanceof Error ? err : new Error(String(err));
+        emit('error', { message: err?.message || String(err), name: name || null, title: title || null });
         hideStatus();
         showNotice({ id: 'error', icon: 'warning', title: title || (name ? t('status.loadErrorTitle', { name: displayName(name) }) : t('status.errorTitle')), message: err?.message || String(err) });
         setTimeout(() => { if (!rootGroup && !missingModels.length) showDropHint(); });
@@ -245,6 +263,8 @@ export async function createPlayer(options = {}) {
 
     // Undo/redo (Ctrl+Z / Ctrl+Y), at most 50 steps
     const history = new History({ limit: 50 });
+    // a change the user can undo (material, visibility, transform …), its undo/redo: 'rindr-change' { action, label }
+    history.addEventListener('change', e => { if (e.detail?.action && e.detail.action !== 'clear') emit('change', { ...e.detail }); });
     // Loading progress (bottom): phase + bar; fraction undefined = indeterminate
     const progressEl = dom.getElementById('progress');
     const progressLabel = progressEl.querySelector('[data-label]');
@@ -257,10 +277,12 @@ export async function createPlayer(options = {}) {
         progressBar.style.width = known ? `${Math.round(Math.min(Math.max(fraction, 0), 1) * 100)}%` : '100%';
         progressBar.classList.toggle('animate-pulse', !known);
         progressBar.classList.toggle('opacity-50', !known);
+        emit('progress', { active: true, text, fraction: known ? Math.min(Math.max(fraction, 0), 1) : null });
     }
     function hideProgress() {
         optimizeWait = null;
         clearTimeout(progressFlash);
+        if (!progressEl.hidden) emit('progress', { active: false, text: null, fraction: null });
         progressEl.hidden = true;
     }
     // a finished task's result in the progress display (full bar) for a moment – unless another task takes it over
@@ -1540,12 +1562,13 @@ export async function createPlayer(options = {}) {
     function runtimeModels() {
         const list = [];
         if (rootGroup && model) list.push({ main: true, root: rootGroup, nodeGroups: currentNodeGroups, meshes: currentMeshes, prefix: '',
+            importNodes: primaryContent?.root === rootGroup ? primaryContent.importNodes : null,   // node names (paths – stage 4)
             file: { name: model.name, type: model.type, size: model.size ?? null }, holder: null, sceneIndex: mainSceneIndex, source: model,
             morphs: animations.find(a => a.owner === 'main')?.anim.morphValues(), animation: animState('main'), pose: poseState('main'), poses: poseListState('main'),
             // Gaussian splats: their look (light, override material) – saved with the scene
             splatLook: splatMesh ? { mode: splatMesh.look.mode, material: splatMesh.look.material && { ...splatMesh.look.material } } : null,
             volumeLooks: volumeLooksOf(rootGroup) });
-        for (const x of extraModels) list.push({ main: false, id: x.id, root: x.root, nodeGroups: x.nodeGroups, meshes: x.meshes, prefix: `x${x.id}:`,
+        for (const x of extraModels) list.push({ main: false, id: x.id, root: x.root, nodeGroups: x.nodeGroups, meshes: x.meshes, prefix: `x${x.id}:`, importNodes: x.content?.importNodes ?? null,
             file: { name: x.source.name, type: x.source.type, size: x.size ?? null }, holder: x.holder, sceneIndex: x.sceneIndex, source: x.source,
             morphs: animations.find(a => a.owner === x.id)?.anim.morphValues(), animation: animState(x.id), pose: poseState(x.id), poses: poseListState(x.id),
             volumeLooks: volumeLooksOf(x.root) });
@@ -1600,7 +1623,17 @@ export async function createPlayer(options = {}) {
      * their saved placement), then apply the state. Missing ones stay as placeholders (⚠ in the Scene Graph,
      * asset window). files: handed in together with the scene (drop) – go into the pool.
      */
-    async function openSceneFile(state, files = [], { reload = false } = {}) {
+    // the host page hears 'rindr-load' once the scene is complete (models loaded and the state applied), not per model
+    let sceneOpening = 0;
+    function emitLoaded() {
+        if (rootGroup || missingModels.length) emit('load', { models: runtimeModels().map(rm => rm.file?.name ?? null), missing: missingModels.map(m => m.name), parts: hostApi?.partCount() ?? 0 });
+    }
+    async function openSceneFile(...args) {
+        sceneOpening++;
+        const errorsBefore = errorLog.count;
+        try { return await openSceneFileNow(...args); } finally { if (!--sceneOpening && errorLog.count === errorsBefore) emitLoaded(); }
+    }
+    async function openSceneFileNow(state, files = [], { reload = false } = {}) {
         filePool = [...filePool, ...files];
         const chunks = sceneModels(state);
         if (!chunks.length) { await restoreScene(state, { force: true }); rebuildPathTracing(); return; }
@@ -2335,6 +2368,8 @@ export async function createPlayer(options = {}) {
             updateSlicerHelper();
             materialPanel?.setSelection(isModelEntry(entry) ? entry.object : null);
             updateHighlight();
+            const told = hostApi?.describeSelection(entry) ?? null;   // the host page: { kind, name, path }
+            if (JSON.stringify(told) !== lastSelect) { lastSelect = JSON.stringify(told); emit('select', told); }
         },
         onWarn: () => assetsWindow.show(),
         // skeleton marker of a model: select it and show/hide its bones
@@ -5101,7 +5136,9 @@ export async function createPlayer(options = {}) {
         // playing: no automatic return to HQ
         if (animPlaying && clipAnims().length) { hqBeforePlay = false; if (mode === 'hq') setAnimPlaying(false); }
         if (mode === 'hq' && viewMode !== 'hq') modeBeforeHq = viewMode;
+        const modeChanged = viewMode !== mode;
         viewMode = mode;
+        if (modeChanged) emit('mode', { mode });
         scene.overrideMaterial = ANALYSIS_MATERIALS[mode] ?? null;
         basicView.active = mode === 'basic';
         contactShadow.markDirty();   // off in Basic – stale when coming back
@@ -6114,6 +6151,7 @@ export async function createPlayer(options = {}) {
         if (kind && (!pending || LOAD_RANK[kind] > LOAD_RANK[pending])) pending = kind;
         if (loading) return loadLoop;
         loadLoop = (async () => {
+            const errorsBefore = errorLog.count;
             while (pending || addQueue.length) {
                 if (!pending) {
                     // additional model (only when no main load is waiting)
@@ -6144,6 +6182,7 @@ export async function createPlayer(options = {}) {
                 pendingState = null;
                 await restoreScene(state);
             }
+            if (!sceneOpening && errorLog.count === errorsBefore) emitLoaded();   // (a scene being opened tells when it is complete)
         })();
         return loadLoop;
     }
@@ -7061,10 +7100,45 @@ export async function createPlayer(options = {}) {
             });
         }
     }
-    if (SAMPLE_SCENE) openSampleScene();
-    else if (options.sceneUrl) { hdrAfterScene = !!HDR_PARAM; openSceneUrl(options.sceneUrl); }
+    // The host page's interface (docs/player.md, stage 4 – player/host-api.js on these internals; rindr-player.js offers it
+    // as the element's methods)
+    hostApi = createHostApi({
+        runtimeModels,
+        importNodesOf: rm => rm.importNodes,
+        isDeleted: key => sceneGraph.deleted.has(key),
+        sceneGraph, materialManager, history,
+        presets: () => MATERIAL_PRESETS, presetName, loadLibraryPresets,
+        labels: { get assignMaterial() { return t('viewer.undo.assignMaterial'); } },
+        assignMaterial,
+        afterMaterialChange: () => { materialPanel?.setSelection(isModelEntry(selection) ? selection.object : null); sceneGraph.render(); },
+        frame: groups => frameObject({ isMeshSet: true, members: groups ?? runtimeModels().map(rm => rm.root) }),
+        errorMark: () => errorLog.count,
+        errorSince: mark => (errorLog.count > mark ? errorLog.last : null),
+        idle,
+        openSceneUrl: url => track(openSceneUrl(url)),
+        openUrl: url => track(openModel(sourceForUrl(decodeURIComponent(new URL(url).pathname.split('/').pop()), url))),
+        selectHdrUrl: url => {
+            const name = decodeURIComponent(new URL(url).pathname.split('/').pop());
+            environment.hdriUrls[name] = url;
+            return environment.select(name);
+        },
+        views: () => cameraViews,
+        activateView: view => { activateCamera(view); sceneGraph.render(); },
+        flyTo: view => flyToView(view),
+        viewModes: ['default', 'hq', ...Object.keys(ANALYSIS_MATERIALS)],
+        setViewMode: mode => setViewMode(mode),
+        getViewMode: () => viewMode,
+        bufferWidth: () => { releaseExportScale(); return canvasTarget.getDrawingBufferSize(new THREE.Vector2()).x; },   // (not the size a last export left)
+        maxExportSize,
+        exportImage,
+        exportFrame: () => rasterSettled().then(exportFrame),
+        captureState: () => captureState(sceneStateContext),
+    });
+
+    if (SAMPLE_SCENE) track(openSampleScene());
+    else if (options.sceneUrl) { hdrAfterScene = !!HDR_PARAM; track(openSceneUrl(options.sceneUrl)); }
     else if (MODEL_FILE && !(crashed?.url && crashed.name === MODEL_FILE)) {
-        openModel(sourceForUrl(MODEL_FILE, MODEL_URL));
+        track(openModel(sourceForUrl(MODEL_FILE, MODEL_URL)));
     } else {
         showDropHint();
     }
@@ -7072,6 +7146,7 @@ export async function createPlayer(options = {}) {
     // Debug access for automated tests + fps/memory/polygon display (app.js: globalThis.__viewer with ?debug in the URL);
     // what createPlayer returns – the start of the player's interface (docs/player.md)
     const debugApi = {
+        host: hostApi,   // the public interface (the element's methods)
         // material node graphs: bake an input into a PNG / render a description on the thumbnail sphere (debug-graph.js)
         bakeGraph: (graph, opts) => import('./debug-graph.js').then(m => m.bakeGraphImage(graphApplier, graph, opts)),
         previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel?.thumbs, def)),
@@ -7670,16 +7745,28 @@ export async function createPlayer(options = {}) {
     // picture stays or the raster view until it gets the engine)
     function settleCheck() {
         if (playerCount() < 2) return;
-        const hqBusy = viewMode === 'hq' && pathTracing.enabled && pathTracing.owner && pathTracing.getStatus().phase !== 'done';
-        const busy = hqBusy ? 'hq' : loading ? 'loading' : loadRender.active ? 'import' : fading.size ? 'fading' : grass.fading ? 'grass'
-            : flight ? 'flight' : animPlaying || poseBlend ? 'animation' : exploder.anim ? 'explode' : splatSpin.active ? 'spin'
-            : !preloaderGone ? 'preloader' : optimizeWait ? 'optimize' : frameRaster && (!batcher.synced || batcher.pending) ? 'batcher'
-            : graphApplier.pending.size || graphApplier.waiting.size ? 'bake' : screenFade.active ? 'transition'
-            : pathTracing._dragging ? 'drag' : frameRaster && rasterAO.on && rasterAO.dirty ? 'ao' : splatEnv.busy ? 'splats' : null;
+        const busy = busyReason();
         const now = performance.now();
         if (busy) { rest.quiet = 0; rest.why = busy; return; }
         if (rest.quiet++ === 0) rest.since = now;
         if (rest.quiet >= QUIET_FRAMES && now - rest.since >= QUIET_MS) rest.frozen = true;
+    }
+    // what keeps the picture changing (null: settled) – hq false: the path tracer does not count (a raster image of the view)
+    function busyReason({ hq = true } = {}) {
+        const hqBusy = hq && viewMode === 'hq' && pathTracing.enabled && pathTracing.owner && pathTracing.getStatus().phase !== 'done';
+        return hqBusy ? 'hq' : loading ? 'loading' : loadRender.active ? 'import' : fading.size ? 'fading' : grass.fading ? 'grass'
+            : flight ? 'flight' : animPlaying || poseBlend ? 'animation' : exploder.anim ? 'explode' : splatSpin.active ? 'spin'
+            : !preloaderGone ? 'preloader' : optimizeWait ? 'optimize' : frameRaster && (!batcher.synced || batcher.pending) ? 'batcher'
+            : graphApplier.pending.size || graphApplier.waiting.size ? 'bake' : screenFade.active ? 'transition'
+            : pathTracing._dragging ? 'drag' : frameRaster && rasterAO.on && rasterAO.dirty ? 'ao' : splatEnv.busy ? 'splats' : null;
+    }
+    // until the raster picture is settled (fades, flights, baking done – a few frames in a row), at most maxMs
+    async function rasterSettled(maxMs = 5000) {
+        const until = performance.now() + maxMs;
+        for (let calm = 0; calm < 3 && performance.now() < until;) {
+            await nextFrame();
+            calm = busyReason({ hq: false }) ? 0 : calm + 1;
+        }
     }
     // the renderer's counters cover every player drawn in this tick: this player's share is the difference
     const frameInfo = { drawCalls: 0, triangles: 0 };
