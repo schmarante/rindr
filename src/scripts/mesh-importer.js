@@ -22,7 +22,9 @@ import { debugLog } from './log.js';
 import { uvLengthHistogram, UvMetric } from './uv-metric.js';
 
 // IFC (BIM) goes the same way but has its own importer (ifc/ifc-importer.js, web-ifc – loaded on demand)
-export const MESH_EXTENSIONS = ['glb', 'gltf', 'fbx', 'max', 'c4d', 'blend', 'obj', '3mf', 'usd', 'usda', 'usdc', 'usdz', 'stl', 'pbrt', 'ifc', 'ifczip', 'vdb', 'nvdb'];
+// extensions and the missing-files error live in mesh-formats.js (the viewer needs them without loading this module)
+import { MESH_EXTENSIONS, MissingFilesError } from './mesh-formats.js';
+export { MESH_EXTENSIONS, MissingFilesError };
 const USD_FORMATS = ['usd', 'usda', 'usdc', 'usdz'];   // usd-importer.js (loaded on demand)
 
 // The loaders are loaded only with the first glTF/FBX (~170 KB that a STEP-only session never needs).
@@ -173,13 +175,6 @@ export async function importMeshFile(source, { renderer, materialManager, onStat
  * files: all missing external files of the glTF ({ uri, kind: 'buffer'|'image' }), images included,
  * so the user can hand everything in at once.
  */
-export class MissingFilesError extends Error {
-    constructor(files) {
-        super('Missing files: ' + files.map(f => f.uri).join(', '));
-        this.name = 'MissingFilesError';
-        this.files = files;
-    }
-}
 
 // --- Loading ---
 

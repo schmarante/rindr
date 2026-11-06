@@ -11,7 +11,7 @@ import { zipStore } from './zip.js';
 import { readZip } from './splat/splat-formats.js';
 import { createImportGraph, createGraph, hasDecal } from './material-graph.js';
 import { graphToMtlx, graphFromMtlx, GRAPH_TO_OPENPBR } from './graph-mtlx.js';
-import { UV_TILE } from './step-importer.js';
+import { UV_TILE } from './box-project.js';
 import { SUBSURFACE_RADIUS_SCALE } from './materials/medium.js';
 import { getLocale } from './i18n.js';
 

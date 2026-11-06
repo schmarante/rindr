@@ -7,7 +7,7 @@ import { ScreenFade } from './screen-fade.js';
 import { HdriRenderService } from './hdri/hdri-service.js';
 import { studioPreset, cloneHdri } from './hdri/hdri-model.js';
 import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
-import { TESS_PRESETS, normalizeQuality, abortStepImport, buildGeometryBVHs, fetchStepFile, readStepFile, releaseStepFile, tessellateStep, ImportLimitError } from './step-importer.js';
+import { TESS_PRESETS, normalizeQuality, ImportLimitError } from './step-shared.js';
 import { UvMapper } from './uv-mapping.js';
 import { Displacer } from './displacement.js';
 import { floatWindow } from './float-window.js';
@@ -19,7 +19,7 @@ import { localTransport, newId, gpuName, formatSize } from './distributed/protoc
 import { hubTransport, channelTransport, answerOffer } from './distributed/rtc.js';
 import { buildDistributedSection, clientView } from './distributed/settings.js';
 import { IMPORT, KI, SPLATS, RASTER, SCENE, TRANSITION, LOD, SKELETON } from './config.js';
-import { importMeshFile, MissingFilesError, MESH_EXTENSIONS } from './mesh-importer.js';
+import { MissingFilesError, MESH_EXTENSIONS } from './mesh-formats.js';
 import { MaterialManager, FADE_MASK } from './material-manager.js';
 import { BasicView } from './basic-view.js';
 import { setPlainView } from './materials/override-hide.js';
@@ -101,6 +101,12 @@ function lazy(create) {
         get now() { return instance; },
     };
 }
+
+// STEP and mesh importers: loaded with the first file of their kind (docs/player.md "schlank"); the mesh importer brings
+// the STEP importer along (shared worker pool) – both module references kept for synchronous calls (abort, release)
+let stepModule = null, meshModule = null;
+const loadStepImporter = () => import('./step-importer.js').then(m => (stepModule = m));
+const loadMeshImporter = () => Promise.all([import('./mesh-importer.js'), loadStepImporter()]).then(([m]) => (meshModule = m));
 
 // BVH-accelerated raycasting for every mesh (picking, focus, material drops) – once per page
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
@@ -1966,7 +1972,7 @@ export async function createPlayer(options = {}) {
     const uvMapper = new UvMapper({
         // tile size of the material on a mesh in mm (node graph output; without a graph the import tile)
         tileOf: material => materialManager.get(material?.userData?.materialId)?.def.graph?.nodes?.find(n => n.type === 'output')?.params?.size ?? 100,
-        build: geometries => buildGeometryBVHs(geometries),
+        build: async geometries => (stepModule ?? await loadStepImporter()).buildGeometryBVHs(geometries),
         makeGeometry,
         release: mesh => displacer.release(mesh),
         onApplied: () => {
@@ -1991,7 +1997,7 @@ export async function createPlayer(options = {}) {
             scene.traverse(o => { if (o.isMesh && o.material?.userData?.materialId) out.push(o); });
             return out;
         },
-        build: geometries => buildGeometryBVHs(geometries),
+        build: async geometries => (stepModule ?? await loadStepImporter()).buildGeometryBVHs(geometries),
         makeGeometry,
         onApplied: () => {
             invalidatePathTracing();
@@ -3912,7 +3918,8 @@ export async function createPlayer(options = {}) {
     }
     // STEP text of a CAD model: a STEP file as read; IGES converted to STEP in a worker first (iges/, loaded on demand)
     async function readCadContent(source, signal) {
-        const bytes = source.file ? await readStepFile(source.file, signal) : await fetchStepFile(source.url, signal);
+        const step = stepModule ?? await loadStepImporter();
+        const bytes = source.file ? await step.readStepFile(source.file, signal) : await step.fetchStepFile(source.url, signal);
         if (!IGES_EXTENSIONS.includes(extOf(source.name))) return bytes;
         const { convertIges } = await import('./iges/iges-import.js');
         return convertIges(bytes, { name: source.name, onStatus: showProgress, signal });
@@ -3921,7 +3928,7 @@ export async function createPlayer(options = {}) {
         if (model?.type !== 'step' || !model.content || model.content.byteLength < RELEASE_STEP_BYTES) return;
         if (!model.file && !model.url) return;   // cannot be read again
         model.content = null;
-        releaseStepFile();
+        stepModule?.releaseStepFile();
     }
 
     /** Set the level of a part ('' = as parent) and re-tessellate only the affected solids */
@@ -3947,7 +3954,7 @@ export async function createPlayer(options = {}) {
         try {
             await ensureStepContent();
             showProgress(t('status.tessellatingParts'));
-            const result = await tessellateStep(model.content, settings.meshQuality, showProgress, {
+            const result = await (stepModule ?? await loadStepImporter()).tessellateStep(model.content, settings.meshQuality, showProgress, {
                 bvh: pathTracing.supported, instancing: IMPORT.instancing, solidQualities: () => target, onlySolids: () => changed,
                 limits: { auto: false, ...importLimits() },
             });
@@ -5402,7 +5409,7 @@ export async function createPlayer(options = {}) {
                 const counted = {};   // level -> triangles counted until the limit stopped it
                 for (;;) {
                     try {
-                        const res = await tessellateStep(model.content, quality, showProgress, {
+                        const res = await (stepModule ?? await loadStepImporter()).tessellateStep(model.content, quality, showProgress, {
                             bvh: pathTracing.supported, instancing: IMPORT.instancing, onPlan: p => { plan = p; setupNodes(p.nodes); }, onSolid, onQuality: basicForSize,
                             // only part levels (null = global level – it may still become coarser)
                             solidQualities: p => solidQualities(p, quality).map(q => (q === quality ? null : q)),
@@ -5446,7 +5453,7 @@ export async function createPlayer(options = {}) {
             let plan = null, usedQualities = [];
             const result = model.type === 'step'
                 ? await tessellateWithLimits()
-                : await importMeshFile(model, { renderer, materialManager, onStatus: showProgress, bvh: pathTracing.supported, checkSize: confirmLargeModel,
+                : await (meshModule ?? await loadMeshImporter()).importMeshFile(model, { renderer, materialManager, onStatus: showProgress, bvh: pathTracing.supported, checkSize: confirmLargeModel,
                     onLarge: basicForSize, largeAbove: importLimits().budget, limit: importLimits().limit, onNodes: setupNodes, onSolid });
             const { geometries, meshes, nodes, missing } = result;
             root.userData.bim = result.bim || null;   // IFC: property lookups (worker stays open, closed in disposeRoot)
@@ -5960,7 +5967,7 @@ export async function createPlayer(options = {}) {
             let result, plan = null;
             if (source.type === 'step') {
                 const content = await readCadContent(source, signal);
-                result = await tessellateStep(content, settings.meshQuality, showProgress, {
+                result = await (stepModule ?? await loadStepImporter()).tessellateStep(content, settings.meshQuality, showProgress, {
                     bvh: pathTracing.supported, instancing: IMPORT.instancing, onPlan: p => { plan = p; }, limits: { auto: true, ...importLimits() },
                 });
             } else {
@@ -5969,7 +5976,7 @@ export async function createPlayer(options = {}) {
                     if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
                     source.main = await res.blob();
                 }
-                result = await importMeshFile(source, { renderer, materialManager, onStatus: showProgress, bvh: pathTracing.supported, checkSize: confirmLargeModel });
+                result = await (meshModule ?? await loadMeshImporter()).importMeshFile(source, { renderer, materialManager, onStatus: showProgress, bvh: pathTracing.supported, checkSize: confirmLargeModel });
                 importNotices(result, name);
             }
             const { geometries, meshes, nodes } = result;
@@ -6139,7 +6146,7 @@ export async function createPlayer(options = {}) {
         nextModel = next;
         if (loading) {
             loadAbort?.abort();
-            abortStepImport();
+            stepModule?.abortStepImport();
         }
         return runLoad('open');
     }

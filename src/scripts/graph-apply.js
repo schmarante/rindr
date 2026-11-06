@@ -14,7 +14,7 @@
 import * as THREE from 'three/webgpu';
 import { evaluateGraph, evaluateNode, nodeSignature, GraphBaker, loadImageTexture, isUvMode, bakeResolution, BAKE_SIZE, hasImage } from './material-graph.js';
 import { PARAMS } from './material-manager.js';
-import { UV_TILE } from './step-importer.js';
+import { UV_TILE } from './box-project.js';
 
 const defaultParams = () => Object.fromEntries(PARAMS.map(p => [p.key, p.default]));
 // wait after a change before baking (changes in quick succession – a dragged value – bake once); baking is cheap

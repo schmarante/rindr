@@ -22,7 +22,7 @@
 import { viewAngle, setViewAngle } from './fisheye.js';
 import * as THREE from 'three/webgpu';
 import { normalizeHdri } from './hdri/hdri-model.js';
-import { normalizeQuality } from './step-importer.js';
+import { normalizeQuality } from './step-shared.js';
 import { t } from './i18n.js';
 import { debugLog } from './log.js';
 

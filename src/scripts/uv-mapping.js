@@ -29,7 +29,7 @@
 // shared, tangents only for normal maps); the path tracer rebuilds its scene once the slider is released (viewer.js)
 // – the kernel stays compiled (the library names the texture info uniform itself since 0.0.28 – formerly the Vite patch rindr-stable-kernel).
 import * as THREE from 'three/webgpu';
-import { UV_TILE } from './step-importer.js';
+import { UV_TILE } from './box-project.js';
 
 export const MAPPING_TYPES = ['standard', 'box', 'planar', 'cylinder', 'sphere'];
 export const MAPPING_AXES = ['y', 'x', 'z'];
