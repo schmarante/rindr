@@ -1,6 +1,6 @@
 # RINDR-Player – Einbettung und Whitelabel
 
-**Stand: Stufe 1 umgesetzt (06.11.2026)** – die App läuft als ein Player (`createPlayer` in `viewer.js`) auf einer seitenweiten Runtime (`runtime.js`); Stufen 2–4 offen. Wunsch des Nutzers: „RINDR als Whitelabel-Lösung in PIM-Systeme und Shops … eine Minimal-Konfiguration, Material-Editor, Scene Graph, Explosion, Laden/Speichern etc. sind alles Optionen, die man über Attribute aktivieren könnte … es sollte natürlich auch möglich sein, dass man in einem PIM mehrere RINDR-Player gleichzeitig anzeigen kann“. Anlass: ein Produktkonfigurator, der GLB, STEP oder gleich die RINDR-Szene ausgibt.
+**Stand (06.11.2026):** Stufe 1 umgesetzt – die App läuft als ein Player (`createPlayer` in `viewer.js`) auf einer seitenweiten Runtime (`runtime.js`). Stufe 2 zum Teil: `<rindr-player>` mit Shadow DOM läuft (die App ist selbst eins), Funktionen per Attribut und „schlank“ noch offen – siehe „Stufe 2“. Stufen 3–4 offen. Wunsch des Nutzers: „RINDR als Whitelabel-Lösung in PIM-Systeme und Shops … eine Minimal-Konfiguration, Material-Editor, Scene Graph, Explosion, Laden/Speichern etc. sind alles Optionen, die man über Attribute aktivieren könnte … es sollte natürlich auch möglich sein, dass man in einem PIM mehrere RINDR-Player gleichzeitig anzeigen kann“. Anlass: ein Produktkonfigurator, der GLB, STEP oder gleich die RINDR-Szene ausgibt.
 
 ## Entscheidungen
 
@@ -9,6 +9,7 @@
 - **Attribute ohne `data-`** (Nutzer: „können wir gerne weglassen, wenn das technisch kein Nachteil ist – sollte halt W3C-valide bleiben“): HTML erlaubt auf autonomen Custom Elements „any other attribute that has no namespace“ (HTML Living Standard 4.13.3) – Namen klein geschrieben, nicht `is`. Globale Attribute (`lang`, `hidden`, `title`, `id` …) nicht umdeuten; `lang` in seiner normalen Bedeutung lesen (Sprache des Players, sonst vom Dokument geerbt). Einziger Nachteil ohne Präfix: ein künftiges globales HTML-Attribut könnte gleich heißen → keine allzu allgemeinen Namen, Funktionen als Token-Liste in einem Attribut. Elementname: Kleinbuchstaben mit Bindestrich, schließendes Tag nötig (`<rindr-player …></rindr-player>`).
 - **Hosting:** beides muss gehen – über unseren Dienst (erster Aufschlag) und beim Kunden selbst gehostet (Nutzer, 06.11.2026).
 - **Die App selbst wird ein Player mit allen Funktionen** – ein Code-Weg, keine Abspaltung.
+- Stufe 2 (Nutzer, 06.11.2026): einzelne Funktionen per `features="…"` (scene-graph, properties, materials, material-editor, explode, transform, section, views, view-cube, view-modes, open, save, render, ki, animation, setup, fullscreen; `all` = wie die App); **ohne `features` = Minimal-Player in der Standard-Ansicht** (HQ per `mode="hq"` oder Taste 3); **das Logo ist immer sichtbar** – kein Schalter dafür, und es bleibt auch bei ausgeblendeter Oberfläche (U) stehen; **„gleich schlank“** – nur der Code der eingeschalteten Funktionen wird geladen (Messung dazu unten).
 
 ## Aufbau
 
@@ -45,18 +46,15 @@ Viele Player (PIM-Raster mit 30 Produkten): nur sichtbare zeichnen (`Intersectio
 - SharedArrayBuffer nur, wenn die Host-Seite isoliert ist; sonst die vorhandenen Ausweichwege. Der coi-Service-Worker wirkt im Player nicht (er gehört zur Host-Seite).
 - Die App behält ihre CSP und `frame-ancestors 'none'`; der Player ist ein eigener Build-Eintrag.
 
-## Für Shadow DOM zu lösen
+## Whitelabel
 
-- Tailwind 4: `@property` gilt im Shadow Root nicht (Schatten, Ringe, Transforms, `backdrop-blur` = Panel-Stil) → diese Regeln einmal ins Dokument, das übrige CSS als ein gemeinsames Stylesheet (`adoptedStyleSheets`) in alle Player.
-- Dialoge/Hinweise an `document.body` (10 Dateien: `notice.js`, `dialog.js`, `ui-controls.js`, `assets.js` …) → Dialog-Ebene des Players.
-- Tastenkürzel an `window` → am Player, nur mit Fokus.
-- `document.getElementById` / `window.innerWidth` in `viewer.js` (~30 Stellen) → Elemente und Größe des Players.
-- Whitelabel: Farben als CSS-Variablen (`--rindr-*`, gehen durch die Shadow-Grenze), Logo/Preloader austauschbar, kein RINDR-Branding sichtbar.
+- Farben: die Tailwind-Variablen (`--color-*`) liegen auf `:host` und lassen sich von der Seite am Element überschreiben (Regeln der Seite schlagen `:host`); eigene `--rindr-*`-Namen kommen mit Stufe 4.
+- Das RINDR-Logo bleibt sichtbar (Entscheidung des Nutzers); der Preloader der App gehört zur Seite, eingebettete Player zeigen den Lade-Text.
 
 ## Stufen
 
 1. **Instanzen:** `viewer.js` (8.000 Zeilen, 92 Imports) in Runtime + Player teilen; die App läuft als ein Player und verhält sich genau wie vorher – **umgesetzt 06.11.2026**, siehe „Stufe 1“ unten.
-2. **`<rindr-player>`** mit Shadow DOM, `features`, Theming; Größe des minimalen Players messen.
+2. **`<rindr-player>`** mit Shadow DOM, `features`, schlank – **Komponente umgesetzt 06.11.2026**, Rest offen, siehe „Stufe 2“ unten.
 3. **Mehrere Player:** gemeinsamer Renderer, Schlafen, ein HQ zur Zeit, gemeinsames Budget, Poster.
 4. **Host-Schnittstelle:** Ereignisse, Laden/Speichern übers Host-System, Namens-Adressierung, Einbau-Anleitung (Hosting, CSP), iframe-Rückfall.
 
@@ -85,12 +83,24 @@ Was heute einmal je Seite existiert und bei zwei Playern kollidieren würde (Bes
 - **Speicher-Schlüssel je Seite:** `rindr.setup.window`, `rindr.distributed`, `rindr.bcf.author`, `rindr.gpuIntegratedHint`, `rindr.gpuLost*`, load-guard (`rindr.loading`, `rindr.safeLoad`), Fensterpositionen der Editoren.
 - Sonst: Diagnose-Intervall ohne Ende, `requestIdleCallback` für das Studio-Upgrade, `document.hidden` in `afterPaint`.
 
-## Hinweise für Stufe 2 (Shadow DOM)
+## Stufe 2 – Stand 06.11.2026
 
-- **Größe:** Inhaltsbox von `#viewport` per ResizeObserver beobachten – nie die Leinwand und nie `device-pixel-content-box` (die gehaltene Export-Skalierung ändert nur die Pixeldichte; ein solcher Beobachter gäbe sie sofort frei und das fertige Bild würde neu gerechnet). Größen runden, unveränderte überspringen, Leinwand per CSS 100 % + `setSize(w, h, false)`. ResizeObserver feuert nach dem gezeichneten Bild – `setSize` dort leert die Leinwand (schwarzes Bild beim Ziehen): Größe nur merken, im nächsten Bild vor dem Zeichnen anwenden. Deshalb in Stufe 1 noch window-`resize`.
-- **Tasten:** die Esc-Behandlung hängt an der Reihenfolge der window-Capture-Listener (`stopPropagation` in Farbwähler/Assets/Export/KI, `stopImmediatePropagation` in dialog.js); auf `document`/`body` verschoben liefen die des Viewers danach und würden abgeschnitten (Esc bei offenem Farbwähler bräche kein Rendern mehr ab). Stufe 2: ein Tasten-Router (Player mit Fokus + Esc-Stapel) statt der verstreuten Listener. Unter Shadow DOM `e.composedPath()[0]` statt `e.target` (sonst sieht `closest('input…')` nur das Host-Element).
-- **Drop:** die Drop-Listener müssen auf `window` bleiben (sonst öffnet der Browser abgelegte Dateien); im Player nur die Zonen.
-- **CSS:** `body.ui-hidden …` wird `:host(.ui-hidden) …`; Tailwind-`@property` einmal ins Dokument.
+Umgesetzt (je Schritt A/B geprüft und committet; Plan in 9 Schritten, die Komponente vor die Verschlankung gezogen):
+- **App-Sonderwege hinter `appMode`** (nur `app.js` setzt es): Neuladen der Seite (GPU-Verlust), Sprachwechsel (`location.replace`; eingebettet ist die Sprachauswahl gesperrt), verteiltes Rendern samt `?render-client`/Kopplung, `worker-monitor.js` und `globalThis.__viewer` (beides in `app.js`). Entwickler-Schalter (`?debug`, `?lod`, `?kernel`, `?ao`, `?occlusion`, `?gaussians`, `?bench`, `?deviceMemory`, i18n `?lang`) lesen weiter die URL der Seite – bei eingebetteten Playern also die des Shops (bewusst so gelassen).
+- **Shadow-sichere Muster** (`src/scripts/shadow-dom.js`): `eventTarget(e)` (`composedPath()[0]` statt `e.target` in Listenern an window/document – sonst sieht man nur das Host-Element: Kürzel feuerten beim Tippen, Menüs schlössen sich beim eigenen Klick), `focusedIn(node)` (Fokus im eigenen Baum statt `document.activeElement` – sonst würden Felder beim Tippen überschrieben), `elementFromPointIn` (Draht-Ziele im Node-Editor, View-Cube-Hover), `layerFor(node)` (Fenster, Menüs, Hinweise, Dialog, Farbwähler, Datalists in die Ebene des Players; Hinweis-Stapel je Ebene), `layerRect` (Positionen und Klemmen relativ zum Player; im Seitenkontext das Fenster → in der App unverändert).
+- **Größe, Tasten, Drops:** `viewSize()` misst `#viewport`; die App reagiert weiter auf window-`resize`, eingebettet merkt ein ResizeObserver die Größe und `applyPendingSize()` wendet sie am Anfang des nächsten Bildes an. Tasten und Datei-Drops zählen bei eingebetteten Playern nur, wenn der Player in `composedPath()` steckt (App: `keyScope: 'page'`); ein Klick in die Ansicht fokussiert den Player (`tabindex=0`, Rahmen bei Tastatur-Fokus). Außerhalb des Players kein `preventDefault` – Drop-Zonen der Seite funktionieren weiter. `ui-hidden` sitzt auf einem inneren Wurzel-Element (das `class`-Attribut des Elements gehört dem Framework der Seite); Vollbild eingebettet auf dem Element. Das Logo ist aus der ausblendbaren Gruppe genommen.
+- **Komponente** (`src/scripts/rindr-player.js`): eigener Shadow Root, Markup aus `src/scripts/player/template.js` (früher statisch in index.astro; gleiche Reihenfolge und Klassen, `vw/vh/dvh` → `cqw/cqh`), ein gemeinsames Stylesheet aus `src/styles/player.css?inline` (Tailwind mit `source(none)` + `@source "../scripts"`). `:host` startet bei `all: initial` (unterste Ebene `rindr-reset`, Tailwinds Preflight setzt danach Schrift/Zeilenhöhe) – Stile der Seite (Schrift, Farbe, Cursor, `scrollbar-color` …) dringen nicht ein. Attribute: `src` (Modell-URL), `mode` (`default`/`hq`). Die App-Seite (`<body data-rindr-app>`) erzeugt in `app.js` ein Element über die ganze Seite (`position:fixed; inset:0`, Optionen als Property `rindrOptions` vor dem Einhängen: `appMode`, `keyScope`, `preloader`, Modell aus der URL); auf anderen Seiten definiert dasselbe Skript nur das Element. index.astro enthält nur noch Preloader, HDRI-Liste und Skript; die Seiten-CSS schrumpfte von 53 auf 8,5 KB (`global.css` mit `source("../pages")`).
+- **Fallen:**
+  - **`container-type: size` macht ein Element nicht mehr zum Bezugsrahmen für `position: fixed`** (die Spezifikation hat die Layout-Eingrenzung herausgenommen) – Fenster und Quad-Menü standen relativ zum Browserfenster; nötig ist zusätzlich `contain: layout`.
+  - Tailwinds `@property`-Regeln wirken im Shadow Root nicht (Schatten, Ringe, Transforms, `backdrop-blur` fielen weg). Statt sie ins Dokument zu schreiben (Nebenwirkung auf die Seite, Kollision mit deren Tailwind) wird Tailwinds eigener Ausweichblock (`@layer properties { @supports (…) { *, ::before … { --tw-…: initial } } }`) beim Anlegen des Stylesheets auf `:host` und immer gültig umgeschrieben (`rindr-player.js`, `PROPERTY_FALLBACK`).
+  - Die Ebene des Players ist `display: contents` – sie hat kein eigenes Rechteck; `layerRect` nimmt dafür das Host-Element.
+  - Ein Element, das verschoben wird (Frameworks), ruft `connectedCallback` erneut – ein Player je Element (`this.ready`), kein zweiter Start.
+  - Die App-Seite braucht die Optionen vor dem Einhängen – deshalb erzeugt `app.js` das Element selbst statt es im Markup zu haben (beim Definieren würde ein vorhandenes Element sofort starten).
+- **Prüfweg:** `tools/player-check` – `run.js` sucht mit `__q/__qa/__byId/__text/__fromPoint` auch in Shadow Roots (dieselben Szenarien für Light DOM und Komponente), `embed.js` legt eine scrollende Testseite mit einem Player in einer 900×500-Box an (lädt das Einstiegs-Skript der App) und prüft: Leinwand = Box, `lang` der Seite unverändert, Taste nur mit Fokus, kein Kürzel beim Tippen in einem Feld des Players, Setup-Fenster und Quad-Menü (nach dem Scrollen) in der Box/am Zeiger, Drag über der Seite ohne `preventDefault` und Drop-Zone der Seite bekommt ihren Drop, Drop auf den Player lädt, Box-Größe ändern, Element verschieben. Ergebnis aller Schritte gegen den Stand von Stufe 1: Bilder pixelgleich, Zustände, Konsole, Prüfpunkte gleich; Screenshots gleich bis auf das Logo bei U (gewollt).
+  - **Fallen des Prüfstands:** Material-Vorschaubilder liegen je Origin in IndexedDB (`rindr-thumbs`) – ein Build auf einem neuen Port rendert sie neu (max. 8/255 Unterschied an einem leuchtenden Material); A und B daher auf Ports mit warmem Cache vergleichen. Das HQ-Rohbild der Beispielszene hat zwei deterministische Ausprägungen (RMSE 0,015, Mittel −0,02 %), je nach Takt beim Start – auch der Stand vor dem Umbau liefert beide (1 von 4 Läufen); nicht als Abweichung werten.
+- **Messung „schlank“** (Build mit Sourcemaps, Skript `tools/player-check/sizes.cjs`): beim Start 2,21 MB JS (gzip 678 KB, 47 Dateien), davon three.js 1,11 MB (bleibt), eigener Code 0,96 MB. Ein Minimal-Player könnte etwa 430 KB (≈ 20 %) weglassen: ~240 KB Oberfläche (Eigenschaften 44, Material-Panel 23, Scene Graph, verteiltes Rendern ~22, KI, Setup, Gizmo …; dazu die UI-Abschnitte in viewer.js), ~100 KB Importer (STEP, Meshes), ~95 KB Splats und Spezial-Materialien; außerdem der Pathtracer (~420 KB), der heute im Leerlauf vorgeladen wird.
+
+Offen (Plan): gemeinsame Konstanten auslagern und Importer/Splats/Spezial-Materialien erst bei Bedarf laden (für alle); Nahtstellen in viewer.js (`core`/`ui`, SceneModel getrennt von der Baumansicht, Werkzeugleiste mit fester Reihenfolge, Tasten-Tabelle); Funktionen in eigene Module (`src/scripts/player/features/`) und `features`-Attribut samt Abhängigkeiten; Attribute `scene` (Szenen-Datei) und `hdr` als URL. Bekannt: gespeicherte Fensterpositionen (`rindr.*.window` in localStorage) teilen sich App und eingebettete Player derselben Origin – Stufe 3 (Speicher-Schlüssel je Player).
 
 ## Offen
 
