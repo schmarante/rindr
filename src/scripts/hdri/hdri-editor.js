@@ -1,6 +1,7 @@
 // HDRI editor window (docs/hdri-editor.md): canvas with the equirect image (2:1) and the pins as outlines with
 // handles (drag = move, corner = size), sun handle for sun & sky; sidebar with background, sun & sky, pin list and
-// the selected pin's settings; header with name, resolution, export, duplicate/delete, close.
+// the selected pin's settings; header with name, resolution, export (.hdr, .exr – the description as .json),
+// load (.json – a new own HDRI), duplicate/delete, close.
 // Always a free window (move by the header, resize at the corner – user's choice; docking at the bottom was
 // dropped). Inputs from ui-controls.js: same look and behaviour as the panels (number fields draggable).
 //
@@ -8,7 +9,7 @@
 // the canvas preview (1024) and the full resolution for the scene. One undo step per finished change.
 import { eventTarget, focusedIn } from '../shadow-dom.js';
 import { t } from '../i18n.js';
-import { createPin, cloneHdri, RESOLUTIONS, direction } from './hdri-model.js';
+import { createPin, cloneHdri, RESOLUTIONS, direction, hdriToFile } from './hdri-model.js';
 import { LatestRender, makeEnvTexture } from './hdri-service.js';
 import { gradientEditor } from './gradient-editor.js';
 import { encodeHdr, encodeExr, saveFile } from './hdri-export.js';
@@ -24,6 +25,7 @@ const STORE_KEY = 'rindr.hdriEditor.window';
 
 const ICON_CLOSE = icon('close', 'size-3.5');
 const ICON_COPY = icon('copy', 'size-3.5'), ICON_DELETE = icon('delete', 'size-3.5'), ICON_PLUS = icon('plus', 'size-2.5');
+const ICON_OPEN = icon('open', 'size-3.5');
 // pin types (shape + fill): circle, rectangle, gradient
 const PIN_ICONS = {
     circle: icon('pin-circle', 'size-4'),
@@ -36,7 +38,7 @@ export class HdriEditor {
      * @param {HTMLElement} root
      * @param {{ service, onApply: (texture, info: { final: boolean }) => void, onSave: (doc) => void,
      *           onDuplicate: (doc) => void, onDelete: (doc) => void, onDrag?: (active: boolean) => void,
-     *           record?: (step) => void, onClose?: () => void }} hooks
+     *           onImport?: () => void, record?: (step) => void, onClose?: () => void }} hooks
      */
     constructor(root, hooks) {
         this.root = root;
@@ -57,6 +59,8 @@ export class HdriEditor {
                 <span class="ml-2 text-white/50">${t('hdriEditor.export')}</span>
                 <button data-export="hdr" class="${BUTTON}" title="${t('hdriEditor.exportHdrTitle')}">.hdr</button>
                 <button data-export="exr" class="${BUTTON}" title="${t('hdriEditor.exportExrTitle')}">.exr</button>
+                <button data-export="json" class="${BUTTON}" title="${t('hdriEditor.exportJsonTitle')}">.json</button>
+                <button data-import class="${BUTTON} ml-1 flex items-center gap-1 py-1" title="${t('hdriEditor.importTitle')}">${ICON_OPEN}${t('hdriEditor.import')}</button>
                 <span data-status class="ml-2 truncate text-white/40"></span>
                 <span class="ml-auto"></span>
                 <button data-duplicate class="${BUTTON} flex items-center py-1" title="${t('hdriEditor.duplicate')}" aria-label="${t('hdriEditor.duplicate')}">${ICON_COPY}</button>
@@ -176,6 +180,9 @@ export class HdriEditor {
         name.onkeydown = e => { if (e.key === 'Enter') name.blur(); };
         this.$('[data-res]').onchange = e => { this.doc.resolution = Number(e.target.value); this._change(); };
         for (const b of this.root.querySelectorAll('[data-export]')) b.onclick = () => this._export(b.dataset.export);
+        const load = this.$('[data-import]');
+        load.hidden = !this.hooks.onImport;
+        load.onclick = () => this.hooks.onImport?.();
         this.$('[data-duplicate]').onclick = () => this.hooks.onDuplicate(cloneHdri(this.doc, { keepIds: true }));
         this.$('[data-delete]').onclick = () => this.hooks.onDelete(this.doc);
         this.$('[data-close]').onclick = () => this.close();
@@ -197,11 +204,22 @@ export class HdriEditor {
 
     async _export(kind) {
         const doc = this.doc, width = doc.resolution || 2048;
+        const base = (doc.name || 'hdri').replace(/[\\/:*?"<>|]+/g, '_');
+        // the description itself – lossless, for "Load" in another scene (hdri-model.js hdriToFile)
+        if (kind === 'json') {
+            try {
+                const saved = await saveFile(new TextEncoder().encode(hdriToFile(doc)), `${base}.hdri.json`, 'application/json', t('hdriEditor.jsonFileType'));
+                this._setStatus(saved ? t('hdriEditor.exported', { name: `${base}.hdri.json` }) : '');
+            } catch (e) {
+                console.error('[HDRI] export failed:', e);
+                this._setStatus(t('hdriEditor.exportError', { message: e.message }));
+            }
+            return;
+        }
         this._setStatus(t('hdriEditor.exporting'));
         try {
             const r = await this.hooks.service.render(doc, width, { half: kind === 'exr', float: kind === 'hdr' });
             const bytes = kind === 'hdr' ? encodeHdr(r.float, r.width, r.height) : await encodeExr(r.half, r.width, r.height);
-            const base = (doc.name || 'hdri').replace(/[\\/:*?"<>|]+/g, '_');
             const saved = await saveFile(bytes, `${base}.${kind}`, kind === 'hdr' ? 'image/vnd.radiance' : 'image/x-exr', kind === 'hdr' ? 'Radiance HDR' : 'OpenEXR');
             this._setStatus(saved ? t('hdriEditor.exported', { name: `${base}.${kind}` }) : '');
         } catch (e) {

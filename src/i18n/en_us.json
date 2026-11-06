@@ -2161,7 +2161,9 @@
             "gradientTop": "Top",
             "gradientBottom": "Bottom",
             "backgroundColor": "Colour",
-            "backgroundColorTitle": "Looks exactly like this when picked (with the current exposure and tone curve) – afterwards exposure and tone curve act on the background like on the model; very saturated colours as close as the tone curve allows"
+            "backgroundColorTitle": "Looks exactly like this when picked (with the current exposure and tone curve) – afterwards exposure and tone curve act on the background like on the model; very saturated colours as close as the tone curve allows",
+            "loadHdri": "Load HDRI from file…",
+            "loadHdriTitle": "Load a custom HDRI from an HDRI editor file (.hdri.json – e.g. saved in another scene)"
         },
         "slicer": {
             "axis": "Axis",
@@ -3481,7 +3483,18 @@
         "gradientBottom": "bottom",
         "gradientTop": "top",
         "gradientAddHint": "Click into the gradient to add a colour stop",
-        "stopHint": "Double-click = colour · drag = move · drag away up/down = remove"
+        "stopHint": "Double-click = colour · drag = move · drag away up/down = remove",
+        "exportJsonTitle": "Save the description as JSON (.hdri.json) – lossless, open it again in another scene with “Load”",
+        "import": "Load",
+        "importTitle": "Load an HDRI editor file (.hdri.json) – becomes a new custom HDRI of this scene",
+        "jsonFileType": "HDRI editor file",
+        "imported": "HDRI loaded: {name}",
+        "importErrorTitle": "HDRI file not loaded",
+        "importError": {
+            "bad-json": "{name}: not valid JSON ({message})",
+            "not-hdri": "{name} is not an HDRI editor file (saved with “.json” in the HDRI editor).",
+            "newer": "{name} comes from a newer RINDR version."
+        }
     },
     "memory": {
         "device": "Device memory",

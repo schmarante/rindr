@@ -25,6 +25,7 @@ Ein performater 3D Viewer im Browser der qualitativ mit professionellen Offline-
 ### HDRI-EDITOR (Okt. 2026 – Details/Checkliste: `docs/hdri-editor.md`)
 Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anlegen (Vorlage: Studio).
 [X] Export des HDRI
+[X] Export/Import als JSON – verlustfrei von einer Szene in eine andere
 [X] Hintergrundverlauf
 [X] Verschiebbare, interaktive Sonne & Himmel
 [X] Bodenfarbe für Sonne & Himmel

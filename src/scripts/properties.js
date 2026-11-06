@@ -734,16 +734,19 @@ export class PropertiesPanel {
             for (const doc of own) group.append(new Option(doc.name, editor.prefix + doc.id));
             select.append(group);
         }
-        // last entry: new own HDRI in the HDRI editor (studio template)
-        const NEW = '\u0000new';
+        // last entries: new own HDRI in the HDRI editor (studio template), one from an HDRI editor file (.hdri.json)
+        const NEW = '\u0000new', LOAD = '\u0000load';
         if (editor) {
-            const opt = new Option(t('properties.environment.newHdri'), NEW);
-            opt.title = t('properties.environment.newHdriTitle');
-            select.append(opt);
+            for (const [value, label, title] of [[NEW, 'newHdri', 'newHdriTitle'], [LOAD, 'loadHdri', 'loadHdriTitle']]) {
+                const opt = new Option(t(`properties.environment.${label}`), value);
+                opt.title = t(`properties.environment.${title}`);
+                select.append(opt);
+            }
         }
         select.value = env.hdri;
         select.onchange = async () => {
             if (select.value === NEW) { select.value = env.hdri; editor.create(); return; }
+            if (select.value === LOAD) { select.value = env.hdri; editor.load(); return; }
             const previous = env.hdri, next = select.value;
             const load = name => env.select(name).catch(e => this.ctx.onHdriError?.(name, e));
             this.ctx.record?.({ label: t('properties.environment.undo.hdri'), undo: () => load(previous), redo: () => load(next) });

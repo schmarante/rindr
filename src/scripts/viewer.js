@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { ContourPass } from './materials/contour.js';
 import { ScreenFade } from './screen-fade.js';
 import { HdriRenderService } from './hdri/hdri-service.js';
-import { studioPreset, cloneHdri } from './hdri/hdri-model.js';
+import { studioPreset, cloneHdri, hdriFromFile, normalizeHdri } from './hdri/hdri-model.js';
 import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
 import { TESS_PRESETS, normalizeQuality, ImportLimitError } from './step-shared.js';
 import { UvMapper } from './uv-mapping.js';
@@ -2422,6 +2422,7 @@ export async function createPlayer(options = {}) {
             if (selection?.kind === 'environment') properties?.show(selection);
         },
         onDrag: active => (active ? pathTracing.beginInteraction() : pathTracing.endInteraction()),
+        onImport: () => pickHdriFile(),
         record: step => history.record(step),
         onClose: () => { if (selection?.kind === 'environment') properties?.show(selection); },   // pencil no longer active
     }));
@@ -2436,11 +2437,39 @@ export async function createPlayer(options = {}) {
         }
         if (selection?.kind === 'environment') properties?.show(selection);
     }
+    // an HDRI editor file (.hdri.json – exported in this or another scene, hdri-model.js hdriToFile): a new own HDRI that
+    // becomes the environment, open in the editor. Lossless: the description as it was (name, pins, sky, resolution);
+    // its id taken by a different HDRI of this scene → a new id, the same one → that one is shown
+    async function importCustomHdri(file) {
+        let doc;
+        try {
+            doc = hdriFromFile(await file.text());
+        } catch (err) {
+            showNotice({ id: 'hdri-import', icon: 'warning', title: t('hdriEditor.importErrorTitle'),
+                message: t(`hdriEditor.importError.${['bad-json', 'not-hdri', 'newer'].includes(err.code) ? err.code : 'bad-json'}`, { name: file.name, message: err.message }) });
+            return null;
+        }
+        const own = environment.custom.get(doc.id);
+        const same = own && JSON.stringify(normalizeHdri(own)) === JSON.stringify(doc);
+        if (own && !same) doc = cloneHdri(doc);
+        await editCustomHdri(same ? own : doc, { add: !same });
+        flashStatus(t('hdriEditor.imported', { name: doc.name }), 3000);
+        return same ? own : doc;
+    }
+    function pickHdriFile() {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json,application/json';
+        input.onchange = () => { if (input.files[0]) importCustomHdri(input.files[0]); };
+        input.click();
+    }
     const hdriApi = {
         prefix: CUSTOM_HDRI,
         list: () => [...environment.custom.values()],
         // new HDRI from the studio template
         create: () => editCustomHdri(studioPreset(t('hdriEditor.newName', { n: environment.custom.size + 1 })), { add: true }),
+        // load an HDRI editor file (file dialog) – a new own HDRI
+        load: () => pickHdriFile(),
         edit: id => { const doc = environment.custom.get(id); if (doc) editCustomHdri(doc); },
         isOpen: id => !!hdriEditor.now?.isOpen && hdriEditor.now.docId === id,
     };

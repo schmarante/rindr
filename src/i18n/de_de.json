@@ -2161,7 +2161,9 @@
             "gradientTop": "Oben",
             "gradientBottom": "Unten",
             "backgroundColor": "Farbe",
-            "backgroundColorTitle": "Erscheint beim Wählen genau so (mit der eingestellten Belichtung und Tonkurve) – danach wirken Belichtung und Tonkurve auf den Hintergrund wie auf das Modell; sehr satte Farben so nah, wie die Tonkurve es erlaubt"
+            "backgroundColorTitle": "Erscheint beim Wählen genau so (mit der eingestellten Belichtung und Tonkurve) – danach wirken Belichtung und Tonkurve auf den Hintergrund wie auf das Modell; sehr satte Farben so nah, wie die Tonkurve es erlaubt",
+            "loadHdri": "HDRI aus Datei laden…",
+            "loadHdriTitle": "Eigenes HDRI aus einer HDRI-Editor-Datei laden (.hdri.json – z. B. in einer anderen Szene gespeichert)"
         },
         "slicer": {
             "axis": "Achse",
@@ -3481,7 +3483,18 @@
         "gradientBottom": "unten",
         "gradientTop": "oben",
         "gradientAddHint": "Klick in den Verlauf fügt einen Farbstopp hinzu",
-        "stopHint": "Doppelklick = Farbe · ziehen = verschieben · nach oben/unten wegziehen = entfernen"
+        "stopHint": "Doppelklick = Farbe · ziehen = verschieben · nach oben/unten wegziehen = entfernen",
+        "exportJsonTitle": "Beschreibung als JSON speichern (.hdri.json) – verlustfrei, in einer anderen Szene über „Laden“ wieder öffnen",
+        "import": "Laden",
+        "importTitle": "HDRI-Editor-Datei laden (.hdri.json) – wird ein neues eigenes HDRI dieser Szene",
+        "jsonFileType": "HDRI-Editor-Datei",
+        "imported": "HDRI geladen: {name}",
+        "importErrorTitle": "HDRI-Datei nicht geladen",
+        "importError": {
+            "bad-json": "{name}: kein gültiges JSON ({message})",
+            "not-hdri": "{name} ist keine HDRI-Editor-Datei (gespeichert über „.json“ im HDRI-Editor).",
+            "newer": "{name} stammt aus einer neueren RINDR-Version."
+        }
     },
     "memory": {
         "device": "Arbeitsspeicher des Geräts",

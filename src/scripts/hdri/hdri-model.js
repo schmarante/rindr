@@ -103,6 +103,30 @@ export function normalizeHdri(doc) {
     return d;
 }
 
+// --- as a file (export/import – user, Nov. 2026: "verlustfrei von einer rindr scene in eine andere") ---
+export const HDRI_FILE_FORMAT = 'rindr-hdri';
+
+/** the description as a file's text: { format, version, hdri } – everything the scene keeps of it, nothing rendered */
+export function hdriToFile(doc) {
+    return JSON.stringify({ format: HDRI_FILE_FORMAT, version: HDRI_VERSION, hdri: doc }, null, 1);
+}
+
+/** a file's text → the description (normalized); also a bare description (e.g. copied from a scene file's
+ *  environment.custom). Throws an Error with `code` 'bad-json' | 'not-hdri' | 'newer' */
+export function hdriFromFile(text) {
+    let data;
+    try { data = JSON.parse(text); } catch (e) { throw Object.assign(new Error(e.message), { code: 'bad-json' }); }
+    const doc = data?.format === HDRI_FILE_FORMAT ? data.hdri : data;
+    const looksLike = doc && typeof doc === 'object' && !Array.isArray(doc) && (doc.background || doc.sky || Array.isArray(doc.pins));
+    if (!looksLike) throw Object.assign(new Error('not an HDRI editor file'), { code: 'not-hdri' });
+    if ((data?.format === HDRI_FILE_FORMAT && data.version > HDRI_VERSION) || doc.version > HDRI_VERSION) {
+        throw Object.assign(new Error(`file version ${data.version ?? doc.version} > ${HDRI_VERSION}`), { code: 'newer' });
+    }
+    const d = normalizeHdri(doc);
+    if (typeof d.id !== 'string' || !d.id) d.id = newId('h');
+    return d;
+}
+
 export function linearToSrgb(v) {
     return v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
 }
