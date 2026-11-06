@@ -38,6 +38,7 @@ Nicht Speicher, aber gleiches Prinzip: Windows setzt die GPU zurück, wenn ein e
 ## Absturz erkennen (`src/scripts/load-guard.js`)
 
 - Während eines Ladevorgangs (viewer.js `guardedLoad` um `loadModel`/`loadExtraModel` in `runLoad`) steht `rindr.loading` in sessionStorage; entfernt beim Ende des Ladens und bei `pagehide` (Neuladen, Schließen = kein Absturz).
+- Mehrere Player je Seite (docs/player.md, Stufe 3): der Merker ist eine Liste aller laufenden Ladevorgänge der Seite (jeder entfernt beim Ende nur sich – `beginLoad` gibt die Ende-Funktion zurück) und wird einmal beim Laden des Moduls gelesen, nicht je Player (ein später startender Player hielt sonst den Ladevorgang eines Nachbarn für einen Absturz); bei mehreren gilt der größte als Ursache, den Hinweis zeigt der erste Player. Prüfung: `tools/player-check/activate.js` (Absturz-Simulation).
 - Beim Start noch da → Hinweis „Letzter Ladevorgang abgebrochen“ (+ Arbeitsspeicher des Geräts), Modell bekommt `rindr.safeLoad`. Ein `?model=`-Modell wird dann **nicht** automatisch erneut geöffnet (Absturzschleife), der Hinweis bietet „Sparsam öffnen“; abgelegte Dateien: „Lege die Datei erneut ab“.
 - Sparsamer Modus beim nächsten Öffnen derselben Datei (Name + Größe): halbes Budget (weniger Worker, kleinere Schranke, kleinere Dreiecksgrenzen), STEP startet mit der gröbsten Stufe, Hinweis „Sparsamer Modus“; danach wieder normal.
 - Geprüft (Scratchpad `crashsim.js`): Merker gesetzt + Neuladen → Hinweis, kein automatisches Öffnen, „Sparsam öffnen“ → Qualität „Grob“, danach beide Merker leer.

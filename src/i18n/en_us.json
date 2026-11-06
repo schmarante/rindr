@@ -3545,5 +3545,8 @@
             "free": "Free (4 planes)"
         },
         "viewTitle": "Shown planes: right C0 or C90, left C180 or C270"
+    },
+    "player": {
+        "start": "Start the 3D view"
     }
 }

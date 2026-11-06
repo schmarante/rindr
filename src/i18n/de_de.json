@@ -3545,5 +3545,8 @@
             "free": "Frei (4 Ebenen)"
         },
         "viewTitle": "Angezeigte Ebenen: rechts C0 bzw. C90, links C180 bzw. C270"
+    },
+    "player": {
+        "start": "3D-Ansicht starten"
     }
 }

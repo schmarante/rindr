@@ -6,21 +6,48 @@ import * as THREE from 'three/webgpu';
 import { ProceduralEquirectTexture } from 'three-gpu-pathtracer/src/textures/ProceduralEquirectTexture.js';
 import { renderStudioHall } from './studio-hall.js';
 
+// Environments the players of a page share (docs/player.md, stage 3): the built-in studio (small and 4k – 64 MB) and
+// HDRIs by URL are made once and counted per use; releaseEnvironment() frees one when no player uses it any more
+const shared = new Map();   // key → { promise, texture, users }
+function share(key, make) {
+    let entry = shared.get(key);
+    if (!entry) {
+        entry = { users: 0, texture: null };
+        shared.set(key, entry);
+        const keep = texture => { texture.userData.sharedKey = key; entry.texture = texture; return texture; };
+        const made = make();
+        entry.promise = made instanceof Promise
+            ? made.then(keep, err => { if (shared.get(key) === entry) shared.delete(key); throw err; })
+            : Promise.resolve(keep(made));
+    }
+    entry.users++;
+    return entry;
+}
+
+/** a player no longer uses `texture` (an environment): freed unless another player of the page still does */
+export function releaseEnvironment(texture) {
+    const entry = shared.get(texture?.userData?.sharedKey);
+    if (entry?.texture === texture) {
+        if (--entry.users > 0) return;
+        shared.delete(texture.userData.sharedKey);
+    }
+    texture?.dispose();
+}
+
 // Built-in studio: procedural hall with light strips on the ceiling (studio-hall.js).
 // At startup a small version on the main thread (1k, ~70 ms), the full one (renderStudioEnvironment, 4k) in a worker.
 export function createStudioEnvironment(width = 1024, height = width / 2) {
-    const data = renderStudioHall(width, height, new Uint16Array(width * height * 4), THREE.DataUtils.toHalfFloat);
-    return studioTexture(data, width, height);
+    return share(`studio:${width}x${height}`, () => studioTexture(renderStudioHall(width, height, new Uint16Array(width * height * 4), THREE.DataUtils.toHalfFloat), width, height)).texture;
 }
 
-/** built-in studio in a worker (4k: sharp enough as a visible background) */
+/** built-in studio in a worker (4k: sharp enough as a visible background) – once for the page */
 export function renderStudioEnvironment(width = 4096, height = width / 2) {
-    return new Promise((resolve, reject) => {
+    return share(`studio:${width}x${height}`, () => new Promise((resolve, reject) => {
         const worker = new Worker(new URL('./studio-hall-worker.js', import.meta.url), { type: 'module', name: 'studio-hdri' });
         worker.onmessage = ({ data: msg }) => { worker.terminate(); resolve(studioTexture(msg.data, msg.width, msg.height)); };
         worker.onerror = e => { worker.terminate(); reject(new Error(e.message || 'studio worker failed')); };
         worker.postMessage({ width, height });
-    });
+    })).promise;
 }
 
 function studioTexture(data, width, height) {
@@ -89,6 +116,11 @@ export class VignetteBackground {
  * @returns {Promise<THREE.DataTexture>}
  */
 export function loadHdri(url, onProgress) {
+    // once for the page (players showing the same HDRI share it – progress for the first one)
+    return share(`hdri:${url}`, () => decodeHdri(url, onProgress)).promise;
+}
+
+function decodeHdri(url, onProgress) {
     return new Promise((resolve, reject) => {
         const worker = new Worker(new URL('./hdr-worker.js', import.meta.url), { type: 'module', name: 'hdr-decode' });
         worker.onmessage = ({ data: msg }) => {

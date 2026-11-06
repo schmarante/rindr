@@ -28,7 +28,7 @@ import { EdgeSystem } from './materials/edges.js';
 import { GraphApplier } from './graph-apply.js';
 import { uvLengthHistogram, UvMetric } from './uv-metric.js';
 import { isUvMode } from './material-graph.js';
-import { createStudioEnvironment, renderStudioEnvironment, loadHdri, listHdris, VignetteBackground, mirroredHdri } from './environment.js';
+import { createStudioEnvironment, renderStudioEnvironment, loadHdri, listHdris, VignetteBackground, mirroredHdri, releaseEnvironment } from './environment.js';
 import { PathTracingView } from './pathtracer.js';
 import { SceneGraph } from './scene-graph.js';
 import { Highlighter } from './highlight.js';
@@ -62,7 +62,7 @@ import * as dialogs from './dialog.js';
 import { showNotice as showPageNotice } from './notice.js';
 import { gpuLabel, looksIntegrated } from './gpu-info.js';
 import { triangleLimits, deviceMemoryGB, memoryBudget, BYTES_PER_TRIANGLE, formatBytes, setSafeMode, holdMemory, sizeFor } from './memory-budget.js';
-import { beginLoad, endLoad, crashedLoad, markSafe, isSafe, clearSafe } from './load-guard.js';
+import { beginLoad, crashedLoad, markSafe, isSafe, clearSafe } from './load-guard.js';
 import { findOutliers, formatLength } from './outliers.js';   // patches the path tracer's background lookup – import before it is created
 import { ANALYSIS_KEYS } from './analysis-modes.js';
 import { SPLAT_EXTENSIONS } from './splat/splat-extensions.js';
@@ -961,7 +961,7 @@ export async function createPlayer(options = {}) {
             this.texture = texture;
             ground.setEnvironment(texture);
             this.apply();
-            if (previous !== studioTexture && previous !== texture) previous.dispose();
+            if (previous !== studioTexture && previous !== texture) releaseEnvironment(previous);   // (shared: other players keep it)
         },
         /** draw the current HDRI into `canvas` (environment panel): × intensity × light boost, turned like the light */
         drawPreview(canvas) {
@@ -1004,17 +1004,17 @@ export async function createPlayer(options = {}) {
                     if (!doc) throw new Error(t('hdriEditor.missing'));
                     showProgress(t('status.renderingHdri'));
                     texture = await hdriService.texture(doc);
-                    if (this.mirror) { const rendered = texture; texture = mirroredHdri(rendered); rendered.dispose(); }
+                    if (this.mirror) { const rendered = texture; texture = mirroredHdri(rendered); releaseEnvironment(rendered); }
                     if (id === this._loadId) await pathTracing.prepareEnvironment(texture);
-                    if (id !== this._loadId) { texture.dispose(); return false; }
+                    if (id !== this._loadId) { releaseEnvironment(texture); return false; }
                 } else if (name) {
                     // relinked HDRI (asset window): blob URL of the dropped file, otherwise public/hdr
                     progress({});
                     texture = await loadHdri(this.hdriUrls[name] || `${ASSET_BASE}hdr/${encodeURIComponent(name)}`, progress);
-                    if (this.mirror) { const loaded = texture; texture = mirroredHdri(loaded); loaded.dispose(); }
+                    if (this.mirror) { const loaded = texture; texture = mirroredHdri(loaded); releaseEnvironment(loaded); }
                     // path tracer's importance-sampling table in a worker first: raster and HQ switch together
                     if (id === this._loadId) await pathTracing.prepareEnvironment(texture);
-                    if (id !== this._loadId) { texture.dispose(); return false; }
+                    if (id !== this._loadId) { releaseEnvironment(texture); return false; }
                 }
             } finally {
                 if (id === this._loadId && !loading) hideProgress();
@@ -1026,7 +1026,7 @@ export async function createPlayer(options = {}) {
             this.texture = texture;
             ground.setEnvironment(texture);
             this.apply();
-            if (previous !== studioTexture && previous !== texture) previous.dispose();
+            if (previous !== studioTexture && previous !== texture) releaseEnvironment(previous);   // (shared: other players keep it)
             return true;
         },
         /** mirror the HDRI left ↔ right (not the procedural studio – it follows the camera); the choice stays for later HDRIs */
@@ -1042,7 +1042,7 @@ export async function createPlayer(options = {}) {
             this.texture = copy;
             ground.setEnvironment(copy);
             this.apply();
-            texture.dispose();
+            releaseEnvironment(texture);   // (a shared HDRI: other players keep it)
         },
         // Transfer state to scene + path tracer. params: only intensity/rotation changed (fast)
         matte: null,         // image export: plain background colour instead of HDRI/vignette (light unchanged)
@@ -1096,8 +1096,8 @@ export async function createPlayer(options = {}) {
             await pathTracing.prepareEnvironment(texture);
             const previous = studioTexture;
             studioTexture = texture;
-            if (environment.texture === previous) environment.useTexture(texture);   // disposes the small one
-            else previous.dispose();
+            if (environment.texture === previous) environment.useTexture(texture);   // releases the small one
+            else releaseEnvironment(previous);
         }).catch(err => console.warn(`Studio environment: ${err.message}`));
         return studioUpgrade;
     }
@@ -4053,11 +4053,11 @@ export async function createPlayer(options = {}) {
         const safe = isSafe(info);
         setSafeMode(safe);
         if (safe) showNotice({ id: 'safe-mode', icon: 'info', title: t('memory.safe.title'), message: t('memory.safe.message', { name: displayName(info.name) }), timeout: 15000 });
-        beginLoad(info);
+        const loadEnded = beginLoad(info);
         try {
             return await run(safe);
         } finally {
-            endLoad();
+            loadEnded();
             if (safe) clearSafe();
             setSafeMode(false);
         }
