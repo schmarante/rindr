@@ -1,6 +1,6 @@
 # RINDR-Player – Einbettung und Whitelabel
 
-**Stand (06.11.2026):** Stufe 1 umgesetzt – die App läuft als ein Player (`createPlayer` in `viewer.js`) auf einer seitenweiten Runtime (`runtime.js`). Stufe 2 zum Teil: `<rindr-player>` mit Shadow DOM läuft (die App ist selbst eins), Funktionen per Attribut und „schlank“ noch offen – siehe „Stufe 2“. Stufen 3–4 offen. Wunsch des Nutzers: „RINDR als Whitelabel-Lösung in PIM-Systeme und Shops … eine Minimal-Konfiguration, Material-Editor, Scene Graph, Explosion, Laden/Speichern etc. sind alles Optionen, die man über Attribute aktivieren könnte … es sollte natürlich auch möglich sein, dass man in einem PIM mehrere RINDR-Player gleichzeitig anzeigen kann“. Anlass: ein Produktkonfigurator, der GLB, STEP oder gleich die RINDR-Szene ausgibt.
+**Stand (06.11.2026):** Stufe 1 umgesetzt – die App läuft als ein Player (`createPlayer` in `viewer.js`) auf einer seitenweiten Runtime (`runtime.js`). Stufe 2 weitgehend: `<rindr-player>` mit Shadow DOM, Funktionen per Attribut (Code nur bei Bedarf geladen), Attribute `src`, `scene`, `hdr`, `mode`, `features` – siehe „Stufe 2“; offen nur noch ~80 KB weitere Verschlankung. Stufen 3–4 offen. Wunsch des Nutzers: „RINDR als Whitelabel-Lösung in PIM-Systeme und Shops … eine Minimal-Konfiguration, Material-Editor, Scene Graph, Explosion, Laden/Speichern etc. sind alles Optionen, die man über Attribute aktivieren könnte … es sollte natürlich auch möglich sein, dass man in einem PIM mehrere RINDR-Player gleichzeitig anzeigen kann“. Anlass: ein Produktkonfigurator, der GLB, STEP oder gleich die RINDR-Szene ausgibt.
 
 ## Entscheidungen
 
@@ -22,7 +22,21 @@
 
 Viele Player (PIM-Raster mit 30 Produkten): nur sichtbare zeichnen (`IntersectionObserver`), nur einer rechnet HQ (der zuletzt bediente), die anderen zeigen ihr letztes Bild; Posterbild bis zum Aktivieren; Obergrenze gleichzeitig lebender Player – darüber gibt der älteste seinen GPU-Speicher frei und behält sein letztes Bild.
 
-## Schnittstelle (Entwurf)
+## Schnittstelle
+
+**Umgesetzt (Stufe 2):**
+
+```html
+<script type="module" src="…/_astro/index.astro_….js"></script>   <!-- definiert <rindr-player> -->
+<rindr-player src="/media/4711.glb"></rindr-player>                                  <!-- Minimal-Player -->
+<rindr-player scene="/media/4711.json" hdr="/hdr/studio.exr" mode="hq"
+              features="scene-graph materials explode" style="height:500px"></rindr-player>
+```
+
+- `src` Modell-URL, `scene` Szenen-Datei (RINDR-JSON, ihre Modelle liegen daneben – Dateinamen aus der Szene), `hdr` HDRI-URL (gewinnt gegen das HDRI der Szene), `mode` `default` (Standard) / `hq`, `features` (Liste, `all`). Alle Attribute werden einmal beim Start gelesen. `element.ready` = Promise der (Debug-)Schnittstelle.
+- Ohne Höhe von der Seite ist der Player 480 px hoch; Breite wie ein Block-Element.
+
+**Entwurf für Stufen 3/4:**
 
 ```html
 <script type="module" src="…/player/1.0.0/rindr-player.js"></script>
@@ -100,7 +114,19 @@ Umgesetzt (je Schritt A/B geprüft und committet; Plan in 9 Schritten, die Kompo
   - **Fallen des Prüfstands:** Material-Vorschaubilder liegen je Origin in IndexedDB (`rindr-thumbs`) – ein Build auf einem neuen Port rendert sie neu (max. 8/255 Unterschied an einem leuchtenden Material); A und B daher auf Ports mit warmem Cache vergleichen. Das HQ-Rohbild der Beispielszene hat zwei deterministische Ausprägungen (RMSE 0,015, Mittel −0,02 %), je nach Takt beim Start – auch der Stand vor dem Umbau liefert beide (1 von 4 Läufen); nicht als Abweichung werten.
 - **Messung „schlank“** (Build mit Sourcemaps, Skript `tools/player-check/sizes.cjs`): beim Start 2,21 MB JS (gzip 678 KB, 47 Dateien), davon three.js 1,11 MB (bleibt), eigener Code 0,96 MB. Ein Minimal-Player könnte etwa 430 KB (≈ 20 %) weglassen: ~240 KB Oberfläche (Eigenschaften 44, Material-Panel 23, Scene Graph, verteiltes Rendern ~22, KI, Setup, Gizmo …; dazu die UI-Abschnitte in viewer.js), ~100 KB Importer (STEP, Meshes), ~95 KB Splats und Spezial-Materialien; außerdem der Pathtracer (~420 KB), der heute im Leerlauf vorgeladen wird.
 
-Offen (Plan): gemeinsame Konstanten auslagern und Importer/Splats/Spezial-Materialien erst bei Bedarf laden (für alle); Nahtstellen in viewer.js (`core`/`ui`, SceneModel getrennt von der Baumansicht, Werkzeugleiste mit fester Reihenfolge, Tasten-Tabelle); Funktionen in eigene Module (`src/scripts/player/features/`) und `features`-Attribut samt Abhängigkeiten; Attribute `scene` (Szenen-Datei) und `hdr` als URL. Bekannt: gespeicherte Fensterpositionen (`rindr.*.window` in localStorage) teilen sich App und eingebettete Player derselben Origin – Stufe 3 (Speicher-Schlüssel je Player).
+- **Schritt 4 – Lazy für alle** (auch die App profitiert): `step-shared.js` (Tessellierungsstufen, Limit-Fehler), `mesh-formats.js` (Endungen, Fehlende-Dateien-Fehler), `splat/splat-extensions.js`, `volumes/volume-bounds.js`, `UV_TILE` aus `box-project.js` – damit hängen STEP-/Mesh-Importer, Splat-Lader und Gitter-Volumen nicht mehr über einzelne Konstanten am Start. Wolken-, Gras- und Gitter-Volumen-System kommen mit dem ersten Material/Volumen ihrer Art: bis dahin ein Stellvertreter mit denselben Aufrufen, eine leere Gruppe hält den Platz in der Szene (Zeichenreihenfolge gleich); Material-Vorschauen solcher Materialien laden ihr System vorher (`specialPreview`, `material-thumbs.js` wartet darauf). Kanten und Wolle bleiben im Kern (eng mit Toon/Material-Shadern verflochten, klein); die Splat-Systeme ebenso (in Lichtern, Schatten und Lichtstrahlen aller Materialien verdrahtet). Ein eingebetteter Player in der Standard-Ansicht lädt den Pathtracer nicht vor (HQ lädt ihn, ~4–5 s bis zum ersten Sample).
+- **Schritte 7a/7b – Oberfläche bei Bedarf:** `player/features.js` (Liste, `all`, Abhängigkeiten: `properties` → `transform`, `material-editor` → `materials`). Die Module der eingeschalteten Funktionen werden parallel zum GPU-Start geladen (`uiLoading`) und an derselben Stelle wie vorher gebaut (Reihenfolge von Listenern, Leisten-Knöpfen, Elementen bleibt); ohne Funktion ist das Objekt `null` und jeder Aufruf optional (`properties?.`, `materialPanel?.` …). Bei Bedarf: Eigenschaften, Material-Panel + Vorschaubilder, Setup (+ Über, KI-Einstellungen, Fenster), Werkzeugleiste (jedes Werkzeug nur mit seiner Funktion), View-Cube, Gizmo + Quad-Menü (`transform-state.js` hält den Transform-Zustand für den Kern, die Overlay-Szene gehört dem Viewer), Skelett-Ansicht (mit dem ersten gezeigten Skelett), verteiltes Rendern (nur App). Der Scene Graph bleibt Kern (Auswahl, ausgeblendet/gesperrt/gelöscht – Szenen-Dateien), sein Panel ist ohne Funktion verborgen.
+- **Schritt 8 – Verhalten je Funktion:** Kürzel: Rückgängig/Wiederholen und Entf nur mit einer bearbeitenden Funktion (`properties`, `materials`, `transform`, `explode`, `section`, `views`), Strg+A und Klick-Auswahl nur mit einer auswählenden (`scene-graph`, `properties`, `transform`, `materials`), U mit einem Panel (`scene-graph`, `properties`, `materials`, `view-cube`, `setup`), C `views`, W/E/S/H `transform`, X `explode`, Leertaste `animation`; immer: 1/2/3, T/F/B/D/L/R, P, Z, Doppelklick (Kamera aufs Objekt). Abspielleiste mit `animation`, Datei-Drop + Drop-Hinweis mit `open`, Material-Bearbeitung mit `material-editor` (`MaterialPanel` Option `editing`). Werkzeugleiste: Undo/Redo/Reset mit Bearbeiten, U-Knopf mit Panel, Explosion, Rendern, KI, Speichern/Laden, Assets (`save`/`open`), Setup, Vollbild, BCF nur App; Modus-Wahl mit `view-modes` (ohne sie fehlt in der Leiste auch der Rendern-Knopf, er sitzt in der Modus-Box).
+- **Messung nach Schritt 8** (Start-JS = was der Minimal-Player lädt; die App lädt die Funktionen dazu): **2,02 MB, gzip 597 KB** (vorher 2,21 MB / 678 KB; dazu Seiten-CSS 53 → 8,5 KB; three.js 1,11 → 1,09 MB ohne TransformControls). Der Minimal-Player lädt beim Start mit einem STL-Modell ~2,2 MB Skripte (ohne Worker). Restpotenzial ~80 KB (≈ 4 %): Abschnitte von viewer.js selbst (KI/Export, MaterialX, BCF, Setup-Aufbau, Qualität je Teil, Skelett-API, verteiltes Rendern ~15 KB Code), Scene-Graph-Ansicht vom Modell trennen, Icons einzeln statt alle auf einmal (~12 KB) – nach Wunsch des Nutzers erst nach Schritt 8, als eigener Schritt.
+- **Weitere Fallen:**
+  - Ein Name, der aus den statischen Imports von viewer.js verschwindet, kann noch an anderer Stelle stehen (die Debug-Schnittstelle hatte `loadSplats`) – erst zur Laufzeit ein Fehler, und dann startet der ganze Player nicht. **Vor jedem Build** `npx eslint` mit `no-undef` (Konfiguration `tools/player-check/eslintrc.json`, Vite-`__APP_VERSION__` und die WebGPU-Konstanten als Globals; `fuzz.patch.js` ist ein Patch-Schnipsel, kein Modul).
+  - Werkzeug-Setter tragen `.button` (Icon tauschen, verbergen) – ein fehlendes Werkzeug braucht einen Ersatz-Setter mit losgelöstem Knopf.
+  - Optionale Aufrufe, deren Ergebnis weitergereicht wird (`patchRaycaster(transformer?.controls…)`), brauchen eine echte Bedingung.
+  - Eine Szenen-Datei setzt beim Wiederherstellen ihr HDRI – das `hdr`-Attribut wird deshalb in `afterRestore` angewendet.
+  - Prüfstand: `run.js` schließt nach jedem Szenario alle Test-Tabs (`127.0.0.1:84…`) – zwei Prüfskripte gleichzeitig brechen sich gegenseitig ab.
+- **Prüfweg ergänzt:** Szenarien `special` (Wolken-/Gras-Material aus der Bibliothek auf einer Kugel, Raster + HQ, Vorschaubild), `vdb` (Rauch-Volumen), `skeleton` (gehäutetes glTF, Skelett zeigen); `embed.js` mit drei Seiten: Player mit `features="all"` (bisherige Prüfungen), Minimal-Player (keine Panels, keine Fehler, Klick wählt nichts, X ohne Wirkung, Taste 3 → HQ ohne vorgeladenen Pathtracer, Skriptmenge) und Szene + HDRI per Attribut. Material-IDs stehen auch als Schlüssel in den Zuweisungen (je Lauf anders – Rauschen).
+
+Bekannt: gespeicherte Fensterpositionen (`rindr.*.window` in localStorage) teilen sich App und eingebettete Player derselben Origin – Stufe 3 (Speicher-Schlüssel je Player).
 
 ## Offen
 
