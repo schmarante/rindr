@@ -42,6 +42,29 @@ const _adaptiveSize = new Vector2();
 // 960² 270 ms, 1216² 375 ms) – other GPUs: scaled by the measured speed (_learnDenoiseSpeed)
 const DENOISE_TILE_COST = { fixed: 60, perPixel: 0.215e-3 };
 
+// One path tracing engine per page (docs/player.md, stage 3): the library's path tracer with the scene's buffers, the
+// denoisers, upscalers and image filters, the kernels and the hooks into the renderer's backend exist once – they are
+// large (buffers at the size of the view, the denoiser's network) and the kernels compile once. The view of the player
+// showing HQ owns it (claim); every other view waits (not ready, its settings kept) and sets its scene again once it
+// owns the engine again. A single player (the app) owns it from its first load() on.
+const engine = {
+    owner: null,
+    hooked: false,   // backend hooks installed (_installAsyncCompile, _installTimestamps)
+    minSamples: 0,   // the library's minSamples (the owners' first-sample tricks set it to 0 for a frame)
+    // the engine's parts – a view sees them only while it owns the engine (OWNED)
+    pathTracer: null, denoiser: null, upscaler: null, kuwahara: null, motionDenoiser: null, motionUpscaler: null,
+    guides: null, denoiseGuides: null, imageFade: null, adaptiveSampler: null, _imageChain: null,
+    // its state – the same for every view (SHARED): loading, compiles, timing, kernels per scene data, denoiser progress
+    _loading: null, _tracing: false, _compiling: 0, _compiled: false, _ownCompile: null, _compileJobs: new Set(),
+    _tsPending: false, _motionReady: false, _denoisePrep: null, _caustics: null, denoiseProgress: 0, denoiseLoading: false,
+};
+const OWNED = ['pathTracer', 'denoiser', 'upscaler', 'kuwahara', 'motionDenoiser', 'motionUpscaler', 'guides', 'denoiseGuides',
+    'imageFade', 'adaptiveSampler', '_imageChain'];
+const SHARED = ['_loading', '_initUNetFromURL', '_GuideKernel', '_tracing', '_compiling', '_compileStart', '_compiled', '_ownCompile',
+    '_compileJobs', '_skips', '_lastSkips', '_tsPending', '_timestamps', '_megakernel', '_woolRay', '_denoisePrep', '_motionPrep',
+    '_motionReady', '_caustics', '_causticsLib', '_causticsLoad', '_emitters', '_emittersVersion', '_helpers', 'denoiseProgress',
+    'denoiseLoading', '_denoiseSpeed'];
+
 export class PathTracingView {
     constructor(renderer, { denoiseWeightsUrl }) {
         this.renderer = renderer;
@@ -78,34 +101,28 @@ export class PathTracingView {
         this.adaptive = { ...PATHTRACING.adaptive };
         this._noiseMap = false;
         this._adaptiveTask = null;      // state of the current render (the render task's, see _adaptiveCycle)
-        this.denoiseProgress = 0;       // 0..1 of the OIDN tiles
-        this.denoiseLoading = false;    // network/weights are loading
-
-        this.pathTracer = null;         // created by load()
+        // engine (OWNED, SHARED): pathTracer, denoiser … created by load(); denoiseProgress 0..1 of the OIDN tiles,
+        // denoiseLoading while network/weights load
         this._denoiseWeightsUrl = denoiseWeightsUrl;
         // settings until the path tracer exists
         this._settings = { renderScale: PATHTRACING.renderScale, maxSamples: PATHTRACING.maxSamples,
             filterGlossyFactor: PATHTRACING.filterGlossyFactor, sharpness: PATHTRACING.sharpness };
-        this._loading = null;
-
-        this._tracing = false;          // inside a path tracer call from render() (async compile applies)
-        this._compiling = 0;            // pipelines being compiled asynchronously
-        this._compiled = false;         // a compile finished -> restart (the skipped dispatches counted as samples)
+        // engine state: _tracing = inside a path tracer call from render() (async compile applies), _compiling = pipelines
+        // being compiled asynchronously, _compiled = a compile finished -> restart (the skipped dispatches counted as samples)
         this._injected = -1;            // restart count of an injected picture (injectImage) – no kernel needed for it
         this.holdKernel = false;        // a render job's picture comes as buckets (viewer): the view traces nothing until
                                         // it is injected – no kernel compiled when this computer does not render along
         this.yieldTo = null;            // () => true: other GPU work waits (material previews, node graph bakes – viewer):
                                         // the frame shows the picture without a sample (_renderPathTraced)
         this._envToken = 0;
-        if (this.supported) { this._installAsyncCompile(); this._installTimestamps(); }
+        if (this.supported && !engine.hooked) { engine.hooked = true; this._installAsyncCompile(); this._installTimestamps(); }
 
-        this._denoisePrep = null;       // OIDN guide kernel compiled for this scene data: { key, done } (_prepareDenoiser)
+        // engine: _denoisePrep = OIDN guide kernel compiled for this scene data: { key, done } (_prepareDenoiser),
+        // _motionReady = motion denoiser compiled once for this scene (_prepareMotionDenoiser), _ownCompile = promise list:
+        // compute pipelines created meanwhile compile asynchronously, _compileJobs = shaders compiling now { key, bytes } –
+        // named in the status (_trackCompile), _tsPending = a timestamp read is running (_readTimestamps)
         this._filterState = { spp: 0, view: new Matrix4(), proj: new Matrix4(), w: 0, h: 0, k: 1 };
-        this._motionReady = false;      // motion denoiser compiled once for this scene (_prepareMotionDenoiser)
-        this._ownCompile = null;        // promise list: compute pipelines created meanwhile compile asynchronously
-        this._compileJobs = new Set();  // shaders compiling now { key, bytes } – named in the status (_trackCompile)
         this._restarted = false;        // reset with the view kept (HDRI, material, light …): show the first sample at once
-        this._tsPending = false;        // a timestamp read is running (_readTimestamps)
         this._frameMs = 0;              // GPU time of the last refining frame (≈ one megakernel tile)
         this._motionScale = 1;          // orbit resolution factor learned from the GPU time (≤ 1)
         this._motionScaleAt = 0;
@@ -116,17 +133,110 @@ export class PathTracingView {
                                         // takes over a change a few frames later, e.g. a new HDRI after its table)
         // soft transition between the images (_fade): rest = share of the non-final image still shown once done
         this.glassShadow = { ...PATHTRACING.glassShadow };   // shadows of glass (setGlassShadow, glass-shadow.js)
-        this._caustics = null;          // photon pass of the caustics (caustics-kernel.js, loaded with the mode)
+        // engine: _caustics = photon pass of the caustics (caustics-kernel.js, loaded with the mode)
         this._causticsVersion = 0;      // scene data / materials / transforms / lights changed: the photons start over
         this.sceneSize = 1;             // size of the scene (viewer) – the fringe fades relative to it
-        this._applyGlassShadow();
-        GLASS_SPLIT.enabled.value = this.glassSplit ? 1 : 0;
-        PT_MOTION.glassBounces.value = this.refractionBounces;
+        this._applyKernelSettings();    // (only while no other view owns the engine)
         this._blend = { last: 0, frame: 0, view: new Matrix4(), proj: new Matrix4(), rest: 0, prepared: false };
         this.lightMix = null;           // light mix of a render with light passes (setLightMix)
         this._passHold = null;          // kernel variant with the passes kept: true during a job (holdPassKernel), then
                                         // the restart count of its picture – the next restart goes back to the normal one
         this.onLightMixEnd = null;      // called when it ends (viewer: closes its window)
+        this.onAttach = null;           // the view got the engine back from another player (viewer: sets its scene again)
+    }
+
+    // --- The page's engine (one per page, see `engine`) ---
+
+    /** this view owns the page's engine (HQ is this player's) */
+    get owner() { return engine.owner === this; }
+
+    // the kernels' settings (module-wide uniforms) may be written by this view: it owns the engine or nobody does
+    _mayWrite() {
+        return !engine.owner || engine.owner === this;
+    }
+
+    // this view's settings in the kernels' uniforms (glass shadow, glass split, refractions while standing still)
+    _applyKernelSettings() {
+        if (!this._mayWrite()) return;
+        this._applyGlassShadow();
+        GLASS_SPLIT.enabled.value = this.glassSplit ? 1 : 0;
+        PT_MOTION.glassBounces.value = this.refractionBounces;
+    }
+
+    /**
+     * Take the page's engine (this player shows HQ): the previous owner's view stops – not ready, its settings kept, its
+     * scene set again once it gets the engine back (onAttach). false while the owner may not give it up (locked: a render,
+     * export … of that player).
+     */
+    claim() {
+        if (engine.owner === this) return true;
+        const prev = engine.owner;
+        if (prev?.locked) return false;
+        prev?._detach();
+        engine.owner = this;
+        if (engine.pathTracer) {
+            this._attach();
+            this.onAttach?.();
+        }
+        return true;
+    }
+
+    // the engine goes to another view: this one's picture ends (reduced orbit settings and its light mix back first)
+    _detach() {
+        this._exitMotion();
+        if (this.lightMix) this.setLightMix(null);
+        this.ready = false;
+        this._restarted = false;
+        this._holdShown = this._holdCover = false;
+        this._fullFirst = false;
+    }
+
+    // the engine came to this view (created before for another one): its settings into the path tracer, the kernels'
+    // uniforms and the parts; what belonged to the previous scene starts over (setScene follows – onAttach)
+    _attach() {
+        const pt = engine.pathTracer, s = this._settings;
+        this._maxSamplesLater = null;
+        pt.maxSamples = s.maxSamples;
+        pt.renderScale = s.renderScale;
+        pt.maxBounces = this.bounces;
+        pt.minSamples = engine.minSamples;
+        pt.filterGlossyFactor = s.filterGlossyFactor;
+        engine.upscaler.sharpness = s.sharpness;
+        pt.setDenoiser(this.denoiseEnabled ? engine.denoiser : null);
+        this._applyKernelSettings();
+        PT_MOTION.mirrors.value = 0;
+        PT_MOTION.fixedJitter.value = 0;
+        // the previous scene's emitter table and photons
+        engine._emittersVersion = -1;
+        if (engine._caustics) engine._caustics.signature = '';
+        // this view's caches of its last picture (the parts' textures meanwhile showed another player's)
+        this._filterState.w = 0;
+        this._filterState.out = null;
+        this._blend.last = -Infinity;
+        this._adaptiveTask = null;
+        this._frameMs = 0;
+        if (this._noiseMap) engine.adaptiveSampler.prepare();
+    }
+
+    /** the engine stays with this view until the returned release is called (a render, export … of this player: claim() of
+     *  another view fails meanwhile) */
+    hold() {
+        this._holds = (this._holds || 0) + 1;
+        let released = false;
+        return () => { if (!released) { released = true; this._holds--; } };
+    }
+
+    /** the engine may not go to another view now (held, or a bucket / light pass compile running) */
+    get locked() {
+        return this._holds > 0 || !!this.regionBusy;
+    }
+
+    /** debug (tests): give the engine up and take it back – the steps of handing it to another player and back */
+    debugReattach() {
+        if (engine.owner !== this) return false;
+        this._detach();
+        engine.owner = null;
+        return this.claim();
     }
 
     // Large compute shaders (megakernel ~110 KB WGSL) via createComputePipelineAsync. three.js creates compute
@@ -150,12 +260,12 @@ export class PathTracingView {
             if (!this._compiling) this._compileStart = t0;   // status: time compiling so far
             this._compiling++;
             // the path tracer's kernel – its variant with the light passes or the normal one
-            this._trackCompile(this.pathTracer?._pathTracer?.kernel?.lightPasses ? 'kernelPasses' : 'kernel', Promise.all(list), pipeline.computeProgram.code.length);
+            this._trackCompile(engine.pathTracer?._pathTracer?.kernel?.lightPasses ? 'kernelPasses' : 'kernel', Promise.all(list), pipeline.computeProgram.code.length);
             Promise.all(list).then(() => {
                 this._compiling--;
                 this._compiled = true;
                 debugLog(`[Pathtracer] kernel compiled asynchronously in ${(performance.now() - t0).toFixed(0)} ms`);
-                if (backend.get(pipeline).error) this.fail(t('render.gpuError'));
+                if (backend.get(pipeline).error) engine.owner?.fail(t('render.gpuError'));
             });
         };
         // pipeline not ready yet (async compile running): skip
@@ -181,20 +291,27 @@ export class PathTracingView {
     /** Load and create the path tracer (once; later calls return the same promise). false = not supported */
     load() {
         if (!this.supported) return Promise.resolve(false);
+        if (!engine.owner) engine.owner = this;   // the first view to load it owns the engine (a single player: always)
         this._loading ??= Promise.all([import('three-gpu-pathtracer/webgpu'), import('oidn-web'), import('@pmndrs/upscaler'), import('./pt-guides.js')])
             .then(([ptLib, oidn, upscalerLib, guidesLib]) => { this._create(ptLib, oidn, upscalerLib, guidesLib); return true; })
             .catch(err => { this._loading = null; throw err; });
         return this._loading;
     }
 
+    // the engine's parts, once per page – set up with this view's settings (the view that loaded first: the owner then;
+    // another owner meanwhile gets its own applied right after). Every hook into the parts acts for the view owning the
+    // engine at that moment (engine.owner), not for the one creating them.
     _create({ WebGPUPathTracer, OIDNDenoiser, FSRUpscaler }, { initUNetFromURL }, { Upscaler }, { GuideKernel }) {
         const t0 = performance.now();
         const s = this._settings;
+        const owner = () => engine.owner ?? this;
         this._initUNetFromURL = initUNetFromURL;
-        const pt = this.pathTracer = new WebGPUPathTracer(this.renderer);
+        const renderer = this.renderer;
+        const pt = engine.pathTracer = new WebGPUPathTracer(renderer);
+        engine.minSamples = pt.minSamples;
         pt.renderScale = s.renderScale;
         // read by the library's own size sync (Vite patch in astro.config.mjs) – the same size as _syncSize
-        Object.defineProperty(pt, 'sizeFactor', { get: () => this.sizeFactor });
+        Object.defineProperty(pt, 'sizeFactor', { get: () => owner().sizeFactor });
         pt.maxSamples = s.maxSamples;
         pt.maxBounces = this.bounces;
         pt.filterGlossyFactor = s.filterGlossyFactor;
@@ -208,91 +325,95 @@ export class PathTracingView {
         pt.adaptiveFrameBudget = false;
         pt.adaptiveDynamicRes = false;
 
-        this.denoiser = new OIDNDenoiser({
-            initUNetFromURL: (url, backend, options) => this._initUNet(url, backend, options),
+        const denoiser = engine.denoiser = new OIDNDenoiser({
+            initUNetFromURL: (url, backend, options) => owner()._initUNet(url, backend, options),
             auxWeightsUrl: this._denoiseWeightsUrl,
             // the guides come from our own kernel (denoiseGuides, see the update below): the library does not gather
             // its albedo / normal in the megakernel then (0.0.28)
             useAuxiliaryBuffers: false,
             ...this._denoiseTileOptions(),
         });
-        this.upscaler = new FSRUpscaler({ Upscaler });
-        this.upscaler.sharpness = s.sharpness;
-        this.kuwahara = new KuwaharaFilter(this.renderer, PATHTRACING.kuwahara);
-        this.motionDenoiser = new MotionDenoiser(this.renderer, PATHTRACING.denoiseMotion);
-        this.motionUpscaler = new MotionUpscaler(this.renderer, PATHTRACING.motionUpscale);
-        this.guides = new GuideKernel(PATHTRACING.denoiseMotion);   // its guide buffers, traced like the image
+        const fsr = engine.upscaler = new FSRUpscaler({ Upscaler });
+        fsr.sharpness = s.sharpness;
+        engine.kuwahara = new KuwaharaFilter(renderer, PATHTRACING.kuwahara);
+        engine.motionDenoiser = new MotionDenoiser(renderer, PATHTRACING.denoiseMotion);
+        engine.motionUpscaler = new MotionUpscaler(renderer, PATHTRACING.motionUpscale);
+        engine.guides = new GuideKernel(PATHTRACING.denoiseMotion);   // its guide buffers, traced like the image
         // OIDN's albedo/normal guides from the same kernel instead of the library's raster pass (perspective camera:
         // did not fit the fisheye – noise stayed, ghost edges –, nor depth of field or mirrors/glass)
-        this.denoiseGuides = new GuideKernel({ ...PATHTRACING.denoiseMotion, samples: PATHTRACING.denoiseGuideSamples });
+        engine.denoiseGuides = new GuideKernel({ ...PATHTRACING.denoiseMotion, samples: PATHTRACING.denoiseGuideSamples });
         this._GuideKernel = GuideKernel;   // helper passes of a light pass render (helperPasses)
-        this.imageFade = new ImageFade(this.renderer);
-        this.adaptiveSampler = new AdaptiveSampler(this.renderer);
-        setAdaptiveHandler((backend, completed, task) => this._adaptiveCycle(backend, completed, task));
+        engine.imageFade = new ImageFade(renderer);
+        engine.adaptiveSampler = new AdaptiveSampler(renderer);
+        setAdaptiveHandler((backend, completed, task) => owner()._adaptiveCycle(backend, completed, task));
         // the path tracer's "upscaler" slot: image filter while orbiting and while the image refines (Kuwahara or
         // denoiser, see _filter), then the upscale (_upscale: with history while orbiting, else FSR if switched on),
         // then the soft transition to the shown image (_fade)
-        const fsr = this.upscaler;
-        this._imageChain = {
-            init: renderer => fsr.init(renderer),
-            dispose: () => { fsr.dispose?.(); this.adaptiveSampler.dispose(); this.kuwahara.dispose(); this.motionDenoiser.dispose(); this.motionUpscaler.dispose(); this.guides.dispose(); this.denoiseGuides.dispose(); this._helpers?.dispose(); this.imageFade.dispose(); this._emitters?.dispose(); },
+        engine._imageChain = {
+            init: r => fsr.init(r),
+            dispose: () => { fsr.dispose?.(); engine.adaptiveSampler.dispose(); engine.kuwahara.dispose(); engine.motionDenoiser.dispose(); engine.motionUpscaler.dispose(); engine.guides.dispose(); engine.denoiseGuides.dispose(); engine._helpers?.dispose(); engine.imageFade.dispose(); engine._emitters?.dispose(); },
             upscale: (texture, camera) => {
+                const view = owner();
                 // light mix of a render with light passes (light-mix.js): its picture instead of the path tracer's
-                if (this.lightMix) texture = this.lightMix.texture() ?? texture;
-                texture = this._filter(texture);
-                texture = this._upscale(texture, camera);
-                texture = this._fade(texture, camera);
+                if (view.lightMix) texture = view.lightMix.texture() ?? texture;
+                texture = view._filter(texture);
+                texture = view._upscale(texture, camera);
+                texture = view._fade(texture, camera);
                 // noise map of adaptive sampling over the picture (not while orbiting: no map of that image)
-                return this.noiseMap && this.adaptiveSampler.hasHeat && !this._motion ? this.adaptiveSampler.overlay(texture) : texture;
+                return view.noiseMap && engine.adaptiveSampler.hasHeat && !view._motion ? engine.adaptiveSampler.overlay(texture) : texture;
             },
         };
         // the denoise waits until the guide kernel is compiled (_prepareDenoiser)
-        const denoiser = this.denoiser;
         denoiser.update = target => {
-            if (this._denoisePrep && !this._denoisePrep.done) return denoiser.texture;
+            const view = owner();
+            if (engine._denoisePrep && !engine._denoisePrep.done) return denoiser.texture;
             // never while orbiting: with the camera still the reduced image reached the sample limit and got denoised –
             // a finished-looking picture at a third of the resolution (user: stuck in the low-res mode)
-            if (this._motion) return denoiser.texture;
+            if (view._motion) return denoiser.texture;
             // light passes: each pass is denoised instead of the image (the mix is made of them)
-            if (this.lightMix) { this._denoiseLightMix(); return denoiser.texture; }
+            if (view.lightMix) { view._denoiseLightMix(); return denoiser.texture; }
             if (denoiser.complete || denoiser.running || denoiser._failed) return denoiser.texture;
             // OIDN's guides, traced like the image (the library's update would take them from the megakernel)
-            const guides = this.denoiseGuides, p = this.pathTracer;
-            guides.trace(this.renderer, p._bvhData, target.width, target.height, p.camera);
+            const guides = engine.denoiseGuides;
+            guides.trace(renderer, pt._bvhData, target.width, target.height, pt.camera);
             denoiser.denoise(target, guides.albedo, guides.normal).catch(err => {
                 denoiser._failed = true;   // reported once – no new pass until a reset (as the library's update)
                 console.warn('[Pathtracer] denoise failed:', err?.message || err);
             });
             return denoiser.texture;
         };
-        pt.setDenoiser(this.denoiseEnabled ? this.denoiser : null);
-        pt.setUpscaler(this._imageChain);
+        pt.setDenoiser(this.denoiseEnabled ? denoiser : null);
+        pt.setUpscaler(engine._imageChain);
         // restart while the image is shown (environment, materials, lights, objects …): the raster image used to cover
         // the path tracer until the first sample was complete – a jump to the raster view and back. Instead the first
         // sample is computed at once (_renderFirstSample) and fades in over the previous image (_fade).
         const reset = pt.reset.bind(pt);
         pt.reset = () => {
+            const view = owner();
             // samples of the settings back after a render with its own count (setMaxSamplesLater) – from this restart on
-            if (this._maxSamplesLater != null) { const v = this._maxSamplesLater; this._maxSamplesLater = null; pt.maxSamples = v; }
+            if (view._maxSamplesLater != null) { const v = view._maxSamplesLater; view._maxSamplesLater = null; pt.maxSamples = v; }
             reset();
-            this._restarts = (this._restarts || 0) + 1;   // image filter cache (_filter)
+            view._restarts = (view._restarts || 0) + 1;   // image filter cache (_filter)
             // another picture (materials, environment, scene …): the orbit history no longer fits – a new view is
             // checked when blending (_seedWeight), while orbiting the neighbourhood clamp follows changes
-            if (!this._motion && !this._cameraReset) this.motionUpscaler.dropHistory();
-            if (this.lightMix) this.setLightMix(null);   // a new picture: the mix is over
-            this._adaptiveTask = null;   // its noise map and counts belong to the old picture
-            this._frameMs = 0;   // dispatches per frame: measured anew (_renderPathTraced)
-            this.adaptiveSampler.hasHeat = false;
-            if (this.ready && !this._motion && !this.interacting) {
-                this._restarted = true;
-                this.onRestart?.();
+            if (!view._motion && !view._cameraReset) engine.motionUpscaler.dropHistory();
+            if (view.lightMix) view.setLightMix(null);   // a new picture: the mix is over
+            view._adaptiveTask = null;   // its noise map and counts belong to the old picture
+            view._frameMs = 0;   // dispatches per frame: measured anew (_renderPathTraced)
+            engine.adaptiveSampler.hasHeat = false;
+            if (view.ready && !view._motion && !view.interacting) {
+                view._restarted = true;
+                view.onRestart?.();
             }
         };
         const updateCamera = pt.updateCamera.bind(pt);
         pt.updateCamera = () => {
-            this._cameraReset = true;
-            try { updateCamera(); } finally { this._cameraReset = false; }
+            const view = owner();
+            view._cameraReset = true;
+            try { updateCamera(); } finally { view._cameraReset = false; }
         };
+        // another view took the engine while it was loading: its settings, not this one's
+        if (engine.owner && engine.owner !== this) engine.owner._attach();
         debugLog(`[Pathtracer] created in ${(performance.now() - t0).toFixed(0)} ms`);
     }
 
@@ -340,7 +461,7 @@ export class PathTracingView {
                     this._learnDenoiseSpeed(unet.getRuntimeInfo?.().lastExecution, overlap);
                     // the whole result at once (0.0.28 copies it only in its progress callback, replaced above); the
                     // light passes' denoise (light-mix.js) keeps its outputs itself
-                    if (!this.lightMix) this.denoiser._copyOutputToTexture(output, width, height);
+                    if (!engine.owner?.lightMix) engine.denoiser._copyOutputToTexture(output, width, height);
                     inputs.done(output);
                 },
             });
@@ -428,7 +549,7 @@ export class PathTracingView {
     setGlassShadow(options) {
         const caustics = this.glassShadow.mode === 'caustics';
         // another photon count: the grid starts over (the picture shows what is set, also with fewer)
-        if (options.photons != null && options.photons !== this.glassShadow.photons && this._caustics) this._caustics.signature = '';
+        if (options.photons != null && options.photons !== this.glassShadow.photons && this.owner && this._caustics) this._caustics.signature = '';
         Object.assign(this.glassShadow, options);
         this._applyGlassShadow();
         // caustics: a kernel feature (photon grid lookup) – the materials collect it again
@@ -439,7 +560,7 @@ export class PathTracingView {
     /** Reflection and refraction both traced at the first glass hit (glass-split.js) */
     setGlassSplit(on) {
         this.glassSplit = !!on;
-        GLASS_SPLIT.enabled.value = on ? 1 : 0;
+        if (this._mayWrite()) GLASS_SPLIT.enabled.value = on ? 1 : 0;
         this.reset();
     }
 
@@ -449,6 +570,7 @@ export class PathTracingView {
     }
 
     _applyGlassShadow() {
+        if (!this._mayWrite()) return;   // applied when this view gets the engine (_attach)
         const g = this.glassShadow;
         GLASS_SHADOW.mode.value = g.mode === 'opaque' ? 0 : g.mode === 'caustics' ? 2 : 1;
         kernelFeatures.caustics = g.mode === 'caustics';
@@ -468,10 +590,13 @@ export class PathTracingView {
         this.building = true;
         this.error = null;
         try {
+            // the page's engine for this view (another player's HQ stops; not while that one holds it – stays not ready)
+            if (!this.claim()) return;
             // path tracer usually preloaded already; the environment table comes from a worker
             await Promise.all([this.load(), prepareEnvCdf(scene.environment)]);
             // wait one frame so the status display becomes visible (hidden tab – render client: no frames, no display)
             if (!document.hidden) await new Promise(resolve => requestAnimationFrame(resolve));
+            if (!this.owner) return;   // another player took the engine meanwhile
             const t0 = performance.now();
             this.pathTracer.setScene(scene, camera);
             this._causticsVersion++;
@@ -526,7 +651,7 @@ export class PathTracingView {
     /** Refractions through glass that do not count as bounces (pt-motion.js) */
     setRefractionBounces(bounces) {
         this.refractionBounces = bounces;
-        if (this._motion) return;   // taken over when the motion ends
+        if (this._motion || !this._mayWrite()) return;   // taken over when the motion ends / the view gets the engine
         PT_MOTION.glassBounces.value = bounces;
         if (this.ready) this.reset();
     }
@@ -1412,7 +1537,7 @@ export class PathTracingView {
 
     /** photons of the caustics so far (0 while they are off) */
     get causticPhotons() {
-        return CAUSTICS.on.value === 1 && this._caustics ? this._caustics.photons : 0;
+        return CAUSTICS.on.value === 1 && this.owner && this._caustics ? this._caustics.photons : 0;
     }
 
     // the photon pass: module loaded, kernels compiled asynchronously for the current scene data – null until ready
@@ -1691,4 +1816,19 @@ export class PathTracingView {
         status.phase = 'rendering';
         return status;
     }
+}
+
+// a view's fields that are the engine's: its parts only for the owner (null for every other view – it behaves as before
+// the path tracer was loaded), its state the same for all
+for (const key of OWNED) {
+    Object.defineProperty(PathTracingView.prototype, key, {
+        get() { return engine.owner === this ? engine[key] : null; },
+        set(v) { engine[key] = v; },
+    });
+}
+for (const key of SHARED) {
+    Object.defineProperty(PathTracingView.prototype, key, {
+        get() { return engine[key]; },
+        set(v) { engine[key] = v; },
+    });
 }

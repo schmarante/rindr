@@ -586,6 +586,8 @@ export async function createPlayer(options = {}) {
 
     // --- Pathtracing (three-gpu-pathtracer, WebGPU) ---
     const pathTracing = new PathTracingView(renderer, { denoiseWeightsUrl: DENOISE_WEIGHTS_URL });
+    // the page's path tracing engine came back from another player (pathtracer.js claim): this player's scene into it again
+    pathTracing.onAttach = () => updatePathTracingScene();
     // path tracer modules: not in the start bundle – loaded when the browser is idle after the start, so
     // switching to HQ later does not wait for the download (setScene() waits for it if HQ comes earlier). An embedded
     // player in the Default view leaves them out (~420 KB): HQ (key 3) then loads them first (docs/player.md "schlank")
