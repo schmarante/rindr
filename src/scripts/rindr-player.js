@@ -3,7 +3,8 @@
 //
 //   <rindr-player src="models/chair.glb" mode="hq"></rindr-player>
 //
-// Attributes (read once at the start): src = model URL (relative to the page), mode = 'default' (raster, the default)
+// Attributes (read once at the start): src = model URL (relative to the page), scene = scene file URL (RINDR scene,
+// its models next to it), hdr = HDRI URL (.hdr/.exr), mode = 'default' (raster, the default)
 // or 'hq' (path tracing when standing still), features = the interface parts (player/features.js; none = the 3D view
 // only, 'all' = everything). Options of the app (whole page, its preloader …) come in as the property
 // `rindrOptions` before the element is put into the page.
@@ -41,6 +42,8 @@ export class RindrPlayer extends HTMLElement {
         // an embedded player takes keys while it has the focus (click into the view, or Tab)
         if (!options.appMode && !this.hasAttribute('tabindex')) this.tabIndex = 0;
         const src = this.getAttribute('src');
+        const scene = this.getAttribute('scene');
+        const hdr = this.getAttribute('hdr');
         const mode = this.getAttribute('mode');
         /** Promise of the player's interface (rejects when the browser has no usable renderer) */
         this.ready = createPlayer({
@@ -51,6 +54,8 @@ export class RindrPlayer extends HTMLElement {
             uiRoot: root.querySelector('[data-rindr-root]'),
             fullscreenElement: options.appMode ? document.documentElement : this,
             ...(src ? { modelUrl: new URL(src, document.baseURI).href } : {}),
+            ...(scene ? { sceneUrl: new URL(scene, document.baseURI).href } : {}),
+            ...(hdr ? { hdrUrl: new URL(hdr, document.baseURI).href } : {}),
             ...(mode ? { mode } : {}),
             features: options.features ?? this.getAttribute('features') ?? '',
         });

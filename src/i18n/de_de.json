@@ -2651,6 +2651,7 @@
         "sceneBelongsTo": "Szene gehört zu „{name}“ – Modell ins Fenster ziehen",
         "restoringScene": "Stelle Szene wieder her…",
         "loadingSample": "Lädt die Beispielszene …",
+        "loadingScene": "Lädt die Szene …",
         "sampleError": "Beispielszene nicht geladen",
         "sceneErrorTitle": "Szene konnte nicht geöffnet werden",
         "invalidJson": "{name}: kein gültiges JSON",

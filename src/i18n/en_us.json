@@ -2651,6 +2651,7 @@
         "sceneBelongsTo": "Scene belongs to “{name}” – drag the model into the window",
         "restoringScene": "Restoring scene…",
         "loadingSample": "Loading the sample scene …",
+        "loadingScene": "Loading the scene …",
         "sampleError": "Sample scene not loaded",
         "sceneErrorTitle": "Could not open the scene",
         "invalidJson": "{name}: not valid JSON",

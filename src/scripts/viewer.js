@@ -175,6 +175,7 @@ export async function createPlayer(options = {}) {
     // empty scene: drop hint, the formats (narrow – the long list ran across the window) and "open file" below
     const ICON_OPEN_FILE = icon('open', 'size-4');
     function showDropHint() {
+        if (!has('open')) { hideStatus(); return; }   // a player without 'open': no invitation to drop files
         const title = document.createElement('div');
         title.textContent = t('status.dropHint');
         const formats = document.createElement('div');
@@ -299,6 +300,8 @@ export async function createPlayer(options = {}) {
     // derived: undo/redo/reset with any editing part, the hide-UI key/button with any panel, the toolbar with any of its tools
     const editing = ['properties', 'materials', 'transform', 'explode', 'section', 'views'].some(has);
     const panels = ['scene-graph', 'properties', 'materials', 'view-cube', 'setup'].some(has);
+    // selecting parts by click (and Ctrl+A, the highlight) – with a part that works on the selection
+    const selecting = ['scene-graph', 'properties', 'transform', 'materials'].some(has);
     const toolbarWanted = APP_MODE || editing || panels || ['view-modes', 'render', 'ki', 'save', 'open', 'setup', 'fullscreen'].some(has);
     const uiLoading = Promise.all([
         has('properties') ? import('./properties.js') : null,
@@ -1043,8 +1046,13 @@ export async function createPlayer(options = {}) {
     (window.requestIdleCallback || (fn => setTimeout(fn, 500)))(() => { if (!environment.hdri) upgradeStudio(); }, { timeout: 1500 });
 
     // HDRI at the start: file from public/hdr (app.js: ?hdr=…)
-    const HDR_PARAM = options.hdr ?? null;
-    if (HDR_PARAM) environment.select(HDR_PARAM).catch(e => console.error(`HDRI ${HDR_PARAM}: ${e.message}`));
+    // or a URL (<rindr-player hdr>): known to the environment by its file name
+    const HDR_PARAM = options.hdrUrl ? decodeURIComponent(new URL(options.hdrUrl).pathname.split('/').pop()) : options.hdr ?? null;
+    if (options.hdrUrl && HDR_PARAM) environment.hdriUrls[HDR_PARAM] = options.hdrUrl;
+    const selectHdrParam = () => environment.select(HDR_PARAM).catch(e => console.error(`HDRI ${HDR_PARAM}: ${e.message}`));
+    let hdrAfterScene = false;   // the scene file of <rindr-player scene> is restored first (afterRestore applies it)
+    // with a scene file (<rindr-player scene>) after it – the attribute wins over the scene's own HDRI
+    if (HDR_PARAM && !options.sceneUrl) selectHdrParam();
 
     // --- Scene Graph ---
     const sceneEntries = [
@@ -1403,7 +1411,7 @@ export async function createPlayer(options = {}) {
         if (!ownsEvent(e)) return;
         const key = e.key.toLowerCase();
         if ((e.ctrlKey || e.metaKey) && !e.altKey && (key === 'z' || key === 'y')) {
-            if (isTextField(eventTarget(e))) return;
+            if (!editing || isTextField(eventTarget(e))) return;   // without an editing feature nothing to undo
             e.preventDefault();
             undoRedo(key === 'y' || e.shiftKey);
             return;
@@ -1411,6 +1419,7 @@ export async function createPlayer(options = {}) {
         if (eventTarget(e).closest?.('input, textarea, select')) return;
         // Ctrl+A (Cmd+A): select all visible parts (in text fields it stays select-all text)
         if ((e.ctrlKey || e.metaKey) && !e.altKey && key === 'a') {
+            if (!selecting) return;
             e.preventDefault();
             if (rootGroup) sceneGraph.selectAllParts();
             return;
@@ -1420,11 +1429,11 @@ export async function createPlayer(options = {}) {
             if (e.key === '1') setViewMode(ANALYSIS_KEYS[(ANALYSIS_KEYS.indexOf(viewMode) + 1) % ANALYSIS_KEYS.length]);
             else setViewMode(e.key === '2' ? 'default' : 'hq');
         }
-        if (key === 'u' && !e.ctrlKey && !e.metaKey && !e.altKey) toggleUi();
+        if (key === 'u' && !e.ctrlKey && !e.metaKey && !e.altKey && panels) toggleUi();
         // C: the next saved camera view (file cameras included) – like clicking it in the Scene Graph; P: back to the
         // perspective of 45°, the whole model framed from the current direction (user: after T the camera stayed far away
         // – only the angle changed; now like a double click on the model) – the angle blends, a file camera's clip start ends
-        if (key === 'c' && !e.ctrlKey && !e.metaKey && !e.altKey && cameraViews.length) {
+        if (key === 'c' && !e.ctrlKey && !e.metaKey && !e.altKey && cameraViews.length && has('views')) {
             const at = selection?.kind === 'view' ? cameraViews.indexOf(selection.view) : -1;
             sceneGraph.select(viewEntry(cameraViews[(at + 1) % cameraViews.length]));
         }
@@ -1434,17 +1443,19 @@ export async function createPlayer(options = {}) {
             if (fit && flight) flight.fit = fit;   // clipping planes for the framed model once there (the far plane of the
                                                    // far-away top view stayed otherwise – poor depth precision)
         }
-        // a selected joint (skeleton view): its gizmo
-        if ((e.key === 'w' || e.key === 'W') && skeletonView.selected >= 0) skeletonView.setMode('translate');
-        else if (e.key === 'w' || e.key === 'W') { transformer?.setMode('translate'); properties?.show(selection); }
-        if ((e.key === 'e' || e.key === 'E') && skeletonView.selected >= 0) skeletonView.setMode('rotate');
-        else if (e.key === 'e' || e.key === 'E') { transformer?.setMode('rotate'); properties?.show(selection); }
-        // S: scale (was R – R is the right view now, user's choice)
-        if (key === 's' && !e.ctrlKey && !e.metaKey && !e.altKey) { transformer?.setMode('scale'); properties?.show(selection); }
+        // a selected joint (skeleton view): its gizmo (W/E/S: feature 'transform')
+        if (has('transform')) {
+            if ((e.key === 'w' || e.key === 'W') && skeletonView.selected >= 0) skeletonView.setMode('translate');
+            else if (e.key === 'w' || e.key === 'W') { transformer?.setMode('translate'); properties?.show(selection); }
+            if ((e.key === 'e' || e.key === 'E') && skeletonView.selected >= 0) skeletonView.setMode('rotate');
+            else if (e.key === 'e' || e.key === 'E') { transformer?.setMode('rotate'); properties?.show(selection); }
+            // S: scale (was R – R is the right view now, user's choice)
+            if (key === 's' && !e.ctrlKey && !e.metaKey && !e.altKey) { transformer?.setMode('scale'); properties?.show(selection); }
+        }
         // views like the view cube: T top, F front, B back, D bottom (down), L left, R right
         const view = !e.ctrlKey && !e.metaKey && !e.altKey && VIEW_KEYS[key];
         if (view) flyToDirection(new THREE.Vector3(...view));
-        if (key === 'x' && !e.ctrlKey && !e.metaKey && !e.altKey && !splatMesh) toggleExplode();
+        if (key === 'x' && !e.ctrlKey && !e.metaKey && !e.altKey && !splatMesh && has('explode')) toggleExplode();
         if (e.key === 'Escape') {
             if (skeletonView.selected >= 0) selectBone(-1);
             if (focusPick) endFocusPick();
@@ -1454,10 +1465,11 @@ export async function createPlayer(options = {}) {
         if (key === 'a' && !e.ctrlKey && !e.metaKey && !e.altKey && isModelEntry(selection)) frameObject(selection.object);
         // Z: centre the camera on the whole (visible) model and zoom in
         if (key === 'z' && !e.ctrlKey && !e.metaKey && !e.altKey && rootGroup) frameObject(extraModels.length ? slicer.group : rootGroup);
-        if (key === 'h' && isModelEntry(selection)) hideSelection();
+        if (key === 'h' && isModelEntry(selection) && has('transform')) hideSelection();
         // Space: play/pause the animation
-        if (e.key === ' ' && clipAnims().length && !e.ctrlKey && !e.metaKey) { e.preventDefault(); setAnimPlaying(!animPlaying); }
-        // Del: delete the selection (parts, models, saved camera views)
+        if (e.key === ' ' && clipAnims().length && !e.ctrlKey && !e.metaKey && has('animation')) { e.preventDefault(); setAnimPlaying(!animPlaying); }
+        // Del: delete the selection (parts, models, saved camera views) – with an editing feature
+        if (!editing) return;
         if ((e.key === 'Delete' || e.key === 'Del') && selection?.kind === 'light') lightApi.remove(selection.object);
         else if ((e.key === 'Delete' || e.key === 'Del') && selection?.kind === 'view') cameraViewApi.remove(selection.view);
         else if ((e.key === 'Delete' || e.key === 'Del') && selection?.kind === 'views') cameraViewApi.removeMany(selection.entries.map(v => v.view));
@@ -2125,6 +2137,7 @@ export async function createPlayer(options = {}) {
     const isModelEntry = e => e && (e.kind === 'node' || e.kind === 'model' || e.kind === 'surface' || e.kind === 'selection');
     // material list, library and editor (feature 'materials') – without it null: every call below is optional
     const materialPanel = uiModules.materialModules && new uiModules.materialModules[0].MaterialPanel(dom.getElementById('materials'), materialManager, {
+        editing: has('material-editor'),   // parameters, node editor, new/copy (player feature)
         getSelectionObject: () => (isModelEntry(selection) ? selection.object : null),
         onAssignToSelection: id => {
             if (!isModelEntry(selection)) return;
@@ -2838,7 +2851,8 @@ export async function createPlayer(options = {}) {
     const animations = [];   // [{ anim: ModelAnimation, owner: 'main' | extra id }]
     let animPlaying = false, animScrubbing = false, animLast = 0;
     let hqBeforePlay = false;   // HQ was on when playing started (restored on pause)
-    const playbar = createPlaybar(dom.getElementById('playbar'), {
+    // play bar (feature 'animation')
+    const playbar = has('animation') ? createPlaybar(dom.getElementById('playbar'), {
         onPlay: play => setAnimPlaying(play),
         onScrub: time => {
             if (!animScrubbing) {
@@ -2854,7 +2868,7 @@ export async function createPlayer(options = {}) {
         },
         onScrubEnd: () => { animScrubbing = false; settleAnimation(); },
         onClip: index => { clipAnims()[0]?.anim.setClip(index); settleAnimation(); updatePlaybar(); },
-    }, { t });
+    }, { t }) : null;
     // shared timeline: a newly added animation jumps to the current time of the others (previously it started
     // at 0 and ran offset from then on)
     function addAnimation(anim, owner) {
@@ -2879,12 +2893,12 @@ export async function createPlayer(options = {}) {
     }
     function updatePlaybar() {
         const list = clipAnims();
-        playbar.setVisible(list.length > 0);
+        playbar?.setVisible(list.length > 0);
         const first = list[0]?.anim;
         if (!first) return;
-        playbar.setPlaying(animPlaying);
-        playbar.setTime(first.time, Math.max(...list.map(a => a.anim.duration)));
-        playbar.setClips(first.clips.map(c => c.name), first.clipIndex);
+        playbar?.setPlaying(animPlaying);
+        playbar?.setTime(first.time, Math.max(...list.map(a => a.anim.duration)));
+        playbar?.setClips(first.clips.map(c => c.name), first.clipIndex);
     }
     // pause playing/scrubbing: pose into our meshes, puppet out of the scene
     function stopAnimation() {
@@ -3755,7 +3769,7 @@ export async function createPlayer(options = {}) {
         const mesh = pickMesh(e);
         const entry = mesh && sceneGraph.entryForObject(mesh);
         if (!entry) return;
-        sceneGraph.select(entry);
+        if (selecting) sceneGraph.select(entry);
         frameObject(entry.object);
     });
 
@@ -3783,6 +3797,7 @@ export async function createPlayer(options = {}) {
             if (joint >= 0) { selectBone(joint); return; }
             if (skeletonView.selected >= 0) selectBone(-1);
         }
+        if (!selecting) return;   // a viewer without editing parts: clicks select nothing
         const mesh = pickSelectable(e);
         const entry = mesh ? sceneGraph.entryForObject(mesh) : null;
         if (e.shiftKey) { if (entry) sceneGraph.toggleSelect(entry); }   // multi-selection
@@ -6300,6 +6315,7 @@ export async function createPlayer(options = {}) {
         restoreLights,
         setSlicerEnabled: v => { slicer.enabled = v; pathTracing.setSuspended(v); updateSlicerHelper(); },
         afterRestore: () => {
+            if (hdrAfterScene) { hdrAfterScene = false; selectHdrParam(); }   // <rindr-player hdr> over the scene's HDRI
             // HDRI editor: show the restored description of the edited HDRI, close it if that one is gone
             if (hdriEditor.now?.isOpen) {
                 const doc = environment.custom.get(hdriEditor.now.docId);
@@ -6552,7 +6568,7 @@ export async function createPlayer(options = {}) {
     // left half of the view = replace, right half = add (measured from the view's own left edge)
     const leftHalf = e => e.clientX - viewportEl.getBoundingClientRect().left < viewSize().width / 2;
     window.addEventListener('dragenter', e => {
-        if (!ownsEvent(e) || !isFileDrag(e)) return;
+        if (!ownsEvent(e) || !has('open') || !isFileDrag(e)) return;
         dragDepth++;
         // asset window open: it is the drop target (relink) – no replace/add plane behind it
         if (assetsWindow.isOpen) assetsWindow.setDragActive(true);
@@ -6561,14 +6577,14 @@ export async function createPlayer(options = {}) {
         else setDropOverlay(true);
     });
     window.addEventListener('dragleave', e => {
-        if (!ownsEvent(e) || !isFileDrag(e)) return;
+        if (!ownsEvent(e) || !has('open') || !isFileDrag(e)) return;
         if (--dragDepth <= 0) { dragDepth = 0; setDropOverlay(false); assetsWindow.setDragActive(false); }
     });
     // anything carrying files that we do not accept: still prevent the browser from opening it itself
     // (navigating away from the viewer) – the drop is simply ignored
     const hasFiles = e => !!e.dataTransfer?.types.includes('Files');
     window.addEventListener('dragover', e => {
-        if (!ownsEvent(e)) return;   // embedded: drags elsewhere on the page are none of the player's business
+        if (!ownsEvent(e) || !has('open')) return;   // embedded: drags elsewhere on the page are none of the player's business
         if (!isFileDrag(e)) {
             if (hasFiles(e) && !isMaterialDrag(e)) { e.preventDefault(); e.dataTransfer.dropEffect = 'none'; }
             return;
@@ -6579,7 +6595,7 @@ export async function createPlayer(options = {}) {
         if (rootGroup && !assetsWindow.isOpen && dropMode === 'split') highlightDropZone(leftHalf(e) ? 'replace' : 'add');
     });
     window.addEventListener('drop', async e => {
-        if (!ownsEvent(e)) return;
+        if (!ownsEvent(e) || !has('open')) return;
         if (!isFileDrag(e)) {
             if (hasFiles(e) && !isMaterialDrag(e)) e.preventDefault();
             return;
@@ -6750,21 +6766,36 @@ export async function createPlayer(options = {}) {
 
     /** The sample scene (public/samplescene: samplescene.json naming samplescene.usda – coarse meshes the USD import
      *  subdivides) – fetched and opened like the two files dropped together */
-    async function openSampleScene() {
-        const base = `${ASSET_BASE}samplescene/`;
-        showProgress(t('status.loadingSample'));
+    // a scene file from a URL with its models next to it (same folder, the file names the scene names) – the sample
+    // scene and <rindr-player scene="…">
+    // models: their names when known beforehand (fetched alongside the scene file)
+    async function openSceneUrl(url, { models = null, loadingText = t('status.loadingScene'), errorTitle = t('status.sceneErrorTitle') } = {}) {
+        showProgress(loadingText);
         try {
-            const files = await Promise.all(['samplescene.json', 'samplescene.usda'].map(async name => {
-                const res = await fetch(base + name);
-                if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
-                return { path: name, file: new File([await res.blob()], name, name.endsWith('.json') ? { type: 'application/json' } : {}) };
-            }));
+            const get = async href => {
+                const res = await fetch(href);
+                if (!res.ok) throw new Error(`${decodeURIComponent(new URL(href).pathname.split('/').pop())}: HTTP ${res.status}`);
+                return res.blob();
+            };
+            const jsonName = decodeURIComponent(new URL(url).pathname.split('/').pop()) || 'scene.json';
+            const modelFile = async name => ({ path: name, file: new File([await get(new URL(name, url).href)], name) });
+            const [json, known] = await Promise.all([get(url), models ? Promise.all(models.map(modelFile)) : null]);
+            let modelFiles = known;
+            if (!modelFiles) {
+                const state = JSON.parse(await json.text());
+                const names = [...new Set([...(state.models || []).map(m => m.file?.name), state.model?.name].filter(Boolean))];
+                modelFiles = await Promise.all(names.map(modelFile));
+            }
+            const files = [{ path: jsonName, file: new File([json], jsonName, { type: 'application/json' }) }, ...modelFiles];
             await openFiles(files, { side: 'add' });
         } catch (err) {
             hideProgress();
-            showError(err, { title: t('status.sampleError') });
+            showError(err, { title: errorTitle });
             showDropHint();
         }
+    }
+    function openSampleScene() {
+        return openSceneUrl(new URL(`${ASSET_BASE}samplescene/samplescene.json`, location.href).href, { models: ['samplescene.usda'], loadingText: t('status.loadingSample'), errorTitle: t('status.sampleError') });
     }
 
     /** Open dropped or picked files ({ path, file }[]): BCF, scene/material JSON, relink into the asset window, splats,
@@ -6939,6 +6970,7 @@ export async function createPlayer(options = {}) {
         }
     }
     if (SAMPLE_SCENE) openSampleScene();
+    else if (options.sceneUrl) { hdrAfterScene = !!HDR_PARAM; openSceneUrl(options.sceneUrl); }
     else if (MODEL_FILE && !(crashed?.url && crashed.name === MODEL_FILE)) {
         openModel(sourceForUrl(MODEL_FILE, MODEL_URL));
     } else {

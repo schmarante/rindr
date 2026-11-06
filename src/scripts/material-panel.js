@@ -86,6 +86,8 @@ export class MaterialPanel {
         this.root = root;
         this.manager = manager;
         this.hooks = hooks;
+        // editing (parameters, node editor, new/copy/rename): config.js MATERIALS.editing and the player's 'material-editor'
+        this.editing = MATERIALS.editing && hooks.editing !== false;
         this.tab = 'scene';
         this.current = null;        // material opened in the editor (ID)
         this.selectionIds = [];     // materials of the selection
@@ -117,7 +119,7 @@ export class MaterialPanel {
                 <button data-tab="scene" class="${TAB}">${t('materials.panel.tabs.scene')}</button>
                 <button data-tab="library" class="${TAB}">${t('materials.panel.tabs.library')}</button>
                 <select data-category class="${SELECT} ml-auto w-auto max-w-40" title="${t('materials.panel.categoryTitle')}" hidden></select>
-                ${MATERIALS.editing ? `<button data-act="new" class="${ICON_BTN} ml-auto" title="${t('materials.panel.newTitle')}" aria-label="${t('materials.panel.newTitle')}">${ACTION_ICONS.create}</button>` : ''}
+                ${this.editing ? `<button data-act="new" class="${ICON_BTN} ml-auto" title="${t('materials.panel.newTitle')}" aria-label="${t('materials.panel.newTitle')}">${ACTION_ICONS.create}</button>` : ''}
             </div>
             <div data-list class="${LIST}"></div>
             <div data-editor class="min-h-0 overflow-y-auto border-t border-white/10 px-3 py-2" hidden></div>
@@ -477,7 +479,7 @@ export class MaterialPanel {
         this.editor.hidden = false;
         const frag = document.createDocumentFragment();
 
-        const editing = MATERIALS.editing;   // config.js: editing hidden for now
+        const editing = this.editing;   // config.js MATERIALS.editing + the player's 'material-editor' feature
         const type = materialType(def.params);
         if (editing) {
             const name = el('input', 'mb-1.5 w-full rounded bg-white/10 px-1.5 py-0.5 text-white outline-none focus:bg-white/20');
@@ -691,7 +693,7 @@ export class MaterialPanel {
         const act = e.target.closest('[data-act]')?.dataset.act;
         if (act === 'export' && MATERIALS.importExport) return this._export();
         if (act === 'import' && MATERIALS.importExport) return this.file.click();
-        if (act === 'new' && MATERIALS.editing) {
+        if (act === 'new' && this.editing) {
             const entry = this.manager.create({ name: t('materials.defaultNames.new'), params: { color: '#b0b0b0', roughness: 0.4 } });
             return this.open(entry.def.id, 'scene');
         }
@@ -701,7 +703,7 @@ export class MaterialPanel {
         if (act === 'import-mtlx') return this.hooks.onImportMaterials?.();
         if (act === 'export-mtlx' && this.current) return this.hooks.onExportMaterial?.(this.current);
         if (act === 'assign' && this.current) return this.hooks.onAssignToSelection?.(this.current);
-        if (act === 'nodes' && this.current && MATERIALS.editing) return this.hooks.onOpenNodeEditor?.(this.current);
+        if (act === 'nodes' && this.current && this.editing) return this.hooks.onOpenNodeEditor?.(this.current);
         if (act === 'select-users' && this.current) return this.hooks.onSelectUsers?.(this.current);
         if (act === 'duplicate' && this.current) return this.open(this.manager.duplicate(this.current).def.id, 'scene');
         if (act === 'delete' && this.current) {
