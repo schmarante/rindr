@@ -91,6 +91,7 @@ import { RasterAO } from './ambient-occlusion.js';
 import { OcclusionCuller } from './occlusion-culling.js';
 import { instancedModelMesh, localBox, lowestInstanced } from './model-instances.js';
 import { icon } from './icons.js';
+import { getRuntime } from './runtime.js';
 
 // a part of the UI whose module is loaded on first use: get() → Promise of the instance (created once), now → the
 // instance if it exists already (calls that only matter for an open window)
@@ -254,44 +255,14 @@ export async function createPlayer(options = {}) {
     const dof = new DepthOfField(camera);
     // camera position is computed automatically after loading
 
-    // WebGPU renderer (falls back to WebGL2 without WebGPU – then without path tracing).
-    // Without an explicit request the device only gets the WebGPU default limits (128 MB per storage
-    // buffer) – for fine tessellations the path tracer's geometry buffers are larger. So request the
-    // limits the hardware actually supports.
-    const GPU_OPTIONS = { powerPreference: 'high-performance' };
-    // After a GPU reset (see renderer.onDeviceLost) Chrome restarts its GPU process: for a few seconds requestAdapter()
-    // yields nothing and the page fell back to WebGL ("no WebGPU", a second reload was needed). After a reset in this tab
-    // wait for the adapter (up to ~10 s); otherwise no waiting (browsers without a usable WebGPU adapter start at once).
-    const gpuRecovering = (() => { try { return sessionStorage.getItem('rindr.gpuLost') === '1'; } catch { return false; } })();
-    async function acquireAdapter() {
-        if (!navigator.gpu) return null;
-        let a = await navigator.gpu.requestAdapter(GPU_OPTIONS).catch(() => null);
-        for (let i = 0; !a && gpuRecovering && i < 20; i++) {
-            if (i === 0) { hidePreloader(); showStatus(t('gpu.waiting')); }
-            await new Promise(r => setTimeout(r, 500));
-            a = await navigator.gpu.requestAdapter(GPU_OPTIONS).catch(() => null);
-        }
-        if (gpuRecovering) hideStatus();
-        return a;
-    }
-    const adapter = await acquireAdapter();
-    // WebGPU present but no adapter: usually the browser withholds the GPU after a reset (until it is restarted
-    // completely), otherwise graphics card/driver are not supported – the notice says what to do instead of "unsupported"
-    const webgpuBlocked = !!navigator.gpu && !adapter;
-    const requiredLimits = adapter ? {
-        maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
-        maxBufferSize: adapter.limits.maxBufferSize,
-        // the raster ambient occlusion adds one texture to every lit material (ambient-occlusion.js) – heavily textured
-        // imports stay below the limit
-        maxSampledTexturesPerShaderStage: adapter.limits.maxSampledTexturesPerShaderStage,
-        // the path tracer's kernel with many features at once (rounded edges, traced Gaussians, volumes, buckets …) binds
-        // more than the default 8 storage buffers (9 with every feature, ?kernel=all)
-        maxStorageBuffersPerShaderStage: adapter.limits.maxStorageBuffersPerShaderStage,
-    } : undefined;
-    // stencil: closed cut surfaces of the section plane (slicer.js)
-    const renderer = new THREE.WebGPURenderer({ antialias: true, stencil: true, ...GPU_OPTIONS, requiredLimits });
+    // GPU adapter, device and WebGPU renderer (falls back to WebGL2 without WebGPU – then without path tracing): once per
+    // page (runtime.js). Waiting for the GPU after a reset is shown here.
+    let runtime;
     try {
-        await renderer.init();
+        runtime = await getRuntime({
+            onWaiting: () => { hidePreloader(); showStatus(t('gpu.waiting')); },
+            onWaitEnd: () => hideStatus(),
+        });
     } catch (err) {
         // neither WebGPU nor WebGL2 (e.g. no GPU and no software renderer in the browser): say so instead of a blank page
         console.error(err);
@@ -299,6 +270,9 @@ export async function createPlayer(options = {}) {
         showStatus(t('status.noRenderer'));
         throw err;
     }
+    // webgpuBlocked: WebGPU present but no adapter – usually the browser withholds the GPU after a reset (until it is
+    // restarted completely), otherwise graphics card/driver are not supported; gpuRecovering: a GPU reset in this tab before
+    const { adapter, renderer, webgpuBlocked, gpuRecovering } = runtime;
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(window.devicePixelRatio);
     // ambient occlusion of the raster view: its hook into the materials' lighting goes in before any shader is built
