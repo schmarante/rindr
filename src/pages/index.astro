@@ -11,7 +11,7 @@ import { icon } from '../scripts/icons.js';   // icons: src/assets/icons
 const logoPaths = [...logoSource.matchAll(/<path[^>]*\sd="([^"]+)"/g)].map(m => m[1]);
 const logoViewBox = logoSource.match(/viewBox="([^"]+)"/)?.[1] || '0 0 1417.323 1417.323';
 
-// German default texts rendered at build time (no flash); viewer.js calls applyDom() for other languages
+// German default texts rendered at build time (no flash); app.js calls applyDom() for other languages
 const tr = (k) => k.split('.').reduce((n, p) => n?.[p], de) ?? k;
 
 // HDRIs offered in the environment panel: all .hdr/.exr files from public/hdr
@@ -295,7 +295,7 @@ const CSP = [
 
         <script is:inline id="hdr-list" type="application/json" set:html={JSON.stringify(hdris).replaceAll("<", "\\u003c")}></script>
         <script>
-            import "../scripts/viewer.js";
+            import "../scripts/app.js";
         </script>
         <!-- brand line bottom left (slides out with the UI); progress/PT status sit above it -->
         <div data-ui="left" class="pointer-events-none absolute bottom-3 left-5 flex items-center gap-1.5 text-[11px] tracking-wide text-white select-none">

@@ -48,7 +48,7 @@ import { ObjectTransformer, applyTransform, ensureTransform, restoreTransform, c
 import { History } from './history.js';
 import { DepthOfField } from './dof.js';
 import { LensEffects } from './lens-effects.js';
-import { t, applyDom, getLocale, getLanguage, setLanguage } from './i18n.js';
+import { t, getLocale, getLanguage, setLanguage } from './i18n.js';
 import { QuadMenu } from './quad-menu.js';
 import { Exploder } from './explode.js';
 import { kiSettings } from './ki-gemini.js';
@@ -92,16 +92,6 @@ import { OcclusionCuller } from './occlusion-culling.js';
 import { instancedModelMesh, localBox, lowestInstanced } from './model-instances.js';
 import { icon } from './icons.js';
 
-// static page texts (data-i18n in index.astro) in the current language
-applyDom();
-
-// Model: ?model=<file name from public/models> in the URL, otherwise empty scene (open a file via drag & drop)
-const MODEL_FILE = new URLSearchParams(location.search).get('model');
-// ?samplescene: the sample scene in public/samplescene (scene file + its model, openSampleScene)
-const SAMPLE_SCENE = new URLSearchParams(location.search).has('samplescene');
-// sub folders allowed (e.g. ?model=folder/scene.gltf – .bin/textures are resolved relative to it)
-const MODEL_URL = `${import.meta.env.BASE_URL}models/${(MODEL_FILE || '').split('/').map(encodeURIComponent).join('/')}`;
-// OIDN weights (Apache 2.0, from RenderKit/oidn-weights)
 // a part of the UI whose module is loaded on first use: get() → Promise of the instance (created once), now → the
 // instance if it exists already (calls that only matter for an open window)
 function lazy(create) {
@@ -112,6 +102,29 @@ function lazy(create) {
     };
 }
 
+// BVH-accelerated raycasting for every mesh (picking, focus, material drops) – once per page
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
+
+// one player per page until the shared runtime exists (docs/player.md, stage 3): several things below are still
+// page-wide (renderer hooks, the material transfer channel, the plain-view hook)
+let playerCreated = false;
+
+/**
+ * The viewer on the page's elements (index.astro) – stage 1 of docs/player.md, still one per page.
+ * @param {object} [options]
+ * @returns {Promise<object>} the debug/test interface (globalThis.__viewer with ?debug)
+ */
+export async function createPlayer(options = {}) {
+if (playerCreated) throw new Error('createPlayer: only one player per page so far (docs/player.md)');
+playerCreated = true;
+
+// Model: ?model=<file name from public/models> in the URL, otherwise empty scene (open a file via drag & drop)
+const MODEL_FILE = new URLSearchParams(location.search).get('model');
+// ?samplescene: the sample scene in public/samplescene (scene file + its model, openSampleScene)
+const SAMPLE_SCENE = new URLSearchParams(location.search).has('samplescene');
+// sub folders allowed (e.g. ?model=folder/scene.gltf – .bin/textures are resolved relative to it)
+const MODEL_URL = `${import.meta.env.BASE_URL}models/${(MODEL_FILE || '').split('/').map(encodeURIComponent).join('/')}`;
+// OIDN weights (Apache 2.0, from RenderKit/oidn-weights)
 const DENOISE_WEIGHTS_URL = `${import.meta.env.BASE_URL}oidn/rt_hdr_alb_nrm.tza`;
 
 const loadingEl = document.getElementById('loading');
@@ -3373,7 +3386,6 @@ graphList.addEventListener('drop', e => {
 });
 
 // --- Selection by clicking into the 3D view (BVH-accelerated raycasting) ---
-THREE.Mesh.prototype.raycast = acceleratedRaycast;
 const raycaster = patchRaycaster(new THREE.Raycaster());
 raycaster.firstHitOnly = true;
 raycaster.layers.enable(BATCH_LAYER);
@@ -6800,16 +6812,16 @@ else if (MODEL_FILE && !(crashed?.url && crashed.name === MODEL_FILE)) {
     showDropHint();
 }
 
-// Debug access for automated tests + fps/memory/polygon display (only with ?debug in the URL)
-if (new URLSearchParams(location.search).has('debug')) {
-    globalThis.__viewer = {
-        // material node graphs: bake an input into a PNG / render a description on the thumbnail sphere (debug-graph.js)
-        bakeGraph: (graph, opts) => import('./debug-graph.js').then(m => m.bakeGraphImage(graphApplier, graph, opts)),
-        previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel.thumbs, def)),
-        // all library presets (categories loaded on demand) – tests bake their node graphs
-        presets: () => loadLibraryPresets().then(() => MATERIAL_PRESETS),
-        skeletonView, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, getPlan: () => currentPlan, setViewMode: m => setViewMode(m), getViewMode: () => viewMode, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
-}
+// Debug access for automated tests + fps/memory/polygon display (globalThis.__viewer only with ?debug in the URL);
+// also what createPlayer returns – the start of the player's interface (docs/player.md)
+const debugApi = {
+    // material node graphs: bake an input into a PNG / render a description on the thumbnail sphere (debug-graph.js)
+    bakeGraph: (graph, opts) => import('./debug-graph.js').then(m => m.bakeGraphImage(graphApplier, graph, opts)),
+    previewMaterial: def => import('./debug-graph.js').then(m => m.previewMaterial(graphApplier, materialPanel.thumbs, def)),
+    // all library presets (categories loaded on demand) – tests bake their node graphs
+    presets: () => loadLibraryPresets().then(() => MATERIAL_PRESETS),
+    skeletonView, get skeletonApi() { return skeletonApi; }, batcher, rasterAO, clouds, grass, edges, sssClearFields: () => { clearFields(); sssBlock = true; }, sssThicknessView: (max = 20) => import('./materials/sss-field.js').then(m => { const mat = new THREE.MeshBasicNodeMaterial(); mat.colorNode = m.debugThicknessNode(max); scene.overrideMaterial = mat; }), getSplats: () => splatMesh, get lightApi() { return lightApi; }, splatOpacity, shaftOpacity, splatEnv, splatComposite, splatVolume, setSplatLook, screenFade, flyToDirection, contours, openBcfFile, loadBcf, applyBcfViewpoint, captureBcfViewpoint, loadSplats, lens, contactShadow, animations, openSceneFile, pickHit, raycaster, exportFrame, brightestDirection, addModel, removeExtraModels, extraModels, graphApplier, materialGraph: () => import('./material-graph.js'), materialTransfer: () => import('./material-transfer.js'), THREE, materialx: () => import('./materialx.js'), highlighter, scene, camera, controls, renderer, pathTracing, setup, sceneGraph, getRootGroup: () => rootGroup, uvMapper, exportImage, getRenderMaster: () => renderMaster, getDistDisplay: () => distDisplay, startDistributed: (samples = 64) => runDistributedJob(() => { const b = renderer.getDrawingBufferSize(new THREE.Vector2()); return { w: b.x, h: b.y }; }, samples).catch(() => null), renderDistributedImage: (scale = 1, samples = 64, transparent = false) => renderDistributedImage(scale, samples, transparent), renderLightPasses: (scale = 1, samples = 16, distributed = false, format = 'exr') => renderLightPasses(scale, samples, distributed, format), cancelDistributed: () => cancelDistributed(), getSelection: () => selection, getHovered: () => hovered, transformer, slicer, displacer, ground, environment, materialManager, materialPanel, nodeEditor, history, undoRedo, dof, frameObject, openModel, getModel: () => model, getPlan: () => currentPlan, setViewMode: m => setViewMode(m), getViewMode: () => viewMode, isLoading: () => !!loading, captureState: () => captureState(sceneStateContext), restoreScene, whenLoaded: () => loadLoop };
+if (new URLSearchParams(location.search).has('debug')) globalThis.__viewer = debugApi;
 
 // --- Resize ---
 // device pixel ratio changed (window moved to a screen with another scaling, browser zoom): the canvas follows – it was
@@ -8075,4 +8087,7 @@ function replayInstances(rm, list = [], unique = [], content = null) {
     root.userData.dupSeq = seq;
     for (const i of unique) if (model.nodeGroups[i]) makeUnique(model.nodeGroups[i]);
     if (!content) instancesChanged(model.nodeGroups.slice(base?.nodes ?? model.nodeGroups.length));
+}
+
+return debugApi;
 }
