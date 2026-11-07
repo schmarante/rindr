@@ -1571,6 +1571,46 @@ export async function createPlayer(options = {}) {
         canvasEl.style.cursor = '';
         hideStatus();
     }
+    // a light of the HDRI editor set by a click on the model (hdri-editor.js "+ cube", docs/hdri-editor.md): the next click
+    // into the 3D view gives the direction the environment has to shine from – onHit({ azimuth, elevation, mode }) in the
+    // description's frame; Esc, a second click on the button or another pick ends it (onEnd)
+    let lightPick = null;   // { onHit, onEnd }
+    function startLightPick(hooks) {
+        endLightPick();
+        if (focusPick) endFocusPick();
+        lightPick = hooks;
+        canvasEl.style.cursor = 'crosshair';
+        showStatus(t('status.lightPick'));
+        return () => endLightPick();
+    }
+    function endLightPick(hit = null) {
+        if (!lightPick) return;
+        const { onHit, onEnd } = lightPick;
+        lightPick = null;
+        canvasEl.style.cursor = '';
+        hideStatus();
+        if (hit) onHit(hit); else onEnd?.();
+    }
+    /**
+     * Where a light of the environment must sit for a clicked point (pickHit): highlight – the view ray mirrored at the
+     * surface (the light shows in the reflection right there, seen from this camera); alongNormal (Shift) – along the
+     * surface normal (lights the spot head-on). Into the HDRI's own frame: world = environmentRotation · texture
+     * direction (three.js), a mirrored HDRI (u → 1 − u) mirrored back – azimuth/elevation as in hdri-model.js direction()
+     */
+    function environmentLightFor(hit, alongNormal) {
+        const o = hit.object, local = hit.normal ?? hit.face?.normal;
+        if (!local) return null;
+        const m = o.matrixWorld.clone();
+        if (o.isInstancedMesh && hit.instanceId != null) { const im = new THREE.Matrix4(); o.getMatrixAt(hit.instanceId, im); m.multiply(im); }
+        const n = local.clone().applyMatrix3(new THREE.Matrix3().getNormalMatrix(m)).normalize();
+        const view = raycaster.ray.direction.clone().normalize();   // (pickHit set it from the camera)
+        if (n.dot(view) > 0) n.negate();   // the side facing the camera
+        const d = alongNormal ? n : view.sub(n.clone().multiplyScalar(2 * view.dot(n)));
+        d.applyQuaternion(new THREE.Quaternion().setFromEuler(scene.environmentRotation).invert()).normalize();
+        let azimuth = THREE.MathUtils.radToDeg(Math.atan2(d.z, d.x));
+        if (environment.mirror) azimuth = -azimuth;
+        return { azimuth, elevation: THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(d.y, -1, 1))), mode: alongNormal ? 'normal' : 'highlight' };
+    }
     controls.addEventListener('change', () => {
         if (cameraSelected()) properties?.refreshCamera();   // live position/rotation in the panel
         if (!dof.enabled || !dof.autoFocus) return;
@@ -1633,7 +1673,8 @@ export async function createPlayer(options = {}) {
         if (key === 'x' && !e.ctrlKey && !e.metaKey && !e.altKey && !splatMesh && has('explode')) toggleExplode();
         if (e.key === 'Escape') {
             if (skeletonView.selected >= 0) selectBone(-1);
-            if (focusPick) endFocusPick();
+            if (lightPick) endLightPick();
+            else if (focusPick) endFocusPick();
             else if (nodeEditor.now?.isOpen) nodeEditor.now.close(); else sceneGraph.select(null);
         }
         // A: frame the camera on the selection (was F – F is the front view now), H: hide the selection
@@ -2401,6 +2442,8 @@ export async function createPlayer(options = {}) {
         // rendered image of a description: shown if that HDRI is (still) the environment
         onApply: (texture, { final, id }) => {
             if (environment.hdri !== CUSTOM_HDRI + id) { texture.dispose(); return; }
+            // mirrored like on choosing it (environment.select) – edits showed the HDRI unmirrored until it was chosen again
+            if (environment.mirror) { const rendered = texture; texture = mirroredHdri(rendered); releaseEnvironment(rendered); }
             environment.useTexture(texture);
             if (!final) pathTracing.updateCamera();   // while dragging: reduced path tracing like orbiting
         },
@@ -2423,6 +2466,8 @@ export async function createPlayer(options = {}) {
         },
         onDrag: active => (active ? pathTracing.beginInteraction() : pathTracing.endInteraction()),
         onImport: () => pickHdriFile(),
+        // "+ cube": a light set by a click on the model – only with a model in the scene
+        pickLight: hooks => (rootGroup || extraModels.length ? startLightPick(hooks) : (flashStatus(t('status.loadModelFirst')), null)),
         record: step => history.record(step),
         onClose: () => { if (selection?.kind === 'environment') properties?.show(selection); },   // pencil no longer active
     }));
@@ -4013,6 +4058,12 @@ export async function createPlayer(options = {}) {
         const moved = Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y);
         pointerDown = null;
         if (moved > 4) return;   // camera was rotated, not a click
+        if (lightPick) {
+            const hit = pickHit(e);
+            const light = hit && environmentLightFor(hit, e.shiftKey);
+            if (light) endLightPick(light);   // clicked beside: keep waiting
+            return;
+        }
         if (focusPick) {
             const hit = pickHit(e);
             if (!hit) return;   // clicked beside: keep waiting

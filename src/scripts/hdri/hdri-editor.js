@@ -25,7 +25,7 @@ const STORE_KEY = 'rindr.hdriEditor.window';
 
 const ICON_CLOSE = icon('close', 'size-3.5');
 const ICON_COPY = icon('copy', 'size-3.5'), ICON_DELETE = icon('delete', 'size-3.5'), ICON_PLUS = icon('plus', 'size-2.5');
-const ICON_OPEN = icon('open', 'size-3.5');
+const ICON_OPEN = icon('open', 'size-3.5'), ICON_MODEL = icon('model', 'size-4');
 // pin types (shape + fill): circle, rectangle, gradient
 const PIN_ICONS = {
     circle: icon('pin-circle', 'size-4'),
@@ -38,7 +38,8 @@ export class HdriEditor {
      * @param {HTMLElement} root
      * @param {{ service, onApply: (texture, info: { final: boolean }) => void, onSave: (doc) => void,
      *           onDuplicate: (doc) => void, onDelete: (doc) => void, onDrag?: (active: boolean) => void,
-     *           onImport?: () => void, record?: (step) => void, onClose?: () => void }} hooks
+     *           onImport?: () => void, pickLight?: ({ onHit, onEnd }) => (() => void) | null,
+     *           record?: (step) => void, onClose?: () => void }} hooks
      */
     constructor(root, hooks) {
         this.root = root;
@@ -48,6 +49,7 @@ export class HdriEditor {
         this._baseline = null;    // JSON of the last committed state (undo)
         this._drag = null;
         this._dragging = false;   // a live change is running (slider, handle)
+        this._picking = null;     // "+ cube" waits for a click on the model: its cancel function
 
         root.hidden = true;
         root.innerHTML = `
@@ -112,6 +114,7 @@ export class HdriEditor {
 
     /** Edit `doc` (a copy is kept – changes go out via onSave) */
     open(doc) {
+        this._picking?.();
         this.doc = cloneHdri(doc, { keepIds: true });
         this._baseline = JSON.stringify(this.doc);
         this.sel = this.doc.pins[0]?.id ?? null;
@@ -123,6 +126,7 @@ export class HdriEditor {
 
     close() {
         if (this.root.hidden) return;
+        this._picking?.();
         this.root.hidden = true;
         this.hooks.onClose?.();
     }
@@ -428,6 +432,16 @@ export class HdriEditor {
             b.onclick = () => this._addPin(type);
             add.append(b);
         }
+        // "+ cube": the next click on the model places a light there (viewer.js environmentLightFor)
+        if (this.hooks.pickLight) {
+            const b = el('button', BUTTON + ` flex items-center gap-0.5 py-1 ${this._picking ? 'bg-sky-500/40 text-white' : 'bg-white/5'}`);
+            b.innerHTML = ICON_PLUS + ICON_MODEL;
+            b.title = t('hdriEditor.add.model');
+            b.setAttribute('aria-label', b.title);
+            b.setAttribute('aria-pressed', String(!!this._picking));
+            b.onclick = () => this._pickLight();
+            add.append(b);
+        }
         side.append(add);
         const list = el('div', 'mb-2 flex flex-col');
         doc.pins.forEach((pin, idx) => {
@@ -513,6 +527,33 @@ export class HdriEditor {
             onEnd: () => set(Number(num.value), 'commit'),
         });
         return row(label, range, num);
+    }
+
+    // a light by a click on the model: highlight where clicked (Shift: lit along the normal) – a second click on the
+    // button, Esc or closing ends the waiting
+    _pickLight() {
+        if (this._picking) { this._picking(); return; }
+        const doc = this.doc;
+        const cancel = this.hooks.pickLight({
+            onHit: ({ azimuth, elevation, mode }) => {
+                this._picking = null;
+                this._setStatus('');
+                if (this.doc !== doc) return;   // another HDRI opened meanwhile
+                const pin = createPin('circle', {
+                    name: t(mode === 'normal' ? 'hdriEditor.pinLitName' : 'hdriEditor.pinHighlightName'),
+                    azimuth: round(wrap180(azimuth), 1), elevation: round(elevation, 1), width: 20, height: 20,
+                });
+                doc.pins.push(pin);
+                this.sel = pin.id;
+                this._renderSide();
+                this._change();
+            },
+            onEnd: () => { this._picking = null; this._setStatus(''); if (!this.root.hidden) this._renderSide(); },
+        });
+        if (!cancel) return;
+        this._picking = cancel;
+        this._setStatus(t('hdriEditor.pickHint'));
+        this._renderSide();
     }
 
     _addPin(type) {

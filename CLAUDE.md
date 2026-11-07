@@ -26,6 +26,7 @@ Ein performater 3D Viewer im Browser der qualitativ mit professionellen Offline-
 Fertiges HDRI laden oder im Editor eigene Varianten der prozeduralen HDRIs anlegen (Vorlage: Studio).
 [X] Export des HDRI
 [X] Export/Import als JSON – verlustfrei von einer Szene in eine andere
+[X] Licht per Klick aufs Modell („+ Würfel“): Glanzlicht genau an der Stelle, Shift-Klick beleuchtet sie von vorn
 [X] Hintergrundverlauf
 [X] Verschiebbare, interaktive Sonne & Himmel
 [X] Bodenfarbe für Sonne & Himmel

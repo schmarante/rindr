@@ -2760,7 +2760,8 @@
         "lockedPartial": "Material nur auf entsperrte Teile – {count} gesperrte ausgelassen",
         "growingHair": "Haare wachsen …",
         "exportingGlb": "GLB wird erstellt …",
-        "glbExported": "GLB exportiert: {name} ({size})"
+        "glbExported": "GLB exportiert: {name} ({size})",
+        "lightPick": "Aufs Modell klicken: dort entsteht ein Glanzlicht (Shift-Klick: die Stelle von vorn beleuchten) – Esc bricht ab"
     },
     "viewCube": {
         "title": "Ansicht wählen: Fläche, Kante oder Ecke anklicken – ziehen dreht die Kamera. Tasten: T oben, F vorne, B hinten, D unten, L links, R rechts",
@@ -3441,7 +3442,8 @@
         "add": {
             "circle": "+ Kreis",
             "rect": "+ Rechteck",
-            "gradient": "+ Verlauf"
+            "gradient": "+ Verlauf",
+            "model": "Licht per Klick aufs Modell: ein Glanzlicht genau an der Stelle (Shift-Klick: die Stelle von vorn beleuchten)"
         },
         "types": {
             "circle": "Kreis",
@@ -3494,7 +3496,10 @@
             "bad-json": "{name}: kein gültiges JSON ({message})",
             "not-hdri": "{name} ist keine HDRI-Editor-Datei (gespeichert über „.json“ im HDRI-Editor).",
             "newer": "{name} stammt aus einer neueren RINDR-Version."
-        }
+        },
+        "pickHint": "Klick aufs Modell setzt das Licht (Shift: von vorn) – Esc bricht ab",
+        "pinHighlightName": "Glanzlicht",
+        "pinLitName": "Licht von vorn"
     },
     "memory": {
         "device": "Arbeitsspeicher des Geräts",
