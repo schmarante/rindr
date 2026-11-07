@@ -3499,7 +3499,10 @@
         },
         "pickHint": "Klick aufs Modell setzt das Licht (Shift: von vorn) – Esc bricht ab",
         "pinHighlightName": "Glanzlicht",
-        "pinLitName": "Licht von vorn"
+        "pinLitName": "Licht von vorn",
+        "aimLabel": "Ausrichten",
+        "aim": "Klick aufs Modell",
+        "aimTitle": "Pin per Klick aufs Modell neu ausrichten: Glanzlicht genau an der Stelle (Shift-Klick: die Stelle von vorn beleuchten) – Größe, Helligkeit, Farbe und Name bleiben"
     },
     "memory": {
         "device": "Arbeitsspeicher des Geräts",

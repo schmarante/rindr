@@ -3499,7 +3499,10 @@
         },
         "pickHint": "A click on the model places the light (Shift: head-on) – Esc cancels",
         "pinHighlightName": "Highlight",
-        "pinLitName": "Head-on light"
+        "pinLitName": "Head-on light",
+        "aimLabel": "Aim",
+        "aim": "Click on the model",
+        "aimTitle": "Re-aim the pin by a click on the model: a highlight right at that spot (Shift-click: light the spot head-on) – size, brightness, colour and name stay"
     },
     "memory": {
         "device": "Device memory",

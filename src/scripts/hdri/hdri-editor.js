@@ -49,7 +49,7 @@ export class HdriEditor {
         this._baseline = null;    // JSON of the last committed state (undo)
         this._drag = null;
         this._dragging = false;   // a live change is running (slider, handle)
-        this._picking = null;     // "+ cube" waits for a click on the model: its cancel function
+        this._picking = null;     // waiting for a click on the model: { cancel, pin } (pin: the one to re-aim, null: a new one)
 
         root.hidden = true;
         root.innerHTML = `
@@ -114,7 +114,7 @@ export class HdriEditor {
 
     /** Edit `doc` (a copy is kept – changes go out via onSave) */
     open(doc) {
-        this._picking?.();
+        this._picking?.cancel();
         this.doc = cloneHdri(doc, { keepIds: true });
         this._baseline = JSON.stringify(this.doc);
         this.sel = this.doc.pins[0]?.id ?? null;
@@ -126,7 +126,7 @@ export class HdriEditor {
 
     close() {
         if (this.root.hidden) return;
-        this._picking?.();
+        this._picking?.cancel();
         this.root.hidden = true;
         this.hooks.onClose?.();
     }
@@ -434,11 +434,13 @@ export class HdriEditor {
         }
         // "+ cube": the next click on the model places a light there (viewer.js environmentLightFor)
         if (this.hooks.pickLight) {
-            const b = el('button', BUTTON + ` flex items-center gap-0.5 py-1 ${this._picking ? 'bg-sky-500/40 text-white' : 'bg-white/5'}`);
+            const active = !!this._picking && !this._picking.pin;
+            const b = el('button', BUTTON + ` flex items-center gap-0.5 py-1 ${active ? 'bg-sky-500/40 text-white' : 'bg-white/5'}`);
             b.innerHTML = ICON_PLUS + ICON_MODEL;
             b.title = t('hdriEditor.add.model');
             b.setAttribute('aria-label', b.title);
-            b.setAttribute('aria-pressed', String(!!this._picking));
+            b.setAttribute('aria-pressed', String(active));
+            b.dataset.pickNew = '';
             b.onclick = () => this._pickLight();
             add.append(b);
         }
@@ -481,6 +483,18 @@ export class HdriEditor {
         name.value = pin.name; name.placeholder = t(`hdriEditor.types.${pinType(pin)}`);
         name.onchange = () => { pin.name = name.value.trim(); this._renderSide(); this._change(); };
         side.append(row(t('hdriEditor.name'), name));
+        // re-aim by a click on the model (like "+ cube" – size, brightness, colour and name stay)
+        if (this.hooks.pickLight) {
+            const active = this._picking?.pin === pin.id;
+            const aim = el('button', BUTTON + ` flex w-full items-center justify-center gap-1.5 py-1 ${active ? 'bg-sky-500/40 text-white' : 'bg-white/5'}`);
+            aim.innerHTML = ICON_MODEL;
+            aim.append(t('hdriEditor.aim'));
+            aim.title = t('hdriEditor.aimTitle');
+            aim.setAttribute('aria-pressed', String(active));
+            aim.dataset.pickAim = '';
+            aim.onclick = () => this._pickLight(pin.id);
+            side.append(row(t('hdriEditor.aimLabel'), aim));
+        }
         side.append(row(t('hdriEditor.shape'), select([['circle', t('hdriEditor.shapes.circle')], ['rect', t('hdriEditor.shapes.rect')]], pin.shape, v => { pin.shape = v; this._renderSide(); this._change(); })));
         side.append(row(t('hdriEditor.fill'), select(['color', 'gradient'].map(f => [f, t(`hdriEditor.fills.${f}`)]), pin.fill, v => { pin.fill = v; this._renderSide(); this._change(); })));
         side.append(this._slider(t('hdriEditor.azimuth'), 'pin.azimuth', -180, 180, 0.5));
@@ -529,21 +543,29 @@ export class HdriEditor {
         return row(label, range, num);
     }
 
-    // a light by a click on the model: highlight where clicked (Shift: lit along the normal) – a second click on the
-    // button, Esc or closing ends the waiting
-    _pickLight() {
-        if (this._picking) { this._picking(); return; }
+    // a light by a click on the model: highlight where clicked (Shift: lit along the normal) – a new pin, or `pinId`
+    // re-aimed (only its direction changes). A second click on the same button, Esc or closing ends the waiting; the
+    // other button switches over
+    _pickLight(pinId = null) {
+        if (this._picking) {
+            const same = this._picking.pin === pinId;
+            this._picking.cancel();
+            if (same) return;
+        }
         const doc = this.doc;
         const cancel = this.hooks.pickLight({
             onHit: ({ azimuth, elevation, mode }) => {
                 this._picking = null;
                 this._setStatus('');
                 if (this.doc !== doc) return;   // another HDRI opened meanwhile
-                const pin = createPin('circle', {
-                    name: t(mode === 'normal' ? 'hdriEditor.pinLitName' : 'hdriEditor.pinHighlightName'),
-                    azimuth: round(wrap180(azimuth), 1), elevation: round(elevation, 1), width: 20, height: 20,
-                });
-                doc.pins.push(pin);
+                const at = { azimuth: round(wrap180(azimuth), 1), elevation: round(elevation, 1) };
+                let pin = pinId && doc.pins.find(p => p.id === pinId);
+                if (pinId && !pin) return;   // deleted meanwhile
+                if (pin) Object.assign(pin, at);
+                else {
+                    pin = createPin('circle', { name: t(mode === 'normal' ? 'hdriEditor.pinLitName' : 'hdriEditor.pinHighlightName'), ...at, width: 20, height: 20 });
+                    doc.pins.push(pin);
+                }
                 this.sel = pin.id;
                 this._renderSide();
                 this._change();
@@ -551,7 +573,7 @@ export class HdriEditor {
             onEnd: () => { this._picking = null; this._setStatus(''); if (!this.root.hidden) this._renderSide(); },
         });
         if (!cancel) return;
-        this._picking = cancel;
+        this._picking = { cancel, pin: pinId };
         this._setStatus(t('hdriEditor.pickHint'));
         this._renderSide();
     }
