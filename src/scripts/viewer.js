@@ -6960,10 +6960,10 @@ export async function createPlayer(options = {}) {
     }
 
     // --- Open files via drag & drop into the window ---
-    // IGES goes the STEP way (converted to STEP text when read – readCadContent); drawings (DXF) too: the STEP text of their
+    // IGES goes the STEP way (converted to STEP text when read – readCadContent); drawings (DXF, DWG) too: the STEP text of their
     // bodies + the extras on the same nodes (cad/, docs/cad-drawings.md)
     const IGES_EXTENSIONS = ['igs', 'iges'];
-    const CAD_EXTENSIONS = ['dxf'];
+    const CAD_EXTENSIONS = ['dxf', 'dwg'];
     const ACIS_EXTENSIONS = ['sat', 'sab'];   // ACIS bodies: converted to STEP like IGES (acis/)
     const STEP_EXTENSIONS = ['stp', 'step', ...IGES_EXTENSIONS, ...CAD_EXTENSIONS, ...ACIS_EXTENSIONS];
     const MAIN_EXTENSIONS = [...STEP_EXTENSIONS, ...MESH_EXTENSIONS, ...SPLAT_EXTENSIONS];

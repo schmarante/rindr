@@ -20,7 +20,7 @@ export function solidsToStep(d, built, name = 'Drawing') {
     const u = built.unit;
     for (const s of list) {
         const a = s.entity.acis;
-        const bytes = a.sat ? encoder.encode(a.sat) : d.acisBlobs.get(a.ref) || null;
+        const bytes = a.sab || (a.sat ? encoder.encode(a.sat) : d.acisBlobs.get(a.ref) || null);   // SAB inline (DWG), SAT text, or by handle
         if (!bytes?.length) { c.skip(`${s.entity.type} without ACIS data`); continue; }
         let file;
         try { file = new AcisFile(bytes); } catch { c.skip(`${s.entity.type} unreadable`); continue; }

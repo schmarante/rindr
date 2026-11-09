@@ -411,15 +411,22 @@ export class AcisStep {
         });
     }
 
-    // cone: base ellipse (centre, normal, major axis, ratio), curve interval, sine, cosine[, u scale][, reverse u]
+    // cone: base ellipse (centre, normal, major axis, ratio), curve interval, sine, cosine[, u scale][, reverse u] –
+    // circular cylinders and cones, elliptic cylinders (an extrusion); elliptic cones are left out
     cone(r) {
         const c = r.vec(), n = r.vec(), m = r.vec(), ratio = r.num();
         if (r.version >= 106) { r.bound(); r.bound(); }
         const s = r.num(), co = r.num();
-        if (Math.abs(ratio - 1) > 1e-6) return this.skip('elliptic cone');
         const radius = len(m) * this.lenScale;
         const N = normalize(this.D(n)), U = this.D(m);
         const inward = co < 0;
+        if (Math.abs(ratio - 1) > 1e-6) {
+            // elliptic cylinder: the base ellipse extruded along the axis (STEP knows no elliptic cylinder; the normal of
+            // the extrusion – tangent × axis – points away from the axis like a cylinder's)
+            if (Math.abs(s) >= 1e-12) return this.skip('elliptic cone');
+            const base = this.w.add(`ELLIPSE('',#${this.axis2(this.P(c), N, U)},${num(radius)},${num(radius * Math.abs(ratio))})`);
+            return { id: this.w.add(`SURFACE_OF_LINEAR_EXTRUSION('',#${base},#${this.w.add(`VECTOR('',#${this.dir(N)},1.)`)})`), flip: inward };
+        }
         if (Math.abs(s) < 1e-12) {
             return { id: this.w.add(`CYLINDRICAL_SURFACE('',#${this.axis2(this.P(c), N, U)},${num(radius)})`), flip: inward };
         }

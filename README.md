@@ -8,7 +8,7 @@
 
 Your local 3D file viewer – with real-time path tracing, right in the browser.
 
-**STEP · IGES · DXF · SAT/SAB · glTF/GLB · FBX · MAX · C4D · Blender · OBJ · 3MF · USD · STL · PLY · pbrt · IFC · BCF · Gaussian splats (PLY/SOG) · MaterialX · HDRI (HDR/EXR)**
+**STEP · IGES · DXF · DWG · SAT/SAB · glTF/GLB · FBX · MAX · C4D · Blender · OBJ · 3MF · USD · STL · PLY · pbrt · IFC · BCF · Gaussian splats (PLY/SOG) · MaterialX · HDRI (HDR/EXR)**
 
 <a href="https://schmarante.github.io/rindr/"><img src="https://img.shields.io/badge/%E2%96%B6%20Live%20demo-schmarante.github.io%2Frindr-2ea44f?style=for-the-badge" alt="Live demo"></a>
 
@@ -20,6 +20,7 @@ Drop a CAD model, a mesh, a BIM file or a Gaussian splat into the window and get
 - **Opens almost anything**
   - **STEP** via a custom CAD kernel: assemblies, colours, instancing, adjustable tessellation quality – **IGES** goes the same way (converted on load)
   - **DXF** drawings via an own reader (ASCII and binary, R12 to current): layers in the scene graph, blocks, line types and weights, hatches, texts, 3D faces and meshes; model space or a layout with its viewports – lines and texts stay sharp over the path-traced image; solid bodies inside go the STEP way
+  - **DWG** drawings via an own reader (R13 to current, written from the public format description): the same drawing model as DXF – layers, blocks, layouts, 3D faces, meshes and solids
   - **SAT/SAB** solids and sheets (analytic and spline surfaces) converted to STEP on load
   - **glTF/GLB, FBX, PLY**, **OBJ** (own reader for files of hundreds of MB, MTL materials)
   - **STL** split into its parts on all CPU cores: identical parts instanced, facet colours as materials

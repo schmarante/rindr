@@ -679,10 +679,12 @@ function solidSize(step, geo, faces, features, sig = null) {
                     } catch { /* unreadable curve – vertices only */ }
                 }
                 if (c && c.type === 'CIRCLE' && circles) circles.push({ id: ec.id, ref: c.args[1], r: c.args[2], pl: null });
-                if (c && c.type === 'CIRCLE') {
-                    circleCount++;
+                // ellipses alike (a planar cap bounded by one closed ellipse: the solid was its single vertex, the face
+                // "larger than its solid" and left out)
+                if (c && (c.type === 'CIRCLE' || c.type === 'ELLIPSE')) {
+                    if (c.type === 'CIRCLE') circleCount++;
                     if (ec.args[1].id === ec.args[2].id) {
-                        const p = geo.placement(c.args[1]).o, r = c.args[2];
+                        const p = geo.placement(c.args[1]).o, r = c.type === 'CIRCLE' ? c.args[2] : Math.max(c.args[2], c.args[3]);
                         ext([p[0] - r, p[1] - r, p[2] - r]); ext([p[0] + r, p[1] + r, p[2] + r]);
                     } else {
                         const curve = geo.curve(ec.args[3]);

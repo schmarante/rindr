@@ -1,4 +1,4 @@
-// Worker: drawing files (DXF; DWG and ACIS bodies follow) → scene data. Two steps, the drawing stays here between them:
+// Worker: drawing files (DXF, DWG – cad/dwg/) → scene data. Two steps, the drawing stays here between them:
 //   { type: 'read', bytes, format }  → { type: 'spaces', spaces }   (model space + layouts with content – the viewer may ask)
 //   { type: 'build', space, limits } → { type: 'done', extras, step } (extras: drawing-build.js; step: STEP text of the
 //                                                                     ACIS bodies or null)
@@ -16,7 +16,7 @@ self.onmessage = async ({ data }) => {
         if (data.type === 'read') {
             // TextDecoder refuses views of shared memory: an own copy (the shared file is released by the caller)
             const bytes = typeof SharedArrayBuffer !== 'undefined' && data.bytes instanceof SharedArrayBuffer ? new Uint8Array(data.bytes).slice() : new Uint8Array(data.bytes);
-            drawing = readDxf(bytes, progress('read'));
+            drawing = data.format === 'dwg' ? (await import('./dwg/dwg-reader.js')).readDwg(bytes, progress('read')) : readDxf(bytes, progress('read'));
             name = data.name || '';
             self.postMessage({ type: 'spaces', spaces: listSpaces(drawing), version: drawing.header.version });
             return;

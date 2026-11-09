@@ -30,13 +30,15 @@ export class AcisFile {
 
     indexSat() {
         const b = this.bytes, n = b.length;
-        // header: three lines (CR, LF or both)
+        // header: three lines (CR, LF or both) – before version 2.0 only the first (version, record and body counts)
         let p = 0;
         const lines = [];
-        while (lines.length < 3 && p < n) {
+        let headLines = 3;
+        while (lines.length < headLines && p < n) {
             let e = p;
             while (e < n && b[e] !== 10 && b[e] !== 13) e++;
             lines.push(latin1(b, p, e));
+            if (lines.length === 1) { const v = Number(lines[0].trim().split(/\s+/)[0]); if (v > 0 && v < 200) headLines = 1; }
             p = e;
             while (p < n && (b[p] === 10 || b[p] === 13)) p++;
         }
@@ -216,7 +218,7 @@ export class AcisFile {
         // optional sequence number "-n"
         if (typeof t[0] === 'string' && /^-\d+$/.test(t[0]) && typeof t[1] === 'string' && /[a-z]/.test(t[1])) k = 1;
         const type = String(t[k++]);
-        const c = new Cursor(t, k, this.version);
+        const c = new Cursor(t, k, this.version, this.binary);
         c.type = type;
         c.attrib = c.ptr();
         if (this.version >= 700) {
@@ -236,16 +238,17 @@ export class AcisFile {
     subtype(n) {
         if (!(n >= 0 && n < this.subs.length)) return null;
         const t = this.binary ? this.sabTokens(this.subs[n], true) : this.satTokens(this.subs[n], true);
-        return new Cursor(t, 0, this.version);
+        return new Cursor(t, 0, this.version, this.binary);
     }
 }
 
 /** reading position over the tokens of a record or subtype */
 export class Cursor {
-    constructor(tokens, k, version) {
+    constructor(tokens, k, version, binary = false) {
         this.t = tokens;
         this.k = k;
         this.version = version;
+        this.binary = binary;
     }
     get done() { return this.k >= this.t.length; }
     peek() { return this.t[this.k]; }
@@ -277,11 +280,14 @@ export class Cursor {
         if (x === 'F' || x === 0 || x === '0') return false;
         return trueWords.includes(x);
     }
-    /** an interval bound: "I" infinite (null) or "F value" */
+    /**
+     * an interval bound → its value or null (infinite). SAT: "I", or "F value"; SAB: a logical "finite" – T then the
+     * value, F alone (read the SAT way, every cylinder of a binary file became a cone: the values after it shifted)
+     */
     bound() {
         const x = this.t[this.k++];
-        if (x === 'I' || x === 'T') return null;
-        if (x === 'F') return this.num();
+        if (this.binary ? x === 'F' : x === 'I') return null;
+        if (x === 'F' || x === 'T') return this.num();
         return typeof x === 'number' ? x : Number(x);
     }
     /** skip a '{ … }' (or anything up to the matching one when already inside) */
@@ -298,7 +304,7 @@ export class Cursor {
     sub() {
         const from = this.k;
         this.skipSubtype();
-        return new Cursor(this.t.slice(from + 1, this.k - 1), 0, this.version);
+        return new Cursor(this.t.slice(from + 1, this.k - 1), 0, this.version, this.binary);
     }
 }
 

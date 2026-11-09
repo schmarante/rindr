@@ -14,8 +14,8 @@
 //   INSERT { name, p (OCS), scale, rot (degrees), cols, rows, colSpacing, rowSpacing, attribs: [records] }
 //   TEXT / ATTRIB / ATTDEF { p, p2, h, rot, width, oblique, style, hAlign, vAlign, mirror, text } (OCS)
 //   MTEXT { p (WCS), dir | null, rot, h, width, attach, spacing, style, text (with format codes) }
-//   DIMENSION / ACAD_TABLE { block } · HATCH { elevation, solid, loops, style, patterns, gradient }
-//   MESH { pts, faces } · LEADER { pts, arrow } · MLINE { pts, miters, params } · WIPEOUT { polygon (WCS) }
+//   DIMENSION { block } · (ACAD_TABLE: an INSERT of its *T block) · HATCH { elevation, solid, loops, style, patterns, gradient }
+//   MESH { pts, faces: flat list (corner count, vertex indices …) } · LEADER { pts, arrow } · MLINE { pts, miters, params } · WIPEOUT { polygon (WCS) }
 //   VIEWPORT { center, w, h, id, status, viewCenter, viewDir, target, viewHeight, twist, frozen: [layer names] }
 //   ACIS (3DSOLID, REGION, BODY, SURFACE …) { acis: { sat: string } | { sab: Uint8Array } | { ref } }
 

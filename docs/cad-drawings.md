@@ -12,8 +12,8 @@ Nutzer (09.11.2026): „können wir auch dwg/dxf anzeigen? das sind ja nur 2D ze
 ## Weg durch den Viewer
 
 **Zeichnungen gehen den STEP-Weg wie IGES** (`docs/step-import.md`):
-- `CAD_EXTENSIONS` (viewer.js) gehört zu `STEP_EXTENSIONS`.
-- `readCadContent` übersetzt im Worker (`cad/cad-import.js` `convertCad` → `cad/cad-worker.js`).
+- `CAD_EXTENSIONS` (viewer.js: `dxf`, `dwg`) gehört zu `STEP_EXTENSIONS`.
+- `readCadContent` übersetzt im Worker (`cad/cad-import.js` `convertCad` → `cad/cad-worker.js`). Der DWG-Leser wird dort erst bei einer `.dwg` nachgeladen (dynamischer Import).
 
 **Ergebnis der Übersetzung:**
 - **STEP-Text der Volumenkörper:** leer ohne Körper; mit Körpern ab Stufe 2. Er ist `model.content`.
@@ -85,6 +85,7 @@ Das gemeinsame Modell für DXF und DWG:
      - sonst nach der Mehrheit der ursprünglichen Wicklung.
 - **Falle:** Erst entschied das Verhältnis |Volumen| / Summe > 0,5 über „geschlossen“. Ein dünnes Uhrenband lag weit darunter und blieb schwarz.
 - Danach Knicknormalen (30°, `crease-normals.js`) und Box-UVs.
+- **Speicher** (`meshGeometry`, `orientFaces`): Verschweißen über eine Hash-Tabelle auf den Float32-Bits, Kanten als Halbkanten nach unterer Ecke sortiert (CSR), Ecken je (Punkt, Normale) über die Ecken je Punkt – alles in typisierten Arrays. Vorher Text-Schlüssel und ein Array je Kante: 1,25 Mio. Dreiecke brauchten 3,2 GB und 7,9 s, jetzt 1,1 s. Ergebnis gleich (Fläche, Volumen, Zahlen der Testdateien).
 
 **Koordinaten:** Millimeter, +Y oben (die +Z der Zeichnung), relativ zu `origin`. Float32 behält so auch bei Vermessungskoordinaten seine Genauigkeit; die Matrix trägt den Ursprung.
 
@@ -120,13 +121,15 @@ Das gemeinsame Modell für DXF und DWG:
 
 **Blöcke:** INSERT/MINSERT bis 16 Ebenen tief, ohne Selbstbezug. Externe Referenzen werden im Hinweis gezählt.
 
-**Bemaßungen und Tabellen:** über ihren anonymen Block.
+**Bemaßungen:** über ihren anonymen Block, so wie er in der Zeichnung liegt.
+
+**Tabellen** (ACAD_TABLE): ebenfalls ein anonymer Block (`*T…`), aber relativ zum Einfügepunkt – also wie eine Einfügung (Punkt, Drehung aus der waagerechten Richtung). Bis zur DWG-Stufe lief die Tabelle wie eine Bemaßung und stand am Ursprung; DWG bis 2007, DXF 2007 und DXF 2018 ergeben jetzt dieselben Linien.
 
 **Weitere Objekte:**
 - LEADER mit gefüllter Pfeilspitze (Größe aus dem Bemaßungsstil).
 - MLINE über die Gehrungsrichtungen.
 - POINT nach `$PDMODE`.
-- XLINE/RAY auf die doppelte Zeichnungsgröße begrenzt.
+- XLINE/RAY: nur über die Ausdehnung der Zeichnung gezogen (Kopf `$EXTMIN/$EXTMAX`, sonst geschätzt; Liang-Barsky im Grundriss, 2 % Rand). Wie „Alles zeigen“ im CAD-Programm, das Konstruktionslinien auslässt – vorher machte die doppelte Zeichnungsgröße die Ansicht viermal so weit wie die Zeichnung. Trifft die Linie die Ausdehnung nicht: die halbe Zeichnungsgröße um ihren Punkt.
 
 **Layouts:**
 - Das Blatt kommt aus den Grenzen des Layouts (sonst Papiergröße und Ränder). Es ist eine weiße Füllung, die immer zuerst gezeichnet wird (`renderOrder` −1).
@@ -138,7 +141,7 @@ Das gemeinsame Modell für DXF und DWG:
 - Linien, Glyphen und Dreiecke aus dem Speicher-Budget (`cadLimits`).
 - Darüber: abgeschnitten, mit Hinweis „Zeichnung gekürzt“.
 
-**Nicht dargestellt** (im Hinweis gezählt): IMAGE/Unterlagen, Proxy-Objekte, MLEADER, SHAPE, OLE, Lichter. Volumenkörper in Layout-Ansichtsfenstern (dort fehlt noch das Kantenbild).
+**Nicht dargestellt** (im Hinweis gezählt, bei DWG mit dem Objektnamen): IMAGE/Unterlagen, Proxy-Objekte, MLEADER, SHAPE, OLE, Lichter, Toleranzen, Tabellen in DWG ab 2010. Volumenkörper in Layout-Ansichtsfenstern (dort fehlt noch das Kantenbild).
 
 ## Volumenkörper: ACIS → STEP (`src/scripts/acis/`, Stufe 2)
 
@@ -148,7 +151,7 @@ Das gemeinsame Modell für DXF und DWG:
 
 ### `acis-file.js`
 **SAT (Text):**
-- Drei Kopfzeilen: Version, Produkt, mm je Einheit.
+- Drei Kopfzeilen: Version, Produkt, mm je Einheit. **Vor Version 2.0 nur die erste** (DWG R14 schreibt SAT 1.06) – drei überlesen hieß: der Körper-Datensatz fehlte, nichts wurde übersetzt.
 - Datensätze bis `#`; die Satzanfänge werden einmal indiziert, Tokens erst bei Bedarf gelesen (424 MB, 2,7 Mio. Sätze).
 - Ab 7.0 stehen im Datensatz eine ID und ein Muster-Zeiger, außer bei Attributen; Zeichenketten sind `@n text`. Vor 7.0 stehen Zeichenketten als `n text`, ohne `@`.
 - Unter-Daten in `{ }` werden in Dateireihenfolge nummeriert, `ref n` zeigt darauf zurück. Auch Flächen werden so geteilt.
@@ -159,6 +162,7 @@ Das gemeinsame Modell für DXF und DWG:
 - **Fallen:**
   - Vertex und Coedge haben in SAB eine zusätzliche Zahl vor dem nächsten Zeiger (`nextPtr`).
   - Die Körper-Transformation steht als **eine Zeichenkette in SAT-Form** da. Sie wird zerlegt; vorher fehlte der Versatz, und ein Zylinder stand im Würfel.
+  - **Intervallgrenzen** sind ein Wahrheitswert „endlich“: `T` und der Wert, `F` allein = unendlich. In SAT heißt es `F Wert` bzw. `I` – nach SAT-Art gelesen verschob ein SAB-`F` alle folgenden Zahlen, jeder Zylinder wurde zum Kegel (Bleche einer DWG sahen zerknittert aus). `Cursor.bound()` unterscheidet nach `binary`.
 
 **Feldfolgen:** nach der öffentlichen SAT-Beschreibung 7.0 (Kegel-Beispiel: Grundellipse, Kurvenintervall, Sinus, Kosinus, u-Maßstab, Umkehr, Flächenintervalle) und an einer öffentlichen Beispieldatei geprüft.
 
@@ -175,7 +179,7 @@ Das gemeinsame Modell für DXF und DWG:
   - Sinus 0 → `CYLINDRICAL_SURFACE`, sonst `CONICAL_SURFACE`.
   - Der Radius wächst um Sinus/Kosinus entlang der Normalen.
   - Ein negativer Kosinus heißt: die Normale zeigt nach innen, die Fläche wird umgedreht.
-  - Elliptische Kegel werden gezählt und weggelassen.
+  - Elliptische Zylinder (Sinus 0, Verhältnis ≠ 1) → `SURFACE_OF_LINEAR_EXTRUSION` der Grundellipse entlang der Achse; ihre Normale (Tangente × Achse) zeigt wie beim Zylinder von der Achse weg. Elliptische Kegel werden gezählt und weggelassen.
 - sphere, torus: ein negativer Radius heißt nach innen.
 - spline → B-Spline aus der bs3-Fläche der Unterdaten:
   - exakt: direkt nach dem Namen, „full“ vorweg;
@@ -216,7 +220,42 @@ Das gemeinsame Modell für DXF und DWG:
   - Umwandlung 12 s in Node, im Browser 7 s, Laden gesamt ≈ 21 s, 476 000 Dreiecke („mittel“).
   - Maße 6 344 × 4 340 × 2 981 mm gegen FBX 6 344 × 4 368 × 2 982 mm; das Bild entspricht der FBX.
 - **DXF mit 3DSOLID:** R2000 (SAT-Text) und R2018 (SAB in ACDSDATA) ergeben dieselben 4 Körper und 44 Flächen. Würfel, Zylinder (mit Körper-Transformation), Block gedreht und skaliert liegen richtig, neben Linie und Text.
-- **Noch nicht an echten Daten geprüft:** Kegel mit Öffnungswinkel, Torus, prozedurale Spline-Flächen, Parameterkurven als Ersatz.
+- **DWG-Beispiele:** dieselbe Zeichnung in R14 … 2018 (SAT 1.06, SAT 4.0, SAB im Objekt, SAB im Datenspeicher) ergibt in jeder Version dieselben 3 Körper, 10 Flächen und Punkte. Eine 2007er Baugruppe aus 58 Blechteilen (Zylinder, Tori, ein elliptischer Zylinder) und eine Flächen-Datei (Extrusion, Loft, Rotation, Ellipsen-Scheibe) richtig in Raster und HQ.
+- **Noch nicht an echten Daten geprüft:** Kegel mit Öffnungswinkel, prozedurale Spline-Flächen, Parameterkurven als Ersatz.
+- **STEP-Kern** (`step/structure.js`, Größe eines Körpers): Ellipsen zählen jetzt wie Kreise. Eine ebene Scheibe mit nur einer geschlossenen Ellipse als Rand hatte als Körpergröße ihren einzigen Eckpunkt – „larger than its solid“, die Fläche fehlte. Trifft auch gewöhnliche STEP-Dateien.
+
+## DWG (`src/scripts/cad/dwg/`, Stufe 3)
+
+Eigener Leser nach der öffentlichen Formatbeschreibung der DWG-Datei. Ein freies Vergleichswerkzeug (GPL) lief nur lokal im Scratchpad, um Ausgaben zu vergleichen – kein Code daraus. Er schreibt in dasselbe Zeichnungsmodell wie der DXF-Leser; Aufbau, Annotationen und Körper sind gemeinsam.
+
+**`container.js`** – Datei → Abschnitte (Details im Kopfkommentar):
+- R13–R2000: Abschnitts-Locator, keine Kompression.
+- R2004/2010/2013/2018: verschleierter Dateikopf, Seiten- und Abschnittskarte, LZ77-Variante je Seite.
+- R2007: Reed-Solomon verschachtelt (Fehlerkorrektur übersprungen, nur die Daten-Bytes), eigene LZ77-Variante.
+
+**`bits.js`** – Bit-Leser: B, BB, 3B, BS, BL, BLL, BD, DD, RC/RS/RL/RD, MC/MS, H (auch relativ zum eigenen Handle), TV/TU (ab 2007 aus dem String-Strom), CMC/ENC, BE, BT, OT.
+
+**`dwg-reader.js`:**
+- Klassen, Objekt-Karte (Handle → Position), Kopfvariablen bis zu den Einheiten, dann jedes Objekt.
+- Objekt: MS-Größe, (2010+) Größe des Handle-Stroms in Bits als MC (nicht in der Größe enthalten), Typ (OT), (2000–2007) Datengröße in Bits, Handle, erweiterte Daten, gemeinsame Objektdaten, eigene Daten; am Datenende der Handle-Strom; ab 2007 die Texte in einem String-Strom, gefunden über das letzte Datenbit.
+- Tabellen: LAYER, LTYPE, STYLE, BLOCK_HEADER, LAYOUT; Objektarten wie beim DXF-Leser; Volumenkörper als SAT (Version 1, 159 − c), SAB (Version 2) oder ab 2013 im Datenspeicher `AcDb:AcDsPrototype_1b`.
+- Speicher: Nach dem Lesen eines Objekts fallen Bit-Leser und Rohdaten weg, nur das Ergebnis bleibt. MESH-Punkte und -Flächen in typisierten Arrays (flache Flächenliste: Eckenzahl, Indizes …) – auch im DXF-Leser.
+
+**Abweichungen von der Beschreibung bzw. Fallen** (alle an Dateien belegt):
+- **Tabelleneinträge ab 2007 ohne „xrefindex+1“ (BS)**: Name, 64-Bit, Xref-Abhängigkeit – die Bits der Layer und Block-Köpfe von 2004 und 2007 derselben Zeichnung zeigen es (2004: `1 10 0 …`, 2007: `1 0 …`). Vorher war alles danach verschoben: Layer galten als „aus“, ein Block-Kopf besaß „Millionen“ Objekte – 3 GB Speicher und 4,6 s beim Lesen statt 0,44 GB und 0,9 s.
+- **Ab 2004 kein „nolinks“-Bit** in den gemeinsamen Objektdaten.
+- **ENC** (Farbe der Objekte): Flags = Wert & 0xE000, Index = Wert & 0x1FFF – sonst wurde 256 (VONLAYER) zu 0.
+- **BLL** im Kopf ab 2013: Länge in 3 festen Bits.
+- **Kopf ab 2007**: die Größe in Bits (RL) steht in jeder Fassung ab 2007, nicht erst ab 2010.
+- **Layer aus**: Flag-Bit 2 (ab 2000), R14 ein eigenes Bit; ein negativer Farbindex heißt ebenfalls aus.
+- **Blocknamen** sind nicht eindeutig (anonyme heißen alle `*D`, `*U` …): Schlüssel `Name#HANDLE`.
+- **Bemaßungen**: Der Block ist der letzte Block-Kopf unter den bis zu 16 Handles am Ende (Bogen- und Radiusbemaßungen haben mehr Handles).
+- **ACIS Version 2** liegt mitten im Bit-Strom, nicht auf einer Byte-Grenze (`bitBytes`) – ab dem abgerundeten Byte gelesen war die Datei Datenmüll, die Körper fehlten.
+- **Datenspeicher** (2013+): Die Kopf-Einträge der Datensätze (Größe, 1, Handle, Versatz) stehen nach dem 48-Byte-Segmentkopf, die Daten direkt dahinter.
+- **Tabellen** (ACAD_TABLE): bis 2007 beginnen die Daten wie eine Einfügung (Punkt, Maßstab, Drehung, Extrusion, Attribute), der erste eigene Handle ist der Block. Ab 2010 steht der Tabelleninhalt vorne – nicht gelesen, im Hinweis gezählt.
+- **Splines** nur mit Fit-Punkten: das CAD-Programm schreibt in DXF zusätzlich berechnete Kontrollpunkte, in DWG nicht; wir zeichnen durch die Fit-Punkte.
+
+**Testdatei-Erkenntnis:** Eine DWG 2004 desselben Fahrzeugs wie die DWG 2018 zeigte nur Teile. Grund: die vier größten Teile (je über 32 767 Punkte, 241 000 Punkte) fehlen in der Datei – Polyface-Netze des alten Formats fassen nicht mehr; der Exporter ließ sie weg. Kein Lesefehler (keine ungültigen Verweise, alle 94 Netze vollständig).
 
 ## Zeichnen (`cad/annotations.js`)
 
@@ -249,6 +288,7 @@ Das gemeinsame Modell für DXF und DWG:
 - `textdbg.mjs`: Lage der Texte.
 - `harness/cadtest.js` (Browser): Laden, Layout-Knopf, Bilder Default/HQ/oben/Zoom.
 - `harness/cadscene.js`: Szene speichern/öffnen.
+- DWG: `cad/t/dwg.mjs` (lesen + bauen, Zahlen, Zeiten), `dwgcmp.mjs` (DWG gegen die DXF derselben Zeichnung: Layer, Objekte, Blöcke), `dwgsolids.mjs` (Körper → STEP), `mem.mjs` (Speicher je Stufe), `acisdump.mjs`/`bodies.mjs` (ACIS-Datensätze einer DWG).
 
 **Ergebnisse (Windows-Chrome, RTX 3080):**
 - **Synthetische Datei:** deckungsgleich mit dem Referenzbild – Lage, Bögen (auch Extrusion −Z), Ellipsen, Splines, Blöcke, Schraffur mit Insel, Muster mit Bogenkante, Linientypen, Linienstärke, Texte samt Umbruch, ⌀/°/±, gedrehter Text.
@@ -257,7 +297,11 @@ Das gemeinsame Modell für DXF und DWG:
 - **Polyface-Datei R12** (67 Netze, 113 000 Dreiecke): 1,5 s, Raster und HQ richtig beleuchtet.
 - **Große Zeichnung:** 330 000 Segmente, 1,1 s, Draufsicht von selbst, 60 fps.
 - **Szene mit Layout:** Wieder geöffnet zeigt sie dasselbe Blatt, ohne Rückfrage.
+- **DWG, öffentliche Beispiele** (47 Dateien R13–2018, darunter R2007): alle lesen und bauen ohne Fehler. Dieselbe Zeichnung in sieben Versionen gegen ihre DXF: Layer, Layouts, Blöcke und Objekte gleich bis auf Splines (s. o.) und Tabellen ab 2010.
+- **DWG 2018, Flächen-Baugruppe** (48 MB, 101 MESH, 1,25 Mio. Dreiecke – dieselbe Zahl wie die FBX): lesen 0,9 s, aufbauen 1,1 s (Node), im Browser 4,8 s bis zum Bild, Raster und HQ richtig.
+- **DWG 2004** (23 MB, 94 Polyface-Netze, 619 000 Dreiecke): 4,6 s im Browser.
 
 **Regression** (`run.js`/`compare.js`, alt gegen neu): Abweichungen nur im Starttext (DXF genannt) und im bekannten Rauschen.
 - Ein Schnittbild wich stabil ab (7,9 % der Pixel, Innenseite einer Kugel hinter dem Schnitt).
 - Eingegrenzt bis auf **eine Zeile im GLB-Export**, ein Modul, das erst beim Export geladen wird und im Szenario gar nicht läuft. Allein in den alten Stand gebaut, erzeugt sie dieselbe Abweichung: Bündel-Rauschen wie bei der Wolke (`docs/player.md`), keine echte Änderung.
+- **DWG-Stufe** (gegen den Stand von Stufe 1+2): wieder nur Starttext (DWG genannt; auch unscharf hinter dem Setup-Fenster) und Rauschen – Schnittbild 7,9 %, Splat-Kamera, Gras-IDs, Wolke. Eine Kernel-Übersetzung von 7,5 s statt 0,1 s kam vom neuen Port des Prüfservers: Chromes Shader-Cache gilt je Origin, ein neuer Port ist ein kalter Cache.

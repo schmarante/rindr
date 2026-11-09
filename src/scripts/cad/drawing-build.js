@@ -95,6 +95,7 @@ class Builder {
         this.counts = { segments: 0, glyphs: 0, triangles: 0, truncated: false, denseHatches: 0, noFont: 0, xrefs: 0, missingBlocks: 0 };
         this.unit = d.unitMm;
         this.ltscale = d.header.ltscale || 1;
+        this.box = null;   // [x0, y0, x1, y1] of the drawing (world units) – where construction lines end
         this.size = this.estimateSize();
         this.tol = Math.max(this.size * 1e-5, 1e-9);
         this.done = 0;
@@ -105,6 +106,7 @@ class Builder {
     estimateSize() {
         const { extmin, extmax } = this.d.header;
         if (extmin && extmax && extmax[0] > extmin[0] && extmax[0] - extmin[0] < 1e15) {
+            this.box = [extmin[0], extmin[1], extmax[0], extmax[1]];
             return Math.hypot(extmax[0] - extmin[0], extmax[1] - extmin[1], (extmax[2] || 0) - (extmin[2] || 0)) || 1;
         }
         let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -113,6 +115,7 @@ class Builder {
             see(e.a); see(e.b); see(e.c); see(e.p);
             if (e.pts) for (let i = 0; i < Math.min(e.pts.length, 30); i += e.kind === '2d' ? 2 : 3) see([e.pts[i], e.pts[i + 1]]);
         }
+        if (x1 > x0) this.box = [x0, y0, x1, y1];
         return x1 > x0 ? Math.hypot(x1 - x0, y1 - y0) : 1000;
     }
 
@@ -243,6 +246,29 @@ class Builder {
 
     // --- output ---
 
+    // parameter range of the line p + t·dir (block coordinates, matrix m) inside the drawing's box (Liang–Barsky in the
+    // plan); a line that misses the box: half the drawing size around p
+    across(m, p, dir, ray) {
+        const P = this.apply(m, p[0], p[1], p[2], [0, 0, 0]);
+        const Q = this.apply(m, p[0] + dir[0], p[1] + dir[1], p[2] + dir[2], [0, 0, 0]);
+        const dx = Q[0] - P[0], dy = Q[1] - P[1];
+        let t0 = ray ? 0 : -Infinity, t1 = Infinity;
+        const b = this.box;
+        if (b) {
+            const clip = (q, r) => {
+                if (q === 0) return r >= 0;
+                const t = r / q;
+                if (q < 0) { if (t > t1) return false; if (t > t0) t0 = t; }
+                else { if (t < t0) return false; if (t < t1) t1 = t; }
+                return true;
+            };
+            const w = (b[2] - b[0]) * 0.02 + 1e-9, h = (b[3] - b[1]) * 0.02 + 1e-9;
+            if (clip(-dx, P[0] - (b[0] - w)) && clip(dx, b[2] + w - P[0]) && clip(-dy, P[1] - (b[1] - h)) && clip(dy, b[3] + h - P[1]) && t1 > t0) return [t0, t1];
+        }
+        const half = this.size / 2 / (Math.hypot(dx, dy, Q[2] - P[2]) || 1);
+        return [ray ? 0 : -half, half];
+    }
+
     apply(m, x, y, z, out) {
         out[0] = m[0] * x + m[4] * y + m[8] * z + m[12];
         out[1] = m[1] * x + m[5] * y + m[9] * z + m[13];
@@ -372,13 +398,15 @@ class Builder {
             const batch = this.lineBatch(this.nodeOf(e, ctx), this.widthOf(e, ctx));
             const rgb = this.rgbOf(e, ctx);
             const A = [0, 0, 0], B = [0, 0, 0];
-            polygons.forEach((poly, pi) => {
+            let pi = 0;
+            for (const poly of polygons) {
                 for (let i = 0; i < poly.length; i++) {
                     if (hiddenEdges?.[pi]?.[i]) continue;
                     const p = poly[i], q = poly[(i + 1) % poly.length];
                     this.segment(batch, this.apply(m, p[0], p[1], p[2], A), this.apply(m, q[0], q[1], q[2], B), rgb, ctx.clip);
                 }
-            });
+                pi++;
+            }
             return;
         }
         if (this.counts.triangles >= this.limits.maxTriangles) { this.counts.truncated = true; return; }
@@ -450,10 +478,12 @@ class Builder {
                 break;
             }
             case 'XLINE': case 'RAY': {
-                const L = this.size * 2;
+                // endless: drawn across the drawing's extents only (like zooming to the extents in a CAD program, which
+                // leaves construction lines out – twice the size made the view four times wider than the drawing)
                 const [px, py, pz] = e.p, [dx, dy, dz] = e.dir;
-                const from = e.type === 'RAY' ? 0 : -L;
-                this.polyline(e, ctx, [px + dx * from, py + dy * from, pz + dz * from, px + dx * L, py + dy * L, pz + dz * L], 3, 0, false, ctx.m, { pattern: null });
+                const [t0, t1] = this.across(ctx.m, e.p, e.dir, e.type === 'RAY');
+                if (!(t1 > t0)) break;
+                this.polyline(e, ctx, [px + dx * t0, py + dy * t0, pz + dz * t0, px + dx * t1, py + dy * t1, pz + dz * t1], 3, 0, false, ctx.m, { pattern: null });
                 break;
             }
             case 'POINT': this.point(e, ctx); break;
@@ -539,9 +569,20 @@ class Builder {
             }
             case 'HATCH': this.hatch(e, ctx); break;
             case 'MESH': {
-                const p = e.pts;
-                const polys = e.faces.map(f => f.map(i => [p[i * 3], p[i * 3 + 1], p[i * 3 + 2]]));
-                this.surface(e, ctx, polys, ctx.m);
+                // flat face list (corner count, vertex indices …) – read face by face, the large ones have a million
+                const p = e.pts, f = e.faces, nv = p.length / 3;
+                const polys = function* () {
+                    for (let i = 0; i < f.length;) {
+                        const n = f[i++], poly = [];
+                        for (let k = 0; k < n && i < f.length; k++, i++) {
+                            const q = f[i];
+                            if (q >= 0 && q < nv) poly.push([p[q * 3], p[q * 3 + 1], p[q * 3 + 2]]);
+                        }
+                        if (n < 1) break;
+                        yield poly;
+                    }
+                };
+                this.surface(e, ctx, polys(), ctx.m);
                 break;
             }
             case 'LEADER': this.leader(e, ctx); break;
@@ -862,45 +903,70 @@ class Builder {
     }
 }
 
-// geometry of a mesh batch: vertices welded by position, crease normals (30°), box UVs in mm
+// geometry of a mesh batch: vertices welded by position, crease normals (30°), box UVs in mm. Typed arrays and hash
+// tables throughout – a surface model with a million triangles took gigabytes with string keys and arrays per edge.
 function meshGeometry(positions, index) {
-    // weld by exact position
-    const map = new Map();
-    const remap = new Uint32Array(positions.length / 3);
-    const P = [];
-    for (let i = 0; i < positions.length / 3; i++) {
-        const key = `${positions[i * 3]},${positions[i * 3 + 1]},${positions[i * 3 + 2]}`;
-        let v = map.get(key);
-        if (v === undefined) { v = P.length / 3; map.set(key, v); P.push(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]); }
-        remap[i] = v;
+    // weld by exact position (−0 = 0)
+    const n = positions.length / 3;
+    const key = new Uint32Array(n * 3), keyF = new Float32Array(key.buffer);
+    for (let i = 0; i < n * 3; i++) keyF[i] = positions[i] + 0;
+    let size = 1;
+    while (size < n * 2) size <<= 1;
+    const table = new Int32Array(size);   // slot = welded id + 1, 0 = empty
+    const remap = new Uint32Array(n), first = new Uint32Array(n);
+    let count = 0;
+    for (let i = 0; i < n; i++) {
+        const x = key[i * 3], y = key[i * 3 + 1], z = key[i * 3 + 2];
+        let slot = (Math.imul(x, 0x9e3779b1) ^ Math.imul(y ^ (y >>> 15), 0x85ebca6b) ^ Math.imul(z ^ (z >>> 13), 0xc2b2ae35)) & (size - 1);
+        for (;;) {
+            const e = table[slot];
+            if (e === 0) { table[slot] = ++count; first[count - 1] = i; remap[i] = count - 1; break; }
+            const j = first[e - 1] * 3;
+            if (key[j] === x && key[j + 1] === y && key[j + 2] === z) { remap[i] = e - 1; break; }
+            slot = (slot + 1) & (size - 1);
+        }
     }
-    const pos = Float32Array.from(P);
-    const idx = [];
+    const pos = new Float32Array(count * 3);
+    for (let v = 0; v < count; v++) { const j = first[v] * 3; pos[v * 3] = keyF[j]; pos[v * 3 + 1] = keyF[j + 1]; pos[v * 3 + 2] = keyF[j + 2]; }
+    let nt = 0;
+    const all = new Uint32Array(index.length);
     for (let t = 0; t < index.length; t += 3) {
         const a = remap[index[t]], b = remap[index[t + 1]], c = remap[index[t + 2]];
-        if (a !== b && b !== c && a !== c) idx.push(a, b, c);
+        if (a !== b && b !== c && a !== c) { all[nt * 3] = a; all[nt * 3 + 1] = b; all[nt * 3 + 2] = c; nt++; }
     }
-    if (!idx.length) return null;
-    const tri = Uint32Array.from(idx);
+    if (!nt) return null;
+    const tri = all.slice(0, nt * 3);
     orientFaces(pos, tri);
     const cn = creaseCornerNormals(pos, tri);
-    // vertex per (position, normal)
-    const bits = new Uint32Array(cn.buffer);
-    const seen = new Map();
-    const outP = [], outN = [], outI = new Uint32Array(tri.length);
-    for (let i = 0; i < tri.length; i++) {
-        const v = tri[i];
-        const key = `${v}|${bits[i * 3]}|${bits[i * 3 + 1]}|${bits[i * 3 + 2]}`;
-        let o = seen.get(key);
-        if (o === undefined) {
-            o = outP.length / 3;
-            seen.set(key, o);
-            outP.push(pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]);
-            outN.push(cn[i * 3], cn[i * 3 + 1], cn[i * 3 + 2]);
+    // vertex per (position, normal): corners grouped by vertex (CSR), equal normals within a group share one vertex
+    const nb = new Uint32Array(cn.buffer);
+    const start = new Uint32Array(count + 1);
+    for (let i = 0; i < tri.length; i++) start[tri[i] + 1]++;
+    for (let v = 0; v < count; v++) start[v + 1] += start[v];
+    const cursor = start.slice(0, count), around = new Uint32Array(tri.length);
+    for (let i = 0; i < tri.length; i++) around[cursor[tri[i]]++] = i;
+    const outI = new Uint32Array(tri.length), source = new Uint32Array(tri.length);   // source: a corner of each new vertex
+    let m = 0;
+    for (let v = 0; v < count; v++) {
+        const base = m;
+        for (let k = start[v]; k < start[v + 1]; k++) {
+            const c = around[k];
+            let o = base;
+            for (; o < m; o++) {
+                const s = source[o];
+                if (nb[s * 3] === nb[c * 3] && nb[s * 3 + 1] === nb[c * 3 + 1] && nb[s * 3 + 2] === nb[c * 3 + 2]) break;
+            }
+            if (o === m) source[m++] = c;
+            outI[c] = o;
         }
-        outI[i] = o;
     }
-    const g = boxProject({ positions: Float32Array.from(outP), normals: Float32Array.from(outN), index: outI });
+    const outP = new Float32Array(m * 3), outN = new Float32Array(m * 3);
+    for (let o = 0; o < m; o++) {
+        const c = source[o], v = tri[c] * 3;
+        outP[o * 3] = pos[v]; outP[o * 3 + 1] = pos[v + 1]; outP[o * 3 + 2] = pos[v + 2];
+        outN[o * 3] = cn[c * 3]; outN[o * 3 + 1] = cn[c * 3 + 1]; outN[o * 3 + 2] = cn[c * 3 + 2];
+    }
+    const g = boxProject({ positions: outP, normals: outN, index: outI });
     return { positions: g.positions, normals: g.normals, uvs: g.uvs, index: g.index instanceof Uint32Array ? g.index : Uint32Array.from(g.index) };
 }
 
@@ -909,55 +975,63 @@ function meshGeometry(positions, index) {
 // with their neighbours (breadth first over edges shared by exactly two faces), then outwards – closed pieces by their
 // signed volume, open ones by the winding most of their faces had. In place.
 function orientFaces(pos, tri) {
-    const nt = tri.length / 3, nv = pos.length / 3;
-    const edges = new Map();   // undirected edge → [face, face] (more: not followed)
-    const key = (a, b) => (a < b ? a * nv + b : b * nv + a);
-    for (let t = 0; t < nt; t++) {
-        for (let k = 0; k < 3; k++) {
-            const e = key(tri[t * 3 + k], tri[t * 3 + (k + 1) % 3]);
-            const list = edges.get(e);
-            if (!list) edges.set(e, [t]);
-            else list.push(t);
+    const nt = tri.length / 3, nv = pos.length / 3, nh = tri.length;
+    const next = h => (h % 3 === 2 ? h - 2 : h + 1);
+    // half-edges grouped by their lower vertex (CSR), sorted by the upper one → runs of the same undirected edge
+    const lo = h => Math.min(tri[h], tri[next(h)]), hi = h => Math.max(tri[h], tri[next(h)]);
+    const start = new Uint32Array(nv + 1);
+    for (let h = 0; h < nh; h++) start[lo(h) + 1]++;
+    for (let v = 0; v < nv; v++) start[v + 1] += start[v];
+    const cursor = start.slice(0, nv), order = new Uint32Array(nh);
+    for (let h = 0; h < nh; h++) order[cursor[lo(h)]++] = h;
+    // mate: the other half-edge of an edge with exactly two faces, −1 otherwise (open, or more than two – not followed)
+    const mate = new Int32Array(nh).fill(-1);
+    for (let v = 0; v < nv; v++) {
+        const s = start[v], e = start[v + 1];
+        // insertion sort by the upper vertex (few edges per vertex)
+        for (let i = s + 1; i < e; i++) {
+            const h = order[i], k = hi(h);
+            let j = i - 1;
+            while (j >= s && hi(order[j]) > k) { order[j + 1] = order[j]; j--; }
+            order[j + 1] = h;
+        }
+        for (let i = s; i < e;) {
+            let j = i + 1;
+            const k = hi(order[i]);
+            while (j < e && hi(order[j]) === k) j++;
+            if (j - i === 2) { mate[order[i]] = order[i + 1]; mate[order[i + 1]] = order[i]; }
+            i = j;
         }
     }
-    // direction of edge a–b in face t: +1 if a → b appears in its winding
-    const dirIn = (t, a, b) => {
-        for (let k = 0; k < 3; k++) {
-            const x = tri[t * 3 + k], y = tri[t * 3 + (k + 1) % 3];
-            if (x === a && y === b) return 1;
-            if (x === b && y === a) return -1;
-        }
-        return 0;
-    };
     const flip = new Int8Array(nt);   // 0 not seen, 1 keep, −1 flip
-    const queue = new Int32Array(nt);
-    for (let start = 0; start < nt; start++) {
-        if (flip[start]) continue;
-        flip[start] = 1;
-        let head = 0, tail = 0;
-        queue[tail++] = start;
-        const members = [];
+    const queue = new Int32Array(nt);   // every face enters once – the members of a piece are queue[first, tail)
+    let tail = 0;
+    for (let startFace = 0; startFace < nt; startFace++) {
+        if (flip[startFace]) continue;
+        flip[startFace] = 1;
+        const first = tail;
+        let head = tail;
+        queue[tail++] = startFace;
         while (head < tail) {
             const t = queue[head++];
-            members.push(t);
             for (let k = 0; k < 3; k++) {
-                const a = tri[t * 3 + k], b = tri[t * 3 + (k + 1) % 3];
-                const list = edges.get(key(a, b));
-                if (!list || list.length !== 2) continue;
-                const u = list[0] === t ? list[1] : list[0];
+                const h = t * 3 + k, o = mate[h];
+                if (o < 0) continue;
+                const u = (o / 3) | 0;
                 if (flip[u]) continue;
-                // effective a → b in t; u must run b → a
-                flip[u] = dirIn(u, a, b) * flip[t] === 1 ? -1 : 1;
+                // effective a → b in t; u must run b → a (its half-edge starting at a = same direction)
+                flip[u] = (tri[o] === tri[h] ? 1 : -1) * flip[t] === 1 ? -1 : 1;
                 queue[tail++] = u;
             }
         }
         // outwards: signed volume against the piece's centre when (nearly) closed – edges with two faces, the sign holds for
         // thin shells too (a watch band: |signed| / total far below 0.5) – else the majority of the original winding
         let cx = 0, cy = 0, cz = 0, n = 0;
-        for (const t of members) for (let k = 0; k < 3; k++) { const v = tri[t * 3 + k] * 3; cx += pos[v]; cy += pos[v + 1]; cz += pos[v + 2]; n++; }
+        for (let q = first; q < tail; q++) { const t = queue[q]; for (let k = 0; k < 3; k++) { const v = tri[t * 3 + k] * 3; cx += pos[v]; cy += pos[v + 1]; cz += pos[v + 2]; n++; } }
         cx /= n; cy /= n; cz /= n;
-        let signed = 0, total = 0, kept = 0;
-        for (const t of members) {
+        let signed = 0, total = 0, kept = 0, open = 0;
+        for (let q = first; q < tail; q++) {
+            const t = queue[q];
             const a = tri[t * 3] * 3, b = tri[t * 3 + 1] * 3, c = tri[t * 3 + 2] * 3;
             const ax = pos[a] - cx, ay = pos[a + 1] - cy, az = pos[a + 2] - cz;
             const bx = pos[b] - cx, by = pos[b + 1] - cy, bz = pos[b + 2] - cz;
@@ -966,12 +1040,13 @@ function orientFaces(pos, tri) {
             signed += v;
             total += Math.abs(v);
             if (flip[t] === 1) kept++;
+            for (let k = 0; k < 3; k++) if (mate[t * 3 + k] < 0) open++;
         }
-        let open = 0, all = 0;
-        for (const t of members) for (let k = 0; k < 3; k++) { all++; if (edges.get(key(tri[t * 3 + k], tri[t * 3 + (k + 1) % 3])).length !== 2) open++; }
-        const closed = total > 0 && (open <= all * 0.02 ? Math.abs(signed) / total > 1e-3 : Math.abs(signed) / total > 0.5);
-        const invert = closed ? signed < 0 : kept * 2 < members.length;
-        for (const t of members) {
+        const members = tail - first;
+        const closed = total > 0 && (open <= members * 3 * 0.02 ? Math.abs(signed) / total > 1e-3 : Math.abs(signed) / total > 0.5);
+        const invert = closed ? signed < 0 : kept * 2 < members;
+        for (let q = first; q < tail; q++) {
+            const t = queue[q];
             if ((flip[t] === -1) === invert) continue;   // final winding = raw · flip · (invert ? −1 : 1)
             const x = tri[t * 3 + 1]; tri[t * 3 + 1] = tri[t * 3 + 2]; tri[t * 3 + 2] = x;
         }

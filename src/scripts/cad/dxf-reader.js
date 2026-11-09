@@ -556,7 +556,12 @@ function convert(r, d) {
         };
         case 'TEXT': case 'ATTRIB': case 'ATTDEF': return text(r);
         case 'MTEXT': return mtext(r);
-        case 'DIMENSION': case 'ARC_DIMENSION': case 'LARGE_RADIAL_DIMENSION': case 'ACAD_TABLE':
+        case 'ACAD_TABLE': {
+            // a table is drawn by its anonymous block (*T…), placed like an insert: point, horizontal direction
+            const dir = r.point(11, [1, 0, 0]);
+            return { ...common(r, 'INSERT'), name: String(r.get(2, '')), p: r.point(10), scale: [1, 1, 1], rot: Math.atan2(dir[1], dir[0]) * 180 / Math.PI, cols: 1, rows: 1, colSpacing: 0, rowSpacing: 0, attribs: [] };
+        }
+        case 'DIMENSION': case 'ARC_DIMENSION': case 'LARGE_RADIAL_DIMENSION':
             return { ...common(r, t), type: 'DIMENSION', block: String(r.get(2, '')), p: r.point(12, [0, 0, 0]) };
         case 'HATCH': return hatch(r);
         case 'MESH': return mesh(r);
@@ -773,7 +778,7 @@ function hatch(r) {
 function mesh(r) {
     const e = common(r, 'MESH');
     const c = r.c, v = r.v;
-    // 92 vertex count, 10/20/30 …, 93 face list size, 90 entries (n, i0 … in-1)
+    // 92 vertex count, 10/20/30 …, 93 face list size, 90 entries (n, i0 … in-1) – kept as the flat face list
     let i = c.indexOf(92);
     const pts = [], faces = [];
     if (i >= 0) {
@@ -785,14 +790,7 @@ function mesh(r) {
         }
         while (i < c.length && c[i] !== 93) i++;
         const size = v[i++];
-        let read = 0;
-        while (read < size && i < c.length && c[i] === 90) {
-            const cnt = v[i++];
-            read++;
-            const f = [];
-            for (let q = 0; q < cnt && c[i] === 90; q++, read++) f.push(v[i++]);
-            faces.push(f);
-        }
+        while (faces.length < size && i < c.length && c[i] === 90) faces.push(v[i++]);
     }
     return { ...e, pts, faces };
 }

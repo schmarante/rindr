@@ -2731,7 +2731,7 @@
         "unsupportedFormat": "Format not supported ({extensions})",
         "dropHint": "Drag a file into the window",
         "openFile": "Open file",
-        "dropFormats": "STEP (.stp/.step) · IGES (.igs/.iges) · DXF (.dxf) · SAT (.sat/.sab) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · pbrt (.pbrt) · VDB volumes (.vdb/.nvdb) · BIM (.ifc/.ifczip) · MaterialX (.mtlx) · BCF issues (.bcfzip) · Gaussian splats (.ply/.sog) · HDRI (.hdr/.exr) · IES light profiles (.ies)",
+        "dropFormats": "STEP (.stp/.step) · IGES (.igs/.iges) · DXF (.dxf) · DWG (.dwg) · SAT (.sat/.sab) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · pbrt (.pbrt) · VDB volumes (.vdb/.nvdb) · BIM (.ifc/.ifczip) · MaterialX (.mtlx) · BCF issues (.bcfzip) · Gaussian splats (.ply/.sog) · HDRI (.hdr/.exr) · IES light profiles (.ies)",
         "hdriDropped": "HDRI “{name}” as environment",
         "hdriOne": "Several HDRIs – “{name}” chosen as environment",
         "qualityReduced": "Large model (≈ {triangles} triangles at “{from}”) – quality automatically reduced to “{to}”",
@@ -3123,7 +3123,7 @@
         "sceneGraph": "Scene Graph",
         "drop": {
             "title": "Drop file here",
-            "hint": "STEP (.stp/.step), IGES (.igs/.iges), DXF (.dxf), SAT (.sat/.sab), glTF/GLB, FBX, MAX (.max), C4D (.c4d), Blender (.blend), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, pbrt (.pbrt), VDB volumes (.vdb/.nvdb), BIM (.ifc/.ifczip), MaterialX (.mtlx), BCF issues (.bcfzip), Gaussian splats (.ply/.sog), HDRI (.hdr/.exr), IES light profiles (.ies) – just drop textures and .bin files along with it",
+            "hint": "STEP (.stp/.step), IGES (.igs/.iges), DXF (.dxf), DWG (.dwg), SAT (.sat/.sab), glTF/GLB, FBX, MAX (.max), C4D (.c4d), Blender (.blend), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, pbrt (.pbrt), VDB volumes (.vdb/.nvdb), BIM (.ifc/.ifczip), MaterialX (.mtlx), BCF issues (.bcfzip), Gaussian splats (.ply/.sog), HDRI (.hdr/.exr), IES light profiles (.ies) – just drop textures and .bin files along with it",
             "addHint": "Several models: drop them together or one after another – they appear side by side",
             "replaceTitle": "Replace models",
             "replaceHint": "The loaded models are removed and replaced by the new file",
@@ -3144,7 +3144,7 @@
     },
     "about": {
         "title": "About",
-        "description": "Your Local 3D-File Viewer – STEP, IGES, DXF, SAT, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, pbrt, VDB volumes, MaterialX, BIM (IFC, BCF), Gaussian splats, HDRIs and IES light profiles right in the browser, with real-time path tracing.",
+        "description": "Your Local 3D-File Viewer – STEP, IGES, DXF, DWG, SAT, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, pbrt, VDB volumes, MaterialX, BIM (IFC, BCF), Gaussian splats, HDRIs and IES light profiles right in the browser, with real-time path tracing.",
         "author": "Author",
         "email": "Email",
         "version": "Version",
