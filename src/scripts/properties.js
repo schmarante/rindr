@@ -1048,6 +1048,9 @@ export class PropertiesPanel {
             ascii: [['size', 'size', 6, 40, 1], ['color', 'color', 0, 1, 0.01], ['brightness', 'brightness', 0.5, 2, 0.01]],
             rain: [['size', 'size', 8, 40, 1], ['speed', 'speed', 0, 3, 0.01], ['image', 'image', 0, 1, 0.01]],
             zebra: [['highlights', 'zebraHighlights', 0.7, 1, 0.01], ['shadows', 'zebraShadows', 0, 0.2, 0.005], ['size', 'zebraSize', 2, 24, 1]],
+            codeSpace: [['mix', 'codeMix', 0, 1, 0.01], ['tint', 'codeTint', 0, 1, 0.01], ['size', 'codeSize', 0.25, 4, 0.01],
+                ['speed', 'speed', 0, 3, 0.01], ['trail', 'codeTrail', 0.1, 3, 0.01], ['rate', 'codeRate', 0, 10, 0.1], ['base', 'codeBase', 0, 1, 0.01],
+                ['random', 'codeRandom', 0, 1, 0.01], ['background', 'codeBackground', 0, 1, 0.01]],
         };
         return this._section('style', t('properties.style.title'), null, true, null, () => {
             const rows = [this._row(t('properties.style.mode'), mode)];
@@ -1055,6 +1058,11 @@ export class PropertiesPanel {
             if (!values) return rows;
             const set = (label, key) => this._tracked(t('properties.style.undo.param', { name: label }), `style-${style.mode}-${key}`,
                 () => values[key], v => { values[key] = v; lens.apply(); });
+            if (style.mode === 'codeSpace') {
+                rows.push(el('div', 'mb-1 text-white/40', t('properties.style.codeHint')));
+                const name = t('properties.style.codeColor');
+                rows.push(this._row(name, colorField(values.color, { onInput: set(name, 'color') })));
+            }
             for (const [key, label, min, max, step] of SLIDERS[style.mode]) {
                 const name = t(`properties.style.${label}`);
                 rows.push(this._rangeRow(name, values[key], min, max, step, set(name, key)));

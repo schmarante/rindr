@@ -77,7 +77,8 @@ export class SplatComposite {
         this.input = texture(this.frame.texture);   // value: the frame of this call (own target or the lens target)
         this.quad = new THREE.QuadMesh(new THREE.NodeMaterial());
         this.out = new THREE.QuadMesh(new THREE.NodeMaterial());
-        this.out.material.fragmentNode = vec4(texture(this.result.texture).rgb, 1);
+        this.outInput = texture(this.result.texture);   // output(): the composite, or a pass over it (code look)
+        this.out.material.fragmentNode = vec4(this.outInput.rgb, 1);
         // models' depth pre-pass: no colour, their view depth into the second attachment (model share 1, coverage 1)
         this.depthMaterial = new THREE.MeshBasicNodeMaterial();
         this.depthMaterial.fragmentNode = mrt({ output: vec4(0), splatDepth: vec4(positionView.z.negate(), 1, 0, 1) });
@@ -111,6 +112,7 @@ export class SplatComposite {
 
     _fit() {
         const r = this.fixedSize ? this._size.setScalar(this.fixedSize) : this.renderer.getDrawingBufferSize(this._size);
+        if (this.splats.width !== r.x || this.splats.height !== r.y) this._splatKey = null;   // resized: the kept picture is gone
         for (const t of [this.frame, this.splats, this.result, this.cloudColor, this.cloudDepth]) if (t.width !== r.x || t.height !== r.y) t.setSize(r.x, r.y);
         const hx = Math.max(1, Math.ceil(r.x / 2)), hy = Math.max(1, Math.ceil(r.y / 2));
         for (const t of [...this.aoTargets, this.normalDepth, ...this.normalTargets]) if (t.width !== hx || t.height !== hy) t.setSize(hx, hy);
@@ -123,7 +125,7 @@ export class SplatComposite {
      */
     begin({ models, draw = true }) {
         const samples = models ? MODEL_SAMPLES : 0;
-        for (const t of [this.frame, this.splats]) if (t.samples !== samples) { t.samples = samples; t.dispose(); }   // rebuilt on next use
+        for (const t of [this.frame, this.splats]) if (t.samples !== samples) { t.samples = samples; t.dispose(); this._splatKey = null; }   // rebuilt on next use
         this._fit();
         if (draw) this.renderer.setRenderTarget(this.frame);
     }
@@ -136,10 +138,14 @@ export class SplatComposite {
      *   material?: THREE.Material, instances?: number }} o  layer = the splats' layer; keep = the scene child holding models
      *   and splats (everything else hidden); hide = objects below it to leave out (environment capture: the models);
      *   extra = scene children that cover the splats with their own materials (wool shells, grass); splat = the
-     *   SplatMesh, drawn with `material` (default: its composite variant) and `instances`
+     *   SplatMesh, drawn with `material` (default: its composite variant) and `instances`; cacheKey: what the picture
+     *   depends on – the same key as last time keeps the last picture (null: draw)
      */
-    drawSplats(scene, camera, { layer, keep, hide = [], extra = [], splat, material = splat.compositeMaterial, instances }) {
+    drawSplats(scene, camera, { layer, keep, hide = [], extra = [], splat, material = splat.compositeMaterial, instances, cacheKey = null }) {
         this._fit();
+        if (cacheKey !== null && cacheKey === this._splatKey) return;
+        this._splatKey = cacheKey;
+        this.splatVersion = (this.splatVersion || 0) + 1;   // a new picture (passes over its depth: code-look.js)
         const r = this.renderer;
         const saved = { target: r.getRenderTarget(), autoClear: r.autoClear, clear: r.getClearColor(new THREE.Color()), alpha: r.getClearAlpha(),
             override: scene.overrideMaterial, background: scene.background, backgroundNode: scene.backgroundNode, mask: camera.layers.mask };
@@ -238,6 +244,8 @@ export class SplatComposite {
     clearSplats() {
         const r = this.renderer;
         this._fit();
+        this._splatKey = null;
+        this.splatVersion = (this.splatVersion || 0) + 1;
         const target = r.getRenderTarget(), autoClear = r.autoClear, clear = r.getClearColor(new THREE.Color()), alpha = r.getClearAlpha();
         r.setRenderTarget(this.splats);
         r.setClearColor(0x000000, 0);
@@ -434,8 +442,9 @@ export class SplatComposite {
     }
 
     /** the composite into a render target (a cube face of the raster fisheye) – linear, its output pass tone-maps */
-    copyTo(target, face = 0) {
+    copyTo(target, face = 0, source = this.result.texture) {
         const r = this.renderer;
+        this.outInput.value = source;
         const autoClear = r.autoClear;
         r.autoClear = true;
         r.setRenderTarget(target, face);
@@ -444,8 +453,9 @@ export class SplatComposite {
     }
 
     /** the composite onto the canvas through the normal output path (tone mapping + sRGB) */
-    output() {
+    output(source = this.result.texture) {
         const r = this.renderer;
+        this.outInput.value = source;
         const autoClear = r.autoClear;
         r.autoClear = true;   // also clears the internal framebuffer target
         r.setRenderTarget(null);

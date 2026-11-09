@@ -96,6 +96,7 @@ export class SplatOpacity {
     update({ renderer, scene, splat, light, receivers, splatReceives, groundY = null, receiverBox = null, keep, hide }) {
         if (!this.dirty) return this.active;
         this.dirty = false;
+        this.version = (this.version || 0) + 1;   // a new map: the splats' kept picture is out of date (SplatMesh.drawState)
         const box = new THREE.Box3();
         for (const r of receivers) if (r?.visible) box.union(_box.setFromObject(r, true));
         splat.updateWorldMatrix(true, false);

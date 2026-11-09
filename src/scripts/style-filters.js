@@ -18,8 +18,12 @@
 import * as THREE from 'three/webgpu';
 import { Fn, texture, uniform, vec2, vec3, vec4, float, floor, fract, clamp, mix, step, smoothstep, select, dot, max, min, abs, exp,
     sin, sqrt, pow, log2, screenCoordinate, screenSize, time, sRGBTransferOETF, sRGBTransferEOTF, toneMapping, toneMappingExposure } from 'three/tsl';
+import { ATLAS_CELL, glyphAtlas, codeAtlas } from './code-glyphs.js';
+import { CODE_DEFAULTS, applyCode } from './code-look.js';
 
-export const STYLE_MODES = ['none', 'handheld', 'pixel', 'lcd', 'crt', 'sketch', 'ascii', 'rain', 'zebra'];
+export const STYLE_MODES = ['none', 'handheld', 'pixel', 'lcd', 'crt', 'sketch', 'ascii', 'rain', 'codeSpace', 'zebra'];
+// looks in the scene, not over the picture (no filter pass): the code look (code-look.js)
+const SCENE_LOOKS = new Set(['codeSpace']);
 
 const DEFAULTS = {
     handheld: { rows: 144, dither: 0.8, palette: 'green' },
@@ -30,6 +34,7 @@ const DEFAULTS = {
     ascii: { size: 12, color: 1, brightness: 1.2 },
     rain: { size: 16, speed: 1, image: 0.85 },
     zebra: { highlights: 0.95, shadows: 0, size: 6 },
+    codeSpace: { ...CODE_DEFAULTS },
 };
 
 // own palettes (display sRGB), dark → light
@@ -40,43 +45,12 @@ const PALETTES = {
 
 const LUMA = vec3(0.2126, 0.7152, 0.0722);
 const ASCII_RAMP = ' .:-=+*#%@';
-const ATLAS_CELL = [40, 64];   // glyph cell in the atlas (monospace aspect)
 
 // ordered dithering: 2×2 Bayer value of an integer cell (0, ½, ¾, ¼), nested once more → 4×4 (16 levels in [0, 1))
 const bayer2 = a => fract(a.x.mul(0.5).add(a.y.mul(a.y).mul(0.75)));
 const bayer4 = a => bayer2(floor(a.mul(0.5))).mul(0.25).add(bayer2(a));
 // cheap hash 0…1 of a 2D value
 const hash = p => fract(sin(dot(p, vec2(12.9898, 78.233))).mul(43758.5453));
-
-function glyphAtlas(chars, columns) {
-    const [w, h] = ATLAS_CELL;
-    const rows = Math.ceil(chars.length / columns);
-    const canvas = document.createElement('canvas');
-    canvas.width = w * columns;
-    canvas.height = h * rows;
-    const g = canvas.getContext('2d');
-    g.fillStyle = '#000';
-    g.fillRect(0, 0, canvas.width, canvas.height);
-    g.fillStyle = '#fff';
-    g.font = `bold ${Math.round(h * 0.78)}px ui-monospace, Menlo, Consolas, "DejaVu Sans Mono", monospace`;
-    g.textAlign = 'center';
-    g.textBaseline = 'middle';
-    [...chars].forEach((ch, i) => g.fillText(ch, (i % columns + 0.5) * w, (Math.floor(i / columns) + 0.53) * h, w));
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.flipY = false;
-    tex.colorSpace = THREE.NoColorSpace;
-    tex.generateMipmaps = true;
-    tex.minFilter = THREE.LinearMipmapLinearFilter;
-    tex.magFilter = THREE.LinearFilter;
-    return { tex, columns, rows };
-}
-
-// code rain: digits and half-width katakana (fall back to whatever the system font has)
-const RAIN_CHARS = (() => {
-    let s = '0123456789';
-    for (let c = 0xff66; s.length < 64; c++) s += String.fromCharCode(c);
-    return s;
-})();
 
 export class StyleFilter {
     constructor(renderer) {
@@ -102,7 +76,12 @@ export class StyleFilter {
     }
 
     get active() {
-        return this.mode !== 'none' && STYLE_MODES.includes(this.mode);
+        return this.mode !== 'none' && STYLE_MODES.includes(this.mode) && !SCENE_LOOKS.has(this.mode);
+    }
+
+    /** the code look is chosen: the viewer turns splats and background into code (code-look.js) */
+    get codeSpace() {
+        return this.mode === 'codeSpace';
     }
 
     /** The mode's settings into the uniforms (cheap, every change) */
@@ -111,6 +90,7 @@ export class StyleFilter {
         const s = this.settings[this.mode];
         u.scale.value = this.pixelScale;
         if (!s) return;
+        if (this.mode === 'codeSpace') { applyCode(s); return; }
         const v = {
             handheld: [s.rows, s.dither, 0, 0],
             pixel: [s.size, s.levels, s.dither, 0],
@@ -163,7 +143,7 @@ export class StyleFilter {
     }
 
     _atlas(name) {
-        this._atlases[name] ??= name === 'ascii' ? glyphAtlas(ASCII_RAMP, ASCII_RAMP.length) : glyphAtlas(RAIN_CHARS, 8);
+        this._atlases[name] ??= name === 'ascii' ? glyphAtlas(ASCII_RAMP, ASCII_RAMP.length) : codeAtlas();
         return this._atlases[name];
     }
 

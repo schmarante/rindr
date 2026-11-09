@@ -59,6 +59,7 @@ import { SplatVolume } from './splat/splat-volume.js';
 import { GroundProjection } from './ground.js';
 import { GROUND_SURFACE } from './ground-reflection.js';
 import { BackgroundDome } from './background-dome.js';
+import { CodeBackground, CodePass } from './code-look.js';
 import { ContactShadow } from './contact-shadow.js';
 import { ModelAnimation, createPlaybar } from './animation.js';
 import * as dialogs from './dialog.js';
@@ -714,6 +715,7 @@ export async function createPlayer(options = {}) {
     const ground = new GroundProjection();
     ground.setEnvironment(studioTexture);
     const dome = new BackgroundDome();   // HDRI background as a finite dome (perspective when zooming)
+    const codeBackground = new CodeBackground();   // style "Code in space": the background as glyph rain (code-look.js)
     // Contact shadow under the model in the raster preview (with "ground shadow"); recomputed when parts move
     // or change visibility (updateTransforms), continuously while editing (gizmo, explode) or loading
     const contactShadow = new ContactShadow();
@@ -7869,6 +7871,24 @@ export async function createPlayer(options = {}) {
         // vignette follows the camera (the path tracer takes over the rotation at the next camera restart)
         if (scene.background === vignette.texture && !environment.matte && vignette.update(camera, scene, backdropLook())) pathTracing.updateEnvironment();
         dome.update(camera);   // dome background: camera position relative to the projection centre
+        // style "Code in space" (code-look.js): splats and background turn into code
+        const code = lens.style.codeSpace ? lens.style.settings.codeSpace : null;
+        codeBackground.sync(scene, camera, renderer, { on: !!code, size: code?.size, fallback: dome.enabled ? dome.node : null });
+    }
+    // glyph height of the code look in the world: 0.6 % of the splat scene's radius (robust box) × the size setting
+    let codePass = null, codePassFish = null;
+    const codeGlyph = () => {
+        _codeBox.copy(splatMesh.geometry.boundingBox).applyMatrix4(splatMesh.matrixWorld);
+        return Math.max(_codeBox.getSize(_codeSize).length() / 2 * 0.006 * (lens.style.settings.codeSpace.size ?? 1), 1e-6);
+    };
+    const _codeBox = new THREE.Box3(), _codeSize = new THREE.Vector3();
+    // Key of the splat picture (splat-composite.js keeps it while the key stays): the splats' own state, the camera, the
+    // view mode – only for splats alone (models, fibres, grass and the section plane change the picture on their own)
+    function splatCacheKey() {
+        if (extraModels.length || slicer.enabled || wool.group.children.length || grass.group.children.length) return null;
+        const state = splatMesh.drawState();
+        if (state === null) return null;
+        return `${state}|${camera.matrixWorld.elements.join(',')}|${camera.projectionMatrix.elements.join(',')}|${viewMode}|${renderer.toneMapping}`;
     }
     function renderFrame() {
         applyPendingSize();
@@ -8039,8 +8059,10 @@ export async function createPlayer(options = {}) {
             if (focusLine && cam !== camera) dof.renderLine(renderer, scene, [ground.material], cam);
             if (fishFace) {
                 fisheyeSplats.drawSplats(scene, cam, { layer: SPLAT_LAYER, keep: slicer.group, extra: [wool.group, grass.group], splat: splatMesh });
-                fisheyeSplats.compose(fisheyeSplats.frame.texture);
-                fisheyeSplats.copyTo(fishFace.target, fishFace.index);
+                let faceImage = fisheyeSplats.compose(fisheyeSplats.frame.texture);
+                // style "Code in space": per cube face (its own camera and depth)
+                if (lens.style.codeSpace) faceImage = (codePassFish ??= new CodePass(renderer)).render(faceImage, fisheyeSplats.splats.textures[1], cam, codeGlyph(), { size: { x: fisheyeSplats.result.width, y: fisheyeSplats.result.height } });
+                fisheyeSplats.copyTo(fishFace.target, fishFace.index, faceImage);
             }
         };
         const rasterize = () => {
@@ -8060,13 +8082,15 @@ export async function createPlayer(options = {}) {
             // path traced: object splats are in the image (volume); scans are drawn over it like in Default (splat-volume.js)
             // … and while the volume is still being baked (a splat opened in HQ) the raster splats stand in
             const splatsDrawn = rasterDrawn || !splatVolume.primary || !splatVolume.ready;
-            if (splatsDrawn) splatComposite.drawSplats(scene, camera, { layer: SPLAT_LAYER, keep: slicer.group, extra: [wool.group, grass.group], splat: splatMesh });
+            if (splatsDrawn) splatComposite.drawSplats(scene, camera, { layer: SPLAT_LAYER, keep: slicer.group, extra: [wool.group, grass.group], splat: splatMesh, cacheKey: splatCacheKey() });
             else splatComposite.clearSplats();
             if (splatClouds && splatsDrawn) splatComposite.drawClouds(scene, camera, { clouds, keep: slicer.group, modelSize: environment.modelSize, inFrame: !rasterDrawn });
             const aoRadius = extraModels.length ? splatModelsBox().getBoundingSphere(_aoSphere).radius * 2 * SPLATS.ao.radius : 0;
-            const composed = splatComposite.compose(post ? lens.target.texture : splatComposite.frame.texture, { camera, aoRadius, clouds: splatClouds && splatsDrawn });
+            let composed = splatComposite.compose(post ? lens.target.texture : splatComposite.frame.texture, { camera, aoRadius, clouds: splatClouds && splatsDrawn });
+            // style "Code in space": the surfaces as code over the composite, by its depth (code-look.js) – the splats stay kept
+            if (lens.style.codeSpace && splatsDrawn) composed = (codePass ??= new CodePass(renderer)).render(composed, splatComposite.splats.textures[1], camera, codeGlyph(), { version: splatComposite.splatVersion });
             if (post) { lens.input.value = composed; lens.end(); lens.input.value = lens.target.texture; }
-            else splatComposite.output();
+            else splatComposite.output(composed);
         } else if (post) lens.end();
         // splat scene with models: shadow depth map after the frame (a pass first in the frame would make the batcher
         // prepare a regrouping in its render context) – the next frame shows it

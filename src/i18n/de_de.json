@@ -2292,6 +2292,7 @@
                 "sketch": "Skizze",
                 "ascii": "ASCII-Art",
                 "rain": "Code-Regen",
+                "codeSpace": "Code im Raum",
                 "zebra": "Zebra (Belichtung)"
             },
             "rows": "Zeilen",
@@ -2322,7 +2323,17 @@
             "undo": {
                 "mode": "Stil-Filter",
                 "param": "Stil-Filter: {name}"
-            }
+            },
+            "codeHint": "Die Szene selbst wird zu Code: Auf den Flächen der Splats liegt ein Zeichenraster mit fallendem Regen, der Hintergrund (auch das HDRI) wird Zeichenregen. Nur in der Live-Ansicht.",
+            "codeColor": "Farbe",
+            "codeMix": "Code-Anteil",
+            "codeTint": "Einfärben",
+            "codeSize": "Zeichengröße",
+            "codeTrail": "Spurlänge",
+            "codeRate": "Wechsel",
+            "codeBase": "Grundlicht",
+            "codeRandom": "Zufall",
+            "codeBackground": "Hintergrund"
         },
         "lens": {
             "title": "Objektiv-Effekte",

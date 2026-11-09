@@ -2292,6 +2292,7 @@
                 "sketch": "Sketch",
                 "ascii": "ASCII art",
                 "rain": "Code rain",
+                "codeSpace": "Code in space",
                 "zebra": "Zebra (exposure)"
             },
             "rows": "Rows",
@@ -2322,7 +2323,17 @@
             "undo": {
                 "mode": "Style filter",
                 "param": "Style filter: {name}"
-            }
+            },
+            "codeHint": "The scene itself turns into code: the splats’ surfaces carry a raster of glyphs with falling rain, the background (the HDRI too) becomes glyph rain. Live view only.",
+            "codeColor": "Colour",
+            "codeMix": "Code share",
+            "codeTint": "Tint",
+            "codeSize": "Glyph size",
+            "codeTrail": "Trail length",
+            "codeRate": "Changes",
+            "codeBase": "Base light",
+            "codeRandom": "Randomness",
+            "codeBackground": "Background"
         },
         "lens": {
             "title": "Lens effects",

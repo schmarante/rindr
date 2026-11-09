@@ -849,9 +849,30 @@ export class SplatMesh extends THREE.Mesh {
                 order.needsUpdate = true;
                 this.geometry.instanceCount = visible;
                 this.lastSort = state;
+                this.sortVersion = (this.sortVersion || 0) + 1;
                 this.onSorted?.();
             })
             .catch(err => { this.sorting = false; console.error('[Splats] sort failed', err); });
+    }
+
+    /**
+     * What the splats' picture depends on, as a key – the composite pass keeps its last picture while it stays the same
+     * (viewer.js adds camera and size): a large scan close up is millions of overlapping splats per frame, the GPU stayed
+     * fully busy drawing an unchanged picture. Relit: also lights, environment, exposure, material and the own shadow's
+     * map. null = draw every frame: loading, reveal.
+     */
+    drawState() {
+        if (this.loading || this.reveal.active || !this.visible) return null;
+        const d = this.dof, L = this.look;
+        const state = [this.sortVersion || 0, this.geometry.instanceCount, L.structure, this.display.value, d.enabled.value, d.aperture.value,
+            d.focus.value, d.line.value, d.sphere.value, this.shadow.enabled.value, ...this.matrixWorld.elements];
+        if (L.mode !== 'baked') {
+            state.push(L.toneMapping, L.exposure.value, L.envIntensity.value, L.envTexture?.uuid, L.envTexture?.version, ...L.envRotation.value.elements,
+                ...L.ambient.value.toArray(), ...L.lights.flatMap(l => [...l.direction.value.toArray(), ...l.color.value.toArray()]),
+                ...L.color.value.toArray(), L.metalness.value, L.roughness.value, ...L.emissive.value.toArray(), L.detail.value,
+                this.opacity?.version ?? -1, this.opacity?.enabled?.value ?? -1);
+        }
+        return state.join(',');
     }
 
     // After the first draws the data lives on the GPU – drop the CPU copies that are not needed any more
