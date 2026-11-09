@@ -4,7 +4,7 @@
 // start with code 0 (type name), sections with 0 SECTION / 2 <name> and end with 0 ENDSEC. Each object is collected as its
 // list of pairs (codes + typed values), then converted by type into the records described in drawing.js.
 // Bytes only up to the pairs (no string per line): files of several hundred MB stay manageable.
-import { Drawing, ACI_BYLAYER, ACI_BYBLOCK, ACI_BYOBJECT, LW_BYLAYER } from './drawing.js';
+import { Drawing, ACI_BYLAYER, ACI_BYBLOCK, ACI_BYOBJECT, LW_BYLAYER, LW_BYBLOCK } from './drawing.js';
 
 const BINARY_SENTINEL = [65, 117, 116, 111, 67, 65, 68, 32, 66, 105, 110, 97, 114, 121, 32, 68, 88, 70, 13, 10, 26, 0];
 
@@ -356,6 +356,8 @@ class Reader {
                 const flags = r.get(70, 0);
                 d.styles.set(key, { name, font: String(r.get(3, '')), bigFont: String(r.get(4, '')), family, height: r.get(40, 0), width: r.get(41, 1) || 1,
                     oblique: r.get(50, 0), flags, gen: r.get(71, 0) });
+                const handle = String(r.get(5, '')).toUpperCase();
+                if (handle) d.styleByHandle.set(handle, name);
                 break;
             }
             case 'DIMSTYLE':
@@ -566,6 +568,7 @@ function convert(r, d) {
         case 'HATCH': return hatch(r);
         case 'MESH': return mesh(r);
         case 'LEADER': return leader(r, d);
+        case 'MULTILEADER': return multileader(r);
         case 'MLINE': return mline(r);
         case 'WIPEOUT': return wipeout(r);
         case 'VIEWPORT': return viewport(r, d);
@@ -801,6 +804,73 @@ function leader(r, d) {
     for (let i = 0; i < r.c.length; i++) if (r.c[i] === 10) pts.push(r.v[i], r.c[i + 1] === 20 ? r.v[i + 1] : 0, r.c[i + 2] === 30 ? r.v[i + 2] : 0);
     const style = d.dimstyles.get(String(r.get(3, 'STANDARD')).toUpperCase());
     return { ...e, pts, arrow: r.get(71, 1) === 1, spline: r.get(72, 0) === 1, arrowSize: (style?.asz ?? d.header.dimasz ?? 2.5) * (style?.scale || d.header.dimscale || 1) };
+}
+
+// colour as stored by multileaders: method in the top byte (0xC0 by layer, 0xC1 by block, 0xC2 RGB, 0xC3 index)
+function rawColor(v) {
+    if (v === undefined || v === null) return null;
+    const method = (v >>> 24) & 0xff;
+    if (method === 0xc2) return { color: ACI_BYOBJECT, rgb: v & 0xffffff };
+    if (method === 0xc3) return { color: v & 0xff, rgb: null };
+    if (method === 0xc1) return { color: ACI_BYBLOCK, rgb: null };
+    return { color: ACI_BYLAYER, rgb: null };
+}
+
+// MULTILEADER: the context data (300 "CONTEXT_DATA{" … 301 "}") holds the content – MTEXT or a block – and the leader
+// roots (302 "LEADER{": connection point, landing direction and distance) with their lines (304 "LEADER_LINE{": points
+// from the arrowhead on); after it the entity's own properties (leader type, colour, line weight, arrowhead, block labels)
+function multileader(r) {
+    const e = common(r, 'MLEADER');
+    const c = r.c, v = r.v;
+    const ctx = new Map(), own = new Map(), roots = [], labels = [], matrix = [];
+    let level = 0, after = false, root = null, line = null;
+    // a point at i (codes n, n + 10, n + 20) → [point, index of its last value]
+    const point = i => {
+        const p = [v[i], 0, 0];
+        let k = i;
+        if (c[k + 1] === c[i] + 10) p[1] = v[++k];
+        if (c[k + 1] === c[i] + 20) p[2] = v[++k];
+        return [p, k];
+    };
+    const POINTS = new Set([10, 11, 12, 13, 14, 15, 16, 110, 111, 112]);
+    for (let i = 0; i < c.length; i++) {
+        const code = c[i], val = v[i];
+        if (level === 0 && code === 300 && /CONTEXT_DATA/.test(val)) { level = 1; continue; }
+        if (level === 1 && code === 302 && /LEADER\{/.test(val)) { level = 2; root = { lines: [], connection: null, dir: null, landing: 0 }; roots.push(root); continue; }
+        if (level === 2 && code === 304 && /LEADER_LINE/.test(val)) { level = 3; line = []; root.lines.push(line); continue; }
+        if (level === 3 && code === 305) { level = 2; continue; }
+        if (level === 2 && code === 303) { level = 1; continue; }
+        if (level === 1 && code === 301) { level = 0; after = true; continue; }
+        if (POINTS.has(code)) {
+            const [p, k] = point(i);
+            i = k;
+            if (level === 3) { if (code === 10) line.push(...p); }
+            else if (level === 2) { if (code === 10) root.connection = p; else if (code === 11) root.dir = p; }
+            else if (level === 1) { if (!ctx.has(code)) ctx.set(code, p); }
+            else if (after && !own.has(code)) own.set(code, p);
+            continue;
+        }
+        if (level === 2) { if (code === 40) root.landing = val; continue; }
+        if (level === 1) { if (code === 47) matrix.push(val); else if (!ctx.has(code)) ctx.set(code, val); continue; }
+        if (!after) continue;
+        // block labels: attribute definition, index, width, text
+        if (code === 330) { labels.push({ attdef: String(val).toUpperCase(), text: '' }); continue; }
+        if (code === 302 && labels.length) { labels[labels.length - 1].text = String(val); continue; }
+        if (!own.has(code)) own.set(code, val);
+    }
+    const text = ctx.get(290) ? {
+        text: String(ctx.get(304) ?? ''), p: ctx.get(12) || [0, 0, 0], dir: ctx.get(13) || null, normal: ctx.get(11) || [0, 0, 1], rot: ctx.get(42) || 0,
+        h: ctx.get(41) || 1, width: ctx.get(43) || 0, spacing: ctx.get(45) || 1, attach: ctx.get(171) || 1, styleHandle: String(ctx.get(340) ?? '').toUpperCase(),
+        color: rawColor(ctx.get(90)),
+    } : null;
+    const block = !text && ctx.get(296) ? {
+        handle: String(ctx.get(341) ?? '').toUpperCase(), normal: ctx.get(14) || [0, 0, 1], p: ctx.get(15) || [0, 0, 0], scale: ctx.get(16) || [1, 1, 1],
+        rot: ctx.get(46) || 0, color: rawColor(ctx.get(93)),
+    } : null;
+    return {
+        ...e, roots, text, block, labels, leaderType: own.get(170) ?? 1, leaderColor: rawColor(own.get(91)), leaderLw: own.get(171) ?? LW_BYBLOCK,
+        dogleg: own.get(291) !== 0, arrowSize: ctx.get(140) || own.get(42) || 1, arrowHandle: String(own.get(342) ?? '').toUpperCase(),
+    };
 }
 
 function mline(r) {

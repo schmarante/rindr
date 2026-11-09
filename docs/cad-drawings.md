@@ -44,6 +44,7 @@ Nutzer (09.11.2026): „können wir auch dwg/dxf anzeigen? das sind ja nur 2D ze
 ### `drawing.js`
 Das gemeinsame Modell für DXF und DWG:
 - Kopf: Einheiten `$INSUNITS` → `UNIT_MM`, `$LTSCALE`, `$LWDISPLAY`, `$PDMODE`/`$PDSIZE`, `$FILLMODE`.
+- **Ohne Einheit** (`$INSUNITS` 0): Zoll, wenn die Zeichnung imperial ist (`$MEASUREMENT` 0, so wie das CAD-Programm es dann annimmt), sonst Millimeter. Vorher immer Millimeter: ein imperialer Grundriss von 480 Einheiten wurde ein 48-cm-Haus. Metrische ohne Einheit bleiben Millimeter – ob mm oder m gemeint ist, steht nirgends (ein Bett von 2 Einheiten ist dann 2 mm groß).
 - Tabellen: Layer, Linientypen, Textstile, Bemaßungsstile, Blöcke, Layouts.
 - Objekte des Modellbereichs und der Papierbereiche als flache Datensätze (Felder im Kopfkommentar).
 - Die ACI-Farbtabelle wird erzeugt: 24 Farbtöne × 5 Stufen × voll/halb gesättigt, dazu Grautöne.
@@ -121,12 +122,17 @@ Das gemeinsame Modell für DXF und DWG:
 
 **Blöcke:** INSERT/MINSERT bis 16 Ebenen tief, ohne Selbstbezug. Externe Referenzen werden im Hinweis gezählt.
 
-**Bemaßungen:** über ihren anonymen Block, so wie er in der Zeichnung liegt.
+**Bemaßungen:** über ihren anonymen Block, eingefügt am Punkt „12“ (OCS; in DWG dazu Maßstab und Drehung der Einfügung). Liegt eine Bemaßung in einem Block, steht ihre Geometrie in Weltkoordinaten und „12“ ist minus die Einfügung – ohne ihn lagen solche Bemaßungen doppelt verschoben neben dem Blatt (Ziegel-Zeichnung eines Nutzers, DXF).
 
 **Tabellen** (ACAD_TABLE): ebenfalls ein anonymer Block (`*T…`), aber relativ zum Einfügepunkt – also wie eine Einfügung (Punkt, Drehung aus der waagerechten Richtung). Bis zur DWG-Stufe lief die Tabelle wie eine Bemaßung und stand am Ursprung; DWG bis 2007, DXF 2007 und DXF 2018 ergeben jetzt dieselben Linien.
 
 **Weitere Objekte:**
 - LEADER mit gefüllter Pfeilspitze (Größe aus dem Bemaßungsstil).
+- **MULTILEADER** (Multi-Führungslinie: Linien mit Pfeil, Knick/Landung, dazu ein Text oder ein Block, z. B. eine Positionsnummer im Kreis):
+  - DXF: der Kontext `300 CONTEXT_DATA{ … 301 }` mit den Wurzeln `302 LEADER{` (Anschlusspunkt 10, Richtung 11, Landung 40) und ihren Linien `304 LEADER_LINE{` (Punkte ab der Pfeilspitze); Text 304 im Kontext (Ort 12, Richtung 13, Höhe 41, Breite 43, Ausrichtung 171 = obere Ankerpunkte 1–3), Block 341/15/16/46; danach die eigenen Werte (Linientyp 170, Farbe 91, Stärke 171, Pfeil 342, Beschriftungen 330/302).
+  - Gezeichnet: Linie Pfeilspitze → Punkte → Anschlusspunkt, Landung um die Länge in Knick-Richtung, Text als MTEXT, Block wie eine Einfügung; Spline-Linien laufen tangential in die Landung. Pfeilformen nach dem Namen des Pfeil-Blocks (`_NONE`, `_DOT…`, `_OPEN…`, `_ARCHTICK`/`_OBLIQUE`, sonst gefüllt).
+  - Farben „von Block“ = die Farbe des Multileaders selbst. Die Beschriftungen eines Blocks ersetzen den Text seiner Attributdefinitionen (`ctx.labels`, nach Handle).
+  - Noch nicht: Textrahmen (292), Linientyp der Führungslinie, eigene Pfeil-Blöcke werden als gefüllter Pfeil gezeichnet.
 - MLINE über die Gehrungsrichtungen.
 - POINT nach `$PDMODE`.
 - XLINE/RAY: nur über die Ausdehnung der Zeichnung gezogen (Kopf `$EXTMIN/$EXTMAX`, sonst geschätzt; Liang-Barsky im Grundriss, 2 % Rand). Wie „Alles zeigen“ im CAD-Programm, das Konstruktionslinien auslässt – vorher machte die doppelte Zeichnungsgröße die Ansicht viermal so weit wie die Zeichnung. Trifft die Linie die Ausdehnung nicht: die halbe Zeichnungsgröße um ihren Punkt.
@@ -141,7 +147,7 @@ Das gemeinsame Modell für DXF und DWG:
 - Linien, Glyphen und Dreiecke aus dem Speicher-Budget (`cadLimits`).
 - Darüber: abgeschnitten, mit Hinweis „Zeichnung gekürzt“.
 
-**Nicht dargestellt** (im Hinweis gezählt, bei DWG mit dem Objektnamen): IMAGE/Unterlagen, Proxy-Objekte, MLEADER, SHAPE, OLE, Lichter, Toleranzen, Tabellen in DWG ab 2010. Volumenkörper in Layout-Ansichtsfenstern (dort fehlt noch das Kantenbild).
+**Nicht dargestellt** (im Hinweis gezählt, bei DWG mit dem Objektnamen): IMAGE/Unterlagen, Proxy-Objekte, SHAPE, OLE, Lichter, Toleranzen, Tabellen in DWG ab 2010. Volumenkörper in Layout-Ansichtsfenstern (dort fehlt noch das Kantenbild).
 
 ## Volumenkörper: ACIS → STEP (`src/scripts/acis/`, Stufe 2)
 
@@ -254,6 +260,10 @@ Eigener Leser nach der öffentlichen Formatbeschreibung der DWG-Datei. Ein freie
 - **Datenspeicher** (2013+): Die Kopf-Einträge der Datensätze (Größe, 1, Handle, Versatz) stehen nach dem 48-Byte-Segmentkopf, die Daten direkt dahinter.
 - **Tabellen** (ACAD_TABLE): bis 2007 beginnen die Daten wie eine Einfügung (Punkt, Maßstab, Drehung, Extrusion, Attribute), der erste eigene Handle ist der Block. Ab 2010 steht der Tabelleninhalt vorne – nicht gelesen, im Hinweis gezählt.
 - **Splines** nur mit Fit-Punkten: das CAD-Programm schreibt in DXF zusätzlich berechnete Kontrollpunkte, in DWG nicht; wir zeichnen durch die Fit-Punkte.
+- **Klassennamen** sind die DXF-Namen: die Multi-Führungslinie heißt „MULTILEADER“, nicht „MLEADER“. Unter dem falschen Namen galt sie als Nicht-Objekt und fehlte still, ohne Hinweis. Sie steckt auch in Dateien im 2000er/2004er Format (als Klassenobjekt, gleiche Feldfolge).
+- **MULTILEADER** (Beschreibung: MLEADER + eingebetteter MLeaderAnnotContext): Der Kontext beginnt direkt mit der Zahl der Wurzeln (keine eigenen Kopf-Felder). Bruchinfos je Linie: Anzahl, dann je Info Segment-Index und Punktpaare. Bis 2007 eine Liste von Pfeilspitzen vor den Beschriftungen. Handle-Strom: je Linie (2010+) Linientyp und Pfeil, Textstil bzw. Block, dann Stil, Linientyp, Pfeil, Textstil, Block, Pfeilspitzen, Attributdefinitionen. Geprüft: dieselbe Hinweislinie in 2000/2004/2007/2010/2013/2018 gleich, DWG und DXF derselben Zeichnungen (zwei Dateien) gleich bis auf die letzte Stelle; Block-Inhalt in DWG nur nach Beschreibung (keine Datei damit).
+- **Bemaßungen**: die gemeinsamen Bemaßungsdaten bis zum Punkt „12“ (Textmitte, Höhe, Flags, Text, Drehungen, Maßstab und Drehung der Block-Einfügung, 2000+ Ausrichtung und Messwert, 2007+ drei Bits).
+- **Maßsystem** (`$MEASUREMENT`): im Abschnitt `AcDb:Template` – Länge der Beschreibung, Beschreibung (ab 2007 UTF-16, also 2 Bytes je Zeichen), dann der Wert.
 
 **Testdatei-Erkenntnis:** Eine DWG 2004 desselben Fahrzeugs wie die DWG 2018 zeigte nur Teile. Grund: die vier größten Teile (je über 32 767 Punkte, 241 000 Punkte) fehlen in der Datei – Polyface-Netze des alten Formats fassen nicht mehr; der Exporter ließ sie weg. Kein Lesefehler (keine ungültigen Verweise, alle 94 Netze vollständig).
 
@@ -288,7 +298,7 @@ Eigener Leser nach der öffentlichen Formatbeschreibung der DWG-Datei. Ein freie
 - `textdbg.mjs`: Lage der Texte.
 - `harness/cadtest.js` (Browser): Laden, Layout-Knopf, Bilder Default/HQ/oben/Zoom.
 - `harness/cadscene.js`: Szene speichern/öffnen.
-- DWG: `cad/t/dwg.mjs` (lesen + bauen, Zahlen, Zeiten), `dwgcmp.mjs` (DWG gegen die DXF derselben Zeichnung: Layer, Objekte, Blöcke), `dwgsolids.mjs` (Körper → STEP), `mem.mjs` (Speicher je Stufe), `acisdump.mjs`/`bodies.mjs` (ACIS-Datensätze einer DWG).
+- DWG: `cad/t/dwg.mjs` (lesen + bauen, Zahlen, Zeiten), `ml.mjs` (Multileader beider Formate), `dwgcmp.mjs` (DWG gegen die DXF derselben Zeichnung: Layer, Objekte, Blöcke), `dwgsolids.mjs` (Körper → STEP), `mem.mjs` (Speicher je Stufe), `acisdump.mjs`/`bodies.mjs` (ACIS-Datensätze einer DWG).
 
 **Ergebnisse (Windows-Chrome, RTX 3080):**
 - **Synthetische Datei:** deckungsgleich mit dem Referenzbild – Lage, Bögen (auch Extrusion −Z), Ellipsen, Splines, Blöcke, Schraffur mit Insel, Muster mit Bogenkante, Linientypen, Linienstärke, Texte samt Umbruch, ⌀/°/±, gedrehter Text.
@@ -300,6 +310,8 @@ Eigener Leser nach der öffentlichen Formatbeschreibung der DWG-Datei. Ein freie
 - **DWG, öffentliche Beispiele** (47 Dateien R13–2018, darunter R2007): alle lesen und bauen ohne Fehler. Dieselbe Zeichnung in sieben Versionen gegen ihre DXF: Layer, Layouts, Blöcke und Objekte gleich bis auf Splines (s. o.) und Tabellen ab 2010.
 - **DWG 2018, Flächen-Baugruppe** (48 MB, 101 MESH, 1,25 Mio. Dreiecke – dieselbe Zahl wie die FBX): lesen 0,9 s, aufbauen 1,1 s (Node), im Browser 4,8 s bis zum Bild, Raster und HQ richtig.
 - **DWG 2004** (23 MB, 94 Polyface-Netze, 619 000 Dreiecke): 4,6 s im Browser.
+- **Weitere Nutzer-Dateien** (lokal unter `tests/dwg/`, nicht im Repo): Dachziegel-Zeichnung als DWG und DXF (2 Multileader, Bemaßungen in Blöcken), 3D-Bett aus Polyface-Netzen, imperiale Beispiele (Grundriss, Maschinenbau, Tablett mit 3D-Flächen), Visualisierungsszenen mit 15–76 Volumenkörpern: alle lesen in < 0,1 s und öffnen in 1–2 s. Offen dort: prozedurale ACIS-Flächen ohne Näherung (Rotations-Spline `rot_spl_sur`, Übergangsfläche `VBL_SURF`, `spline-surface` ohne bs3-Daten), Schnittkurven, die nicht auf ihre Ecken passen, eine Fläche „Open periodic bound“, Lichter. Eine `.dwf` (Plot-/Ansichtsformat, kein DWG) wird nicht gelesen.
+- **Multileader-Testdatei** (`cad/t/mlgen.py` mit dem Python-DXF-Werkzeug, Referenzbild per `ref.py`): Text mit Landung, zwei Wurzeln mit Spline-Linien und Punkt-Pfeilen, Positionsnummer als Block mit Attribut – deckungsgleich bis auf die Rundung der Splines.
 
 **Regression** (`run.js`/`compare.js`, alt gegen neu): Abweichungen nur im Starttext (DXF genannt) und im bekannten Rauschen.
 - Ein Schnittbild wich stabil ab (7,9 % der Pixel, Innenseite einer Kugel hinter dem Schnitt).

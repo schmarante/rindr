@@ -525,21 +525,30 @@ class Builder {
             case 'DIMENSION': {
                 const block = this.d.blocks.get(e.block.toUpperCase());
                 if (!block) { this.counts.missingBlocks++; break; }
-                const m = withOcs(ctx.m, e.extrusion);
+                // the block inserted at "12" (OCS; DWG: also scaled and turned) – inside a block the dimension's geometry
+                // is in world coordinates and this point is minus the insert (drawn without it, it lay twice as far out)
+                let m = withOcs(ctx.m, e.extrusion);
+                const [px, py, pz] = e.p || [0, 0, 0];
+                if (px || py || pz) m = mul(m, translate(px, py, pz));
+                if (e.blockRot) m = mul(m, rotZ(e.blockRot / DEG));
+                if (e.blockScale && e.blockScale.some(v => v !== 1) && e.blockScale.every(v => v)) m = mul(m, scale3(...e.blockScale));
                 this.blockContent(block, e, ctx, m);
                 break;
             }
             case 'TEXT': case 'ATTRIB': case 'ATTDEF': {
-                if (e.type === 'ATTDEF' && ctx.depth > 0) break;   // definitions show only outside of blocks
+                // definitions show only outside of blocks – inside a multileader's block their label text instead
+                const label = e.type === 'ATTDEF' && ctx.depth > 0 ? ctx.labels?.get(e.handle) : undefined;
+                if (e.type === 'ATTDEF' && ctx.depth > 0 && label === undefined) break;
                 if (!this.atlas.available) { this.counts.noFont++; break; }
-                const style = this.d.styles.get(String(e.style).toUpperCase());
-                const laid = layoutText(e, style, this.atlas, this.rgbOf(e, ctx));
+                const te = label === undefined ? e : { ...e, text: label };
+                const style = this.d.styles.get(String(te.style).toUpperCase());
+                const laid = layoutText(te, style, this.atlas, this.rgbOf(te, ctx));
                 if (!laid) break;
                 let m = withOcs(ctx.m, e.extrusion);
                 m = mul(m, translate(laid.origin[0], laid.origin[1], laid.origin[2] || 0));
                 m = mul(m, rotZ(laid.rotation));
                 if (laid.mirrorX || laid.mirrorY) m = mul(m, scale3(laid.mirrorX ? -1 : 1, laid.mirrorY ? -1 : 1, 1));
-                this.glyphs(e, ctx, laid, m);
+                this.glyphs(te, ctx, laid, m);
                 break;
             }
             case 'MTEXT': {
@@ -586,6 +595,7 @@ class Builder {
                 break;
             }
             case 'LEADER': this.leader(e, ctx); break;
+            case 'MLEADER': this.mleader(e, ctx); break;
             case 'MLINE': {
                 const n = e.pts.length / 3;
                 const elements = e.params[0]?.length || 0;
@@ -818,15 +828,94 @@ class Builder {
         if (pts.length < 6) return;
         if (e.spline) pts = splinePoints({ fit: pts, ctrl: [] }, this.tol);
         this.polyline(e, ctx, pts, 3, 0, false, ctx.m);
-        if (!e.arrow) return;
-        // closed filled arrowhead at the first point, pointing away from the second
+        if (e.arrow) this.arrowhead(e, ctx, pts, e.arrowSize, '');
+    }
+
+    // arrowhead at the first point of a leader, pointing away from the second. `kind`: the name of the arrow block –
+    // the usual ones drawn by shape (_NONE nothing, _DOT… a dot, _OPEN… open, _ARCHTICK/_OBLIQUE a tick), others closed
+    // and filled
+    arrowhead(e, ctx, pts, s, kind) {
+        const k = String(kind || '').toUpperCase();
+        if (k === '_NONE' || !(s > 0)) return;
         const [x0, y0, z0] = pts, [x1, y1] = [pts[3], pts[4]];
         const dx = x0 - x1, dy = y0 - y1, l = Math.hypot(dx, dy);
         if (!(l > 0)) return;
-        const s = e.arrowSize, ux = dx / l, uy = dy / l;
-        const bx = x0 - ux * s, by = y0 - uy * s, w = s / 6;
+        const ux = dx / l, uy = dy / l;
+        const node = this.nodeOf(e, ctx), rgb = this.rgbOf(e, ctx);
+        if (k.includes('DOT')) {
+            const r = k.includes('SMALL') ? s / 8 : s / 2;
+            const ring = arcPoints(x0, y0, r, 0, Math.PI * 2, this.tol, true);
+            const poly = [x0, y0, z0], idx = [];
+            for (let i = 0; i + 2 < ring.length; i += 2) poly.push(ring[i], ring[i + 1], z0);   // (the last point closes the ring)
+            const n = poly.length / 3 - 1;
+            for (let i = 0; i < n; i++) idx.push(0, 1 + i, 1 + (i + 1) % n);
+            if (!k.includes('BLANK')) this.fill(node, poly, idx, rgb, ctx.m, ctx.clip);
+            return;
+        }
+        if (k === '_ARCHTICK' || k === '_OBLIQUE') {
+            const h = s / 2, tx = (ux - uy) * h * Math.SQRT1_2, ty = (uy + ux) * h * Math.SQRT1_2;
+            this.polyline(e, ctx, [x0 - tx, y0 - ty, z0, x0 + tx, y0 + ty, z0], 3, 0, false, ctx.m, { pattern: null });
+            return;
+        }
+        const bx = x0 - ux * s, by = y0 - uy * s;
+        if (k.startsWith('_OPEN')) {
+            const w = k === '_OPEN90' ? s : k === '_OPEN30' ? s * Math.tan(15 * DEG) : s / 6;
+            this.polyline(e, ctx, [bx - uy * w, by + ux * w, z0, x0, y0, z0, bx + uy * w, by - ux * w, z0], 3, 0, false, ctx.m, { pattern: null });
+            return;
+        }
+        const w = s / 6;
         const tri = [x0, y0, z0, bx - uy * w, by + ux * w, z0, bx + uy * w, by - ux * w, z0];
-        this.fill(this.nodeOf(e, ctx), tri, [0, 1, 2], this.rgbOf(e, ctx), ctx.m, ctx.clip);
+        this.fill(node, tri, [0, 1, 2], rgb, ctx.m, ctx.clip);
+    }
+
+    // multileader: leader lines (from the arrowhead to the connection point), the landing (dog-leg) and the content –
+    // MTEXT, or a block with its labels (attribute texts). Parts "by block" take the multileader's own colour.
+    mleader(e, ctx) {
+        const as = (col, extra) => {
+            const c = col && col.color !== ACI_BYBLOCK ? col : { color: e.color, rgb: e.rgb };
+            return { ...e, ...extra, color: c.color, rgb: c.rgb };
+        };
+        const lw = e.leaderLw === LW_BYBLOCK || e.leaderLw === undefined ? e.lineweight : e.leaderLw;
+        const L = as(e.leaderColor, { lineweight: lw });
+        const arrow = e.arrowHandle ? this.d.blockByRecord.get(e.arrowHandle) || '' : '';
+        if (e.leaderType !== 0) {
+            for (const root of e.roots) {
+                const conn = root.connection;
+                for (const line of root.lines) {
+                    let pts = line.slice();
+                    const n = pts.length;
+                    if (conn && !(n >= 3 && pts[n - 3] === conn[0] && pts[n - 2] === conn[1] && pts[n - 1] === conn[2])) pts.push(...conn);
+                    if (pts.length < 6) continue;
+                    if (e.leaderType === 2) pts = splinePoints({ fit: pts, ctrl: [], endTangent: e.dogleg && root.dir ? root.dir : null }, this.tol);
+                    this.polyline(L, ctx, pts, 3, 0, false, ctx.m);
+                    this.arrowhead(L, ctx, pts, e.arrowSize, arrow);
+                }
+                const d = root.dir;
+                if (e.dogleg && conn && d && root.landing > 0 && root.lines.length) {
+                    const l = Math.hypot(d[0], d[1], d[2]) || 1, f = root.landing / l;
+                    this.polyline(L, ctx, [...conn, conn[0] + d[0] * f, conn[1] + d[1] * f, conn[2] + d[2] * f], 3, 0, false, ctx.m);
+                }
+            }
+        }
+        const t = e.text;
+        if (t && t.text) {
+            const style = this.d.styleByHandle.get(t.styleHandle) || 'STANDARD';
+            this.entity(as(t.color, { type: 'MTEXT', p: t.p, dir: t.dir, rot: t.rot / DEG, h: t.h, width: t.width, attach: t.attach,
+                spacing: t.spacing, style, text: t.text, extrusion: t.normal }), ctx);
+        }
+        const b = e.block;
+        if (b) {
+            const name = this.d.blockByRecord.get(b.handle);
+            const block = name ? this.d.blocks.get(name.toUpperCase()) : null;
+            if (!block) { this.counts.missingBlocks++; return; }
+            if (ctx.depth >= MAX_DEPTH || ctx.stack.has(block)) return;
+            const [sx, sy, sz] = b.scale;
+            let m = withOcs(mul(ctx.m, translate(b.p[0], b.p[1], b.p[2])), b.normal);
+            m = mul(m, rotZ(b.rot / DEG));
+            m = mul(m, mul(scale3(sx || 1, sy || 1, sz || 1), translate(-block.base[0], -block.base[1], -block.base[2])));
+            const labels = new Map(e.labels.map(x => [x.attdef, x.text]));
+            this.blockContent(block, as(b.color), { ...ctx, labels }, m);
+        }
     }
 
     // --- result ---

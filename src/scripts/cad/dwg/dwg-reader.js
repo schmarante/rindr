@@ -32,7 +32,7 @@ const TYPE_NAMES = new Map(Object.entries(T).map(([name, n]) => [n, name]));   /
 const ENTITY_TYPES = new Set([1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
     32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 44, 45, 46, 47, 77, 78]);
 // class-based types by their DXF name
-const CLASS_ENTITY = new Set(['LWPOLYLINE', 'HATCH', 'MESH', 'WIPEOUT', 'IMAGE', 'ARC_DIMENSION', 'LARGE_RADIAL_DIMENSION', 'MLEADER',
+const CLASS_ENTITY = new Set(['LWPOLYLINE', 'HATCH', 'MESH', 'WIPEOUT', 'IMAGE', 'ARC_DIMENSION', 'LARGE_RADIAL_DIMENSION', 'MULTILEADER',
     'ACAD_TABLE', 'ACAD_PROXY_ENTITY', 'PLANESURFACE', 'EXTRUDEDSURFACE', 'LOFTEDSURFACE', 'REVOLVEDSURFACE', 'SWEPTSURFACE', 'NURBSURFACE',
     'HELIX', 'LIGHT', 'OLE2FRAME', 'PDFUNDERLAY', 'DWFUNDERLAY', 'DGNUNDERLAY', 'POINTCLOUD', 'POINTCLOUDEX', 'SECTIONOBJECT', 'GEOPOSITIONMARKER']);
 
@@ -68,6 +68,7 @@ class DwgReader {
         this.readClasses();
         this.readMap();
         try { this.readHeader(); } catch (err) { console.warn('[DWG] header variables not read:', err.message); }
+        this.readTemplate();
         const handles = this.handleList;
         for (let i = 0; i < handles.length; i++) {
             const h = handles[i];
@@ -162,6 +163,19 @@ class DwgReader {
         }
         this.offsets = offsets;
         this.handleList = [...offsets.keys()].sort((a, b) => a - b);
+    }
+
+    // MEASUREMENT (0 imperial, 1 metric) from the template section: RS description length, the description (2007+:
+    // UTF-16), RS measurement
+    readTemplate() {
+        const t = this.file.sections.get('AcDb:Template');
+        if (!t || t.length < 4) return;
+        const dv = new DataView(t.buffer, t.byteOffset, t.byteLength);
+        const n = dv.getUint16(0, true);
+        const at = 2 + (this.v >= R2007 ? 2 * n : n);
+        if (at + 2 > t.length) return;
+        const m = dv.getUint16(at, true);
+        if (m === 0 || m === 1) this.d.header.measurement = m;
     }
 
     // --- header variables (the beginning, up to the units) ---
@@ -682,13 +696,23 @@ class DwgReader {
                 rec.acis = this.acis(r, o);
                 break;
             case 'MESH': this.mesh(r, rec); break;
+            case 'MULTILEADER': after = this.mleader(r, rec, o); break;
             case 'WIPEOUT': this.wipeout(r, rec); break;
             default:
                 if (t >= 20 && t <= 26 || t === 'ARC_DIMENSION' || t === 'LARGE_RADIAL_DIMENSION') {
                     rec.type = 'DIMENSION';
                     if (v >= R2010) r.RC();
                     rec.extrusion = r.BD3();
-                    rec.p = [0, 0, 0];
+                    // common dimension data up to the insertion point of the block ("12", OCS): it places the block –
+                    // a dimension inside a block has its geometry in world coordinates and minus the insert here
+                    r.RD(); r.RD();   // text middle point
+                    const elevation = r.BD();
+                    r.RC(); r.TV(); r.BD(); r.BD();
+                    rec.blockScale = [r.BD(), r.BD(), r.BD()];
+                    rec.blockRot = r.BD();
+                    if (v >= R2000) { r.BS(); r.BS(); r.BD(); r.BD(); }
+                    if (v >= R2007) { r.B(); r.B(); r.B(); }
+                    rec.p = [r.RD(), r.RD(), elevation];
                     // DIMSTYLE, anonymous block (some kinds hold more handles): every handle up to the end – the block is
                     // the last one naming a block header
                     after = () => { rec.dimH = []; for (let i = 0; i < 16 && o.h.p < o.end - 8; i++) rec.dimH.push(o.ref()); };
@@ -929,6 +953,100 @@ class DwgReader {
         rec.faces = faces;
     }
 
+    // multileader (2007+; older files keep it as a class object of the same layout): the embedded annotation context –
+    // leader roots with their lines, then the content (MTEXT or a block) – and the entity's own properties. Handles in
+    // the handle stream in the same order: per leader line (2010+) line type and arrow, the text style or the block, then
+    // leader style, line type, arrow, text style, block, arrowheads and the attribute definitions of the block labels.
+    mleader(r, rec, o) {
+        const v = this.v;
+        rec.type = 'MLEADER';
+        if (v >= R2010) r.BS();   // version
+        const vec = () => r.BD3();
+        const color = () => { const c = r.CMC(); return { color: c.index === 257 ? ACI_BYOBJECT : c.index, rgb: c.rgb }; };
+        const roots = [];
+        let lines = 0;
+        const nRoots = r.BL();
+        for (let i = 0; i < nRoots && i < 1000; i++) {
+            const root = { lines: [] };
+            r.B(); r.B();
+            root.connection = vec();
+            root.dir = vec();
+            const breaks = r.BL();
+            for (let k = 0; k < breaks && k < 1e4; k++) { vec(); vec(); }
+            r.BL();   // leader index
+            root.landing = r.BD();
+            const nLines = r.BL();
+            for (let l = 0; l < nLines && l < 1000; l++) {
+                const np = r.BL(), pts = [];
+                for (let k = 0; k < np && k < 1e5; k++) pts.push(...vec());
+                const infos = r.BL();
+                for (let k = 0; k < infos && k < 1e4; k++) {
+                    r.BL();   // segment index
+                    const pairs = r.BL();
+                    for (let q = 0; q < pairs && q < 1e4; q++) { vec(); vec(); }
+                }
+                r.BL();   // line index
+                if (v >= R2010) { r.BS(); color(); r.BL(); r.BD(); r.BL(); lines++; }
+                root.lines.push(pts);
+            }
+            if (v >= R2010) r.BS();   // attachment direction
+            roots.push(root);
+        }
+        rec.roots = roots;
+        r.BD(); vec();   // overall scale, content base point
+        const th = r.BD();
+        rec.arrowSize = r.BD();
+        r.BD(); r.BS(); r.BS(); r.BS(); r.BS();   // landing gap, attachments, align, attachment type
+        rec.text = null; rec.block = null;
+        if (r.B()) {
+            const t = { text: r.TV(), normal: vec() };
+            t.p = vec(); t.dir = vec(); t.rot = r.BD(); t.width = r.BD(); r.BD(); t.spacing = r.BD() || 1; r.BS();
+            t.color = color();
+            t.attach = r.BS() || 1;
+            t.h = th || 1;
+            r.BS(); color(); r.BD(); r.BL(); r.B(); r.B(); r.BS(); r.B(); r.BD(); r.BD(); r.B();
+            const cols = r.BL();
+            for (let k = 0; k < cols && k < 1000; k++) r.BD();
+            r.B(); r.B();
+            rec.text = t;
+        } else if (r.B()) {
+            const b = { normal: vec(), p: vec(), scale: vec(), rot: r.BD(), color: color() };
+            for (let k = 0; k < 16; k++) r.BD();
+            rec.block = b;
+        }
+        vec(); vec(); vec(); r.B();   // plane: origin, x, y, normal reversed
+        if (v >= R2010) { r.BS(); r.BS(); }
+        // the entity's own properties
+        r.BL();   // override flags
+        rec.leaderType = r.BS();
+        rec.leaderColor = color();
+        rec.leaderLw = r.BL();
+        r.B();
+        rec.dogleg = !!r.B();
+        r.BD(); r.BD();
+        r.BS(); r.BS(); r.BS(); r.BS(); r.BS();
+        color(); r.B(); color(); vec(); r.BD(); r.BS(); r.B();
+        const arrows = v < R2010 ? r.BL() : 0;
+        for (let k = 0; k < arrows && k < 1000; k++) r.B();
+        const nLabels = r.BL();
+        const labels = [];
+        for (let k = 0; k < nLabels && k < 1000; k++) { labels.push({ attdef: '', text: r.TV() }); r.BS(); r.BD(); }
+        rec.labels = labels;
+        const hex = h => h ? h.toString(16).toUpperCase() : '';
+        return () => {
+            for (let k = 0; k < lines; k++) { o.ref(); o.ref(); }
+            if (rec.text) rec.text.styleHandle = hex(o.ref());
+            if (rec.block) rec.block.handle = hex(o.ref());
+            o.ref(); o.ref();   // leader style, line type
+            rec.arrowHandle = hex(o.ref());
+            const style = o.ref();
+            if (rec.text && !rec.text.styleHandle) rec.text.styleHandle = hex(style);
+            o.ref();   // block
+            for (let k = 0; k < arrows; k++) o.ref();
+            for (const l of labels) l.attdef = hex(o.ref());
+        };
+    }
+
     wipeout(r, rec) {
         rec.type = 'WIPEOUT';
         r.BL();
@@ -987,7 +1105,7 @@ class DwgReader {
         for (const o of rec.values()) {
             if (o.layer) { layers.set(o.handle, o); d.layers.set(o.layer.name.toUpperCase(), o.layer); d.layerByHandle.set(hex(o.handle), o.layer.name); }
             if (o.linetype) { ltypes.set(o.handle, o.linetype); d.linetypes.set(o.linetype.name.toUpperCase(), o.linetype); }
-            if (o.style) { styles.set(o.handle, o.style); d.styles.set(o.style.name.toUpperCase(), o.style); }
+            if (o.style) { styles.set(o.handle, o.style); d.styles.set(o.style.name.toUpperCase(), o.style); d.styleByHandle.set(hex(o.handle), o.style.name); }
         }
         for (const o of layers.values()) o.layer.linetype = ltypes.get(o.ltypeH)?.name || '';
         if (!d.layers.has('0')) d.layers.set('0', { name: '0', color: 7, rgb: null, off: false, frozen: false, linetype: 'CONTINUOUS', lineweight: -3, handle: '' });

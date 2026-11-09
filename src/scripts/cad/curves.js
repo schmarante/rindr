@@ -76,7 +76,7 @@ export function splinePoints(sp, tol) {
         return out;
     }
     const fit = sp.fit || [];
-    if (fit.length >= 6) return catmullRom(fit, sp.closed);
+    if (fit.length >= 6) return catmullRom(fit, sp.closed, sp.endTangent || null);
     return ctrl.slice();
 }
 
@@ -105,9 +105,13 @@ function deBoor(p, U, P, W, u, out) {
 }
 
 // centripetal Catmull-Rom through the points (fit-point splines without control points)
-function catmullRom(F, closed) {
+function catmullRom(F, closed, endTangent = null) {
     const n = F.length / 3;
+    // a given end direction (a spline leader runs into its landing): a point beyond the end along it
+    const last = n - 1, seg = n > 1 ? Math.hypot(F[last * 3] - F[last * 3 - 3], F[last * 3 + 1] - F[last * 3 - 2], F[last * 3 + 2] - F[last * 3 - 1]) : 0;
+    const tl = endTangent ? Math.hypot(endTangent[0], endTangent[1], endTangent[2]) : 0;
     const pt = i => {
+        if (!closed && i > last && tl > 0) return [0, 1, 2].map(c => F[last * 3 + c] + endTangent[c] / tl * seg);
         if (closed) i = (i + n) % n;
         else i = Math.min(Math.max(i, 0), n - 1);
         return [F[i * 3], F[i * 3 + 1], F[i * 3 + 2]];

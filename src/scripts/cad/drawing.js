@@ -17,6 +17,10 @@
 //   DIMENSION { block } · (ACAD_TABLE: an INSERT of its *T block) · HATCH { elevation, solid, loops, style, patterns, gradient }
 //   MESH { pts, faces: flat list (corner count, vertex indices …) } · LEADER { pts, arrow } · MLINE { pts, miters, params } · WIPEOUT { polygon (WCS) }
 //   VIEWPORT { center, w, h, id, status, viewCenter, viewDir, target, viewHeight, twist, frozen: [layer names] }
+//   MLEADER { roots: [{ connection, dir, landing, lines: [[x,y,z …] from the arrowhead on] }], leaderType (0 none, 1 straight,
+//     2 spline), leaderColor, leaderLw, dogleg, arrowSize, arrowHandle, text: { text, p, dir, normal, rot (rad), h, width,
+//     spacing, attach (1–3), styleHandle, color } | null, block: { handle, p, normal, scale, rot (rad), color } | null,
+//     labels: [{ attdef (handle), text }] } – colours { color (ACI code), rgb } | null; points WCS
 //   ACIS (3DSOLID, REGION, BODY, SURFACE …) { acis: { sat: string } | { sab: Uint8Array } | { ref } }
 
 export const ACI_BYBLOCK = 0, ACI_BYLAYER = 256, ACI_BYOBJECT = 257;
@@ -101,6 +105,8 @@ export class Drawing {
         /** handle (hex string, upper-case) → layer name (viewport frozen layers), block record → block name */
         this.layerByHandle = new Map();
         this.blockByRecord = new Map();
+        /** handle → text style name (multileaders name their style by handle) */
+        this.styleByHandle = new Map();
         /** objects not shown, by type (counted for the notice) */
         this.skipped = {};
         this.acisBlobs = new Map();   // ACDSDATA / AcDs: SAB data by entity handle (stage 2)
@@ -114,8 +120,10 @@ export class Drawing {
         this.skipped[type] = (this.skipped[type] || 0) + n;
     }
 
-    /** millimetres per drawing unit */
+    /** millimetres per drawing unit – unitless drawings: inches when imperial ($MEASUREMENT 0, like the CAD program's
+     *  default), else millimetres */
     get unitMm() {
+        if (!this.header.insunits) return this.header.measurement === 0 ? 25.4 : 1;
         return UNIT_MM[this.header.insunits] ?? 1;
     }
 }
