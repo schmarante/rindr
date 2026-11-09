@@ -142,12 +142,21 @@ Das gemeinsame Modell für DXF und DWG:
 - Auf Papier wird Farbe 7 zu Schwarz.
 - **Ansichtsfenster:** Der Modellbereich wird in die Ansicht gerechnet (Ansichtsrichtung über das OCS der Richtung, Ziel, Maßstab Höhe/Ansichtshöhe, Drehung, Mitte) und flach gemacht. Danach zugeschnitten: Linien nach Liang-Barsky, Dreiecke und Glyphen nach Sutherland-Hodgman am Rechteck; die Farben werden dabei nicht interpoliert. Gefrorene Layer des Fensters fehlen.
 - 3D-Flächen erscheinen als Kanten (sichtbare Polygonkanten); 2D-Füllungen bleiben gefüllt wie im CAD-Programm.
+- **Volumenkörper** (ACIS) erscheinen dort ebenfalls als Kanten (`AcisStep.wire`, je Objekt einmal berechnet – mehrere Fenster zeigen dasselbe): Geraden, Bögen in Schritten ≤ 5° (Richtung aus dem Sinn der Kante, Bögen laufen gegen den Uhrzeiger um ihre Normale), Schnittkurven in 32 Stücken ihrer Näherung; Kanten ohne Kurve (Pole, Spitzen) fehlen. Kein verdecktes Kantenbild – alle Kanten sichtbar wie die Drahtansicht im CAD-Programm. Vorher fehlten die Körper in Ansichtsfenstern ganz (ein Blatt einer Visualisierungsszene war leer, jetzt 25 000 Segmente, 0,2 s).
 
 **Grenzen:**
 - Linien, Glyphen und Dreiecke aus dem Speicher-Budget (`cadLimits`).
 - Darüber: abgeschnitten, mit Hinweis „Zeichnung gekürzt“.
 
-**Nicht dargestellt** (im Hinweis gezählt, bei DWG mit dem Objektnamen): IMAGE/Unterlagen, Proxy-Objekte, SHAPE, OLE, Lichter, Toleranzen, Tabellen in DWG ab 2010. Volumenkörper in Layout-Ansichtsfenstern (dort fehlt noch das Kantenbild).
+**Lichter** (LIGHT, DXF und DWG) werden Szenen-Lichter des Viewers – derselbe Weg wie bei glTF/FBX/… (`docs/mesh-import.md` „Lichter aus Dateien“): `drawing-build.js` liefert `lights` in der Form von `importedLight` (mm, +Y oben, absolut), `mergeCadExtras` hängt sie an das Ergebnis, `addImportedLights` legt sie an und skaliert alle zusammen auf die Helligkeit der Standardlichter (Haupt- und Fülllicht gehen aus).
+- Art: entfernt → Richtung, Punkt → Punkt, Spot → Spot (Hotspot/Abfall sind volle Kegelwinkel: halber Winkel = Abfall/2, Rand = 1 − Hotspot/Abfall), **Web-Licht** (Art 10 – photometrisch mit Verteilungsdatei, meist Downlights) → breiter Spot (70°, Rand 0,7).
+- Stärke: der Faktor der Datei, Einheit `relative` (die Verhältnisse der Lichter bleiben). Die photometrischen Werte (Candela, Farbtemperatur, Verteilungsdatei) stehen in einem Erweiterungs-Wörterbuch des Lichts – nicht gelesen.
+- Farbe: die eigene Lichtfarbe (DWG: CMC im Objekt; DXF: 421/63), nicht die Objektfarbe (die färbt nur das Symbol).
+- Ausgeschaltete Lichter und Lichter auf ausgeblendeten Layern fehlen; nur im Modellbereich (nicht durch Ansichtsfenster eines Layouts).
+- DXF-Winkel in Grad, DWG in Radiant. Die Sonne einer Szene (SUN-Objekt am Ansichtsfenster, Richtung aus Datum, Uhrzeit und Ort) ist nicht dabei.
+- Geprüft: zwei Visualisierungsszenen (10 Spots/Web-Lichter, 18 Punktlichter, auch in Blöcken), selbst erzeugte DXF (Spot, Richtung, ausgeschaltetes Licht).
+
+**Nicht dargestellt** (im Hinweis gezählt, bei DWG mit dem Objektnamen): IMAGE/Unterlagen, Proxy-Objekte, SHAPE, OLE, Toleranzen (Form- und Lagetoleranzen), Schnittobjekte.
 
 ## Volumenkörper: ACIS → STEP (`src/scripts/acis/`, Stufe 2)
 
@@ -185,16 +194,18 @@ Das gemeinsame Modell für DXF und DWG:
   - Sinus 0 → `CYLINDRICAL_SURFACE`, sonst `CONICAL_SURFACE`.
   - Der Radius wächst um Sinus/Kosinus entlang der Normalen.
   - Ein negativer Kosinus heißt: die Normale zeigt nach innen, die Fläche wird umgedreht.
-  - Elliptische Zylinder (Sinus 0, Verhältnis ≠ 1) → `SURFACE_OF_LINEAR_EXTRUSION` der Grundellipse entlang der Achse; ihre Normale (Tangente × Achse) zeigt wie beim Zylinder von der Achse weg. Elliptische Kegel werden gezählt und weggelassen.
+  - Elliptische Zylinder (Sinus 0, Verhältnis ≠ 1) → `SURFACE_OF_LINEAR_EXTRUSION` der Grundellipse entlang der Achse; ihre Normale (Tangente × Achse) zeigt wie beim Zylinder von der Achse weg. Elliptische Kegel werden gezählt und weggelassen (keine Testdatei).
 - sphere, torus: ein negativer Radius heißt nach innen.
 - spline → B-Spline aus der bs3-Fläche der Unterdaten:
   - exakt: direkt nach dem Namen, „full“ vorweg;
-  - prozedural: die erste B-Spline-Fläche auf oberster Ebene.
+  - prozedural: die erste B-Spline-Fläche auf oberster Ebene (verschachtelte Unterdaten – Stützflächen, Profilkurven – zählen nicht). Geprüft an Loft (`skin_spl_sur`), Versatz (`off_spl_sur`), Rundung (`rb_blend_spl_sur`, auch mit einer Rundung als Stützfläche), Rotation (`rot_spl_sur`), Sweep (`sum_spl_sur`).
   - ACIS speichert die Kontrollpunkte **u-schnell** (an einer Datei über Parameterkurven geprüft). Die Endvielfachheit ist dort = Grad, in STEP Grad + 1.
+  - **Gewichtete Splines** (`nurbs`) haben nach den Graden ein Wort für die gewichtete Richtung (`both`, `u`, `v`), erst dann Schluss und Singularität. Ohne das Wort verschob sich alles, die Fläche galt als unlesbar – jede gewichtete Fläche fehlte (eine Szene: 10 Rotationsflächen). Kurven ebenso (`skipRationalWord`).
+  - **Prozedural ohne Näherung** (Eckübergang `VBL_SURF` in neueren Dateien): `fillFace` baut einen Ersatz aus dem Rand der Fläche – Ecken, Bögen (8 Punkte) und Schnittkurven (8 Punkte ihrer Näherung); liegt er in einer Ebene → `PLANE`, sonst die quadratische Höhenfläche über der Ebene des Rands (Newell-Normale der Schleife = Außenseite, kleinste Quadrate; eine Kugelkappe ist genau so eine) als Bézier-Fläche 3 × 3 über dem Rand-Rechteck + 5 %. Das Netz behält die exakten Kanten (der Kern teilt ihre Punkte mit den Nachbarflächen), nur das Innere ist geschätzt. Passt keine Höhenfläche (Abweichung > ½ Höhe), fehlt die Fläche weiter. Zählt als `filled`, nicht im Hinweis. Vorher fehlten die Flächen, die Körper hatten Löcher (eine Szene: 2 Kappen, 160 offene Kanten).
 
 **Kurven:**
 - straight → `LINE`, ellipse → `CIRCLE`/`ELLIPSE`.
-- intcurve → B-Spline der bs3-Kurve; nur angenommen, wenn ihre Enden auf den Eckpunkten liegen.
+- intcurve → B-Spline der bs3-Kurve; angenommen, wenn die Eckpunkte der Kante **auf** ihr liegen (2 % ihrer Größe; prozedurale Unterdaten enthalten auch andere Splines). Vorher mussten die Kurvenenden auf den Eckpunkten liegen: Teilstücke geschlossener Kurven und Näherungen, die 0,04–0,15 mm vor der Ecke enden, fielen durch – 21 Kanten in zwei Szenen fehlten, die Flächen daneben bekamen Risse.
 - Sonst die Parameterkurve der Coedge (exppc) als `PCURVE` auf der B-Spline-Fläche, in eine zusammengesetzte Kurve gewickelt wie beim IGES-Weg.
 
 **Farben:** `rgb_color`-, `colour`- (ACI) und `truecolor`-Attribute von Fläche, Lump und Körper; bei Zeichnungen die Objektfarbe als Vorgabe.
@@ -227,7 +238,8 @@ Das gemeinsame Modell für DXF und DWG:
   - Maße 6 344 × 4 340 × 2 981 mm gegen FBX 6 344 × 4 368 × 2 982 mm; das Bild entspricht der FBX.
 - **DXF mit 3DSOLID:** R2000 (SAT-Text) und R2018 (SAB in ACDSDATA) ergeben dieselben 4 Körper und 44 Flächen. Würfel, Zylinder (mit Körper-Transformation), Block gedreht und skaliert liegen richtig, neben Linie und Text.
 - **DWG-Beispiele:** dieselbe Zeichnung in R14 … 2018 (SAT 1.06, SAT 4.0, SAB im Objekt, SAB im Datenspeicher) ergibt in jeder Version dieselben 3 Körper, 10 Flächen und Punkte. Eine 2007er Baugruppe aus 58 Blechteilen (Zylinder, Tori, ein elliptischer Zylinder) und eine Flächen-Datei (Extrusion, Loft, Rotation, Ellipsen-Scheibe) richtig in Raster und HQ.
-- **Noch nicht an echten Daten geprüft:** Kegel mit Öffnungswinkel, prozedurale Spline-Flächen, Parameterkurven als Ersatz.
+- **Visualisierungsszenen** (DWG 2010, 50 und 76 Körper, Prüfwerkzeug `tools/stepcheck` auf der Übersetzung, Stufe Mittel, vorher → nachher): offene Kanten 814 → 0 und 45 → 9, geflippte Normalen 3 209 → 78 und 13 → 3, umgeklappte Dreiecke 1 806 → 36, Flächenfehler 3 → 0; keine Fläche mehr ausgelassen. Ursachen: gewichtete Splines, Schnittkurven-Prüfung, Ersatzflächen (oben) und zwei Fehler im STEP-Kern (`docs/step-import.md` „Geschlossene B-Spline-Kurven, Nahtprüfung“).
+- **Noch nicht an echten Daten geprüft:** Kegel mit Öffnungswinkel, elliptische Kegel, Parameterkurven als Ersatz.
 - **STEP-Kern** (`step/structure.js`, Größe eines Körpers): Ellipsen zählen jetzt wie Kreise. Eine ebene Scheibe mit nur einer geschlossenen Ellipse als Rand hatte als Körpergröße ihren einzigen Eckpunkt – „larger than its solid“, die Fläche fehlte. Trifft auch gewöhnliche STEP-Dateien.
 
 ## DWG (`src/scripts/cad/dwg/`, Stufe 3)
@@ -258,7 +270,9 @@ Eigener Leser nach der öffentlichen Formatbeschreibung der DWG-Datei. Ein freie
 - **Bemaßungen**: Der Block ist der letzte Block-Kopf unter den bis zu 16 Handles am Ende (Bogen- und Radiusbemaßungen haben mehr Handles).
 - **ACIS Version 2** liegt mitten im Bit-Strom, nicht auf einer Byte-Grenze (`bitBytes`) – ab dem abgerundeten Byte gelesen war die Datei Datenmüll, die Körper fehlten.
 - **Datenspeicher** (2013+): Die Kopf-Einträge der Datensätze (Größe, 1, Handle, Versatz) stehen nach dem 48-Byte-Segmentkopf, die Daten direkt dahinter.
-- **Tabellen** (ACAD_TABLE): bis 2007 beginnen die Daten wie eine Einfügung (Punkt, Maßstab, Drehung, Extrusion, Attribute), der erste eigene Handle ist der Block. Ab 2010 steht der Tabelleninhalt vorne – nicht gelesen, im Hinweis gezählt.
+- **Tabellen** (ACAD_TABLE): die Daten beginnen wie eine Einfügung (Punkt, Maßstab, Drehung, Extrusion, Attribute), der erste eigene Handle ist der Block – auch ab 2010 (dort wanderte nur der Zellinhalt in ein eigenes Objekt). Gezeichnet wird der Block `*T…`; 2007, 2010, 2013 und 2018 derselben Zeichnung gleich und wie die DXF.
+- **Einfügungen: Zahl der eigenen Objekte nur mit Attributen.** Die Formatbeschreibung führt das BL ab 2004 immer auf; tatsächlich steht es nur, wenn das Attribut-Bit gesetzt ist. Belegt an der Tabelle: ohne das BL lesen sich die Flags als 0x16 („hat Block“ + „nach unten“) und die Richtung als (1, 0, 0) – wie in der DXF. Bei einer Einfügung ohne Attribute folgt nichts mehr (der Fehler blieb unbemerkt), bei MINSERT wären Spalten und Zeilen verschoben gewesen. 61 Beispiel-DWGs: alle Einfügungen unverändert.
+- **LIGHT**: Version (BL), Name, Art (BL: 1 entfernt, 2 Punkt, 3 Spot, 10 Web), an (B), eigene Farbe (CMC), Symbol (B), Stärke, Position, Ziel (BD/3BD), Abschwächung (BL, B, BD, BD), Hotspot und Abfall (BD, Radiant), Schatten (B, BL, BS, RC); danach der Name noch einmal als UTF-16 im Datenstrom (Länge BS, 16 Bit je Zeichen) – an 17 Lichtern ging die Bitzahl damit genau auf.
 - **Splines** nur mit Fit-Punkten: das CAD-Programm schreibt in DXF zusätzlich berechnete Kontrollpunkte, in DWG nicht; wir zeichnen durch die Fit-Punkte.
 - **Klassennamen** sind die DXF-Namen: die Multi-Führungslinie heißt „MULTILEADER“, nicht „MLEADER“. Unter dem falschen Namen galt sie als Nicht-Objekt und fehlte still, ohne Hinweis. Sie steckt auch in Dateien im 2000er/2004er Format (als Klassenobjekt, gleiche Feldfolge).
 - **MULTILEADER** (Beschreibung: MLEADER + eingebetteter MLeaderAnnotContext): Der Kontext beginnt direkt mit der Zahl der Wurzeln (keine eigenen Kopf-Felder). Bruchinfos je Linie: Anzahl, dann je Info Segment-Index und Punktpaare. Bis 2007 eine Liste von Pfeilspitzen vor den Beschriftungen. Handle-Strom: je Linie (2010+) Linientyp und Pfeil, Textstil bzw. Block, dann Stil, Linientyp, Pfeil, Textstil, Block, Pfeilspitzen, Attributdefinitionen. Geprüft: dieselbe Hinweislinie in 2000/2004/2007/2010/2013/2018 gleich, DWG und DXF derselben Zeichnungen (zwei Dateien) gleich bis auf die letzte Stelle; Block-Inhalt in DWG nur nach Beschreibung (keine Datei damit).
@@ -298,7 +312,8 @@ Eigener Leser nach der öffentlichen Formatbeschreibung der DWG-Datei. Ein freie
 - `textdbg.mjs`: Lage der Texte.
 - `harness/cadtest.js` (Browser): Laden, Layout-Knopf, Bilder Default/HQ/oben/Zoom.
 - `harness/cadscene.js`: Szene speichern/öffnen.
-- DWG: `cad/t/dwg.mjs` (lesen + bauen, Zahlen, Zeiten), `ml.mjs` (Multileader beider Formate), `dwgcmp.mjs` (DWG gegen die DXF derselben Zeichnung: Layer, Objekte, Blöcke), `dwgsolids.mjs` (Körper → STEP), `mem.mjs` (Speicher je Stufe), `acisdump.mjs`/`bodies.mjs` (ACIS-Datensätze einer DWG).
+- DWG: `cad/t/dwg.mjs` (lesen + bauen, Zahlen, Zeiten), `ml.mjs` (Multileader beider Formate), `dwgcmp.mjs` (DWG gegen die DXF derselben Zeichnung: Layer, Objekte, Blöcke), `dwgsolids.mjs` (Körper → STEP; mit Ausgabedatei für das Prüfwerkzeug), `mem.mjs` (Speicher je Stufe), `acisdump.mjs`/`bodies.mjs` (ACIS-Datensätze einer DWG), `inscmp.mjs` (Einfügungen alter gegen neuen Leser).
+- ACIS: `cad/t/survey.mjs` (ausgelassene Flächen/Kurven über alle Beispiele), `icfail2.mjs` (warum eine Schnittkurve abgelehnt wird: Abstand der Ecken zur Kurve), `facemap.mjs` (STEP-Fläche → ACIS-Fläche und Unterart), `rec.mjs`/`procdump.mjs` (Datensätze roh), `faceloop.mjs` (Schleifen einer Fläche). Prüfwerkzeug auf der Übersetzung: `tools/stepcheck/check.mjs` (`dwgsolids.mjs <dwg> tools/stepcheck/cad/x.stp`), Vergleich mit dem alten Stand über `--src` (Quellbaum per `git archive`).
 
 **Ergebnisse (Windows-Chrome, RTX 3080):**
 - **Synthetische Datei:** deckungsgleich mit dem Referenzbild – Lage, Bögen (auch Extrusion −Z), Ellipsen, Splines, Blöcke, Schraffur mit Insel, Muster mit Bogenkante, Linientypen, Linienstärke, Texte samt Umbruch, ⌀/°/±, gedrehter Text.
@@ -310,7 +325,7 @@ Eigener Leser nach der öffentlichen Formatbeschreibung der DWG-Datei. Ein freie
 - **DWG, öffentliche Beispiele** (47 Dateien R13–2018, darunter R2007): alle lesen und bauen ohne Fehler. Dieselbe Zeichnung in sieben Versionen gegen ihre DXF: Layer, Layouts, Blöcke und Objekte gleich bis auf Splines (s. o.) und Tabellen ab 2010.
 - **DWG 2018, Flächen-Baugruppe** (48 MB, 101 MESH, 1,25 Mio. Dreiecke – dieselbe Zahl wie die FBX): lesen 0,9 s, aufbauen 1,1 s (Node), im Browser 4,8 s bis zum Bild, Raster und HQ richtig.
 - **DWG 2004** (23 MB, 94 Polyface-Netze, 619 000 Dreiecke): 4,6 s im Browser.
-- **Weitere Nutzer-Dateien** (lokal unter `tests/dwg/`, nicht im Repo): Dachziegel-Zeichnung als DWG und DXF (2 Multileader, Bemaßungen in Blöcken), 3D-Bett aus Polyface-Netzen, imperiale Beispiele (Grundriss, Maschinenbau, Tablett mit 3D-Flächen), Visualisierungsszenen mit 15–76 Volumenkörpern: alle lesen in < 0,1 s und öffnen in 1–2 s. Offen dort: prozedurale ACIS-Flächen ohne Näherung (Rotations-Spline `rot_spl_sur`, Übergangsfläche `VBL_SURF`, `spline-surface` ohne bs3-Daten), Schnittkurven, die nicht auf ihre Ecken passen, eine Fläche „Open periodic bound“, Lichter. Eine `.dwf` (Plot-/Ansichtsformat, kein DWG) wird nicht gelesen.
+- **Weitere Nutzer-Dateien** (lokal unter `tests/dwg/`, nicht im Repo): Dachziegel-Zeichnung als DWG und DXF (2 Multileader, Bemaßungen in Blöcken), 3D-Bett aus Polyface-Netzen, imperiale Beispiele (Grundriss, Maschinenbau, Tablett mit 3D-Flächen), Visualisierungsszenen mit 15–76 Volumenkörpern: alle lesen in < 0,1 s und öffnen in 1–2 s; seit der zweiten Runde ohne ausgelassene Flächen und Kanten, mit ihren Lichtern, und die Blätter zeigen die Körper als Kanten. Offen: die Sonne einer Szene. Eine `.dwf` (Plot-/Ansichtsformat, kein DWG) wird nicht gelesen.
 - **Multileader-Testdatei** (`cad/t/mlgen.py` mit dem Python-DXF-Werkzeug, Referenzbild per `ref.py`): Text mit Landung, zwei Wurzeln mit Spline-Linien und Punkt-Pfeilen, Positionsnummer als Block mit Attribut – deckungsgleich bis auf die Rundung der Splines.
 
 **Regression** (`run.js`/`compare.js`, alt gegen neu): Abweichungen nur im Starttext (DXF genannt) und im bekannten Rauschen.

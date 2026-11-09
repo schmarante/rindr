@@ -4383,6 +4383,7 @@ export async function createPlayer(options = {}) {
         const g0 = result.geometries.length;
         result.geometries.push(...extras.geometries);
         extras.meshes.forEach((m, k) => result.meshes.push({ ...m, geometry: m.geometry + g0, node: map[m.node], instance: -1, countId: `cad${k}` }));
+        if (extras.lights?.length) result.lights = [...(result.lights || []), ...extras.lights];   // scene lights (addImportedLights)
         result.cad = { extras, map };
     }
     // lines, fills and texts of a drawing into the groups of their nodes; counted as parts (Scene Graph rows)

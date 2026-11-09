@@ -22,6 +22,8 @@
 //     spacing, attach (1–3), styleHandle, color } | null, block: { handle, p, normal, scale, rot (rad), color } | null,
 //     labels: [{ attdef (handle), text }] } – colours { color (ACI code), rgb } | null; points WCS
 //   ACIS (3DSOLID, REGION, BODY, SURFACE …) { acis: { sat: string } | { sab: Uint8Array } | { ref } }
+//   LIGHT { name, kind (1 distant, 2 point, 3 spot, 10 web – photometric with a distribution file), on, intensity (factor),
+//     p, target (WCS), hotspot / falloff (full cone angles, degrees), lightRgb (the light's own colour, null = white) }
 
 export const ACI_BYBLOCK = 0, ACI_BYLAYER = 256, ACI_BYOBJECT = 257;
 export const LW_BYLAYER = -1, LW_BYBLOCK = -2, LW_DEFAULT = -3;

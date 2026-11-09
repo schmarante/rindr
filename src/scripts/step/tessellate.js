@@ -86,6 +86,14 @@ function sampleParams(curve, ta, tb, defl, ang) {
     return out;
 }
 
+// A closed B-spline (end = start, not periodic) run once around from a point inside its range: evaluated with the
+// parameter wrapped into the range, knots repeated a period before and after (for sampleParams)
+function wrappedCurve(c) {
+    const per = c.t1 - c.t0, w = t => c.t0 + ((((t - c.t0) % per) + per) % per);
+    const U = c.U ? [...Array.from(c.U, k => k - per), ...c.U, ...Array.from(c.U, k => k + per)] : null;
+    return { kind: c.kind, p: c.p, U, eval: t => c.eval(w(t)), d1: t => c.d1(w(t)) };
+}
+
 // Composite curve: every segment sampled by its own curve (a circle as a circle, a line by its end points), the
 // pieces between the segment joins (global parameters k = 0, 1, …; past the end of a closed one again from the start)
 function compositeParams(curve, ta, tb, defl, ang) {
@@ -376,9 +384,18 @@ export class Tessellator {
             pts.f = t => [P1[0] + (P2[0] - P1[0]) * t, P1[1] + (P2[1] - P1[1]) * t, P1[2] + (P2[2] - P1[2]) * t];
         } else {
             const closedLoop = v1.id === v2.id || dist(P1, P2) < 1e-9 * (1 + len(P1));
-            let ta, tb;
+            let ta, tb, c = curve;
             const per = curve.period || (curve.closed ? curve.t1 - curve.t0 : 0);
-            if (curve.period) {
+            let tv;
+            if (closedLoop && curve.closed && !curve.period && curve.t1 > curve.t0 && (tv = curve.closest(P1)) > curve.t0 + 1e-6 * per
+                && tv < curve.t1 - 1e-6 * per && dist(curve.eval(tv), P1) < defl) {
+                // a closed edge on a closed B-spline whose vertex is not its start (seen: an intersection curve of a
+                // drawing's solid): once around from the vertex – from the curve's start, the vertex replaced the
+                // first and last sample and the edge jumped across to it
+                c = wrappedCurve(curve);
+                ta = tv;
+                tb = sameSense !== false ? tv + per : tv - per;
+            } else if (curve.period) {
                 ta = curve.closest(P1);
                 tb = curve.closest(P2);
                 const P = curve.period;
@@ -397,9 +414,17 @@ export class Tessellator {
             } else {
                 ta = curve.closest(P1);
                 tb = curve.closest(P2);
+                // a part of a closed, not periodic curve (a closed B-spline) from or to its seam: a vertex there stands
+                // for either end – take the one that runs the edge's way (else it ran back along the other part)
+                if (curve.closed && curve.t1 > curve.t0 && (sameSense !== false ? tb < ta : ta < tb)) {
+                    const span = curve.t1 - curve.t0, atEnd = t => Math.min(t - curve.t0, curve.t1 - t) < 1e-6 * span;
+                    const flip = t => (t - curve.t0 < curve.t1 - t ? curve.t1 : curve.t0);
+                    if (atEnd(tb)) tb = flip(tb);
+                    else if (atEnd(ta)) ta = flip(ta);
+                }
             }
-            let ts = sampleParams(curve, ta, tb, defl, ang);
-            pts = ts.map(t => curve.eval(t));
+            let ts = sampleParams(c, ta, tb, defl, ang);
+            pts = ts.map(t => c.eval(t));
             // The vertices make neighbouring edges meet exactly – unless the single vertex of a closed curve lies far
             // off it (broken data, seen: the vertices of two circles of a 0.4 mm lead 10 and 23 mm away – a spike
             // reached out to them): then the curve's own start, for both ends
@@ -418,7 +443,7 @@ export class Tessellator {
                 if (keep.length < pts.length) { pts = keep.map(i => pts[i]); ts = keep.map(i => ts[i]); }
             }
             pts.ts = ts;
-            pts.f = t => curve.eval(t);
+            pts.f = t => c.eval(t);
         }
         this.edgeCache.set(key, pts);
         return pts;

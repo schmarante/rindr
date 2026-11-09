@@ -4,7 +4,7 @@
 // start with code 0 (type name), sections with 0 SECTION / 2 <name> and end with 0 ENDSEC. Each object is collected as its
 // list of pairs (codes + typed values), then converted by type into the records described in drawing.js.
 // Bytes only up to the pairs (no string per line): files of several hundred MB stay manageable.
-import { Drawing, ACI_BYLAYER, ACI_BYBLOCK, ACI_BYOBJECT, LW_BYLAYER, LW_BYBLOCK } from './drawing.js';
+import { Drawing, ACI_BYLAYER, ACI_BYBLOCK, ACI_BYOBJECT, LW_BYLAYER, LW_BYBLOCK, aciRgb } from './drawing.js';
 
 const BINARY_SENTINEL = [65, 117, 116, 111, 67, 65, 68, 32, 66, 105, 110, 97, 114, 121, 32, 68, 88, 70, 13, 10, 26, 0];
 
@@ -572,6 +572,15 @@ function convert(r, d) {
         case 'MLINE': return mline(r);
         case 'WIPEOUT': return wipeout(r);
         case 'VIEWPORT': return viewport(r, d);
+        case 'LIGHT': {
+            // own colour: 421 true colour, 63 index (the entity colour is the glyph's); angles in degrees
+            const rgb = r.get(421, null), aci = r.get(63, 0);
+            return {
+                ...common(r, t), name: String(r.get(1, '')), kind: r.get(70, 2), on: r.get(290, 1) !== 0, intensity: r.get(40, 1),
+                p: r.point(10), target: r.point(11), hotspot: r.get(50, 45), falloff: r.get(51, 50),
+                lightRgb: rgb !== null ? rgb & 0xffffff : aci > 0 && aci < 256 && aci !== 7 ? aciRgb(aci) : null,
+            };
+        }
         case '3DSOLID': case 'REGION': case 'BODY': case 'SURFACE': case 'EXTRUDEDSURFACE': case 'LOFTEDSURFACE': case 'REVOLVEDSURFACE':
         case 'SWEPTSURFACE': case 'PLANESURFACE': case 'NURBSURFACE':
             return acis(r);

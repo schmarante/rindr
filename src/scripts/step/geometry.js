@@ -603,7 +603,13 @@ class BSplineSurface extends SurfaceBase {
     edgesCoincide(alongU) {
         const { cw } = this;
         let size = 0;
-        for (let k = 0; k < cw.length; k += 4) size = Math.max(size, Math.abs(cw[k] / cw[k + 3]), Math.abs(cw[k + 1] / cw[k + 3]), Math.abs(cw[k + 2] / cw[k + 3]));
+        const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+        for (let k = 0; k < cw.length; k += 4) {
+            for (let d = 0; d < 3; d++) {
+                const x = cw[k + d] / cw[k + 3];
+                size = Math.max(size, Math.abs(x)); lo[d] = Math.min(lo[d], x); hi[d] = Math.max(hi[d], x);
+            }
+        }
         const tol = 1e-6 * (1 + size);
         let spread = 0;
         const N = 9;
@@ -620,8 +626,10 @@ class BSplineSurface extends SurfaceBase {
             if (dist(a, b) > tol) return false;
             if (i === 0) var first = a; else spread = Math.max(spread, dist(a, first));
         }
-        // an edge degenerated to a point (pole) is not a seam
-        return spread > tol * 10;
+        // an edge degenerated to a point (pole) is not a seam – the margin against the surface's own size, too: tol
+        // grows with the distance from the origin (text precision), a fillet ring of 1.5 mm 100 m away (a drawing's
+        // solid) had a seam of 0.8 mm < 10 · tol and counted as a pole (its edges collapsed onto one side)
+        return spread > Math.max(tol, Math.min(tol * 10, 0.01 * dist(lo, hi)));
     }
     rowsCoincide(alongU) {
         const { cw, cols } = this;

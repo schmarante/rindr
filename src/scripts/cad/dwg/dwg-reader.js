@@ -10,7 +10,7 @@
 // vertices and attributes name theirs.
 import { readDwgSections } from './container.js';
 import { BitReader, readMC, readMS, versionNumber, R14, R2000, R2004, R2007, R2010, R2013, R2018 } from './bits.js';
-import { Drawing, ACI_BYLAYER, ACI_BYBLOCK, ACI_BYOBJECT, LW_BYLAYER, LW_BYBLOCK, LW_DEFAULT } from '../drawing.js';
+import { Drawing, ACI_BYLAYER, ACI_BYBLOCK, ACI_BYOBJECT, LW_BYLAYER, LW_BYBLOCK, LW_DEFAULT, aciRgb } from '../drawing.js';
 
 // DWG code pages → TextDecoder labels
 const CODEPAGES = { 28: 'windows-874', 29: 'shift_jis', 30: 'gbk', 31: 'euc-kr', 32: 'big5', 33: 'windows-1250', 34: 'windows-1251',
@@ -582,9 +582,8 @@ class DwgReader {
                 break;
             }
             case T.INSERT: case T.MINSERT: case 'ACAD_TABLE': {
-                // a table up to 2007 starts like an insert of its anonymous block (*T…) – drawn as that block; from 2010
-                // on its data is laid out differently (not read)
-                if (t === 'ACAD_TABLE' && v >= R2010) { this.d.skip(t); return null; }
+                // a table starts like an insert of its anonymous block (*T…) – drawn as that block (from 2010 on, too: the
+                // cells moved into a table content object, the insert part and the block handle stayed)
                 rec.type = 'INSERT';
                 rec.p = r.BD3();
                 if (v <= R14) rec.scale = [r.BD(), r.BD(), r.BD()];
@@ -598,7 +597,9 @@ class DwgReader {
                 rec.rot = r.BD() * 180 / Math.PI;
                 rec.extrusion = r.BD3();
                 const hasAttribs = r.B();
-                const owned = v >= R2004 ? r.BL() : 0;
+                // the count of owned attributes only with attributes (the format description has it always: a table's
+                // flags then read as the count – its value 0x16 is "has block" + "downwards", as the DXF says)
+                const owned = v >= R2004 && hasAttribs ? r.BL() : 0;
                 rec.cols = 1; rec.rows = 1; rec.colSpacing = 0; rec.rowSpacing = 0;
                 if (t === T.MINSERT) { rec.cols = Math.max(1, r.BS()); rec.rows = Math.max(1, r.BS()); rec.colSpacing = r.BD(); rec.rowSpacing = r.BD(); }
                 rec.attribs = [];
@@ -696,6 +697,7 @@ class DwgReader {
                 rec.acis = this.acis(r, o);
                 break;
             case 'MESH': this.mesh(r, rec); break;
+            case 'LIGHT': this.light(r, rec); break;
             case 'MULTILEADER': after = this.mleader(r, rec, o); break;
             case 'WIPEOUT': this.wipeout(r, rec); break;
             default:
@@ -937,6 +939,21 @@ class DwgReader {
 
     // MESH (subdivision mesh, not in the description; read like its DXF form): BS version, B blend crease, BL subdivision
     // level, BL vertex count + 3BD each, BL face list size + BL entries (n, i0 … in-1), edges, creases (not needed)
+    // LIGHT (class): version, name, kind, on, own colour, glyph, intensity, position, target, attenuation (kind, limits on,
+    // start, end), hotspot, falloff (radians), shadows (on, kind, map size, softness); then the name once more, inline.
+    // The photometric values (candela, colour temperature, distribution file) live in an extension dictionary – not read
+    light(r, rec) {
+        rec.type = 'LIGHT';
+        r.BL();
+        rec.name = r.TV(); rec.kind = r.BL(); rec.on = !!r.B();
+        const c = r.CMC();
+        rec.lightRgb = c.rgb !== null ? c.rgb : c.index > 0 && c.index < 256 && c.index !== 7 ? aciRgb(c.index) : null;
+        r.B();
+        rec.intensity = r.BD(); rec.p = r.BD3(); rec.target = r.BD3();
+        r.BL(); r.B(); r.BD(); r.BD();
+        rec.hotspot = r.BD() * 180 / Math.PI; rec.falloff = r.BD() * 180 / Math.PI;
+    }
+
     mesh(r, rec) {
         rec.type = 'MESH';
         r.BS(); r.B(); r.BL();

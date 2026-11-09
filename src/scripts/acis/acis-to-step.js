@@ -10,16 +10,22 @@
 //   surfaces: plane → PLANE, cone → CYLINDRICAL_SURFACE / CONICAL_SURFACE (radius grows by sine / cosine along the axis,
 //   a negative cosine turns the normal inwards), sphere / torus → SPHERICAL / TOROIDAL_SURFACE (negative radius: inwards),
 //   spline → (rational) B_SPLINE_SURFACE_WITH_KNOTS from the bs3 surface of its subtype (exact, or the approximation a
-//   procedural one keeps; control points are stored with u running fastest)
-//   curves: straight → LINE, ellipse → CIRCLE / ELLIPSE, intcurve → B-spline of its bs3 curve (checked against the edge's
-//   vertices), else the coedge's parameter curve (exppc) as PCURVE on the face's B-spline surface
+//   procedural one keeps; control points are stored with u running fastest; a procedural one without: a stand-in from
+//   the face's boundary – fillFace)
+//   curves: straight → LINE, ellipse → CIRCLE / ELLIPSE, intcurve → B-spline of its bs3 curve (the edge's vertices have to
+//   lie on it), else the coedge's parameter curve (exppc) as PCURVE on the face's B-spline surface
 //   colours: rgb_color / colour attributes of face, lump or body → STYLED_ITEM; the body transform (affine part, scale,
 //   translation) and the caller's placement go into the coordinates, lengths in mm.
+// wire(): the edges of a body as polylines (a drawing's solid seen through a layout viewport).
 import { AcisFile } from './acis-file.js';
 import { StepWriter, num, str, list, ref } from '../step-text.js';
 import { aciRgb } from '../cad/drawing.js';
+import { BSplineCurve } from '../step/geometry.js';
 
 const SPLINE_WORDS = new Set(['nubs', 'nurbs']);
+// closure / singularity of a bs3 (words in SAT text, numbers in SAB) – a rational one has its rational direction first
+const BS3_FORM = new Set(['open', 'closed', 'periodic', 'none', 'singular', 'unknown']);
+const skipRationalWord = c => { const x = c.peek(); if (typeof x === 'string' && !BS3_FORM.has(x) && !Number.isFinite(Number(x))) c.next(); };
 
 // 3 × 4 row-major affine [r00 r01 r02 t0 r10 …]
 const IDENT = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];
@@ -40,6 +46,20 @@ const normalize = a => { const l = len(a) || 1; return [a[0] / l, a[1] / l, a[2]
 const perpendicular = n => normalize(Math.abs(n[0]) < 0.9 ? cross(n, [1, 0, 0]) : cross(n, [0, 1, 0]));
 // position key at 0.1 µm (mm): welding of edges and vertices
 const posKey = p => `${Math.round(p[0] * 1e4)},${Math.round(p[1] * 1e4)},${Math.round(p[2] * 1e4)}`;
+// n × (n + 1) augmented system → solution (Gauss with partial pivoting; NaN when singular)
+function solveSystem(A) {
+    const n = A.length;
+    for (let i = 0; i < n; i++) {
+        let p = i;
+        for (let r = i + 1; r < n; r++) if (Math.abs(A[r][i]) > Math.abs(A[p][i])) p = r;
+        [A[i], A[p]] = [A[p], A[i]];
+        if (Math.abs(A[i][i]) < 1e-14) return new Array(n).fill(NaN);
+        for (let r = i + 1; r < n; r++) { const f = A[r][i] / A[i][i]; for (let c = i; c <= n; c++) A[r][c] -= f * A[i][c]; }
+    }
+    const x = new Array(n).fill(0);
+    for (let i = n - 1; i >= 0; i--) { let v = A[i][n]; for (let c = i + 1; c < n; c++) v -= A[i][c] * x[c]; x[i] = v / A[i][i]; }
+    return x;
+}
 
 /**
  * A whole SAT/SAB file → STEP text: one product with every body (the file's name).
@@ -160,23 +180,7 @@ export class AcisStep {
         const b = file.record(bi);
         const lump = b.ptr();
         b.ptr();   // wire
-        const tr = b.ptr();
-        let M = [unit, 0, 0, 0, 0, unit, 0, 0, 0, 0, unit, 0];
-        if (tr >= 0) {
-            const t = file.record(tr);
-            // SAB keeps the transform as one long string in SAT form ("1 0 0 … tx ty tz scale no_rotate …")
-            const x = t.peek();
-            if (x && typeof x === 'object' && typeof x.s === 'string') t.t.splice(t.k, 1, ...x.s.trim().split(/\s+/));
-            const a = []; for (let k = 0; k < 9; k++) a.push(t.num());
-            const tt = t.vec(), s = t.num();
-            // p' = s · (p · A) + t (row vector times the affine part)
-            const B = [a[0] * s, a[3] * s, a[6] * s, tt[0], a[1] * s, a[4] * s, a[7] * s, tt[1], a[2] * s, a[5] * s, a[8] * s, tt[2]];
-            if (B.every(Number.isFinite)) M = compose(M, B);
-        }
-        if (transform) M = compose(transform, M);
-        this.M = M;
-        this.lenScale = Math.cbrt(Math.abs(det3(M))) || 1;
-        this.mirror = det3(M) < 0;
+        this.place(file, b.ptr(), unit, transform);
         const bodyColor = this.colorOf(b.attrib) || color;
         this.stats.bodies++;
         const items = [], sheets = [];
@@ -224,6 +228,99 @@ export class AcisStep {
         return items;
     }
 
+    // the current transform: unit, the body's own transform (record tr), then the caller's placement
+    place(file, tr, unit, transform) {
+        let M = [unit, 0, 0, 0, 0, unit, 0, 0, 0, 0, unit, 0];
+        if (tr >= 0) {
+            const t = file.record(tr);
+            // SAB keeps the transform as one long string in SAT form ("1 0 0 … tx ty tz scale no_rotate …")
+            const x = t.peek();
+            if (x && typeof x === 'object' && typeof x.s === 'string') t.t.splice(t.k, 1, ...x.s.trim().split(/\s+/));
+            const a = []; for (let k = 0; k < 9; k++) a.push(t.num());
+            const tt = t.vec(), s = t.num();
+            // p' = s · (p · A) + t (row vector times the affine part)
+            const B = [a[0] * s, a[3] * s, a[6] * s, tt[0], a[1] * s, a[4] * s, a[7] * s, tt[1], a[2] * s, a[5] * s, a[8] * s, tt[2]];
+            if (B.every(Number.isFinite)) M = compose(M, B);
+        }
+        if (transform) M = compose(transform, M);
+        this.M = M;
+        this.lenScale = Math.cbrt(Math.abs(det3(M))) || 1;
+        this.mirror = det3(M) < 0;
+    }
+
+    /**
+     * The edges of a body as polylines – the wireframe of a drawing's solid seen through a layout viewport (STEP knows
+     * no such view): [x, y, z, …] after the body's own transform, in its file's units. Arcs in steps of ≤ 5°,
+     * intersection curves in 32 pieces of their approximation, edges without a curve (poles, apexes) left out.
+     */
+    wire(file, bi) {
+        this.file = file;
+        const b = file.record(bi);
+        const lump = b.ptr();
+        b.ptr();
+        this.place(file, b.ptr(), 1, null);
+        const done = new Set(), out = [];
+        const line = ei => {
+            const r = file.record(ei);
+            const v1 = r.ptr();
+            const t0 = file.version >= 500 && !r.peekPtr() ? r.num() : null;
+            const v2 = r.ptr();
+            const t1 = file.version >= 500 && !r.peekPtr() ? r.num() : null;
+            r.ptr();
+            const cu = r.ptr();
+            const sense = r.flag('reversed');
+            if (v1 < 0 || v2 < 0 || cu < 0) return null;
+            const a = this.vertexPos(v1), z = this.vertexPos(v2);
+            const pts = [a, ...this.edgeSamples(cu, a, z, t0 !== null && t1 !== null ? Math.abs(t1 - t0) : null, sense, true), z];
+            return Float64Array.from(pts.flat());
+        };
+        const faces = f0 => {
+            for (let f = f0, g = 0; f >= 0 && g++ < 1e7;) {
+                const fr = file.record(f);
+                const next = fr.ptr();
+                for (let l = fr.ptr(), g2 = 0; l >= 0 && g2++ < 1e6;) {
+                    const lr = file.record(l);
+                    const nextLoop = lr.ptr(), first = lr.ptr();
+                    for (let c = first, n = 0; c >= 0 && n < 1e6; n++) {
+                        const cr = file.record(c);
+                        const cn = cr.ptr();
+                        cr.ptr(); cr.ptr();
+                        const e = cr.ptr();
+                        if (e >= 0 && !done.has(e)) { done.add(e); const p = line(e); if (p) out.push(p); }
+                        c = cn;
+                        if (c === first) break;
+                    }
+                    l = nextLoop;
+                }
+                f = next;
+            }
+        };
+        const subshells = (s0, seen = new Set()) => {
+            for (let k = s0, g = 0; k >= 0 && g++ < 1e6 && !seen.has(k);) {
+                seen.add(k);
+                const r = file.record(k);
+                r.ptr();
+                const next = r.ptr(), child = r.ptr();
+                faces(r.ptr());
+                if (child >= 0) subshells(child, seen);
+                k = next;
+            }
+        };
+        for (let l = lump, g = 0; l >= 0 && g++ < 1e7;) {
+            const r = file.record(l);
+            const next = r.ptr();
+            for (let s = r.ptr(), g2 = 0; s >= 0 && g2++ < 1e6;) {
+                const sr = file.record(s);
+                const nextShell = sr.ptr(), sub = sr.ptr();
+                faces(sr.ptr());
+                if (sub >= 0) subshells(sub);
+                s = nextShell;
+            }
+            l = next;
+        }
+        return out;
+    }
+
     // faces of a shell (with its subshells); closed = every coedge has a partner
     shell(si, sr, color) {
         const subshell = sr.ptr();
@@ -265,15 +362,13 @@ export class AcisStep {
         fr.ptr(); fr.ptr();   // shell, subshell
         const surfRec = fr.ptr();
         const reversed = fr.flag('reversed');
-        const surf = this.surface(surfRec);
-        if (!surf) return this.skip(`surface ${surfRec >= 0 ? file.type(surfRec) : 'none'}`);
-        const bounds = [];
-        let closed = true;
+        // loops → coedges first (a surface without data of its own is filled from them)
+        const loops = [];
         for (let l = loop, guard = 0; l >= 0 && guard++ < 1e6;) {
             const lr = file.record(l);
             const next = lr.ptr();
             const first = lr.ptr();
-            const oes = [];
+            const coedges = [];
             for (let c = first, n = 0; c >= 0 && n < 1e6; n++) {
                 const cr = file.record(c);
                 const cnext = cr.ptr();
@@ -283,14 +378,30 @@ export class AcisStep {
                 const sense = cr.flag('reversed');
                 cr.ptr();   // loop
                 const pcurve = cr.nextPtr();   // (SAB: a count first)
-                if (partner < 0) closed = false;
-                const e = this.edge(edge, pcurve, surf, partner < 0);
-                if (e) oes.push(this.w.add(`ORIENTED_EDGE('',*,*,#${e.id},${sense !== e.flip ? '.F.' : '.T.'})`));
+                coedges.push({ partner, edge, sense, pcurve });
                 c = cnext;
                 if (c === first) break;
             }
-            if (oes.length) bounds.push(this.w.add(`FACE_BOUND('',#${this.w.add(`EDGE_LOOP('',${list(oes.map(ref))})`)},.T.)`));
+            loops.push(coedges);
             l = next;
+        }
+        let surf = this.surface(surfRec);
+        if (surf?.missing) {
+            const why = surf.missing;
+            surf = this.fillFace(loops, reversed);
+            if (!surf) return this.skip(why);
+        }
+        if (!surf) return this.skip(`surface ${surfRec >= 0 ? file.type(surfRec) : 'none'}`);
+        const bounds = [];
+        let closed = true;
+        for (const coedges of loops) {
+            const oes = [];
+            for (const { partner, edge, sense, pcurve } of coedges) {
+                if (partner < 0) closed = false;
+                const e = this.edge(edge, pcurve, surf, partner < 0);
+                if (e) oes.push(this.w.add(`ORIENTED_EDGE('',*,*,#${e.id},${sense !== e.flip ? '.F.' : '.T.'})`));
+            }
+            if (oes.length) bounds.push(this.w.add(`FACE_BOUND('',#${this.w.add(`EDGE_LOOP('',${list(oes.map(ref))})`)},.T.)`));
         }
         const same = !reversed !== surf.flip;
         const id = this.w.add(`ADVANCED_FACE('',${list(bounds.map(ref))},#${surf.id},${same ? '.T.' : '.F.'})`);
@@ -403,12 +514,120 @@ export class AcisStep {
                     const reversed = r.flag('reversed');
                     const data = this.subtypeAt(r);
                     const s = data && this.bs3Surface(data);
-                    if (!s) return this.skip(`spline ${data?.name || '?'}`);
+                    if (!s) return { missing: `spline ${data?.name || '?'}` };   // procedural without data: fillFace
                     return { id: s, flip: reversed !== this.mirror, bspline: true };
                 }
                 default: return this.skip(r.type);
             }
         });
+    }
+
+    // A procedural spline surface without an approximation (seen: vertex blends capping rounded bars) → a stand-in from
+    // its boundary: the plane of the boundary when it is flat, else the quadratic height field over that plane that fits
+    // the boundary best (least squares; a spherical cap is one up to its rim) as a 3 × 3 Bézier patch. The mesh keeps the
+    // exact edges either way (the kernel shares their samples with the neighbouring faces) – only the inside is an
+    // estimate. The loops run counter-clockwise around the face's normal: their Newell normal is the face's outward
+    // side (a mirroring placement turns the order). Boundaries that fit no height field leave the face out.
+    fillFace(loops, reversed) {
+        const file = this.file, ring = [], pts = [];
+        for (const coedges of loops) {
+            for (const { edge, sense } of coedges) {
+                if (edge < 0) continue;
+                const r = file.record(edge);
+                const v1 = r.ptr();
+                const t0 = file.version >= 500 && !r.peekPtr() ? r.num() : null;
+                const v2 = r.ptr();
+                const t1 = file.version >= 500 && !r.peekPtr() ? r.num() : null;
+                r.ptr();
+                const cu = r.ptr();
+                const along = r.flag('reversed');   // the edge against its curve
+                if (v1 < 0 || v2 < 0) continue;
+                const a = this.vertexPos(v1), b = this.vertexPos(v2);
+                if (loops[0] === coedges) ring.push(sense ? b : a);
+                pts.push(a, b, ...(cu >= 0 ? this.edgeSamples(cu, a, b, t0 !== null && t1 !== null ? Math.abs(t1 - t0) : null, along) : []));
+            }
+        }
+        if (ring.length < 3) return null;
+        const n = [0, 0, 0], c = [0, 0, 0];
+        for (let i = 0; i < ring.length; i++) {
+            const a = ring[i], b = ring[(i + 1) % ring.length];
+            n[0] += (a[1] - b[1]) * (a[2] + b[2]); n[1] += (a[2] - b[2]) * (a[0] + b[0]); n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+            for (let d = 0; d < 3; d++) c[d] += a[d] / ring.length;
+        }
+        if (!(len(n) > 0)) return null;
+        const N = normalize(this.mirror ? n.map(v => -v) : n), X = perpendicular(N), Y = cross(N, X);
+        const loc = pts.map(p => { const d = sub(p, c); return [dot(d, X), dot(d, Y), dot(d, N)]; });
+        let size = 0, zmin = Infinity, zmax = -Infinity;
+        for (const [x, y, z] of loc) { size = Math.max(size, Math.hypot(x, y)); zmin = Math.min(zmin, z); zmax = Math.max(zmax, z); }
+        if (!(size > 0)) return null;
+        const tol = Math.max(1e-6, 1e-3 * size);
+        this.stats.filled = (this.stats.filled || 0) + 1;
+        if (zmax - zmin <= tol) return { id: this.w.add(`PLANE('',#${this.axis2(c, N, X)})`), flip: reversed };
+        // z ≈ k0 + k1 x + k2 y + k3 x² + k4 x y + k5 y² (x, y in units of size)
+        const A = Array.from({ length: 6 }, () => new Array(7).fill(0));
+        for (const [x0, y0, z] of loc) {
+            const x = x0 / size, y = y0 / size, f = [1, x, y, x * x, x * y, y * y];
+            for (let i = 0; i < 6; i++) { for (let j = 0; j < 6; j++) A[i][j] += f[i] * f[j]; A[i][6] += f[i] * z; }
+        }
+        const k = solveSystem(A);
+        const h = (x0, y0) => { const x = x0 / size, y = y0 / size; return k[0] + k[1] * x + k[2] * y + k[3] * x * x + k[4] * x * y + k[5] * y * y; };
+        if (!k.every(Number.isFinite) || loc.some(([x, y, z]) => Math.abs(h(x, y) - z) > 0.5 * (zmax - zmin) + tol)) {
+            this.stats.filled--;
+            return null;
+        }
+        // the patch over the boundary's box (+5 %): Bézier heights from the values at 0, ½, 1 per direction
+        let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+        for (const [x, y] of loc) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+        const mx = 0.05 * (x1 - x0) + tol, my = 0.05 * (y1 - y0) + tol;
+        x0 -= mx; x1 += mx; y0 -= my; y1 += my;
+        const xs = [x0, (x0 + x1) / 2, x1], ys = [y0, (y0 + y1) / 2, y1];
+        const bez = f => [f[0], 2 * f[1] - (f[0] + f[2]) / 2, f[2]];
+        const cols = xs.map(x => bez(ys.map(y => h(x, y))));   // per x: Bézier heights along y
+        const H = [0, 1, 2].map(j => bez(cols.map(col => col[j])));   // per y: along x → H[j][i]
+        const rows = xs.map((x, i) => list(ys.map((y, j) => ref(this.cp([0, 1, 2].map(d => c[d] + X[d] * x + Y[d] * y + N[d] * H[j][i]))))));
+        const id = this.w.add(`B_SPLINE_SURFACE_WITH_KNOTS('',2,2,${list(rows)},.UNSPECIFIED.,.F.,.F.,.F.,(3,3),(3,3),(0.,1.),(0.,1.),.UNSPECIFIED.)`);
+        return { id, flip: reversed };   // u along X, v along Y: the normal is N, the face's side
+    }
+    // points along an edge between its vertices a, b (world): ellipses (the way the edge runs along its curve – sense;
+    // unknown: the arc of the edge's parameter span, else the shorter one), intersection curves (their approximation);
+    // straight edges add their middle. fine: arcs in steps of ≤ 5°, curves in 32 pieces (else 8 points)
+    edgeSamples(ci, a, b, span, sense = null, fine = false) {
+        const out = [];
+        let K = fine ? 32 : 8;
+        try {
+            const r = this.file.record(ci);
+            if (r.type === 'straight-curve') return [[(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2]];
+            if (r.type === 'ellipse-curve') {
+                const c0 = r.vec(), nn = r.vec(), m0 = r.vec(), ratio = r.num();
+                const c = this.P(c0), m = this.D(m0), q = this.D(cross(normalize(nn), m0).map(v => v * ratio));
+                const ang = p => { const d = sub(p, c); return Math.atan2(dot(d, q) / dot(q, q), dot(d, m) / dot(m, m)); };
+                const ta = ang(a), TAU = 2 * Math.PI, mod = x => ((x % TAU) + TAU) % TAU;
+                let dt = ang(b) - ta;
+                const closed = len(sub(a, b)) < 1e-9 * (1 + len(a));
+                if (sense !== null) dt = closed ? (sense ? -TAU : TAU) : sense ? -mod(-dt) : mod(dt);   // the curve runs counter-clockwise
+                else if (closed) dt = TAU;
+                else {
+                    dt -= TAU * Math.round(dt / TAU);
+                    if (span !== null && span > Math.PI + 1e-6) dt -= Math.sign(dt) * TAU;
+                }
+                if (fine) K = Math.max(2, Math.ceil(Math.abs(dt) / (Math.PI / 36)));
+                for (let i = 1; i < K; i++) {
+                    const t = ta + dt * i / K;
+                    out.push([0, 1, 2].map(d => c[d] + m[d] * Math.cos(t) + q[d] * Math.sin(t)));
+                }
+            } else if (r.type === 'intcurve-curve') {
+                r.flag('reversed');
+                const data = this.subtypeAt(r);
+                if (!data) return out;
+                if (['full', 'summary', 'none', 'approx'].includes(String(data.peek()))) data.next();
+                if (!SPLINE_WORDS.has(String(data.peek()))) return out;
+                const bc = this.readBs3Curve(data, null, false, 3, 'curve');
+                let ta = bc.closest(a), tb = bc.closest(b);
+                if (len(sub(a, b)) < 1e-9 * (1 + len(a))) { ta = bc.t0; tb = bc.t1; }
+                for (let i = 1; i < K; i++) out.push(bc.eval(ta + (tb - ta) * i / K));
+            }
+        } catch { /* the vertices only */ }
+        return out;
     }
 
     // cone: base ellipse (centre, normal, major axis, ratio), curve interval, sine, cosine[, u scale][, reverse u] –
@@ -474,6 +693,7 @@ export class AcisStep {
     readBs3Surface(c) {
         const rational = c.next() === 'nurbs';
         const du = c.int(), dv = c.int();
+        if (rational) skipRationalWord(c);   // "both" / "u" / "v": the direction with weights (all points carry one)
         c.next(); c.next();   // closure u, v
         c.next(); c.next();   // singularity u, v
         const nku = c.int(), nkv = c.int();
@@ -560,6 +780,7 @@ export class AcisStep {
     readBs3Curve(c, ends, reversed, dim = 3, dry = false) {
         const rational = c.next() === 'nurbs';
         const deg = c.int();
+        if (rational) skipRationalWord(c);
         c.next();   // closure
         const nk = c.int();
         if (!(deg >= 1 && nk >= 2 && nk < 1e7)) throw new Error('bs3 curve header');
@@ -576,18 +797,19 @@ export class AcisStep {
         }
         m[0]++; m[m.length - 1]++;
         const world = dim === 3 ? pts.map(p => this.P(p)) : pts;
-        if (dry) return `${n}:${posKey(world[n >> 1])}`;   // count + middle control point (welding)
-        if (dim === 3 && ends) {
-            // ends of a clamped spline are its first and last control points
-            const [a, b] = reversed ? [ends[1], ends[0]] : ends;
-            const tol = Math.max(1e-3, 1e-4 * len(sub(a, b)));
-            const d0 = len(sub(world[0], a)), d1 = len(sub(world[world.length - 1], b));
-            const closedEdge = len(sub(a, b)) < tol;
-            if (!closedEdge && (d0 > tol * 10 || d1 > tol * 10)) {
-                // the stored spline runs the other way?
-                const e0 = len(sub(world[0], b)), e1 = len(sub(world[world.length - 1], a));
-                if (e0 > tol * 10 || e1 > tol * 10) throw new Error('bs3 curve ends');
-            }
+        if (dry && dry !== 'curve') return `${n}:${posKey(world[n >> 1])}`;   // count + middle control point (welding)
+        if (dry === 'curve' || (dim === 3 && ends)) {
+            // the edge's vertices have to lie on the spline (a procedural subtype holds other splines too): not at its
+            // ends – an edge may use a part of a closed curve, and an approximation may stop short of the vertices
+            // (seen: 0.04 … 0.15 mm on edges of 5 … 18 mm; the kernel starts the edge at the vertex then)
+            const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+            for (const p of world) for (let d = 0; d < 3; d++) { lo[d] = Math.min(lo[d], p[d]); hi[d] = Math.max(hi[d], p[d]); }
+            const tol = Math.max(1e-3, 0.02 * len(sub(hi, lo)));
+            const U = [];
+            k.forEach((x, i) => { for (let j = 0; j < m[i]; j++) U.push(x); });
+            const bc = new BSplineCurve(deg, world, rational ? ws : null, U);
+            if (dry === 'curve') return bc;
+            for (const v of ends) if (len(sub(bc.eval(bc.closest(v)), v)) > tol) throw new Error('bs3 curve ends');
         }
         const ids = world.map(p => (dim === 3 ? this.cp(p) : this.w.add(`CARTESIAN_POINT('',${list(p.map(num))})`)));
         const pl = list(ids.map(ref));
