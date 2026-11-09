@@ -20,6 +20,7 @@
 // Not drawn: points, curves, annotation, blanked entities, unbounded planes / analytic surfaces standing alone.
 
 import { IgesFile } from './iges-file.js';
+import { StepWriter, num, str, list, ref } from '../step-text.js';
 
 const STANDARD_COLORS = { 1: [0, 0, 0], 2: [1, 0, 0], 3: [0, 1, 0], 4: [0, 0, 1], 5: [1, 1, 0], 6: [1, 0, 1], 7: [0, 1, 1], 8: [1, 1, 1] };
 // independent entities drawn as parts / faces
@@ -43,59 +44,8 @@ export function igesToStep(bytes, { name = '', onProgress = null } = {}) {
     return { bytes: c.w.finish(), stats: c.stats };
 }
 
-// --- STEP text ---
-
-// real number in STEP form (always with a decimal point, exponent with E)
-function num(x) {
-    if (!Number.isFinite(x)) x = 0;
-    const s = String(x);
-    const e = s.indexOf('e');
-    if (e >= 0) { const m = s.slice(0, e); return (m.includes('.') ? m : m + '.') + 'E' + s.slice(e + 1); }
-    return s.includes('.') ? s : s + '.';
-}
+// --- STEP text (shared writer: step-text.js) ---
 const colorKey = c => (c ? c.map(v => v.toFixed(4)).join(',') : '');
-const str = s => `'${String(s ?? '').replace(/[^\x20-\x7e]/g, '?').replace(/\\/g, '\\\\').replace(/'/g, "''")}'`;
-const list = a => `(${a.join(',')})`;
-const ref = id => `#${id}`;
-
-class StepWriter {
-    constructor() {
-        this.id = 0;
-        this.parts = [];
-        this.pending = 0;
-        this.buf = new Uint8Array(1 << 24);
-        this.used = 0;
-        this.enc = new TextEncoder();
-    }
-    add(body) {
-        const id = ++this.id;
-        this.text(`#${id}=${body};\n`);
-        return id;
-    }
-    text(s) {
-        this.parts.push(s);
-        this.pending += s.length;
-        if (this.pending > 1 << 20) this.flush();
-    }
-    flush() {
-        const s = this.parts.join('');
-        this.parts = [];
-        this.pending = 0;
-        if (this.used + s.length > this.buf.length) {
-            let size = this.buf.length;
-            while (size < this.used + s.length) size *= 2;
-            const b = new Uint8Array(size);
-            b.set(this.buf.subarray(0, this.used));
-            this.buf = b;
-        }
-        this.used += this.enc.encodeInto(s, this.buf.subarray(this.used)).written;
-    }
-    finish() {
-        this.text('ENDSEC;\nEND-ISO-10303-21;\n');
-        this.flush();
-        return this.buf.subarray(0, this.used);
-    }
-}
 
 // --- 3 × 4 transformations [r00 r01 r02 t0 r10 r11 r12 t1 r20 r21 r22 t2] ---
 const compose = (A, B) => {   // A ∘ B

@@ -729,6 +729,7 @@ export async function createPlayer(options = {}) {
     // closed cut surfaces only for closed bodies: STEP solids (not surface models), other meshes checked
     slicer.capRoot = () => rootGroup;
     slicer.isClosed = mesh => {
+        if (mesh.userData.cadAnnotation) return false;   // lines/texts of drawings (not drawn by the raster camera anyway)
         if (mesh.userData.closedSolid !== undefined) return mesh.userData.closedSolid;   // additional STEP model
         const inst = model?.type === 'step' && currentPlan ? currentPlan.instances[mesh.userData.instance] : null;
         if (inst) return !currentPlan.solids[inst.solid]?.surface;
@@ -1258,6 +1259,8 @@ export async function createPlayer(options = {}) {
 
     const highlighter = new Highlighter(renderer, scene, camera);
     // contour lines of toon/outline materials (contour.js) – over raster and path-traced image, part of exports
+    // lines, fills and texts of drawings (cad/annotations.js, created with the first drawing) – over raster and HQ like the contours
+    let annotationPass = null;
     const contours = new ContourPass(renderer, scene, camera, {
         roots: () => [rootGroup, ...extraModels.map(x => x.root)],
         hide: () => [ground.mesh],
@@ -1699,13 +1702,13 @@ export async function createPlayer(options = {}) {
         const list = [];
         if (rootGroup && model) list.push({ main: true, root: rootGroup, nodeGroups: currentNodeGroups, meshes: currentMeshes, prefix: '',
             importNodes: primaryContent?.root === rootGroup ? primaryContent.importNodes : null,   // node names (paths – stage 4)
-            file: { name: model.name, type: model.type, size: model.size ?? null }, holder: null, sceneIndex: mainSceneIndex, source: model,
+            file: { name: model.name, type: model.type, size: model.size ?? null, ...cadSpaceOf(model) }, holder: null, sceneIndex: mainSceneIndex, source: model,
             morphs: animations.find(a => a.owner === 'main')?.anim.morphValues(), animation: animState('main'), pose: poseState('main'), poses: poseListState('main'),
             // Gaussian splats: their look (light, override material) – saved with the scene
             splatLook: splatMesh ? { mode: splatMesh.look.mode, material: splatMesh.look.material && { ...splatMesh.look.material } } : null,
             volumeLooks: volumeLooksOf(rootGroup) });
         for (const x of extraModels) list.push({ main: false, id: x.id, root: x.root, nodeGroups: x.nodeGroups, meshes: x.meshes, prefix: `x${x.id}:`, importNodes: x.content?.importNodes ?? null,
-            file: { name: x.source.name, type: x.source.type, size: x.size ?? null }, holder: x.holder, sceneIndex: x.sceneIndex, source: x.source,
+            file: { name: x.source.name, type: x.source.type, size: x.size ?? null, ...cadSpaceOf(x.source) }, holder: x.holder, sceneIndex: x.sceneIndex, source: x.source,
             morphs: animations.find(a => a.owner === x.id)?.anim.morphValues(), animation: animState(x.id), pose: poseState(x.id), poses: poseListState(x.id),
             volumeLooks: volumeLooksOf(x.root) });
         return list;
@@ -1716,6 +1719,13 @@ export async function createPlayer(options = {}) {
         return looks.some(l => l.density !== 1 || l.emission !== 1 || l.color != null || l.anisotropy != null || l.temperature != null) ? looks : null;
     }
     const sameFile = (a, b) => !!a && !!b && a.name === b.name && (a.size == null || b.size == null || a.size === b.size);
+    // a drawing: the space it shows (a layout) belongs to the saved model; a scene restores it without asking
+    const cadSpaceOf = src => (src?.cadSpace && src.cadSpace !== 'model' ? { space: src.cadSpace } : {});
+    function withCadSpace(src, info) {
+        if (!src || !CAD_EXTENSIONS.includes(extOf(src.name))) return src;
+        const space = info?.space || 'model';
+        return src.cadSpace === space ? src : { ...src, cadSpace: space, content: null, extras: null };
+    }
     const baseName = path => path.split(/[\\/]/).pop().toLowerCase();
     let filePool = [];   // files handed in for relinking (models, textures, HDRIs) – kept for later relinks
 
@@ -1794,7 +1804,7 @@ export async function createPlayer(options = {}) {
         }
         showProgress(t('status.restoringScene'));
         sceneChunks = chunks;
-        const sources = await Promise.all(chunks.map(c => resolveModelSource(c.file || {}, filePool).then(classifyModel)));
+        const sources = await Promise.all(chunks.map(c => resolveModelSource(c.file || {}, filePool).then(classifyModel).then(src => withCadSpace(src, c.file))));
         missingModels = chunks.map((chunk, sceneIndex) => ({ sceneIndex, name: chunk.file?.name || '?', chunk })).filter((m, i) => !sources[i]);
         const first = sources.findIndex(Boolean);
         if (first < 0) {
@@ -4307,13 +4317,81 @@ export async function createPlayer(options = {}) {
         showProgress(t('status.loadingFile'));
         model.content = await readCadContent(model, loadAbort?.signal);
     }
-    // STEP text of a CAD model: a STEP file as read; IGES converted to STEP in a worker first (iges/, loaded on demand)
+    // STEP text of a CAD model: a STEP file as read; IGES converted to STEP in a worker first (iges/, loaded on demand); a
+    // drawing (cad/): the STEP text of its bodies (empty without) – its lines, fills, texts and 3D surfaces go to
+    // source.extras, the space it shows (model space or a layout, asked when it has layouts) to source.cadSpace
     async function readCadContent(source, signal) {
         const step = stepModule ?? await loadStepImporter();
         const bytes = source.file ? await step.readStepFile(source.file, signal) : await step.fetchStepFile(source.url, signal);
+        if (CAD_EXTENSIONS.includes(extOf(source.name))) {
+            source.size ??= bytes.byteLength;   // the drawing's size (scene states) – its STEP text may be empty
+            const { convertCad } = await import('./cad/cad-import.js');
+            const res = await convertCad(bytes, { name: source.name, format: extOf(source.name), space: source.cadSpace ?? null, signal, onStatus: showProgress,
+                chooseSpace: spaces => chooseCadSpace(spaces, source.name), limits: cadLimits() });
+            source.cadSpace = res.space;
+            source.extras = res.extras;
+            return res.content;
+        }
+        if (ACIS_EXTENSIONS.includes(extOf(source.name))) {
+            source.size ??= bytes.byteLength;
+            const { convertAcis } = await import('./acis/acis-import.js');
+            const res = await convertAcis(bytes, { name: source.name, onStatus: showProgress, signal });
+            acisNotice(res.stats, source.name);
+            return res.bytes;
+        }
         if (!IGES_EXTENSIONS.includes(extOf(source.name))) return bytes;
         const { convertIges } = await import('./iges/iges-import.js');
         return convertIges(bytes, { name: source.name, onStatus: showProgress, signal });
+    }
+    // faces or curves of an ACIS model the conversion could not take (procedural surfaces without approximation …)
+    function acisNotice(stats, name) {
+        const what = Object.entries(stats?.skipped || {}).map(([k, n]) => `${n} × ${k}`);
+        if (what.length) showNotice({ id: 'acis-skipped', icon: 'info', title: t('import.cad.skipped.title'), timeout: 15000,
+            message: t('import.cad.skipped.message', { name: displayName(name), what: what.join(', ') }) });
+    }
+    // a drawing with layouts: model space or which layout (model.cadSpace keeps the choice – re-reading, scene states)
+    function chooseCadSpace(spaces, name) {
+        const list = spaces.slice(0, 12);
+        return choiceDialog({
+            icon: 'info', title: t('import.cad.choose.title'), message: t('import.cad.choose.message', { name: displayName(name), count: spaces.length - 1 }), list: true,
+            buttons: [...list.map((s, i) => ({ label: s.name ?? t('import.cad.modelSpace'), value: s.id, kind: i ? 'secondary' : 'primary' })),
+                { label: t('dialog.cancel'), value: null, kind: 'cancel', cancel: true }],
+        });
+    }
+    // how much of a drawing this device holds: line segments (~120 B with GPU copy), glyphs (~160 B), 3D triangles
+    const cadLimits = () => ({ maxSegments: Math.max(1e6, Math.floor(memoryBudget() * 0.3 / 120)), maxGlyphs: Math.max(2e5, Math.floor(memoryBudget() * 0.08 / 160)),
+        maxTriangles: importLimits().limit });
+    // the STEP part of a model – a drawing without bodies has none (its extras are all there is)
+    async function tessellateCad(content, quality, onStatus, options) {
+        if (!content?.byteLength) return { geometries: [], meshes: [], nodes: [], stats: {}, quality, estimates: {} };
+        return (stepModule ?? await loadStepImporter()).tessellateStep(content, quality, onStatus, options);
+    }
+    // a drawing's extras (cad/drawing-build.js) into the import result: nodes by key onto those of its STEP part (new ones
+    // appended), its 3D surfaces as meshes (BVHs built here); lines, fills and texts follow once the groups exist
+    async function mergeCadExtras(result, extras) {
+        const byKey = new Map();
+        result.nodes.forEach((n, i) => { if (n.key) byKey.set(n.key, i); });
+        // layers without bodies: beside those with (below the STEP part's root, named like the drawing)
+        const roots = result.nodes.flatMap((n, i) => (n.parent < 0 ? [i] : []));
+        const parent = roots.length === 1 ? roots[0] : -1;
+        const map = extras.nodes.map(n => {
+            let i = byKey.get(n.key);
+            if (i === undefined) { i = result.nodes.length; result.nodes.push({ name: n.name, parent, key: n.key }); }
+            return i;
+        });
+        if (extras.geometries.length && pathTracing.supported) await (stepModule ?? await loadStepImporter()).buildGeometryBVHs(extras.geometries, showProgress);
+        const g0 = result.geometries.length;
+        result.geometries.push(...extras.geometries);
+        extras.meshes.forEach((m, k) => result.meshes.push({ ...m, geometry: m.geometry + g0, node: map[m.node], instance: -1, countId: `cad${k}` }));
+        result.cad = { extras, map };
+    }
+    // lines, fills and texts of a drawing into the groups of their nodes; counted as parts (Scene Graph rows)
+    async function addCadAnnotations(cad, groups, root, partCounts) {
+        const module = await import('./cad/annotations.js');
+        annotationPass ??= new module.AnnotationPass(renderer, scene, camera, { roots: () => [rootGroup, ...extraModels.map(x => x.root)], hide: () => [ground.mesh] });
+        const objects = module.createAnnotations(cad.extras, n => groups[cad.map[n]] || root);
+        for (const o of objects) { const n = groups.indexOf(o.parent); if (n >= 0) partCounts[n] = (partCounts[n] || 0) + 1; }
+        return objects;
     }
     async function releaseLargeStep() {
         if (model?.type !== 'step' || !model.content || model.content.byteLength < RELEASE_STEP_BYTES) return;
@@ -4345,7 +4423,7 @@ export async function createPlayer(options = {}) {
         try {
             await ensureStepContent();
             showProgress(t('status.tessellatingParts'));
-            const result = await (stepModule ?? await loadStepImporter()).tessellateStep(model.content, settings.meshQuality, showProgress, {
+            const result = await tessellateCad(model.content, settings.meshQuality, showProgress, {
                 bvh: pathTracing.supported, instancing: IMPORT.instancing, solidQualities: () => target, onlySolids: () => changed,
                 limits: { auto: false, ...importLimits() },
             });
@@ -5461,6 +5539,7 @@ export async function createPlayer(options = {}) {
             if (!c.isMesh) return;
             if (c.isSplat) c.sorter.dispose();   // Gaussian splats: sort workers
             if (c.userData.dispBase) displacer.release(c);   // displaced: its moved geometry is freed with the last user
+            if (c.userData.cadAnnotation) { c.material.userData.atlas?.dispose(); c.material.dispose(); }   // drawings: own materials
             c.geometry.boundsTree = null;
             c.geometry.dispose();
             const base = c.userData.uvBase;   // import geometry of a mesh with its own UV mapping (uv-mapping.js)
@@ -5628,6 +5707,27 @@ export async function createPlayer(options = {}) {
     // What an import could not show completely (main and added models): FBX without animation, MAX objects whose
     // modifier stack we cannot rebuild (left out) or only approximate (Noise: own noise function), C4D objects the reader
     // does not build (generators, splines …) – named in a notice
+    // a drawing loaded: its layers that are off or frozen hidden (Scene Graph, like the file), a notice for what is not shown
+    function cadLoaded(cad, prefix, name) {
+        const { extras, map } = cad;
+        const hide = extras.nodes.flatMap((n, i) => (n.hidden ? [`${prefix}n${map[i]}`] : []));
+        if (hide.length) {
+            sceneGraph.setHiddenModel([...sceneGraph.hiddenModel, ...hide]);
+            updateTransformsAfterVisibility();
+        }
+        const c = extras.counts, skipped = [...Object.entries(extras.skipped || {}), ...Object.entries(c.solidStats?.skipped || {})];
+        const what = [
+            ...skipped.map(([type, n]) => `${n} × ${type}`),
+            ...(c.solidStats?.wire ? [t('import.cad.solidsInViewports', { count: c.solidStats.wire })] : []),
+            ...(c.xrefs ? [t('import.cad.xrefs', { count: c.xrefs })] : []),
+            ...(c.denseHatches ? [t('import.cad.denseHatches', { count: c.denseHatches })] : []),
+            ...(c.noFont ? [t('import.cad.noText', { count: c.noFont })] : []),
+        ];
+        if (c.truncated) showNotice({ id: 'cad-truncated', icon: 'warning', title: t('import.cad.truncated.title'), timeout: 15000, message: t('import.cad.truncated.message', { name: displayName(name) }) });
+        if (what.length) showNotice({ id: 'cad-skipped', icon: 'info', title: t('import.cad.skipped.title'), timeout: 15000,
+            message: t('import.cad.skipped.message', { name: displayName(name), what: what.join(', ') }) });
+    }
+
     function importNotices(result, name) {
         if (result.warnings?.includes('fbxStatic')) showNotice({ id: 'fbx-static', icon: 'info', title: t('memory.fbxStatic.title'), message: t('memory.fbxStatic.message', { name: displayName(name) }) });
         const skipped = result.maxSkipped;
@@ -5819,13 +5919,13 @@ export async function createPlayer(options = {}) {
                 const counted = {};   // level -> triangles counted until the limit stopped it
                 for (;;) {
                     try {
-                        const res = await (stepModule ?? await loadStepImporter()).tessellateStep(model.content, quality, showProgress, {
+                        const res = await tessellateCad(model.content, quality, showProgress, {
                             bvh: pathTracing.supported, instancing: IMPORT.instancing, onPlan: p => { plan = p; setupNodes(p.nodes); }, onSolid, onQuality: basicForSize,
                             // only part levels (null = global level – it may still become coarser)
                             solidQualities: p => solidQualities(p, quality).map(q => (q === quality ? null : q)),
                             limits: { auto: !reload, ...importLimits() },
                         });
-                        usedQualities = solidQualities(plan, res.quality);
+                        usedQualities = plan ? solidQualities(plan, res.quality) : [];   // a drawing without bodies: no plan
                         if (res.quality !== requested) {
                             settings.meshQuality = res.quality;
                             qualityController?.refresh();
@@ -5865,11 +5965,17 @@ export async function createPlayer(options = {}) {
                 ? await tessellateWithLimits()
                 : await (meshModule ?? await loadMeshImporter()).importMeshFile(model, { renderer, materialManager, onStatus: showProgress, bvh: pathTracing.supported, checkSize: confirmLargeModel,
                     onLarge: basicForSize, largeAbove: importLimits().budget, limit: importLimits().limit, onNodes: setupNodes, onSolid });
+            if (model.type === 'step' && model.extras) await mergeCadExtras(result, model.extras);   // a drawing (cad/)
             const { geometries, meshes, nodes, missing } = result;
             if (result.volumes?.length) await ensureGridVolumes();   // smoke, clouds, fire: the volume system with its first volume
             root.userData.bim = result.bim || null;   // IFC: property lookups (worker stays open, closed in disposeRoot)
             root.userData.ifcOrigin = result.bim?.origin || null;   // IFC: shift to the origin (metres) – alignment, BCF
             if (!nodeGroups.length) setupNodes(nodes);
+            else if (nodeGroups.length < nodes.length) {
+                // nodes a drawing's extras added to those of its STEP part (streamed already)
+                for (let i = nodeGroups.length; i < nodes.length; i++) { const g = new THREE.Group(); g.name = nodes[i].name; nodeGroups.push(g); }
+                for (let i = 0; i < nodes.length; i++) if (!nodeGroups[i].parent) (nodes[i].parent >= 0 ? nodeGroups[nodes[i].parent] : root).add(nodeGroups[i]);
+            }
             // very many meshes (instanced vegetation): the raster draws the model only once the batcher has grouped it
             // (not after streaming – those parts are on screen already)
             if (!reload && meshes.length > HOLD_MESHES && !streamed.length) batcher.holdUngrouped = true;
@@ -5892,6 +5998,13 @@ export async function createPlayer(options = {}) {
                 }
             }
             if (result.volumes?.length) bbox.union(volumeBounds(result.volumes));   // smoke, clouds, fire (a VDB file: only that)
+            // a drawing: its lines, fills and texts (on the layer groups, counted as parts) and their extent
+            const cad = result.cad;
+            if (cad) {
+                await addCadAnnotations(cad, nodeGroups, root, partCounts);
+                const b = cad.extras.bounds;
+                if (b) bbox.union(new THREE.Box3(new THREE.Vector3(b[0], b[1], b[2]), new THREE.Vector3(b[3], b[4], b[5])));
+            }
             if (bbox.isEmpty()) throw new Error(t('status.noFaces'));
             // stray objects: out of the bounds (centre, camera, ground, shadows, scene size); hidden after the Scene Graph
             const stray = boundsWithoutStray(meshList);
@@ -5960,10 +6073,11 @@ export async function createPlayer(options = {}) {
 
             if (!reload && streamFit.active) {
                 const centered = bbox.clone().translate(center.clone().negate());
-                // nothing streamed (glTF/FBX, very small model) -> default view directly
-                fitCamera(centered, first ? { animate: false, direction: DEFAULT_VIEW } : {});
+                // nothing streamed (glTF/FBX, very small model) -> default view directly; a flat drawing from the top
+                fitCamera(centered, first ? { animate: false, direction: cad?.extras.is2D ? TOP_VIEW : DEFAULT_VIEW } : {});
             }
             streamFit.active = false;
+            if (!reload && cad?.extras.is2D) flyToDirection(new THREE.Vector3(0, 1, 0));   // nearly orthographic top view
             loadRender.active = false;
             // a render scene (pbrt): its environment (or none) and its camera with the film's exposure
             if (!reload && result.environment) await applyImportedEnvironment(result.environment);
@@ -5976,6 +6090,7 @@ export async function createPlayer(options = {}) {
             primaryContent = { name: model.name.replace(/\.[^.]+$/, ''), importNodes: nodes, groups: nodeGroups, partCounts, root };
             refreshSceneGraph();
             if (stray.stray.size && !reload) hideStray(meshList, stray.stray, { name: model.name, size: stray.size });
+            if (cad && !reload) cadLoaded(cad, '', model.name);
             finishProgress();
             loadedQuality = settings.meshQuality;
             appliedPartQuality = { ...settings.partQuality };
@@ -5999,7 +6114,7 @@ export async function createPlayer(options = {}) {
             updatePathTracingScene();
 
             setupGUI();
-            qualityController?.enable(model.type === 'step');
+            qualityController?.enable(model.type === 'step' && !!currentPlan);   // a drawing without bodies: nothing to tessellate
             await releaseLargeStep();
         } catch (err) {
             hideProgress();
@@ -6020,6 +6135,7 @@ export async function createPlayer(options = {}) {
         }
     }
     const DEFAULT_VIEW = new THREE.Vector3(1, 0.6, 1).normalize();
+    const TOP_VIEW = new THREE.Vector3(0, 1, 1e-3).normalize();   // a flat drawing (front at the bottom)
 
     // --- Gaussian splats (PLY / SOG, splat/) ---
     async function loadSplatScene() {
@@ -6406,9 +6522,10 @@ export async function createPlayer(options = {}) {
             let result, plan = null;
             if (source.type === 'step') {
                 const content = await readCadContent(source, signal);
-                result = await (stepModule ?? await loadStepImporter()).tessellateStep(content, settings.meshQuality, showProgress, {
+                result = await tessellateCad(content, settings.meshQuality, showProgress, {
                     bvh: pathTracing.supported, instancing: IMPORT.instancing, onPlan: p => { plan = p; }, limits: { auto: true, ...importLimits() },
                 });
+                if (source.extras) await mergeCadExtras(result, source.extras);   // a drawing (cad/)
             } else {
                 if (!source.main) {
                     const res = await fetch(source.url, { signal });
@@ -6446,6 +6563,11 @@ export async function createPlayer(options = {}) {
                 startFade(mesh);
             }
             if (result.volumes?.length) bbox.union(volumeBounds(result.volumes));
+            if (result.cad) {
+                await addCadAnnotations(result.cad, groups, root, partCounts);
+                const b = result.cad.extras.bounds;
+                if (b) bbox.union(new THREE.Box3(new THREE.Vector3(b[0], b[1], b[2]), new THREE.Vector3(b[3], b[4], b[5])));
+            }
             if (bbox.isEmpty()) throw new Error(t('status.noFaces'));
             const stray = boundsWithoutStray(meshList);   // stray objects: out of the bounds, hidden (see loadModel)
             if (stray.stray.size) bbox.copy(stray.box).union(volumeBounds(result.volumes));
@@ -6502,6 +6624,7 @@ export async function createPlayer(options = {}) {
             updateSceneExtent();   // floor/dome/shadows for all models
             refreshSceneGraph();
             if (stray.stray.size) hideStray(meshList, stray.stray, { name, size: stray.size });
+            if (result.cad) cadLoaded(result.cad, prefix, name);
             exploder.refresh();   // exploded: the new model explodes too
             invalidatePathTracing();
             updatePathTracingScene();
@@ -6837,9 +6960,12 @@ export async function createPlayer(options = {}) {
     }
 
     // --- Open files via drag & drop into the window ---
-    // IGES goes the STEP way (converted to STEP text when read – readCadContent)
+    // IGES goes the STEP way (converted to STEP text when read – readCadContent); drawings (DXF) too: the STEP text of their
+    // bodies + the extras on the same nodes (cad/, docs/cad-drawings.md)
     const IGES_EXTENSIONS = ['igs', 'iges'];
-    const STEP_EXTENSIONS = ['stp', 'step', ...IGES_EXTENSIONS];
+    const CAD_EXTENSIONS = ['dxf'];
+    const ACIS_EXTENSIONS = ['sat', 'sab'];   // ACIS bodies: converted to STEP like IGES (acis/)
+    const STEP_EXTENSIONS = ['stp', 'step', ...IGES_EXTENSIONS, ...CAD_EXTENSIONS, ...ACIS_EXTENSIONS];
     const MAIN_EXTENSIONS = [...STEP_EXTENSIONS, ...MESH_EXTENSIONS, ...SPLAT_EXTENSIONS];
     const extOf = name => name.split('.').pop().toLowerCase();
 
@@ -7996,6 +8122,10 @@ export async function createPlayer(options = {}) {
         if (!rasterFisheye.active) contours.render();
         else if (contours.hasLines()) {
             rasterFisheye.render(renderer, camera, cam => contours.render(cam, { scale: rasterFisheye.faceScale(renderer) }), { overlay: true });
+        }
+        if (annotationPass) {
+            if (!rasterFisheye.active) annotationPass.render();
+            else if (annotationPass.has()) rasterFisheye.render(renderer, camera, cam => annotationPass.render(cam, { scale: rasterFisheye.faceScale(renderer) }), { overlay: true });
         }
         lens.finish();   // style filter onto the canvas (tone mapping off until the end of the frame)
         screenFade.frame(!capture && !exportReq);   // soft transition after a change (not into captured images)

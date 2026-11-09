@@ -28,6 +28,30 @@
         "iges": {
             "converting": "Wandle IGES in STEP um..."
         },
+        "acis": {
+            "converting": "Wandle SAT in STEP um..."
+        },
+        "cad": {
+            "reading": "Lese Zeichnung...",
+            "building": "Baue Zeichnung auf...",
+            "modelSpace": "Modellbereich",
+            "choose": {
+                "title": "Was soll gezeigt werden?",
+                "message": "{name} hat neben dem Modellbereich {count} Layout(s). Ein Layout zeigt das Blatt mit seinen Ansichtsfenstern."
+            },
+            "solidsInViewports": "{count} Volumenkörper in Ansichtsfenstern (dort noch ohne Kantenbild)",
+            "xrefs": "{count} externe Referenz(en) – nicht in der Datei",
+            "denseHatches": "{count} Schraffur(en) zu dicht – nur der Rand",
+            "noText": "{count} Texte (dieser Browser kann im Hintergrund keine Schrift zeichnen)",
+            "skipped": {
+                "title": "Nicht alles dargestellt",
+                "message": "{name}: {what}"
+            },
+            "truncated": {
+                "title": "Zeichnung gekürzt",
+                "message": "{name} ist zu groß für den Speicher dieses Geräts – ein Teil der Linien, Texte oder Flächen fehlt."
+            }
+        },
         "stl": {
             "analyzing": "Analysiere STL...",
             "joining": "Verbinde Teile...",
@@ -2707,7 +2731,7 @@
         "unsupportedFormat": "Format nicht unterstützt ({extensions})",
         "dropHint": "Datei ins Fenster ziehen",
         "openFile": "Datei öffnen",
-        "dropFormats": "STEP (.stp/.step) · IGES (.igs/.iges) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · pbrt (.pbrt) · VDB-Volumen (.vdb/.nvdb) · BIM (.ifc/.ifczip) · MaterialX (.mtlx) · BCF-Tickets (.bcfzip) · Gaussian Splats (.ply/.sog) · HDRI (.hdr/.exr) · IES-Lichtprofile (.ies)",
+        "dropFormats": "STEP (.stp/.step) · IGES (.igs/.iges) · DXF (.dxf) · SAT (.sat/.sab) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · pbrt (.pbrt) · VDB-Volumen (.vdb/.nvdb) · BIM (.ifc/.ifczip) · MaterialX (.mtlx) · BCF-Tickets (.bcfzip) · Gaussian Splats (.ply/.sog) · HDRI (.hdr/.exr) · IES-Lichtprofile (.ies)",
         "hdriDropped": "HDRI „{name}“ als Umgebung",
         "hdriOne": "Mehrere HDRIs – „{name}“ als Umgebung gewählt",
         "qualityReduced": "Großes Modell (≈ {triangles} Dreiecke bei „{from}“) – Qualität automatisch auf „{to}“ gesenkt",
@@ -3099,7 +3123,7 @@
         "sceneGraph": "Scene Graph",
         "drop": {
             "title": "Datei hier ablegen",
-            "hint": "STEP (.stp/.step), IGES (.igs/.iges), glTF/GLB, FBX, MAX (.max), C4D (.c4d), Blender (.blend), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, pbrt (.pbrt), VDB-Volumen (.vdb/.nvdb), BIM (.ifc/.ifczip), MaterialX (.mtlx), BCF-Tickets (.bcfzip), Gaussian Splats (.ply/.sog), HDRI (.hdr/.exr), IES-Lichtprofile (.ies) – Texturen und .bin-Dateien einfach mit hineinziehen",
+            "hint": "STEP (.stp/.step), IGES (.igs/.iges), DXF (.dxf), SAT (.sat/.sab), glTF/GLB, FBX, MAX (.max), C4D (.c4d), Blender (.blend), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, pbrt (.pbrt), VDB-Volumen (.vdb/.nvdb), BIM (.ifc/.ifczip), MaterialX (.mtlx), BCF-Tickets (.bcfzip), Gaussian Splats (.ply/.sog), HDRI (.hdr/.exr), IES-Lichtprofile (.ies) – Texturen und .bin-Dateien einfach mit hineinziehen",
             "addHint": "Mehrere Modelle: zusammen oder nacheinander hineinziehen – sie erscheinen nebeneinander",
             "replaceTitle": "Modelle ersetzen",
             "replaceHint": "Die geladenen Modelle werden entfernt und durch die neue Datei ersetzt",
@@ -3120,7 +3144,7 @@
     },
     "about": {
         "title": "Über",
-        "description": "Your Local 3D-File Viewer – STEP, IGES, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, pbrt, VDB-Volumen, MaterialX, BIM (IFC, BCF), Gaussian Splats, HDRIs und IES-Lichtprofile direkt im Browser, mit Pathtracing in Echtzeit.",
+        "description": "Your Local 3D-File Viewer – STEP, IGES, DXF, SAT, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, pbrt, VDB-Volumen, MaterialX, BIM (IFC, BCF), Gaussian Splats, HDRIs und IES-Lichtprofile direkt im Browser, mit Pathtracing in Echtzeit.",
         "author": "Autor",
         "email": "E-Mail",
         "version": "Version",
@@ -3628,6 +3652,7 @@
             "subsurface": "Subsurface Scattering fehlt",
             "edges": "Abgerundete Kanten fehlen",
             "hair": "Haarfasern fehlen (die Form ist dabei)",
+            "drawing": "Linien, Schraffuren und Texte aus Zeichnungen fehlen (nur ihre 3D-Flächen sind dabei)",
             "splats": "Gaussian Splats fehlen",
             "volumes": "Volumen (Rauch, Wolken, Feuer) fehlen",
             "texture": "Texturen ausgelassen (komprimiert oder Gleitkomma)",

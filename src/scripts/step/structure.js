@@ -229,6 +229,13 @@ export function buildPlan(step, typeIds, { solidDetails = true } = {}) {
     // --- Product definitions -> representations, names ---
     const pdReps = new Map();   // PD-ID -> [rep]
     const pdName = new Map();
+    const pdKey = new Map();   // PD-ID -> product id (node key: converted drawings hang their lines on it – cad/)
+    const productId = pd => {
+        const e = step.get(pd);
+        const form = e?.args ? step.get(e.args[2]) : null;
+        const prod = form?.args ? step.get(form.args[2]) : null;
+        return prod?.type === 'PRODUCT' && typeof prod.args[0] === 'string' ? prod.args[0] : '';
+    };
     const productName = pd => {
         const e = step.get(pd);
         if (!e || !e.args) return '';
@@ -253,6 +260,7 @@ export function buildPlan(step, typeIds, { solidDetails = true } = {}) {
         if (!pdReps.has(def)) pdReps.set(def, []);
         pdReps.get(def).push(rep);
         if (!pdName.has(def)) pdName.set(def, productName(def));
+        if (!pdKey.has(def)) pdKey.set(def, productId(def));
     }
     // product definition or one of its subtypes written as an entity of its own (e.g. PACKAGE in electronics
     // files): (id, description, formation, frame) – the formation tells it from occurrences (NAUO: name, description …)
@@ -261,10 +269,11 @@ export function buildPlan(step, typeIds, { solidDetails = true } = {}) {
         const form = d.args && step.get(d.args[2]);
         return !!form && !!form.type && form.type.startsWith('PRODUCT_DEFINITION_FORMATION');
     }
-    const groupName = new Map();
+    const groupName = new Map(), groupKey = new Map();
     for (const [pd, rs] of pdReps) for (const r of rs) {
         const g = find(r);
         if (!groupName.has(g)) groupName.set(g, pdName.get(pd));
+        if (!groupKey.has(g) && pdKey.get(pd)) groupKey.set(g, pdKey.get(pd));
     }
 
     // --- Assembly edges (CDSR) ---
@@ -444,6 +453,7 @@ export function buildPlan(step, typeIds, { solidDetails = true } = {}) {
     const visitGroup = (g, matrix, label, depth, parent) => {
         if (depth > 32) return;
         const node = addNode(label, parent);
+        if (groupKey.has(g)) nodes[node].key = groupKey.get(g);
         const own = [];
         visitContent(g, matrix, depth, node, label, own);
         own.forEach(({ solid, matrix: m }, i) => {

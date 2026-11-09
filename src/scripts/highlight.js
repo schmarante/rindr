@@ -135,6 +135,7 @@ function collectMeshes(object) {
     // multi-selection (scene-graph selectMeshes): only the visible ones of the selected meshes
     if (object.isMeshSet) return object.members.flatMap(collectMeshes);
     for (let o = object; o; o = o.parent) if (!o.visible) return out;
-    object.traverseVisible(c => { if (c.isMesh && !c.isSplat) out.push(c); });   // splats: no outline (their quads would be drawn)
+    // splats: no outline (their quads would be drawn); lines/texts of drawings neither (cad/annotations.js – own pass)
+    object.traverseVisible(c => { if (c.isMesh && !c.isSplat && !c.userData.cadAnnotation) out.push(c); });
     return out;
 }

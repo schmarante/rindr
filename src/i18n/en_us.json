@@ -28,6 +28,30 @@
         "iges": {
             "converting": "Converting IGES to STEP..."
         },
+        "acis": {
+            "converting": "Converting SAT to STEP..."
+        },
+        "cad": {
+            "reading": "Reading drawing...",
+            "building": "Building drawing...",
+            "modelSpace": "Model space",
+            "choose": {
+                "title": "What should be shown?",
+                "message": "{name} has {count} layout(s) besides the model space. A layout shows the sheet with its viewports."
+            },
+            "solidsInViewports": "{count} solid bodies in viewports (no edge view there yet)",
+            "xrefs": "{count} external reference(s) – not in the file",
+            "denseHatches": "{count} hatch(es) too dense – outline only",
+            "noText": "{count} texts (this browser cannot draw text in the background)",
+            "skipped": {
+                "title": "Not everything shown",
+                "message": "{name}: {what}"
+            },
+            "truncated": {
+                "title": "Drawing cut short",
+                "message": "{name} is too large for the memory of this device – some of its lines, texts or surfaces are missing."
+            }
+        },
         "stl": {
             "analyzing": "Analysing STL...",
             "joining": "Joining parts...",
@@ -2707,7 +2731,7 @@
         "unsupportedFormat": "Format not supported ({extensions})",
         "dropHint": "Drag a file into the window",
         "openFile": "Open file",
-        "dropFormats": "STEP (.stp/.step) · IGES (.igs/.iges) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · pbrt (.pbrt) · VDB volumes (.vdb/.nvdb) · BIM (.ifc/.ifczip) · MaterialX (.mtlx) · BCF issues (.bcfzip) · Gaussian splats (.ply/.sog) · HDRI (.hdr/.exr) · IES light profiles (.ies)",
+        "dropFormats": "STEP (.stp/.step) · IGES (.igs/.iges) · DXF (.dxf) · SAT (.sat/.sab) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · pbrt (.pbrt) · VDB volumes (.vdb/.nvdb) · BIM (.ifc/.ifczip) · MaterialX (.mtlx) · BCF issues (.bcfzip) · Gaussian splats (.ply/.sog) · HDRI (.hdr/.exr) · IES light profiles (.ies)",
         "hdriDropped": "HDRI “{name}” as environment",
         "hdriOne": "Several HDRIs – “{name}” chosen as environment",
         "qualityReduced": "Large model (≈ {triangles} triangles at “{from}”) – quality automatically reduced to “{to}”",
@@ -3099,7 +3123,7 @@
         "sceneGraph": "Scene Graph",
         "drop": {
             "title": "Drop file here",
-            "hint": "STEP (.stp/.step), IGES (.igs/.iges), glTF/GLB, FBX, MAX (.max), C4D (.c4d), Blender (.blend), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, pbrt (.pbrt), VDB volumes (.vdb/.nvdb), BIM (.ifc/.ifczip), MaterialX (.mtlx), BCF issues (.bcfzip), Gaussian splats (.ply/.sog), HDRI (.hdr/.exr), IES light profiles (.ies) – just drop textures and .bin files along with it",
+            "hint": "STEP (.stp/.step), IGES (.igs/.iges), DXF (.dxf), SAT (.sat/.sab), glTF/GLB, FBX, MAX (.max), C4D (.c4d), Blender (.blend), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, pbrt (.pbrt), VDB volumes (.vdb/.nvdb), BIM (.ifc/.ifczip), MaterialX (.mtlx), BCF issues (.bcfzip), Gaussian splats (.ply/.sog), HDRI (.hdr/.exr), IES light profiles (.ies) – just drop textures and .bin files along with it",
             "addHint": "Several models: drop them together or one after another – they appear side by side",
             "replaceTitle": "Replace models",
             "replaceHint": "The loaded models are removed and replaced by the new file",
@@ -3120,7 +3144,7 @@
     },
     "about": {
         "title": "About",
-        "description": "Your Local 3D-File Viewer – STEP, IGES, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, pbrt, VDB volumes, MaterialX, BIM (IFC, BCF), Gaussian splats, HDRIs and IES light profiles right in the browser, with real-time path tracing.",
+        "description": "Your Local 3D-File Viewer – STEP, IGES, DXF, SAT, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, pbrt, VDB volumes, MaterialX, BIM (IFC, BCF), Gaussian splats, HDRIs and IES light profiles right in the browser, with real-time path tracing.",
         "author": "Author",
         "email": "Email",
         "version": "Version",
@@ -3628,6 +3652,7 @@
             "subsurface": "Subsurface scattering left out",
             "edges": "Rounded edges left out",
             "hair": "Hair fibres left out (the shape is included)",
+            "drawing": "Lines, hatches and texts of drawings are missing (only their 3D surfaces are included)",
             "splats": "Gaussian splats left out",
             "volumes": "Volumes (smoke, clouds, fire) left out",
             "texture": "Textures left out (compressed or floating point)",

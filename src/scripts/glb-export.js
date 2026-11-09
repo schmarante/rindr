@@ -107,6 +107,7 @@ function copyTree(o, ctx) {
     if (!o.visible && o.userData.liveHidden !== 'shown') return null;
     if (o.isLine || o.isLineSegments || o.isPoints || o.isSprite || o.isLight || o.isCamera) return null;
     if (o.userData.ptCurves || o.userData.curveLines) { ctx.note('hair'); return null; }
+    if (o.userData.cadAnnotation) { ctx.note('drawing'); return null; }   // lines, fills, texts of drawings (cad/annotations.js)
     if (o.isSplat) { ctx.note('splats'); return null; }
     if (o.userData.gridVolumeProxy) return null;
     if (o.isMesh && o.geometry?.attributes?.position) {

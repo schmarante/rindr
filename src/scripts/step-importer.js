@@ -382,7 +382,8 @@ function brepCopies(plan, wanted, presetOf) {
 // for CATIA traces (CATPart/CATProduct names, e.g. 'Product1_AllCATPart').
 // Test/override: ?upAxis=z|y.
 // FreeCAD: Z up by convention (3D printing test models lay on their side before)
-const Z_UP_SYSTEMS = /CATIA|3DEXPERIENCE|\bNX\s*\d*\b|UNIGRAPHICS|SOLID\s*EDGE|FREECAD/i;
+// "+Z UP": our own converters of Z-up data (acis/acis-to-step.js – ACIS bodies, drawings)
+const Z_UP_SYSTEMS = /CATIA|3DEXPERIENCE|\bNX\s*\d*\b|UNIGRAPHICS|SOLID\s*EDGE|FREECAD|\+Z UP/i;
 const Y_UP_SYSTEMS = /SOLID\s*WORKS|SWSTEP|INVENTOR|CREO|PRO\/?ENGINEER|FUSION/i;
 const CATIA_TRACES = /CAT(?:Part|Product)\b|CATIA/;
 const TRACE_SCAN_BYTES = 4 * 1024 * 1024;
@@ -426,6 +427,8 @@ function orientUpAxis(plan, bytes) {
     }
     plan.upAxis = up;
     plan.originatingSystem = header.system || header.preprocessor;
+    // converted ACIS bodies: the side of every sheet comes from the file (orientFaces keeps it)
+    if (/rindr ACIS converter/.test(header.preprocessor)) for (const s of plan.solids) s.keepSkins = true;
     debugLog(`[STEP] Originating system: "${header.system}" (${header.preprocessor}) → ${up === 'z' ? '+Z up, rotated to +Y up' : '+Y up'} (${reason})`);
     if (up !== 'z') return;
     // R · M with R = rotation −90° about X (column-major): row y ← z, row z ← −y
@@ -1223,7 +1226,9 @@ export function orientFaces(s, results) {
             for (const fi of group) { flipFace(fi); flipped++; }
         }
     }
-    if (s.surface) flipped += orientSkins(results, root, flipFace);
+    // ACIS sheets (acis/acis-to-step.js) have an outside of their own – the centre rule turned panels whose outside faces
+    // the body's centre (the back wall of a cabin) inwards
+    if (s.surface && !s.keepSkins) flipped += orientSkins(results, root, flipFace);
     return flipped;
 }
 

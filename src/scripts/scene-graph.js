@@ -192,7 +192,7 @@ export class SceneGraph {
     _surfaces(group) {
         const byInstance = new Map();
         for (const c of group.children) {
-            if (!c.isMesh) continue;
+            if (!c.isMesh || c.userData.cadAnnotation) continue;   // lines/texts of drawings are no surfaces
             const k = c.userData.instance ?? c.uuid;
             if (!byInstance.has(k)) byInstance.set(k, []);
             byInstance.get(k).push(c);
