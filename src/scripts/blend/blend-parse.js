@@ -1,4 +1,4 @@
-// .blend reader (Blender 4.x): the scene's objects, their meshes (evaluated data as saved – modifiers are listed, not
+// .blend reader (Blender 2.8 – 4.x): the scene's objects, their meshes (evaluated data as saved – modifiers are listed, not
 // applied), Principled BSDF materials with their image textures, packed images, cameras, units. Own implementation on top
 // of the file's self description (blend-file.js); field names as the file's DNA has them (older names, e.g. totpoly).
 //
@@ -7,6 +7,9 @@
 // "sharp_edge" (bool); faces from poly_offset_indices (faces + 1). Normals like Blender's: per corner the faces around its
 // vertex that are smooth and joined across edges that are not sharp (custom normals – CD_CUSTOMLOOPNORMAL – not decoded;
 // on the test scene they were all but empty). Closed meshes wound inwards are turned outwards (orient-outward.js).
+// Meshes up to 3.x: the same data as struct arrays in CustomData layers by type (MVert co, MLoop v/e, MPoly loopstart /
+// totloop / mat_nr / flag ME_SMOOTH, MEdge flag ME_SHARP, MLoopUV) – moved to named attributes step by step in 3.4–4.0,
+// so each piece falls back on its own; auto smooth (Mesh flag, smoothresh – until 4.0) marks edges sharp by angle.
 // Objects: loc / rot (rotmode: 0 quaternion, 1…6 Euler XYZ…ZYX, −1 axis angle) / size, parent · parentinv · local; only
 // objects of the scene's collections; restrictflag render/viewport off = hidden.
 // Materials: Principled BSDF inputs (default values; linked from an image texture – through Mapping for its scale /
@@ -178,19 +181,60 @@ export function parseBlend(bytes, onProgress = () => {}) {
         geometryIndex.set(ptr, index);
         return index;
     };
+    // legacy layers (Blender ≤ 3.x, each moved to a named attribute between 3.4 and 4.0): CustomData type → struct
+    const CD_MVERT = 0, CD_MEDGE = 3, CD_MLOOPUV = 16, CD_MPOLY = 25, CD_MLOOP = 26;
+    const ME_SMOOTH = 1, ME_SHARP = 1 << 9, ME_AUTOSMOOTH = 1 << 5;
+    const ofType = (layers, type) => { for (const l of layers.values()) if (l.type === type && l.block) return l.block; return null; };
+    // one field of every element of a struct array (legacy layer) as a typed array
+    const column = (block, structName, field, Type, count, width = 1) => {
+        const st = f.structByName.get(structName), fd = st?.fields.get(field);
+        if (!block || !fd) return null;
+        const n = Math.min(count, Math.floor(block.len / st.size)), out = new Type(count * width);
+        for (let i = 0; i < n; i++) {
+            const p = block.data + i * st.size + fd.offset;
+            for (let k = 0; k < width; k++) {
+                const q = p + k * (fd.size / fd.count);
+                out[i * width + k] = fd.type === 'float' ? f.f32(q) : fd.type === 'short' ? f.i16(q) : fd.type === 'char' ? bytes[q] : f.i32(q);
+            }
+        }
+        return out;
+    };
     function buildMesh(me) {
         const nv = me.int('totvert'), nf = me.int('totpoly') ?? me.int('faces_num'), nc = me.int('totloop') ?? me.int('corners_num');
+        const ne = me.int('totedge') ?? me.int('edges_num') ?? 0;
         const V = layersOf(me.sub('vdata')), E = layersOf(me.sub('edata')), P = layersOf(me.sub('pdata')), L = layersOf(me.sub('ldata'));
-        const pos = typed(V.get('position')?.block, Float32Array, nv * 3);
-        const cv = typed(L.get('.corner_vert')?.block, Int32Array, nc);
-        const offsets = typed(f.deref(me.pointer('poly_offset_indices')), Int32Array, nf + 1);
-        if (!pos || !cv || !offsets) return { parts: [], materials: [] };
-        const ce = typed(L.get('.corner_edge')?.block, Int32Array, nc);
-        const matIndex = typed(P.get('material_index')?.block, Int32Array, nf);
-        const sharpFace = P.get('sharp_face')?.block ? bytes.subarray(P.get('sharp_face').block.data, P.get('sharp_face').block.data + nf) : null;
-        const sharpEdge = E.get('sharp_edge')?.block ? bytes.subarray(E.get('sharp_edge').block.data, E.get('sharp_edge').block.data + (me.int('totedge') || 0)) : null;
+        const mloop = ofType(L, CD_MLOOP), mpoly = ofType(P, CD_MPOLY), medge = ofType(E, CD_MEDGE);
+        const pos = typed(V.get('position')?.block, Float32Array, nv * 3) ?? column(ofType(V, CD_MVERT), 'MVert', 'co', Float32Array, nv, 3);
+        let cv = typed(L.get('.corner_vert')?.block, Int32Array, nc) ?? column(mloop, 'MLoop', 'v', Int32Array, nc);
+        let ce = typed(L.get('.corner_edge')?.block, Int32Array, nc) ?? column(mloop, 'MLoop', 'e', Int32Array, nc);
+        let offsets = typed(f.deref(me.pointer('poly_offset_indices')), Int32Array, nf + 1);
         let uv = null;
         for (const [name, l] of L) if (l.type === 49 && !name.startsWith('.')) { uv = typed(l.block, Float32Array, nc * 2); break; }
+        uv ??= column(ofType(L, CD_MLOOPUV), 'MLoopUV', 'uv', Float32Array, nc, 2);
+        // faces as MPoly (loopstart, totloop): Blender writes them in corner order – else the corners are put in face order
+        if (!offsets && mpoly && cv) {
+            const start = column(mpoly, 'MPoly', 'loopstart', Int32Array, nf), count = column(mpoly, 'MPoly', 'totloop', Int32Array, nf);
+            offsets = new Int32Array(nf + 1);
+            let ordered = true;
+            for (let fi = 0; fi < nf; fi++) { offsets[fi + 1] = offsets[fi] + count[fi]; if (start[fi] !== offsets[fi]) ordered = false; }
+            if (!ordered) {
+                const reorder = (a, w) => {
+                    if (!a) return a;
+                    const out = new a.constructor(offsets[nf] * w);
+                    for (let fi = 0; fi < nf; fi++) for (let k = 0; k < count[fi] * w; k++) out[offsets[fi] * w + k] = a[start[fi] * w + k];
+                    return out;
+                };
+                cv = reorder(cv, 1); ce = reorder(ce, 1); uv = reorder(uv, 2);
+            }
+        }
+        if (!pos || !cv || !offsets) return { parts: [], materials: [] };
+        const matIndex = typed(P.get('material_index')?.block, Int32Array, nf) ?? column(mpoly, 'MPoly', 'mat_nr', Int32Array, nf);
+        let sharpFace = P.get('sharp_face')?.block ? bytes.subarray(P.get('sharp_face').block.data, P.get('sharp_face').block.data + nf) : null;
+        let sharpEdge = E.get('sharp_edge')?.block ? bytes.subarray(E.get('sharp_edge').block.data, E.get('sharp_edge').block.data + ne) : null;
+        if (!sharpFace && mpoly) sharpFace = column(mpoly, 'MPoly', 'flag', Uint8Array, nf).map(x => (x & ME_SMOOTH ? 0 : 1));
+        if (!sharpEdge && medge) sharpEdge = column(medge, 'MEdge', 'flag', Int32Array, ne).map(x => (x & ME_SHARP ? 1 : 0));
+        // auto smooth (until 4.0): edges between faces at a greater angle than smoothresh are sharp too
+        const autoSmooth = f.version < 401 && (me.int('flag') & ME_AUTOSMOOTH) ? Math.cos(me.float('smoothresh') ?? Math.PI / 6) : null;
         // face normals (Newell, area-weighted)
         const fn = new Float32Array(nf * 3);
         for (let fi = 0; fi < nf; fi++) {
@@ -221,9 +265,16 @@ export function parseBlend(bytes, onProgress = () => {}) {
                 if (l) l.push(c); else byEdge.set(e, [c]);
             }
             const next = c => { const fi = faceOfCorner[c]; return c + 1 < offsets[fi + 1] ? c + 1 : offsets[fi]; };
+            const angleSharp = (a, b) => {
+                if (autoSmooth === null) return false;
+                const p = faceOfCorner[a] * 3, q = faceOfCorner[b] * 3;
+                const d = fn[p] * fn[q] + fn[p + 1] * fn[q + 1] + fn[p + 2] * fn[q + 2];
+                return d < autoSmooth * Math.hypot(fn[p], fn[p + 1], fn[p + 2]) * Math.hypot(fn[q], fn[q + 1], fn[q + 2]);
+            };
             for (const cs of byEdge.values()) {
                 for (let i = 1; i < cs.length; i++) {
                     const a = cs[0], b = cs[i];
+                    if (angleSharp(a, b)) continue;
                     // same vertex at the edge's ends in both faces
                     const a0 = a, a1 = next(a), b0 = b, b1 = next(b);
                     if (cv[a0] === cv[b0]) { union(a0, b0); union(a1, b1); } else { union(a0, b1); union(a1, b0); }
@@ -275,7 +326,8 @@ export function parseBlend(bytes, onProgress = () => {}) {
             loc: ob.floats('loc'), rot: ob.floats('rot'), quat: ob.floats('quat'), size: ob.floats('size'), rotmode: ob.int('rotmode'),
             rotAxis: ob.floats('rotAxis'), rotAngle: ob.float('rotAngle'), parentinv: ob.floats('parentinv'),
             hidden: !!(restrict & 4) || !!(restrict & 1), geometry: -1, slots: [], camera: null, light: null,
-            modifiers: list(ob.sub('modifiers'), null).map(m => m.string('name')),
+            // each modifier block is its own struct (SubsurfModifierData …) with the common ModifierData first
+            modifiers: list(ob.sub('modifiers'), 'ModifierData').map(m => m.string('name')).filter(Boolean),
         };
         if (type === OB_MESH) {
             o.geometry = meshOf(ob.pointer('data'));

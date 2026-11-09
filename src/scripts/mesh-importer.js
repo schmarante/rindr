@@ -320,6 +320,7 @@ async function load(source, ext, renderer, onStatus = () => {}, preloaded = null
         }
         await idle();
         dropGreyNormalMaps(object);
+        fitTextureSizes(object, renderer);
         return { object, scale, missing };
     } finally {
         release();
@@ -388,6 +389,35 @@ function dropGreyNormalMaps(object) {
             if (!m?.normalMap || !grey(m.normalMap)) continue;
             m.normalMap = null;
             m.needsUpdate = true;
+        }
+    });
+}
+
+// Pictures larger than the GPU allows (a packed 17067² picture in a .blend; WebGPU refuses the texture, every draw with
+// it fails) are scaled down to the device's limit, keeping their aspect. Clones share the source – once per source.
+function fitTextureSizes(object, renderer) {
+    const backend = renderer?.backend;
+    const max = backend?.device?.limits?.maxTextureDimension2D || (backend?.gl ? backend.gl.getParameter(backend.gl.MAX_TEXTURE_SIZE) : 0) || 8192;
+    const done = new Set();
+    const drawable = img => ['ImageBitmap', 'HTMLImageElement', 'HTMLCanvasElement', 'OffscreenCanvas'].some(k => globalThis[k] && img instanceof globalThis[k]);
+    object.traverse(o => {
+        if (!o.isMesh) return;
+        for (const m of [o.material].flat()) {
+            for (const tex of Object.values(m || {})) {
+                if (!tex?.isTexture || tex.isCompressedTexture || done.has(tex.source)) continue;
+                done.add(tex.source);
+                const img = tex.image;
+                if (!drawable(img) || Math.max(img.width, img.height) <= max || typeof OffscreenCanvas === 'undefined') continue;
+                const w = img.width, h = img.height, k = max / Math.max(w, h);
+                const canvas = new OffscreenCanvas(Math.max(1, Math.floor(w * k)), Math.max(1, Math.floor(h * k)));
+                const ctx = canvas.getContext('2d');
+                ctx.imageSmoothingQuality = 'high';
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                img.close?.();
+                tex.image = canvas;
+                tex.needsUpdate = true;
+                debugLog(`[Import] texture ${tex.name || '?'} ${w}×${h} → ${canvas.width}×${canvas.height} (GPU limit)`);
+            }
         }
     });
 }
