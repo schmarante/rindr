@@ -86,6 +86,7 @@ export function buildBlend(scene, manager, name = '') {
         else q.setFromEuler(new THREE.Euler(o.rot[0], o.rot[1], o.rot[2], EULER[o.rotmode] || 'ZYX'));
         const m = new THREE.Matrix4().compose(new THREE.Vector3(...o.loc), q, new THREE.Vector3(...o.size));
         if (o.parent >= 0 && o.parentinv) m.premultiply(new THREE.Matrix4().fromArray(o.parentinv));
+        if (o.parentBone) m.premultiply(new THREE.Matrix4().fromArray(o.parentBone));   // child of a bone (blend-parse.js)
         return m;
     };
     scene.objects.forEach((o, i) => {

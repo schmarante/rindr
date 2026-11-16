@@ -10,15 +10,19 @@
 // Meshes up to 3.x: the same data as struct arrays in CustomData layers by type (MVert co, MLoop v/e, MPoly loopstart /
 // totloop / mat_nr / flag ME_SMOOTH, MEdge flag ME_SHARP, MLoopUV) – moved to named attributes step by step in 3.4–4.0,
 // so each piece falls back on its own; auto smooth (Mesh flag, smoothresh – until 4.0) marks edges sharp by angle.
-// Objects: loc / rot (rotmode: 0 quaternion, 1…6 Euler XYZ…ZYX, −1 axis angle) / size, parent · parentinv · local; only
+// Objects: loc / rot (rotmode: 0 quaternion, 1…6 Euler XYZ…ZYX, −1 axis angle) / size, parent · parentinv · local (a bone
+// as parent: parent · bone pose at its tail · parentinv · local); subdivision modifiers applied (subdivide.js); only
 // objects of the scene's collections; restrictflag render/viewport off = hidden.
 // Materials: Principled BSDF inputs (default values; linked from an image texture – through Mapping for its scale /
 // location –: Base Color, Roughness, Metallic, Alpha, Emission Color; Normal ← Normal Map (Color) or Bump (Height)).
 
 import { BlendFile } from './blend-file.js';
 import { orientOutward } from '../orient-outward.js';
+import { subdivideCorners } from '../subdivide.js';
 
 const OB_MESH = 1, OB_LAMP = 10, OB_CAMERA = 11;
+// subdivision modifier: at most this many faces per mesh (the level is lowered until it fits – like USD subdivision)
+const SUBDIV_FACES = 2e6;
 
 export function parseBlend(bytes, onProgress = () => {}) {
     const f = new BlendFile(bytes);
@@ -174,11 +178,13 @@ export function parseBlend(bytes, onProgress = () => {}) {
         const copy = bytes.slice(block.data, block.data + Math.min(size, block.len));
         return new Type(copy.buffer, 0, Math.floor(copy.byteLength / Type.BYTES_PER_ELEMENT));
     };
-    const meshOf = ptr => {
-        if (geometryIndex.has(ptr)) return geometryIndex.get(ptr);
+    // one geometry per mesh and subdivision (objects sharing a mesh may subdivide it differently)
+    const meshOf = (ptr, subdiv = null) => {
+        const key = subdiv ? `${ptr}|${subdiv.level}|${+subdiv.limit}|${+subdiv.crease}` : ptr;
+        if (geometryIndex.has(key)) return geometryIndex.get(key);
         const me = f.view(f.deref(ptr), 0, 'Mesh');
-        const index = me ? geometries.push(buildMesh(me)) - 1 : -1;
-        geometryIndex.set(ptr, index);
+        const index = me ? geometries.push(buildMesh(me, subdiv)) - 1 : -1;
+        geometryIndex.set(key, index);
         return index;
     };
     // legacy layers (Blender ≤ 3.x, each moved to a named attribute between 3.4 and 4.0): CustomData type → struct
@@ -199,12 +205,13 @@ export function parseBlend(bytes, onProgress = () => {}) {
         }
         return out;
     };
-    function buildMesh(me) {
-        const nv = me.int('totvert'), nf = me.int('totpoly') ?? me.int('faces_num'), nc = me.int('totloop') ?? me.int('corners_num');
-        const ne = me.int('totedge') ?? me.int('edges_num') ?? 0;
+    function buildMesh(me, subdiv = null) {
+        const nv = me.int('totvert');
+        let nf = me.int('totpoly') ?? me.int('faces_num'), nc = me.int('totloop') ?? me.int('corners_num');
+        let ne = me.int('totedge') ?? me.int('edges_num') ?? 0;
         const V = layersOf(me.sub('vdata')), E = layersOf(me.sub('edata')), P = layersOf(me.sub('pdata')), L = layersOf(me.sub('ldata'));
         const mloop = ofType(L, CD_MLOOP), mpoly = ofType(P, CD_MPOLY), medge = ofType(E, CD_MEDGE);
-        const pos = typed(V.get('position')?.block, Float32Array, nv * 3) ?? column(ofType(V, CD_MVERT), 'MVert', 'co', Float32Array, nv, 3);
+        let pos = typed(V.get('position')?.block, Float32Array, nv * 3) ?? column(ofType(V, CD_MVERT), 'MVert', 'co', Float32Array, nv, 3);
         let cv = typed(L.get('.corner_vert')?.block, Int32Array, nc) ?? column(mloop, 'MLoop', 'v', Int32Array, nc);
         let ce = typed(L.get('.corner_edge')?.block, Int32Array, nc) ?? column(mloop, 'MLoop', 'e', Int32Array, nc);
         let offsets = typed(f.deref(me.pointer('poly_offset_indices')), Int32Array, nf + 1);
@@ -228,11 +235,34 @@ export function parseBlend(bytes, onProgress = () => {}) {
             }
         }
         if (!pos || !cv || !offsets) return { parts: [], materials: [] };
-        const matIndex = typed(P.get('material_index')?.block, Int32Array, nf) ?? column(mpoly, 'MPoly', 'mat_nr', Int32Array, nf);
+        let matIndex = typed(P.get('material_index')?.block, Int32Array, nf) ?? column(mpoly, 'MPoly', 'mat_nr', Int32Array, nf);
         let sharpFace = P.get('sharp_face')?.block ? bytes.subarray(P.get('sharp_face').block.data, P.get('sharp_face').block.data + nf) : null;
         let sharpEdge = E.get('sharp_edge')?.block ? bytes.subarray(E.get('sharp_edge').block.data, E.get('sharp_edge').block.data + ne) : null;
         if (!sharpFace && mpoly) sharpFace = column(mpoly, 'MPoly', 'flag', Uint8Array, nf).map(x => (x & ME_SMOOTH ? 0 : 1));
         if (!sharpEdge && medge) sharpEdge = column(medge, 'MEdge', 'flag', Int32Array, ne).map(x => (x & ME_SHARP ? 1 : 0));
+        // subdivision modifier (Catmull–Clark, subdivide.js) before the normals: each new face keeps its input face's material
+        // and smoothness, edges their sharpness; creases (edge crease 0…1: 4.x attribute "crease_edge", up to 3.x MEdge.crease
+        // 0…255 while the mesh flags it) only when the modifier uses them
+        if (subdiv?.level > 0 && ce && nf > 0) {
+            let level = subdiv.level;
+            while (level > 0 && nc * 4 ** (level - 1) > SUBDIV_FACES) level--;
+            if (level > 0) {
+                let crease = null;
+                if (subdiv.crease) {
+                    const attr = E.get('crease_edge')?.block;
+                    crease = attr ? typed(attr, Float32Array, ne)
+                        : medge && (me.int('cd_flag') & 4) ? column(medge, 'MEdge', 'crease', Float32Array, ne).map(x => x / 255) : null;
+                    if (crease && !crease.some(x => x > 0)) crease = null;
+                }
+                const r = subdivideCorners({ pos, offsets, cv, ce, ne, uv, sharp: sharpEdge, crease }, level, { limit: subdiv.limit });
+                const mi = matIndex, sf = sharpFace;
+                if (mi) matIndex = Int32Array.from(r.root, x => mi[x]);
+                if (sf) sharpFace = Uint8Array.from(r.root, x => sf[x]);
+                ({ pos, cv, ce, offsets, uv, ne } = r);
+                sharpEdge = r.sharp;
+                nf = offsets.length - 1; nc = cv.length;
+            }
+        }
         // auto smooth (until 4.0): edges between faces at a greater angle than smoothresh are sharp too
         const autoSmooth = f.version < 401 && (me.int('flag') & ME_AUTOSMOOTH) ? Math.cos(me.float('smoothresh') ?? Math.PI / 6) : null;
         // face normals (Newell, area-weighted)
@@ -309,6 +339,21 @@ export function parseBlend(bytes, onProgress = () => {}) {
         };
     }
 
+    // a bone as parent (partype 7): its pose matrix in the armature (as saved – the rig's pose), moved to the bone's tail
+    // (Blender's rule for children of bones; "relative parenting" bones: their channel matrix); the rest pose if unposed
+    const BONE_RELATIVE_PARENTING = 1 << 23;
+    const boneMatrix = (arm, name) => {
+        const ch = list(arm?.deref('pose', 'bPose')?.sub('chanbase'), 'bPoseChannel').find(c => c.string('name') === name);
+        if (!ch) return null;
+        const bone = ch.deref('bone', 'Bone');
+        const relative = !!((bone?.int('flag') || 0) & BONE_RELATIVE_PARENTING);
+        let m = ch.floats(relative ? 'chan_mat' : 'pose_mat');
+        if (!m?.some(x => x)) m = bone?.floats('arm_mat') ?? null;
+        if (!m?.some(x => x)) return null;
+        if (!relative) { const len = bone?.float('length') || 0; m[12] += m[4] * len; m[13] += m[5] * len; m[14] += m[6] * len; }
+        return m;
+    };
+
     // objects
     const objects = [];
     const objectIndex = new Map();
@@ -326,11 +371,28 @@ export function parseBlend(bytes, onProgress = () => {}) {
             loc: ob.floats('loc'), rot: ob.floats('rot'), quat: ob.floats('quat'), size: ob.floats('size'), rotmode: ob.int('rotmode'),
             rotAxis: ob.floats('rotAxis'), rotAngle: ob.float('rotAngle'), parentinv: ob.floats('parentinv'),
             hidden: !!(restrict & 4) || !!(restrict & 1), geometry: -1, slots: [], camera: null, light: null,
-            // each modifier block is its own struct (SubsurfModifierData …) with the common ModifierData first
-            modifiers: list(ob.sub('modifiers'), 'ModifierData').map(m => m.string('name')).filter(Boolean),
+            modifiers: [],
+            parentBone: ob.int('partype') === 7 && parentBlock ? boneMatrix(f.view(parentBlock, 0, 'Object'), ob.string('parsubstr')) : null,
         };
+        // modifiers (each block its own struct – SubsurfModifierData … – with the common ModifierData first): on in the
+        // viewport or the render; subdivision (Catmull–Clark, render levels) is applied, the others are listed (notice).
+        // Subdivision flags: 1 << 4 use creases, 1 << 6 "recursive" = limit surface off; type 1 (simple) changes no shape
+        let subdiv = null;
+        for (const md of list(ob.sub('modifiers'), 'ModifierData')) {
+            const mode = md.int('mode') || 0;
+            if (!(mode & 3)) continue;
+            const own = f.view(md.block);
+            if (own?.st.name === 'SubsurfModifierData' && type === OB_MESH && !subdiv) {
+                if (!(mode & 2)) continue;   // viewport only
+                const flags = own.int('flags') || 0;
+                subdiv = own.int('subdivType') === 1 ? { level: 0 } : { level: Math.min(own.int('renderLevels') ?? own.int('levels') ?? 0, 6), limit: !(flags & 64), crease: !!(flags & 16) };
+                continue;
+            }
+            const name = md.string('name');
+            if (name) o.modifiers.push(name);
+        }
         if (type === OB_MESH) {
-            o.geometry = meshOf(ob.pointer('data'));
+            o.geometry = meshOf(ob.pointer('data'), subdiv?.level > 0 ? subdiv : null);
             // object-linked material slots (matbits) override the mesh's
             const totcol = ob.int('totcol') || 0, matList = f.deref(ob.pointer('mat')), bitsBlock = f.deref(ob.pointer('matbits'));
             for (let i = 0; i < totcol; i++) {
