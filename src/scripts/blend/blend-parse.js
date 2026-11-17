@@ -1,10 +1,10 @@
-// .blend reader (Blender 2.8 – 4.x): the scene's objects, their meshes (evaluated data as saved – modifiers are listed, not
+// .blend reader (version 2.8 – 4.x): the scene's objects, their meshes (evaluated data as saved – modifiers are listed, not
 // applied), Principled BSDF materials with their image textures, packed images, cameras, units. Own implementation on top
 // of the file's self description (blend-file.js); field names as the file's DNA has them (older names, e.g. totpoly).
 //
 // Meshes (4.x): attributes in CustomData layers by name – vdata "position" (float3), ldata ".corner_vert" / ".corner_edge"
 // (int), UV maps (float2, the first not starting with "."), pdata "material_index" (int), "sharp_face" (bool), edata
-// "sharp_edge" (bool); faces from poly_offset_indices (faces + 1). Normals like Blender's: per corner the faces around its
+// "sharp_edge" (bool); faces from poly_offset_indices (faces + 1). Normals like the modeller's: per corner the faces around its
 // vertex that are smooth and joined across edges that are not sharp (custom normals – CD_CUSTOMLOOPNORMAL – not decoded;
 // on the test scene they were all but empty). Closed meshes wound inwards are turned outwards (orient-outward.js).
 // Meshes up to 3.x: the same data as struct arrays in CustomData layers by type (MVert co, MLoop v/e, MPoly loopstart /
@@ -153,7 +153,7 @@ export function parseBlend(bytes, onProgress = () => {}) {
         if (nn?.string('idname') === 'ShaderNodeNormalMap') { const m = imageFeeding(input(nn, 'Color')); if (m) mat.maps.normal = m; }
         if (nn?.string('idname') === 'ShaderNodeBump') {
             const m = imageFeeding(input(nn, 'Height'));
-            // Distance: the height of the picture's full range in scene units (Blender's bump is physical – world-space
+            // Distance: the height of the picture's full range in scene units (the modeller's bump is physical – world-space
             // derivatives); Strength blends towards the unbumped normal
             if (m) { mat.maps.bump = m; mat.bumpStrength = socketValue(input(nn, 'Strength')) ?? 1; mat.bumpDistance = socketValue(input(nn, 'Distance')) ?? 1; }
         }
@@ -187,7 +187,7 @@ export function parseBlend(bytes, onProgress = () => {}) {
         geometryIndex.set(key, index);
         return index;
     };
-    // legacy layers (Blender ≤ 3.x, each moved to a named attribute between 3.4 and 4.0): CustomData type → struct
+    // legacy layers (the modeller ≤ 3.x, each moved to a named attribute between 3.4 and 4.0): CustomData type → struct
     const CD_MVERT = 0, CD_MEDGE = 3, CD_MLOOPUV = 16, CD_MPOLY = 25, CD_MLOOP = 26;
     const ME_SMOOTH = 1, ME_SHARP = 1 << 9, ME_AUTOSMOOTH = 1 << 5;
     const ofType = (layers, type) => { for (const l of layers.values()) if (l.type === type && l.block) return l.block; return null; };
@@ -218,7 +218,7 @@ export function parseBlend(bytes, onProgress = () => {}) {
         let uv = null;
         for (const [name, l] of L) if (l.type === 49 && !name.startsWith('.')) { uv = typed(l.block, Float32Array, nc * 2); break; }
         uv ??= column(ofType(L, CD_MLOOPUV), 'MLoopUV', 'uv', Float32Array, nc, 2);
-        // faces as MPoly (loopstart, totloop): Blender writes them in corner order – else the corners are put in face order
+        // faces as MPoly (loopstart, totloop): the modeller writes them in corner order – else the corners are put in face order
         if (!offsets && mpoly && cv) {
             const start = column(mpoly, 'MPoly', 'loopstart', Int32Array, nf), count = column(mpoly, 'MPoly', 'totloop', Int32Array, nf);
             offsets = new Int32Array(nf + 1);
@@ -340,7 +340,7 @@ export function parseBlend(bytes, onProgress = () => {}) {
     }
 
     // a bone as parent (partype 7): its pose matrix in the armature (as saved – the rig's pose), moved to the bone's tail
-    // (Blender's rule for children of bones; "relative parenting" bones: their channel matrix); the rest pose if unposed
+    // (the modeller's rule for children of bones; "relative parenting" bones: their channel matrix); the rest pose if unposed
     const BONE_RELATIVE_PARENTING = 1 << 23;
     const boneMatrix = (arm, name) => {
         const ch = list(arm?.deref('pose', 'bPose')?.sub('chanbase'), 'bPoseChannel').find(c => c.string('name') === name);

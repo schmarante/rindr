@@ -141,7 +141,7 @@ export const IMPORT = {
     instancedCopies: 16,          // an object the file places at least this often (pbrt object instances) becomes one
                                   // InstancedMesh per part (model-instances.js): one Scene Graph row "name (n×)",
                                   // selected/moved/coloured together; below it every copy stays a part of its own
-    // binary FBX is read by an own lean reader (fbx/fbx-parse.js, typed arrays). Animated / skinned FBX up to this
+    // binary .fbx is read by an own lean reader (fbx/fbx-parse.js, typed arrays). Animated / skinned .fbx up to this
     // size still go to three.js' FBXLoader (animation, skinning, blend shapes) – it needs roughly 6–8× the file size
     // in JS heap, and all JS heaps of a tab share one 4 GB area in Chrome (independent of the computer's RAM)
     fbxLoaderMaxBytes: 256 * 2 ** 20,

@@ -1,4 +1,4 @@
-// .blend file access (Blender's own format, self-describing): header, blocks, SDNA, typed struct reading.
+// .blend file access (the modeller's own format, self-describing): header, blocks, SDNA, typed struct reading.
 //
 // Header (12 bytes): "BLENDER", pointer size ('_' 4 / '-' 8), endianness ('v' little / 'V' big), version "404".
 // (Newer files may start "BLENDER17-01v0405": header length, format version – read as well.)

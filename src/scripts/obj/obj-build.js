@@ -1,10 +1,10 @@
 // OBJ scene (obj-parse.js, from the worker) + its MTL → a three.js group like the loaders give it: one group per OBJ group,
 // one mesh per material in it; mesh-importer.js converts it like the other formats.
-// Materials (MTL): Kd / map_Kd colour (sRGB as most exporters write it; Blender writes its scene-linear values – an MTL
-// whose header names Blender is read linear), Ke / map_Ke emission, Ns → roughness (Blender writes Ns = 1000 · (1 − roughness)²;
+// Materials (MTL): Kd / map_Kd colour (sRGB as most exporters write it; the modeller writes its scene-linear values – an MTL
+// whose header names the modeller is read linear), Ke / map_Ke emission, Ns → roughness (the modeller writes Ns = 1000 · (1 − roughness)²;
 // Pr wins; no Ns = 0 → rough, as the format's default), Pm metal, d / map_d opacity – d < 1 with illum 4/6/7/9 (glass) as transmission –, map_Bump / bump → bump map,
 // norm / map_Kn → normal map. Textures by file name (absolute paths of the authoring machine: the resolver takes the name).
-// Both sides drawn: OBJ has no notion of sides and exporters keep whatever winding the faces had (Blender shows both by
+// Both sides drawn: OBJ has no notion of sides and exporters keep whatever winding the faces had (the modeller shows both by
 // default) – a rug seen from above showed its back faces and vanished, a bed base looked like glass.
 import * as THREE from 'three/webgpu';
 import { parseMtl } from './obj-parse.js';
@@ -41,7 +41,7 @@ export function buildObj(scene, mtl, manager, name = '', { linear = false } = {}
         const glass = d < 1 && [4, 6, 7, 9].includes(m.illum);
         const mat = new THREE.MeshPhysicalMaterial({ name: matName || 'Standard', ior: Math.min(Math.max(m.ni ?? 1.5, 1), 2.333) });
         if (glass) { mat.transmission = 1 - d; mat.thickness = 0; }
-        // Blender writes its Specular IOR Level as Ks (0.5 = normal, 0 = no reflection) – other exporters a specular colour
+        // the modeller writes its Specular IOR Level as Ks (0.5 = normal, 0 = no reflection) – other exporters a specular colour
         const ks = rgb(m.ks);
         if (linear && ks) mat.specularIntensity = Math.min(Math.max(((ks[0] + ks[1] + ks[2]) / 3) * 2, 0), 1);
         const kd = rgb(m.kd);

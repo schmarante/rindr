@@ -1,5 +1,5 @@
 // STEP text (ISO 10303-21) written piece by piece into a growing byte buffer – shared by the converters that go the STEP
-// way (iges/iges-to-step.js, acis/acis-to-step.js): `add(body)` writes one instance and returns its id.
+// way (iges/iges-to-step.js, sat/sat-to-step.js): `add(body)` writes one instance and returns its id.
 
 // real number in STEP form (always with a decimal point, exponent with E)
 export function num(x) {

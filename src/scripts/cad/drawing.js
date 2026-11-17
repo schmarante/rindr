@@ -21,7 +21,7 @@
 //     2 spline), leaderColor, leaderLw, dogleg, arrowSize, arrowHandle, text: { text, p, dir, normal, rot (rad), h, width,
 //     spacing, attach (1–3), styleHandle, color } | null, block: { handle, p, normal, scale, rot (rad), color } | null,
 //     labels: [{ attdef (handle), text }] } – colours { color (ACI code), rgb } | null; points WCS
-//   ACIS (3DSOLID, REGION, BODY, SURFACE …) { acis: { sat: string } | { sab: Uint8Array } | { ref } }
+//   SAT (3DSOLID, REGION, BODY, SURFACE …) { satData: { sat: string } | { sab: Uint8Array } | { ref } }
 //   LIGHT { name, kind (1 distant, 2 point, 3 spot, 10 web – photometric with a distribution file), on, intensity (factor),
 //     p, target (WCS), hotspot / falloff (full cone angles, degrees), lightRgb (the light's own colour, null = white) }
 
@@ -111,7 +111,7 @@ export class Drawing {
         this.styleByHandle = new Map();
         /** objects not shown, by type (counted for the notice) */
         this.skipped = {};
-        this.acisBlobs = new Map();   // ACDSDATA / AcDs: SAB data by entity handle (stage 2)
+        this.satBlobs = new Map();   // ACDSDATA / AcDs: SAB data by entity handle (stage 2)
     }
 
     layer(name) {

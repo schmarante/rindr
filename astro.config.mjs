@@ -505,7 +505,7 @@ ${OPENPBR_MAPS.map(k => `${tab}intArray[ index ++ ] = getTexture( m, '${k}' );\n
       }
       if (file.endsWith('three-gpu-pathtracer/src/webgpu/nodes/material.wgsl.js')) {
         replaceOnce(/\n(\t+)surf\.clearcoat = clearcoat;\n/, (m, tab) => `${m}${tab}surf.transmissionTint = mix( surf.color, vec3f( 1.0 ), material.mediumTint );\n`);
-        // the glass lobe's share (0.0.28: the tint per crossing of a volume is √colour, as in Cycles)
+        // the glass lobe's share (0.0.28: the tint per crossing of a volume is √colour, as in common path tracers)
         replaceOnce('let transmissionTint = select( sqrt( surf.color ), surf.color, surf.thinWall );', () => 'let transmissionTint = select( sqrt( surf.transmissionTint ), surf.transmissionTint, surf.thinWall );');
         return { code, map: null };
       }

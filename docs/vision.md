@@ -12,7 +12,7 @@ Nur für finale Standbilder (hohe Auflösung/viele Samples) und Animationen sinn
 
 **Animation: Frames aufteilen**
 - Noch einfacher: jeder Knoten rendert ganze Frames (Frame-Splitting), Koordinator verteilt Frame-Nummern und sammelt die fertigen (entrauschten) Bilder ein → Video/Bildfolge.
-- Dafür bräuchte es eine Animationsbeschreibung im Szenen-Zustand (Kamerapfad, Bauteil-Bewegungen als Keyframes). Eine Kamerafahrt durch die gespeicherten Ansichten + Drehteller in der Abspielleiste wurde gebaut (Okt. 2026) und auf Wunsch des Nutzers wieder entfernt (Kamera-Auswahl erschien bei jedem animierten FBX und verwirrte).
+- Dafür bräuchte es eine Animationsbeschreibung im Szenen-Zustand (Kamerapfad, Bauteil-Bewegungen als Keyframes). Eine Kamerafahrt durch die gespeicherten Ansichten + Drehteller in der Abspielleiste wurde gebaut (Okt. 2026) und auf Wunsch des Nutzers wieder entfernt (Kamera-Auswahl erschien bei jedem animierten .fbx und verwirrte).
 
 **Bausteine**
 1. Render-Knoten: Viewer ohne Oberfläche (z.B. `?node`) – lädt Modell + Zustand + HDRI, rendert mit eigenem Seed bzw. zugeteilte Frames, schickt das Ergebnis zurück. Beliebiger Browser mit WebGPU oder Headless-Chrome auf einem GPU-Server.

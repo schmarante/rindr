@@ -8,5 +8,5 @@ storage/
 tests/
 # parallel worktrees (agents)
 .worktrees/
-# local tools (Blender add-on, material library rebuild – docs/material-format.md, docs/material-library.md) – not in git
+# local tools (add-on for a modelling program, material library rebuild – docs/material-format.md, docs/material-library.md) – not in git
 tools/

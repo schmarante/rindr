@@ -231,7 +231,7 @@ fast schwarzblau, Leinen/Canvas ohne Schuss, Streifen zu kräftig). Nicht in die
 | plastic-carbon | Köper 2/2, Rauheit Kette/Schuss verschieden, Klarlack | Laminate.CarbonFiber |
 | plastic-grained | feine Zellen-Narbung (Armaturenbrett, Gehäuse) | Plastics.Vinyl (Struktur) |
 | plastic-laminate | zweifarbiger Sprenkel, leichte Orangenhaut | Plastic Laminates.* (6 Farben → eins) |
-| rubber-neoprene | feine Poren (Dellen), matt | Rubber.Neoprene, Rubber.Black.Textured1 |
+| rubber-neoprene | feine Poren (Dellen), matt | poriger Gummi, Rubber.Black.Textured1 |
 | rubber-studded | Noppen auf Raster | RubberBlack (Raytrace) |
 | foam-polystyrene | verschmolzene Perlen (Zellen) | Plastics.PolyStyrene, Rigid Insulation |
 | foam-rubber | dichte offene Poren (Dellen) | Plastics.Foam.Rubber, Carpet.Pad.Waffled |

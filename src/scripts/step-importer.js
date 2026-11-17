@@ -382,7 +382,7 @@ function brepCopies(plan, wanted, presetOf) {
 // for CATIA traces (CATPart/CATProduct names, e.g. 'Product1_AllCATPart').
 // Test/override: ?upAxis=z|y.
 // FreeCAD: Z up by convention (3D printing test models lay on their side before)
-// "+Z UP": our own converters of Z-up data (acis/acis-to-step.js – ACIS bodies, drawings)
+// "+Z UP": our own converters of Z-up data (sat/sat-to-step.js – SAT bodies, drawings)
 const Z_UP_SYSTEMS = /CATIA|3DEXPERIENCE|\bNX\s*\d*\b|UNIGRAPHICS|SOLID\s*EDGE|FREECAD|\+Z UP/i;
 const Y_UP_SYSTEMS = /SOLID\s*WORKS|SWSTEP|INVENTOR|CREO|PRO\/?ENGINEER|FUSION/i;
 const CATIA_TRACES = /CAT(?:Part|Product)\b|CATIA/;
@@ -427,8 +427,8 @@ function orientUpAxis(plan, bytes) {
     }
     plan.upAxis = up;
     plan.originatingSystem = header.system || header.preprocessor;
-    // converted ACIS bodies: the side of every sheet comes from the file (orientFaces keeps it)
-    if (/rindr ACIS converter/.test(header.preprocessor)) for (const s of plan.solids) s.keepSkins = true;
+    // converted SAT bodies: the side of every sheet comes from the file (orientFaces keeps it)
+    if (/rindr SAT converter/.test(header.preprocessor)) for (const s of plan.solids) s.keepSkins = true;
     debugLog(`[STEP] Originating system: "${header.system}" (${header.preprocessor}) → ${up === 'z' ? '+Z up, rotated to +Y up' : '+Y up'} (${reason})`);
     if (up !== 'z') return;
     // R · M with R = rotation −90° about X (column-major): row y ← z, row z ← −y
@@ -1091,7 +1091,7 @@ function refan(P, N, a, b, c, chain) {
 
 /**
  * Make the orientation of a solid's faces consistent (like ShapeFix in OpenCascade).
- * Some exports (CATIA, spline surfaces) state `same_sense` wrongly – the face then points inwards
+ * Some exports (spline surfaces of a CAD exporter) state `same_sense` wrongly – the face then points inwards
  * and is invisible with FrontSide materials ("holes", Basic with DoubleSide looks closed).
  * In a correctly oriented shell, two neighbouring faces traverse their shared edge in opposite
  * directions. Shared boundary edges (same boundary points – edges are sampled identically per face;
@@ -1226,7 +1226,7 @@ export function orientFaces(s, results) {
             for (const fi of group) { flipFace(fi); flipped++; }
         }
     }
-    // ACIS sheets (acis/acis-to-step.js) have an outside of their own – the centre rule turned panels whose outside faces
+    // SAT sheets (sat/sat-to-step.js) have an outside of their own – the centre rule turned panels whose outside faces
     // the body's centre (the back wall of a cabin) inwards
     if (s.surface && !s.keepSkins) flipped += orientSkins(results, root, flipFace);
     return flipped;
@@ -1374,7 +1374,7 @@ export function releaseImportPool() {
 }
 
 /**
- * Build BVHs + tangents for foreign geometries (glTF/FBX import) in the worker pool.
+ * Build BVHs + tangents for foreign geometries (glTF/.fbx import) in the worker pool.
  * Every geometry needs its own buffers (they are transferred to the worker and replaced).
  */
 export async function buildGeometryBVHs(geometries, onStatus = () => {}) {

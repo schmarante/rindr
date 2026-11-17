@@ -1,4 +1,4 @@
-// Box-projected texture coordinates for meshes without UVs (STEP, STL, FBX/glTF/OBJ … without UVs). Pure function:
+// Box-projected texture coordinates for meshes without UVs (STEP, STL, .fbx/glTF/OBJ … without UVs). Pure function:
 // main thread (step-importer.js re-exports it) and workers (STL parts, stl/stl-core.js).
 
 // Texture coordinates via box projection (CAD geometry has no UVs): every triangle takes the plane perpendicular to

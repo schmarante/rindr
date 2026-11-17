@@ -1,5 +1,5 @@
 // Closed meshes wound inwards → outwards (winding and normals), for formats that keep whatever winding the faces had (OBJ,
-// .blend; Blender draws both sides, a converted scene had 105 of 195 meshes inside out – lit as if from behind here).
+// .blend; the modeller draws both sides, a converted scene had 105 of 195 meshes inside out – lit as if from behind here).
 // Measure: the signed volume of the triangles against the mesh's centroid over the sum of their absolute volumes – about
 // −1 for a closed inward shell, about +1 outward, near 0 for open sheets (left as they are; the threshold −0.5).
 // Parts: [{ positions, normals, index }] of one mesh (all parts together form the shell); changed in place.

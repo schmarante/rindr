@@ -31,7 +31,7 @@ let tess = null;
 // deterministically, so the mesh stays watertight even after clearing.
 // Curves/surfaces are limited independently: StepFile clears its entity cache itself at 250 000,
 // so a condition coupled to it never triggered – evaluated B-spline surfaces (large control nets)
-// piled up without limit (389 MB CATIA file: 1.9 GB heap per worker; in Chrome all workers of a tab
+// piled up without limit (389 MB file: 1.9 GB heap per worker; in Chrome all workers of a tab
 // share ONE 4 GB heap region → "Out of Memory"). The faces of a solid are in consecutive jobs,
 // so small limits cost hardly any hits (measured: same run time, at most ~125 MB heap per worker
 // instead of 1.9 GB; 175 MB file 6.9 → 6.7 s).

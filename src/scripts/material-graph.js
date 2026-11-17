@@ -17,7 +17,7 @@
 // Procedural texture nodes live in their own modules in nodes/ (one per type, default export = node type with an
 // `evaluate` function; see node-lib.js for the result format and the tileable helpers) and register themselves here.
 //
-// Imported materials (glTF/FBX) get a graph on import with one "import texture" node per texture
+// Imported materials (glTF/.fbx) get a graph on import with one "import texture" node per texture
 // of the file. If such a node is attached unchanged to the matching input (channel as three.js
 // reads it, e.g. metalness = B, roughness = G), the original texture is set directly as a map
 // (kind 'map', full resolution, material parameters act as a factor). Only when something sits
@@ -100,7 +100,7 @@ export const NODE_TYPES = {
             // relief: height in mm of the full range of the relief input (0 → 1) – the normal map's slopes are that height
             // over the true texel size (graph-apply.js), whatever the bake resolution (Nov. 2026, before: a strength per
             // texel – a material baked at 4096 showed a quarter of the relief it had at 1024); negative = sunk (pbrt's
-            // negative displacement scale, Blender's inverted bump)
+            // negative displacement scale, the modeller's inverted bump)
             { key: 'reliefHeight', kind: 'number', min: -50, max: 50, step: 0.01, default: RELIEF_DEFAULT },
             // edge length of the baked tile on the model in mm (UV_TILE = one UV unit of the box UVs)
             { key: 'size', kind: 'number', min: 10, max: 10000, step: 10, default: 100 },
@@ -357,7 +357,7 @@ export const IMPORT_SLOTS = {
     // displacement height (MaterialX import: displacementshader) – not three's displacementMap (that would move the
     // raster vertices a second time)
     displacementHeightMap: ['displacementHeight', 'r'],
-    // bump picture (OBJ, FBX, MAX, C4D, Blender): the relief – baked into a normal map like any relief (three's bump
+    // bump picture (OBJ, .fbx, MAX, .c4d, .blend): the relief – baked into a normal map like any relief (three's bump
     // mapping counts the height per screen pixel, the path tracer has none)
     bumpMap: ['height', 'r'],
 };

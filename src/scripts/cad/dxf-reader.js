@@ -458,7 +458,7 @@ class Reader {
         }
     }
 
-    // ACDSDATA: ACIS data of solids in files from 2013 on (SAB, binary chunks 310 per record, owner handle 320)
+    // ACDSDATA: SAT data of solids in files from 2013 on (SAB, binary chunks 310 per record, owner handle 320)
     acdsData() {
         while (this.read()) {
             if (this.p.code !== 0) continue;
@@ -474,7 +474,7 @@ class Reader {
             const sab = new Uint8Array(len);
             let o = 0;
             for (const h of chunks) for (let i = 0; i + 1 < h.length; i += 2) sab[o++] = parseInt(h.substr(i, 2), 16);
-            this.d.acisBlobs.set(owner, sab);
+            this.d.satBlobs.set(owner, sab);
         }
     }
 
@@ -583,7 +583,7 @@ function convert(r, d) {
         }
         case '3DSOLID': case 'REGION': case 'BODY': case 'SURFACE': case 'EXTRUDEDSURFACE': case 'LOFTEDSURFACE': case 'REVOLVEDSURFACE':
         case 'SWEPTSURFACE': case 'PLANESURFACE': case 'NURBSURFACE':
-            return acis(r);
+            return satData(r);
         default:
             d.skip(t);
             return null;
@@ -938,8 +938,8 @@ function viewport(r, d) {
     };
 }
 
-// ACIS solids: SAT text in 1/3 groups (encoded – 159 − c), or (2013+) the SAB data in ACDSDATA by handle
-function acis(r) {
+// SAT solids: SAT text in 1/3 groups (encoded – 159 − c), or (2013+) the SAB data in ACDSDATA by handle
+function satData(r) {
     const e = common(r, r.type);
     const lines = [];
     let cur = '';
@@ -959,7 +959,7 @@ function acis(r) {
         }
         return out;
     });
-    return { ...e, acis: decoded.length ? { sat: decoded.join('\n') } : { ref: e.handle } };
+    return { ...e, satData: decoded.length ? { sat: decoded.join('\n') } : { ref: e.handle } };
 }
 
 export { ACI_BYBLOCK };

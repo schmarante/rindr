@@ -8,7 +8,7 @@
 
 Your local 3D file viewer – with real-time path tracing, right in the browser.
 
-**STEP · IGES · DXF · DWG · SAT/SAB · glTF/GLB · FBX · MAX · C4D · Blender · OBJ · 3MF · USD · STL · PLY · pbrt · IFC · BCF · Gaussian splats (PLY/SOG) · MaterialX · HDRI (HDR/EXR)**
+**.stp/.step · .igs/.iges · .dxf · .dwg · .sat/.sab · .gltf/.glb · .fbx · .max · .c4d · .blend · .lwo · .xsi · .mb · .3ds · .obj · .3mf · .usd/.usdz · .stl · .ply · .pbrt · .vdb · .ifc · .bcfzip · .sog · .mtlx · .hdr/.exr · .ies**
 
 <a href="https://schmarante.github.io/rindr/"><img src="https://img.shields.io/badge/%E2%96%B6%20Live%20demo-schmarante.github.io%2Frindr-2ea44f?style=for-the-badge" alt="Live demo"></a>
 
@@ -18,25 +18,29 @@ Drop a CAD model, a mesh, a BIM file or a Gaussian splat into the window and get
 
 - **Path tracing in real time (WebGPU)** – fast preview while you orbit, physically based rendering with AI denoising as soon as the camera stands still.
 - **Opens almost anything**
-  - **STEP** via a custom CAD kernel: assemblies, colours, instancing, adjustable tessellation quality – **IGES** goes the same way (converted on load)
-  - **DXF** drawings via an own reader (ASCII and binary, R12 to current): layers in the scene graph, blocks, line types and weights, hatches, texts, 3D faces and meshes; model space or a layout with its viewports – lines and texts stay sharp over the path-traced image; solid bodies inside go the STEP way
-  - **DWG** drawings via an own reader (R13 to current, written from the public format description): the same drawing model as DXF – layers, blocks, layouts, 3D faces, meshes and solids
+  - **.stp/.step** via a custom CAD kernel: assemblies, colours, instancing, adjustable tessellation quality – **.igs/.iges** goes the same way (converted on load)
+  - **.dxf** drawings via an own reader (ASCII and binary, R12 to current): layers in the scene graph, blocks, line types and weights, hatches, texts, 3D faces and meshes; model space or a layout with its viewports – lines and texts stay sharp over the path-traced image; solid bodies inside go the STEP way
+  - **.dwg** drawings via an own reader (R13 to current, written from the public format description): the same drawing model as DXF – layers, blocks, layouts, 3D faces, meshes and solids
   - lights of DXF/DWG scenes become scene lights; solids seen through layout viewports are drawn as wireframe
-  - **SAT/SAB** solids and sheets (analytic and spline surfaces) converted to STEP on load
-  - **glTF/GLB, FBX, PLY**, **OBJ** (own reader for files of hundreds of MB, MTL materials)
-  - **STL** split into its parts on all CPU cores: identical parts instanced, facet colours as materials
-  - **MAX (.max)** via an own reader: Editable Mesh/Poly, primitives, text and splines, common modifiers (Extrude, Shell, Bend, FFD, TurboSmooth …), instances, Physical Materials
-  - **C4D (.c4d)** via an own reader: polygon objects with UVs and phong smoothing, joints and weights (skinning), keyframe animation, materials with colour and normal maps
-  - **Blender (.blend)** via an own reader on the file's self-description: meshes, Principled BSDF materials with packed textures, cameras (modifiers not evaluated)
-  - **3MF** via an own reader: assemblies and instances, multi-part slicer projects, colours and textures
-  - **USD** (.usd/.usda/.usdc/.usdz): multi-file scenes with references, payloads and sublayers, shared geometry for referenced assets
-  - **pbrt-v4 scenes** (.pbrt) via an own reader: shapes, object instances, materials and textures (measured materials approximated), area lights as real rectangle/disc lights in absolute units, the scene's environment map and camera with its exposure
-  - **IFC** (BIM) incl. properties, **BCF** issues
-  - **MaterialX (.mtlx)** with OpenPBR: materials in and out – a material as a package with textures, glTF sphere and preview
-  - **Gaussian splats** (PLY, SOG)
+  - **.sat/.sab** solids and sheets (analytic and spline surfaces) converted to STEP on load
+  - **.gltf/.glb, .fbx, .ply**, **.obj** (own reader for files of hundreds of MB, .mtl materials)
+  - **.stl** split into its parts on all CPU cores: identical parts instanced, facet colours as materials
+  - **.max** via an own reader: Editable Mesh/Poly, primitives, text and splines, common modifiers (Extrude, Shell, Bend, FFD, TurboSmooth …), instances, Physical Materials
+  - **.c4d** via an own reader: polygon objects with UVs and phong smoothing, joints and weights (skinning), keyframe animation, materials with colour and normal maps
+  - **.blend** via an own reader on the file's self-description: meshes, Principled BSDF materials with packed textures, cameras (modifiers not evaluated)
+  - **.lwo** via an own reader (LWO2): layers, surfaces as materials with UV-mapped colour and bump pictures, smoothing angle, subdivision patches
+  - **.mb** via an own reader (binary form): transform hierarchy with pivots, polygon meshes with UVs and point tweaks, materials per shape or face set
+  - **.3ds** via an own reader: meshes with UVs and smoothing groups, keyframer hierarchy and instances, Phong materials with colour, bump and opacity pictures
+  - **.xsi** via an own reader (text form): model hierarchy with transforms, polygon meshes with normals and UVs, Phong materials with colour pictures
+  - **.3mf** via an own reader: assemblies and instances, multi-part slicer projects, colours and textures
+  - **.usd/.usda/.usdc/.usdz**: multi-file scenes with references, payloads and sublayers, shared geometry for referenced assets
+  - **.pbrt** scenes (version 4) via an own reader: shapes, object instances, materials and textures (measured materials approximated), area lights as real rectangle/disc lights in absolute units, the scene's environment map and camera with its exposure
+  - **.ifc** (BIM) incl. properties, **.bcfzip** issues
+  - **.mtlx** with OpenPBR: materials in and out – a material as a package with textures, glTF sphere and preview
+  - **Gaussian splats** (.ply, .sog)
 - **Node-based materials** (three.js TSL) and a material library – drag & drop onto parts in the viewport or the scene graph; UV mapping per object (box, planar, cylinder, sphere).
 - **Special materials** – toon and contour styles, subsurface scattering (jelly, wax), glowing marble, a **cloud** as real volume, **wool** with fibres, **grass** with real blades, **hair and bristles** as real fibres (shaving brush, fur), **soap bubbles** with thin-film colours; scattering media for cloudy liquids – juice, milk, honey, beer and more in the library.
-- **Studio tools** – scene graph with hover outlines, move/rotate/scale gizmo, MAX-style quad menu, view cube, animated **exploded view**, section plane, animations with skeleton view.
+- **Studio tools** – scene graph with hover outlines, move/rotate/scale gizmo, quad menu, view cube, animated **exploded view**, section plane, animations with skeleton view.
 - **Lighting** – HDRI environments (drop your own .hdr/.exr into the window) with a flattened ground dome, shadow catcher and contact shadows, ground reflections and rain puddles; an **HDRI editor** for your own procedural environments with sun & sky and movable light pins.
 - **Camera like a real lens** – depth of field with bokeh blades, fisheye up to 240°, bloom, glare, lens flare and **volumetric god rays**; style filters from pixel art and scanlines to sketch and ASCII.
 - **Distributed rendering** – other computers in your local network render along (paired via link and code, peer-to-peer), buckets labelled per computer.
@@ -333,7 +337,7 @@ RINDR is built on great open-source projects. Thanks to everyone who contributes
 
 | Project | Used for | License |
 |---|---|---|
-| [three.js](https://threejs.org) | 3D engine, WebGPU renderer, glTF/FBX/STL loaders | MIT |
+| [three.js](https://threejs.org) | 3D engine, WebGPU renderer, .gltf/.fbx/.stl loaders | MIT |
 | [three-gpu-pathtracer](https://github.com/gkjohnson/three-gpu-pathtracer) | GPU path tracing (HQ) | MIT |
 | [three-mesh-bvh](https://github.com/gkjohnson/three-mesh-bvh) | Acceleration structures for raycasting and path tracing | MIT |
 | [Intel Open Image Denoise](https://github.com/RenderKit/oidn) | AI denoising (weights) | Apache-2.0 |
@@ -350,7 +354,7 @@ RINDR is built on great open-source projects. Thanks to everyone who contributes
 | [Basis Universal](https://github.com/BinomialLLC/basis_universal) | KTX2/Basis textures (glTF) | Apache-2.0 |
 | [ktx-parse, zstddec](https://github.com/donmccurdy/KTX-Parse) | KTX2 container and Zstandard (glTF) | MIT |
 | [meshoptimizer](https://github.com/zeux/meshoptimizer) | Meshopt compression (glTF) | MIT |
-| [fflate](https://github.com/101arrowz/fflate) | Decompression of FBX data | MIT |
+| [fflate](https://github.com/101arrowz/fflate) | Decompression of .fbx data | MIT |
 | [web-ifc](https://github.com/ThatOpen/engine_web-ifc) | IFC import (BIM): geometry and properties | MPL-2.0 |
 | [coi-serviceworker](https://github.com/gzuidhof/coi-serviceworker) | Cross-origin isolation on GitHub Pages (fast loading of large files) | MIT |
 | [MaterialX, ltc-sheen (fuzz fits)](https://github.com/tizian/ltc-sheen) | Fitted formulas for the OpenPBR fuzz sheen (Zeltner et al. 2022) | Apache-2.0 |

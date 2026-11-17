@@ -245,7 +245,7 @@ const laminate = (() => {
     return g.done();
 })();
 
-// neoprene / textured rubber: matte with fine pores
+// chloroprene rubber / textured rubber: matte with fine pores
 const neoprene = (() => {
     const g = graph({ size: 30, relief: 0.3 });
     const d = g.node('dent', { scale: 40, size: 0.45, density: 0.5, strength: 0.6, detail: 2, distort: 0.5, a: '#151515', b: '#2b2b2b' });

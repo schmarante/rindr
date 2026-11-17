@@ -226,7 +226,7 @@ export async function createPlayer(options = {}) {
         title.textContent = t('status.dropHint');
         const formats = document.createElement('div');
         formats.className = 'mx-auto mt-1 max-w-md text-sm text-white/60';
-        // a format never breaks inside (e.g. "Blender (.blend)"), only between the entries
+        // a format never breaks inside (e.g. ".usd/.usdz"), only between the entries
         t('status.dropFormats').split(' · ').forEach((f, i) => {
             if (i) formats.append(' · ');
             formats.append(Object.assign(document.createElement('span'), { className: 'whitespace-nowrap', textContent: f }));
@@ -1983,7 +1983,7 @@ export async function createPlayer(options = {}) {
         const maxSide = textureMaxSide(sources.size + files.length);
         const perMaterial = new Map();   // entry → { maps, color }
         for (const { path, file } of files) {
-            // one picture per orientation the slots need: USD and FBX/MAX count texture rows from the bottom (flipped while
+            // one picture per orientation the slots need: USD and .fbx/MAX count texture rows from the bottom (flipped while
             // decoding, flipY false – previews turn it back), glTF from the top (info.flipY false: as it is)
             const bases = new Map();
             let full;
@@ -2883,7 +2883,7 @@ export async function createPlayer(options = {}) {
         if (select) sceneGraph.select(viewEntry(select));
         else if (selection?.kind === 'view' && !cameraViews.includes(selection.view)) sceneGraph.select(null);
     }
-    // Cameras of an imported file (MAX, FBX, glTF – importedCamera in mesh-importer.js; user: "recognise the cameras … and
+    // Cameras of an imported file (MAX, .fbx, glTF – importedCamera in mesh-importer.js; user: "recognise the cameras … and
     // create them as new cameras") → saved views, appended. They are in the model's space: through its root (centred,
     // placed) into the scene; boxCenter = centre of the model in the root's space (a camera without target orbits the point
     // of its view ray nearest to it – also one whose target is implausibly close: some exporters put the point looked at
@@ -2929,7 +2929,7 @@ export async function createPlayer(options = {}) {
         flashStatus(t('status.camerasImported', { count: added.length }), 4000);
         return added;
     }
-    // Lights of an imported file (glTF, FBX, MAX, C4D, Blender, USD – importedLight in mesh-importer.js; user: "take over the
+    // Lights of an imported file (glTF, .fbx, MAX, .c4d, .blend, USD – importedLight in mesh-importer.js; user: "take over the
     // lights from gltf/fbx/max etc.") → scene lights, `fixed` (they stay at their fixtures when the scene size changes,
     // scene-lights.js). In the model's space like the cameras: through its root into the scene.
     // Brightness: files light for their own exposure (physical units, or relative ones without falloff), RINDR's picture is
@@ -3130,7 +3130,7 @@ export async function createPlayer(options = {}) {
         },
     };
 
-    // --- Animation (animated glTF/FBX, animation.js): play bar above the toolbar ---
+    // --- Animation (animated glTF/.fbx, animation.js): play bar above the toolbar ---
     // All animated models share one timeline. While playing/scrubbing only the raster view runs
     // (pauseForEdit); afterwards the path tracer gets the current frame.
     const animations = [];   // [{ anim: ModelAnimation, owner: 'main' | extra id }]
@@ -3205,7 +3205,7 @@ export async function createPlayer(options = {}) {
     // Show a model's deformed parts live (play, scrub, joint drag, pose blend, morph slider). The first time with these
     // materials (and view mode / lens target) the puppet's skinned meshes need new shader variants (vertex shader with the
     // bone matrices): built in the first live frame, three.js creates their pipelines synchronously – the GPU process
-    // blocked and the page froze (FBX figure with 5 maps: 1.1 s with a warm shader cache, much longer without; playing
+    // blocked and the page froze (.fbx figure with 5 maps: 1.1 s with a warm shader cache, much longer without; playing
     // again was smooth). Instead the next frame only compiles them like the first Basic/Default (announcePrepare):
     // compileLive – the puppet alone, in the raster context and for the AO pre-pass, pipelines asynchronous; the canvas
     // keeps the previous image, the animation clock and a pose blend wait.
@@ -4223,7 +4223,7 @@ export async function createPlayer(options = {}) {
         const reported = Number(new URLSearchParams(location.search).get('deviceMemory')) || navigator.deviceMemory;
         return reported ? t('memory.deviceGb', { gb: deviceMemoryGB().toLocaleString(getLocale()) }) : t('memory.deviceUnknown');
     }
-    // Mesh models (glTF/FBX/STL/PLY) cannot be tessellated coarser: above the device's limit ask before the
+    // Mesh models (glTF/.fbx/STL/PLY) cannot be tessellated coarser: above the device's limit ask before the
     // memory-heavy part (BVHs, GPU upload) – the triangle count is known then
     // Language (Settings → About): stored for the next visit (i18n.js setLanguage – the fixed texts switch at once). Most of the
     // interface is built with its texts at the start – it changes completely only on a reload: at once when nothing is
@@ -4334,21 +4334,21 @@ export async function createPlayer(options = {}) {
             source.extras = res.extras;
             return res.content;
         }
-        if (ACIS_EXTENSIONS.includes(extOf(source.name))) {
+        if (SAT_EXTENSIONS.includes(extOf(source.name))) {
             source.size ??= bytes.byteLength;
-            const { convertAcis } = await import('./acis/acis-import.js');
-            const res = await convertAcis(bytes, { name: source.name, onStatus: showProgress, signal });
-            acisNotice(res.stats, source.name);
+            const { convertSat } = await import('./sat/sat-import.js');
+            const res = await convertSat(bytes, { name: source.name, onStatus: showProgress, signal });
+            satNotice(res.stats, source.name);
             return res.bytes;
         }
         if (!IGES_EXTENSIONS.includes(extOf(source.name))) return bytes;
         const { convertIges } = await import('./iges/iges-import.js');
         return convertIges(bytes, { name: source.name, onStatus: showProgress, signal });
     }
-    // faces or curves of an ACIS model the conversion could not take (procedural surfaces without approximation …)
-    function acisNotice(stats, name) {
+    // faces or curves of an SAT model the conversion could not take (procedural surfaces without approximation …)
+    function satNotice(stats, name) {
         const what = Object.entries(stats?.skipped || {}).map(([k, n]) => `${n} × ${k}`);
-        if (what.length) showNotice({ id: 'acis-skipped', icon: 'info', title: t('import.cad.skipped.title'), timeout: 15000,
+        if (what.length) showNotice({ id: 'sat-skipped', icon: 'info', title: t('import.cad.skipped.title'), timeout: 15000,
             message: t('import.cad.skipped.message', { name: displayName(name), what: what.join(', ') }) });
     }
     // a drawing with layouts: model space or which layout (model.cadSpace keeps the choice – re-reading, scene states)
@@ -5704,11 +5704,11 @@ export async function createPlayer(options = {}) {
     onViewSizeChange(() => { loadRender.force = true; });
     window.addEventListener('pointermove', () => { if (loadRender.active) loadRender.dirty = true; });
 
-    // --- Load and process the model (STEP: tessellate; glTF/FBX: take over meshes) ---
+    // --- Load and process the model (STEP: tessellate; glTF/.fbx: take over meshes) ---
     // reload = re-tessellate the same STEP model (materials + transforms are kept). The old model stays
     // visible until the new one is done; when opening, the model builds up part by part.
-    // What an import could not show completely (main and added models): FBX without animation, MAX objects whose
-    // modifier stack we cannot rebuild (left out) or only approximate (Noise: own noise function), C4D objects the reader
+    // What an import could not show completely (main and added models): .fbx without animation, MAX objects whose
+    // modifier stack we cannot rebuild (left out) or only approximate (Noise: own noise function), .c4d objects the reader
     // does not build (generators, splines …) – named in a notice
     // a drawing loaded: its layers that are off or frozen hidden (Scene Graph, like the file), a notice for what is not shown
     function cadLoaded(cad, prefix, name) {
@@ -6013,7 +6013,7 @@ export async function createPlayer(options = {}) {
             const stray = boundsWithoutStray(meshList);
             if (stray.stray.size) { bbox.copy(stray.box).union(volumeBounds(result.volumes)); console.warn(`[Load] ${stray.stray.size} stray object(s) left out (up to ${Math.round(stray.size)} mm)`); }
             const shownMeshes = meshList.filter((_, i) => !stray.stray.has(i));
-            // animated glTF/FBX: play bar
+            // animated glTF/.fbx: play bar
             if (result.animation) addAnimation(new ModelAnimation(result.animation, meshList, root), 'main');
 
             // On re-tessellation, swap the old model for the new one now
@@ -6076,7 +6076,7 @@ export async function createPlayer(options = {}) {
 
             if (!reload && streamFit.active) {
                 const centered = bbox.clone().translate(center.clone().negate());
-                // nothing streamed (glTF/FBX, very small model) -> default view directly; a flat drawing from the top
+                // nothing streamed (glTF/.fbx, very small model) -> default view directly; a flat drawing from the top
                 fitCamera(centered, first ? { animate: false, direction: cad?.extras.is2D ? TOP_VIEW : DEFAULT_VIEW } : {});
             }
             streamFit.active = false;
@@ -6379,7 +6379,7 @@ export async function createPlayer(options = {}) {
         }
 
         // changing the quality -> re-tessellate automatically, path tracing restarts afterwards
-        // (STEP only – glTF/FBX bring their own triangles)
+        // (STEP only – glTF/.fbx bring their own triangles)
         const tess = setup.addSection('tessellation', t('setup.tessellation'));
         qualityController = tess.select(t('setup.quality'), Object.keys(TESS_PRESETS).map(q => ({ label: t(`tessellation.quality.${q}`), value: q })),
             () => settings.meshQuality, q => { settings.meshQuality = q; reloadModel(); });
@@ -6967,13 +6967,13 @@ export async function createPlayer(options = {}) {
     // bodies + the extras on the same nodes (cad/, docs/cad-drawings.md)
     const IGES_EXTENSIONS = ['igs', 'iges'];
     const CAD_EXTENSIONS = ['dxf', 'dwg'];
-    const ACIS_EXTENSIONS = ['sat', 'sab'];   // ACIS bodies: converted to STEP like IGES (acis/)
-    const STEP_EXTENSIONS = ['stp', 'step', ...IGES_EXTENSIONS, ...CAD_EXTENSIONS, ...ACIS_EXTENSIONS];
+    const SAT_EXTENSIONS = ['sat', 'sab'];   // SAT bodies: converted to STEP like IGES (sat/)
+    const STEP_EXTENSIONS = ['stp', 'step', ...IGES_EXTENSIONS, ...CAD_EXTENSIONS, ...SAT_EXTENSIONS];
     const MAIN_EXTENSIONS = [...STEP_EXTENSIONS, ...MESH_EXTENSIONS, ...SPLAT_EXTENSIONS];
     const extOf = name => name.split('.').pop().toLowerCase();
 
-    // Several model files at once: one model per main file (STEP/glTF/GLB/FBX); textures/.bin go with every
-    // glTF/FBX (resolved by path/name). Sorted by name.
+    // Several model files at once: one model per main file (STEP/glTF/GLB/.fbx); textures/.bin go with every
+    // glTF/.fbx (resolved by path/name). Sorted by name.
     function modelsFromFiles(files) {
         // USD layers (.usd/.usda/.usdc): a scene is usually a folder of layers referencing each other – one root layer is
         // the model, the others go with it (usd-importer.js loads the referenced ones)
@@ -7021,7 +7021,7 @@ export async function createPlayer(options = {}) {
         return layers.sort((a, b) => depth(a) - depth(b) || Number(folderNamed(b)) - Number(folderNamed(a)) || (b.file.size || 0) - (a.file.size || 0))[0];
     }
     function modelFromFiles(files) {
-        // main file: STEP before glTF/GLB before FBX; the rest (textures, .bin) is passed along
+        // main file: STEP before glTF/GLB before .fbx; the rest (textures, .bin) is passed along
         const main = MAIN_EXTENSIONS.map(ext => files.find(f => extOf(f.path) === ext)).find(Boolean);
         // USD: the root layer chosen above (modelsFromFiles passes it first), not just any layer of the folder
         if (main && USD_LAYER_EXTENSIONS.includes(extOf(main.path)) && USD_LAYER_EXTENSIONS.includes(extOf(files[0].path))) return modelFromFilesWith(files[0], files);

@@ -169,7 +169,7 @@ function decodeHdri(url, onProgress) {
 
 /**
  * The HDRI mirrored left ↔ right (u → 1 − u): some renderers read equirect panoramas the other way round than three.js
- * and Blender – a scene made there (and its reference pictures) only matches with the panorama mirrored. A new texture
+ * and the modeller – a scene made there (and its reference pictures) only matches with the panorama mirrored. A new texture
  * with its own data: the path tracer's importance table and the caustics' sun are cached per data.
  */
 export function mirroredHdri(texture) {

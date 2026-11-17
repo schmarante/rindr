@@ -694,7 +694,7 @@ class DwgReader {
             case T.REGION: case T.SOLID3D: case T.BODY:
             case 'PLANESURFACE': case 'EXTRUDEDSURFACE': case 'LOFTEDSURFACE': case 'REVOLVEDSURFACE': case 'SWEPTSURFACE': case 'NURBSURFACE':
                 rec.type = typeof t === 'number' ? ({ 37: 'REGION', 38: '3DSOLID', 39: 'BODY' })[t] : t;
-                rec.acis = this.acis(r, o);
+                rec.satData = this.satData(r, o);
                 break;
             case 'MESH': this.mesh(r, rec); break;
             case 'LIGHT': this.light(r, rec); break;
@@ -1083,8 +1083,8 @@ class DwgReader {
         rec.polygon = polygon;
     }
 
-    // ACIS data of a body: SAT text blocks (version 1, 159 − c), SAB (version 2), or (2013+) in the data storage
-    acis(r, o) {
+    // SAT data of a body: SAT text blocks (version 1, 159 − c), SAB (version 2), or (2013+) in the data storage
+    satData(r, o) {
         if (o.hasDs) return { ref: o.handle.toString(16).toUpperCase() };
         const empty = r.B();
         if (empty) return { ref: o.handle.toString(16).toUpperCase() };
@@ -1184,10 +1184,10 @@ class DwgReader {
             const vps = list.filter(e => e.type === 'VIEWPORT').sort((a, b) => parseInt(a.handle, 16) - parseInt(b.handle, 16));
             vps.forEach((e, i) => { e.id = i + 1; });
         }
-        // ACIS data in the data storage (2013+): by entity handle
+        // SAT data in the data storage (2013+): by entity handle
         const ds = this.file.sections.get('AcDb:AcDsPrototype_1b');
         if (ds) {
-            try { for (const [h, sab] of readDataStorage(ds)) d.acisBlobs.set(hex(h), sab); } catch (err) { console.warn('[DWG] data storage not read:', err.message); }
+            try { for (const [h, sab] of readDataStorage(ds)) d.satBlobs.set(hex(h), sab); } catch (err) { console.warn('[DWG] data storage not read:', err.message); }
         }
     }
 
@@ -1273,7 +1273,7 @@ function bitBytes(data, from, to) {
 }
 
 function findEnd(data, start, limit) {
-    // "End-of-ACIS-data" / "End-of-ASM-data" as type name parts (14 len "End", 14 len "of", 14 len …, 13 len "data")
+    // "End-of-SAT-data" / "End-of-ASM-data" as type name parts (14 len "End", 14 len "of", 14 len …, 13 len "data")
     for (let i = start; i < Math.min(limit, data.length) - 4; i++) {
         if (data[i] === 13 && data[i + 1] === 4 && data[i + 2] === 100 && data[i + 3] === 97 && data[i + 4] === 116 && data[i + 5] === 97) return i + 6;
     }

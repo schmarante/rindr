@@ -1,14 +1,14 @@
-// C4D scene (c4d-parse.js, from the worker) → a three.js object tree like the loaders give it: groups, bones, (skinned)
-// meshes and an animation clip – mesh-importer.js converts it like FBX/glTF (animation puppet, skeleton view, play bar).
+// .c4d scene (c4d-parse.js, from the worker) → a three.js object tree like the loaders give it: groups, bones, (skinned)
+// meshes and an animation clip – mesh-importer.js converts it like .fbx/glTF (animation puppet, skeleton view, play bar).
 //
-// Coordinates: C4D is left-handed with Y up – mirrored on Z (points (x, y, −z), matrices F·M·F). The local matrix of an
-// object is T(position) · Ry(−H) · Rx(−P) · Rz(−B) · S(scale) in C4D's coordinates (found against the joints' bind
+// Coordinates: .c4d is left-handed with Y up – mirrored on Z (points (x, y, −z), matrices F·M·F). The local matrix of an
+// object is T(position) · Ry(−H) · Rx(−P) · Rz(−B) · S(scale) in .c4d's coordinates (found against the joints' bind
 // matrices of the weight tag: all joints that do not move match exactly) – mirrored (F·R·F turns the rotations about
 // Y and X around, the one about Z stays): Euler(P, H, −B, 'YXZ') with the position (x, y, −z).
 // Units: the project unit (metres per unit from the document) → mm.
-// Skinning: C4D deforms a point as Σ w · joint (global) · bind⁻¹ · mesh at binding · point – three.js' attached skinning
+// Skinning: .c4d deforms a point as Σ w · joint (global) · bind⁻¹ · mesh at binding · point – three.js' attached skinning
 // computes the same with boneInverses = bind⁻¹ and bindMatrix = the mesh at binding (both from the weight tag). The
-// weight tag stores a joint in C4D's bone convention: Z along the bone, pointing away from the first child joint, Y = the
+// weight tag stores a joint in .c4d's bone convention: Z along the bone, pointing away from the first child joint, Y = the
 // joint's own Y made perpendicular (mirrored space) – a joint whose children lie along its X (a rig from another
 // program) differs from it by 90°; skinned with the object matrix that turned every part about its bone. bind · A⁻¹
 // (A = that alignment, from the child's local position) is the joint's matrix at binding: checked on the test rig – all
@@ -19,7 +19,7 @@ const T_POLYGON = 5100, T_LIGHT = 5102, T_CAMERA = 5103, T_JOINT = 1019362, T_SK
 const P_POSITION = 903, P_ROTATION = 904, P_SCALE = 905;
 const _e = new THREE.Euler(), _q = new THREE.Quaternion();
 
-// C4D matrix (offset, v1, v2, v3) → three.js (mirrored on Z)
+// .c4d matrix (offset, v1, v2, v3) → three.js (mirrored on Z)
 const F = new THREE.Matrix4().makeScale(1, 1, -1);
 function fromC4d(m) {
     return new THREE.Matrix4().set(m[3], m[6], m[9], m[0], m[4], m[7], m[10], m[1], m[5], m[8], m[11], m[2], 0, 0, 0, 1)
@@ -27,10 +27,10 @@ function fromC4d(m) {
 }
 // Rotation orders (last value of the transform chunk): 6 HPB – the vector is (H, P, B); 0…5 the global orders YXZ, YZX,
 // ZYX, ZXY, XZY, XYZ – the vector is (x, y, z), rotated about the world axes in that order (a scene from another program
-// had XYZ: read as HPB a group turned about Y instead of X, the phones lay flat). An axis turns by −angle in C4D's
+// had XYZ: read as HPB a group turned about Y instead of X, the phones lay flat). An axis turns by −angle in .c4d's
 // coordinates (HPB: Ry(−H)·Rx(−P)·Rz(−B)); mirrored the rotations about Y and X change sign, the one about Z not →
 // Euler(x, y, −z) with the order reversed for the global orders (three.js applies its order's last axis first).
-const GLOBAL_ORDERS = ['ZXY', 'XZY', 'XYZ', 'YXZ', 'YZX', 'ZYX'];   // three.js orders of C4D's 0…5
+const GLOBAL_ORDERS = ['ZXY', 'XZY', 'XYZ', 'YXZ', 'YZX', 'ZYX'];   // three.js orders of .c4d's 0…5
 function rotationQuaternion(r, order = 6, out = new THREE.Quaternion()) {
     if (order === 6 || !GLOBAL_ORDERS[order]) return out.setFromEuler(_e.set(r[1], r[0], -r[2], 'YXZ'));
     return out.setFromEuler(_e.set(r[0], r[1], -r[2], GLOBAL_ORDERS[order]));
@@ -55,7 +55,7 @@ export function buildC4d(scene, manager, name = '') {
     root.name = name;
     const loader = new THREE.TextureLoader(manager);
     const textures = new Map();
-    // C4D looks for textures in "tex" next to the scene; dropped files are found by their name anyway
+    // .c4d looks for textures in "tex" next to the scene; dropped files are found by their name anyway
     const texture = (file, srgb) => {
         if (!file) return null;
         const key = file + (srgb ? '|s' : '');
@@ -134,7 +134,7 @@ export function buildC4d(scene, manager, name = '') {
 }
 
 // A light shines when switched on and rendered: the first render visibility up the hierarchy that is not "default"
-// decides (C4D: default = like the parent; the editor visibility does not switch a light off for rendering – a key light
+// decides (.c4d: default = like the parent; the editor visibility does not switch a light off for rendering – a key light
 // of a sample scene is hidden in the editor only)
 function lightRenders(o, scene) {
     if (o.transform?.off) return false;
@@ -160,7 +160,7 @@ function lightColor(l) {
     return new THREE.Color().setRGB(...l.color, THREE.SRGBColorSpace).toArray();
 }
 
-// C4D's bone frame of a joint relative to its own: Z' = −(direction to the first child joint), Y' = its Y made
+// .c4d's bone frame of a joint relative to its own: Z' = −(direction to the first child joint), Y' = its Y made
 // perpendicular, X' = Y' × Z' (mirrored space); a joint without child joints: its own frame
 function boneAlignment(scene, index) {
     const child = scene.objects.find(o => o.parent === index && o.typeId === T_JOINT && o.transform);
@@ -258,7 +258,7 @@ function buildMesh(o, scene, materials, fallback) {
     geometry.setAttribute('normal', new THREE.Float32BufferAttribute(vNor, 3));
     if (UV) geometry.setAttribute('uv', new THREE.Float32BufferAttribute(vUv, 2));
     geometry.setIndex(new THREE.BufferAttribute(index, 1));
-    // material: the object's texture tag, else one of a parent (C4D inherits them down the hierarchy)
+    // material: the object's texture tag, else one of a parent (.c4d inherits them down the hierarchy)
     let material = null;
     for (let x = o; x && !material; x = x.parent >= 0 ? scene.objects[x.parent] : null) {
         const tex = x.tags.find(tg => tg.kind === 'texture' && tg.material >= 0);

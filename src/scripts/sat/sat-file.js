@@ -1,9 +1,9 @@
-// ACIS model data (SAT text and SAB binary; also the variant of a common shape-modelling kernel fork, "ASM"): records
-// indexed once, tokens read on demand (a SAT of hundreds of MB has millions of records). Used by acis-to-step.js.
+// SAT model data (SAT text and SAB binary; also the variant of a common shape-modelling kernel fork, "ASM"): records
+// indexed once, tokens read on demand (a SAT of hundreds of MB has millions of records). Used by sat-to-step.js.
 //
 // SAT: three header lines (version · record count · entity count · history flag; product, kernel version and date as
 // length-prefixed strings; millimetres per unit · resabs · resnor), then records "[-n] type $attrib [id $pattern] data #"
-// up to "End-of-ACIS-data" (or the history marker). From 7.0 on every record carries an id after the attribute pointer,
+// up to "End-of-SAT-data" (or the history marker). From 7.0 on every record carries an id after the attribute pointer,
 // and every entity but the attributes a pattern pointer; strings are "@n text". Subtype data stands in { } and is
 // numbered in the order it appears in the file ("ref n" points back to one).
 // SAB: signature, 4 raw ints, tagged header strings and doubles, then tagged records (tags as in the SAT documentation:
@@ -15,7 +15,7 @@
 const SAB_SIGNATURES = ['ACIS BinaryFile', 'ASM BinaryFile4'];
 const END_MARKERS = /^(End-of-ACIS-data|End-of-ASM-data|Begin-of-ACIS-History-Data)/;
 
-export class AcisFile {
+export class SatFile {
     /** @param {Uint8Array} bytes */
     constructor(bytes) {
         this.bytes = bytes;

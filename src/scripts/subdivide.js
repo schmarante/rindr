@@ -1,6 +1,6 @@
 // Catmull–Clark subdivision of polygon meshes – MAX TurboSmooth / MeshSmooth (max/max-modifiers.js) and USD meshes with
 // subdivisionScheme "catmullClark" (usd-importer.js); `subdivideCorners` below: the same on typed corner arrays for
-// large meshes (Blender's subdivision modifier, blend/blend-parse.js – creases, limit surface). Mesh = { P: [x, y, z, …], faces: [{ v: [vertex …], uv?: [uv
+// large meshes (the modeller's subdivision modifier, blend/blend-parse.js – creases, limit surface). Mesh = { P: [x, y, z, …], faces: [{ v: [vertex …], uv?: [uv
 // index …], mat?, root? }], uvs?: [u, v, …] }. Faces of the result: per input face its children in corner order (child
 // k starts at the parent's corner k), each with `root` = the input face it came from.
 
@@ -89,13 +89,13 @@ export function catmullClark(mesh, iterations = 1) {
 }
 
 /**
- * Catmull–Clark on a corner mesh in typed arrays (large meshes – Blender's subdivision modifier, blend-parse.js). Faces are
+ * Catmull–Clark on a corner mesh in typed arrays (large meshes – the modeller's subdivision modifier, blend-parse.js). Faces are
  * corner ranges `offsets` (faces + 1); per corner its vertex `cv` and the edge to the next corner `ce` (edges 0…ne−1);
  * optional per corner `uv` (subdivided linearly – seams stay seams), per edge `sharp` (carried to both halves – for the
- * normals afterwards) and `crease` (0…1: semi-sharp, sharpness = crease² · 10 as Blender hands it to its subdivision,
+ * normals afterwards) and `crease` (0…1: semi-sharp, sharpness = crease² · 10 as the modeller hands it to its subdivision,
  * one less per level, blended below 1). Rules: smooth interior, borders as curves (all border vertices smooth), creased
  * vertices with two creased edges as curves, more = corners. Result: quads, face c = the child of input corner c, `root`
- * per face = the input face. `limit`: the final points moved onto the limit surface (Blender's default "limit surface").
+ * per face = the input face. `limit`: the final points moved onto the limit surface (the modeller's default "limit surface").
  */
 export function subdivideCorners({ pos, offsets, cv, ce, ne = 0, uv = null, sharp = null, crease = null }, levels, { limit = false } = {}) {
     let nf = offsets.length - 1, nc = cv.length, nv = pos.length / 3;

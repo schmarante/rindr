@@ -1,6 +1,6 @@
 // MaterialX with OpenPBR (docs/material-format.md): a material as a package (.zip – .mtlx with open_pbr_surface,
 // RINDR's own description, a glTF sphere, preview, textures) and reading .mtlx files / packages back
-// (open_pbr_surface, Autodesk standard_surface).
+// (open_pbr_surface, Standard Surface).
 //
 // Export reads the live three.js material (RindrMaterial): what the node graph baked and what an imported file
 // brought are both its maps, the factors its values – one way for every kind of material. Textures go out one per
@@ -715,7 +715,7 @@ const FROM_OPENPBR = {
     geometry_normal: { map: 'normalMap', kind: 'normal' },
     geometry_coat_normal: { map: 'clearcoatNormalMap', kind: 'normal' },
 };
-// Autodesk Standard Surface → the same (weights multiplied in afterwards)
+// Standard Surface → the same (weights multiplied in afterwards)
 const FROM_STANDARD = {
     base_color: 'base_color', metalness: 'base_metalness', diffuse_roughness: 'base_diffuse_roughness', specular: 'specular_weight',
     specular_color: 'specular_color', specular_roughness: 'specular_roughness', specular_anisotropy: 'specular_roughness_anisotropy',

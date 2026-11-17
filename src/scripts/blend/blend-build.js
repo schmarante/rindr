@@ -1,6 +1,6 @@
 // .blend scene (blend-parse.js, from the worker) → a three.js object tree like the loaders give it; mesh-importer.js
 // converts it like the other formats.
-// Transforms: local = T(loc) · R(rotmode) · S(size), in the parent: parentinv · local (Blender: world = parent · parentinv ·
+// Transforms: local = T(loc) · R(rotmode) · S(size), in the parent: parentinv · local (the modeller: world = parent · parentinv ·
 // local); Z up → the root turned −90° about X. Rotation modes 1…6 = Euler XYZ, XZY, YXZ, YZX, ZXY, ZYX (the first axis
 // first → three.js' reversed order), 0 quaternion (w, x, y, z), −1 axis angle.
 // Materials: Principled values in scene-linear colour (no sRGB conversion) – a linked input ignores its value (Base
@@ -11,7 +11,7 @@
 // Cameras: look along −Z, up +Y; the lens over the sensor width (fit auto: the larger render side).
 import * as THREE from 'three/webgpu';
 
-const EULER = [null, 'ZYX', 'YZX', 'ZXY', 'XZY', 'YXZ', 'XYZ'];   // Blender's 1…6 → three.js
+const EULER = [null, 'ZYX', 'YZX', 'ZXY', 'XZY', 'YXZ', 'XYZ'];   // the modeller's 1…6 → three.js
 
 export function buildBlend(scene, manager, name = '') {
     const root = new THREE.Group();
@@ -49,7 +49,7 @@ export function buildBlend(scene, manager, name = '') {
         const glass = m.transmission > 0.01;
         const mat = new THREE.MeshPhysicalMaterial({ name: m.name, ior: Math.min(Math.max(m.ior || 1.5, 1), 2.333) });
         if (glass) { mat.transmission = m.transmission; mat.thickness = 0; }
-        // Blender's Specular IOR Level 0.5 = three.js' specular intensity 1 (0 = no reflection: fabrics shone like satin)
+        // the modeller's Specular IOR Level 0.5 = three.js' specular intensity 1 (0 = no reflection: fabrics shone like satin)
         mat.specularIntensity = Math.min(Math.max((m.specular ?? 0.5) * 2, 0), 1);
         mat.color.setRGB(...m.color);   // scene-linear
         mat.roughness = Math.min(Math.max(m.roughness, 0), 1);

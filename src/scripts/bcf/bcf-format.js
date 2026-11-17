@@ -1,7 +1,7 @@
 // BCF (BIM Collaboration Format, buildingSMART): issues ("topics") about IFC models, exchanged as .bcfzip –
 // per topic a folder with markup.bcf (title, status, comments …), viewpoints (.bcfv: camera, selected/hidden/
 // coloured components by IFC GlobalId, clipping planes) and snapshots (PNG).
-// Read: BCF 2.0, 2.1 and 3.0 (lenient – element names per version). Written: BCF 2.1 (read by Revit, ArchiCAD,
+// Read: BCF 2.0, 2.1 and 3.0 (lenient – element names per version). Written: BCF 2.1 (read by common BIM programs,
 // Solibri, BIMcollab, Navisworks …), unknown parts of the source are not kept.
 // Coordinates stay as in the file: IFC world coordinates in metres, z up (the viewer maps them).
 // RINDR keeps its scene (materials, lights, camera, models …) as an extra file in the zip root (SCENE_FILE) –

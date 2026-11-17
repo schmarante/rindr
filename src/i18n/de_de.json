@@ -28,7 +28,7 @@
         "iges": {
             "converting": "Wandle IGES in STEP um..."
         },
-        "acis": {
+        "sat": {
             "converting": "Wandle SAT in STEP um..."
         },
         "cad": {
@@ -71,37 +71,52 @@
             "layersMissing": "Die Teile der Szene liegen in weiteren USD-Dateien, die fehlen: {files} – den ganzen Ordner ins Fenster ziehen"
         },
         "blend": {
-            "notBlend": "Keine gültige Blender-Datei",
+            "notBlend": "Keine gültige .blend-Datei",
             "modifiers": {
                 "title": "Modifikatoren nicht angewendet",
-                "message": "„{name}“: Blender-Modifikatoren ({what}) werden nicht ausgewertet – die Objekte erscheinen in ihrer Grundform. In Blender anwenden oder als glTF/FBX exportieren."
+                "message": "„{name}“: Modifikatoren ({what}) werden nicht ausgewertet – die Objekte erscheinen in ihrer Grundform. Im Modellierprogramm anwenden oder als .gltf/.fbx exportieren."
             }
         },
         "c4d": {
-            "notC4d": "Keine gültige C4D-Datei",
+            "notC4d": "Keine gültige .c4d-Datei",
             "skipped": {
                 "title": {
                     "one": "Ein Objekt nicht dargestellt",
                     "other": "{count} Objekte nicht dargestellt"
                 },
-                "message": "„{name}“ enthält Objekte, die rindr aus C4D noch nicht liest ({what}) – sie fehlen. In C4D „Grundobjekt konvertieren“ (Taste C) oder als FBX/glTF exportieren, dann sind sie dabei."
+                "message": "„{name}“ enthält Objekte, die rindr aus .c4d-Dateien noch nicht liest ({what}) – sie fehlen. Im Modellierprogramm in Polygon-Objekte umwandeln oder als .fbx/.gltf exportieren, dann sind sie dabei."
             }
         },
+        "lwo": {
+            "notLwo": "Keine gültige .lwo-Datei",
+            "version": "Diese .lwo-Datei ({version}) liest rindr noch nicht – bitte im Modellierprogramm im Format LWO2 speichern oder als .fbx/.obj exportieren.",
+            "layer": "Ebene {n}"
+        },
+        "xsi": {
+            "notXsi": "Keine gültige .xsi-Datei",
+            "binary": "Binäre .xsi-Dateien liest rindr noch nicht – bitte als Text, .fbx oder .obj exportieren."
+        },
+        "mb": {
+            "notMb": "Keine gültige .mb-Datei (nur die binäre Form wird gelesen)"
+        },
+        "tds": {
+            "not3ds": "Keine gültige .3ds-Datei"
+        },
         "max": {
-            "notMax": "Keine gültige MAX-Datei",
+            "notMax": "Keine gültige .max-Datei",
             "skipped": {
                 "title": {
                     "one": "Ein Objekt nicht dargestellt",
                     "other": "{count} Objekte nicht dargestellt"
                 },
-                "message": "„{name}“ enthält Objekte, deren Form rindr nicht nachbauen kann ({what}) – sie fehlen. In MAX „In Editable Poly umwandeln“ oder als FBX/glTF exportieren, dann sind sie dabei."
+                "message": "„{name}“ enthält Objekte, deren Form rindr nicht nachbauen kann ({what}) – sie fehlen. Im Modellierprogramm in Polygone umwandeln oder als .fbx/.gltf exportieren, dann sind sie dabei."
             },
             "approx": {
                 "title": {
                     "one": "Ein Objekt angenähert",
                     "other": "{count} Objekte angenähert"
                 },
-                "message": "„{name}“: Die Wirkung von {what} rechnet rindr selbst nach – die Form stimmt im Groben, im Detail weicht sie von MAX ab."
+                "message": "„{name}“: Die Wirkung von {what} rechnet rindr selbst nach – die Form stimmt im Groben, im Detail weicht sie vom Original ab."
             }
         },
         "mesh": {
@@ -517,7 +532,7 @@
             "plastic-carbon": "Carbon (Kohlefaser)",
             "plastic-grained": "Kunststoff genarbt",
             "plastic-laminate": "Schichtstoff (HPL) gesprenkelt",
-            "rubber-neoprene": "Neopren",
+            "rubber-neoprene": "Chloropren-Kautschuk",
             "rubber-studded": "Gummi-Noppenboden",
             "foam-polystyrene": "Polystyrol-Hartschaum (EPS)",
             "foam-rubber": "Schaumstoff",
@@ -2742,7 +2757,7 @@
         "unsupportedFormat": "Format nicht unterstützt ({extensions})",
         "dropHint": "Datei ins Fenster ziehen",
         "openFile": "Datei öffnen",
-        "dropFormats": "STEP (.stp/.step) · IGES (.igs/.iges) · DXF (.dxf) · DWG (.dwg) · SAT (.sat/.sab) · glTF/GLB · FBX · MAX (.max) · C4D (.c4d) · Blender (.blend) · OBJ · 3MF · USD (.usd/.usdz) · STL · PLY · pbrt (.pbrt) · VDB-Volumen (.vdb/.nvdb) · BIM (.ifc/.ifczip) · MaterialX (.mtlx) · BCF-Tickets (.bcfzip) · Gaussian Splats (.ply/.sog) · HDRI (.hdr/.exr) · IES-Lichtprofile (.ies)",
+        "dropFormats": ".stp/.step · .igs/.iges · .dxf · .dwg · .sat/.sab · .gltf/.glb · .fbx · .max · .c4d · .blend · .lwo · .xsi · .mb · .3ds · .obj · .3mf · .usd/.usda/.usdc/.usdz · .stl · .ply · .pbrt · .vdb/.nvdb · .ifc/.ifczip · .mtlx · .bcfzip/.bcf · .sog · .hdr/.exr · .ies",
         "hdriDropped": "HDRI „{name}“ als Umgebung",
         "hdriOne": "Mehrere HDRIs – „{name}“ als Umgebung gewählt",
         "qualityReduced": "Großes Modell (≈ {triangles} Dreiecke bei „{from}“) – Qualität automatisch auf „{to}“ gesenkt",
@@ -3128,13 +3143,13 @@
     },
     "page": {
         "title": "RINDR – 3D-Viewer mit Pathtracing im Browser",
-        "description": "STEP, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, STL, MaterialX, BIM (IFC, BCF) und Gaussian Splats direkt im Browser öffnen – lokal, ohne Upload, mit Materialbibliothek und Echtzeit-Pathtracing.",
+        "description": "3D-, CAD- und BIM-Dateien direkt im Browser öffnen (.stp, .igs, .dxf, .dwg, .sat, .gltf/.glb, .fbx, .max, .c4d, .blend, .lwo, .xsi, .mb, .3ds, .obj, .3mf, .usd, .stl, .ply, .pbrt, .vdb, .ifc, .mtlx, .sog …) – lokal, ohne Upload, mit Materialbibliothek und Echtzeit-Pathtracing.",
         "ogImageAlt": "RINDR-Logo (Kuhkopf) mit dem Schriftzug „3D-Viewer im Browser“",
         "loading": "RINDR wird gestartet …",
         "sceneGraph": "Scene Graph",
         "drop": {
             "title": "Datei hier ablegen",
-            "hint": "STEP (.stp/.step), IGES (.igs/.iges), DXF (.dxf), DWG (.dwg), SAT (.sat/.sab), glTF/GLB, FBX, MAX (.max), C4D (.c4d), Blender (.blend), OBJ, 3MF, USD (.usd/.usdz), STL, PLY, pbrt (.pbrt), VDB-Volumen (.vdb/.nvdb), BIM (.ifc/.ifczip), MaterialX (.mtlx), BCF-Tickets (.bcfzip), Gaussian Splats (.ply/.sog), HDRI (.hdr/.exr), IES-Lichtprofile (.ies) – Texturen und .bin-Dateien einfach mit hineinziehen",
+            "hint": ".stp/.step, .igs/.iges, .dxf, .dwg, .sat/.sab, .gltf/.glb, .fbx, .max, .c4d, .blend, .lwo, .xsi, .mb, .3ds, .obj, .3mf, .usd/.usda/.usdc/.usdz, .stl, .ply, .pbrt, .vdb/.nvdb, .ifc/.ifczip, .mtlx, .bcfzip/.bcf, .sog, .hdr/.exr, .ies – Texturen und .bin-Dateien einfach mit hineinziehen",
             "addHint": "Mehrere Modelle: zusammen oder nacheinander hineinziehen – sie erscheinen nebeneinander",
             "replaceTitle": "Modelle ersetzen",
             "replaceHint": "Die geladenen Modelle werden entfernt und durch die neue Datei ersetzt",
@@ -3155,7 +3170,7 @@
     },
     "about": {
         "title": "Über",
-        "description": "Your Local 3D-File Viewer – STEP, IGES, DXF, DWG, SAT, glTF, FBX, MAX, C4D, Blender, OBJ, 3MF, USD, STL, pbrt, VDB-Volumen, MaterialX, BIM (IFC, BCF), Gaussian Splats, HDRIs und IES-Lichtprofile direkt im Browser, mit Pathtracing in Echtzeit.",
+        "description": "Your Local 3D-File Viewer – 3D-, CAD- und BIM-Dateien, Gaussian Splats, HDRIs und IES-Lichtprofile direkt im Browser öffnen (.stp, .igs, .dxf, .dwg, .sat, .gltf/.glb, .fbx, .max, .c4d, .blend, .lwo, .xsi, .mb, .3ds, .obj, .3mf, .usd, .stl, .ply, .pbrt, .vdb, .ifc, .mtlx, .sog, .hdr/.exr, .ies …), mit Pathtracing in Echtzeit.",
         "author": "Autor",
         "email": "E-Mail",
         "version": "Version",
@@ -3174,7 +3189,7 @@
         "assets": "HDRI-Umgebungen",
         "build": "Zum Bauen",
         "libs": {
-            "three": "3D-Engine, WebGPU-Renderer, Loader für glTF/FBX/STL",
+            "three": "3D-Engine, WebGPU-Renderer, Loader für .gltf/.fbx/.stl",
             "pathtracer": "Pathtracing auf der GPU (HQ)",
             "bvh": "Beschleunigungsstrukturen für Raycasts und Pathtracing",
             "oidn": "KI-Entrauschen (Gewichte)",
@@ -3192,7 +3207,7 @@
             "basis": "KTX2-/Basis-Texturen (glTF)",
             "ktxParse": "KTX2-Container und Zstandard (glTF)",
             "meshopt": "Meshopt-Kompression (glTF)",
-            "fflate": "Dekompression von FBX-Daten",
+            "fflate": "Dekompression von .fbx-Daten",
             "astro": "Web-Framework",
             "vite": "Build-Werkzeug",
             "tailwind": "CSS-Framework",
@@ -3574,7 +3589,7 @@
         },
         "fbxStatic": {
             "title": "Ohne Animation geladen",
-            "message": "„{name}“ ist zu groß für den vollständigen FBX-Import im Browser. Geometrie, Materialien und Texturen sind da – Animationen, Skinning und Blend Shapes wurden nicht geladen."
+            "message": "„{name}“ ist zu groß für den vollständigen .fbx-Import im Browser. Geometrie, Materialien und Texturen sind da – Animationen, Skinning und Blend Shapes wurden nicht geladen."
         }
     },
     "feature": {

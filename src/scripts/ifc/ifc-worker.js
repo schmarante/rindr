@@ -29,7 +29,7 @@ self.onmessage = async ({ data: msg }) => {
     }
 };
 
-// IFC strings: \X\hh (ISO 8859-1), \X2\hhhh…\X0\ (UCS-2), \X4\…\X0\ (UCS-4), \S\c (upper half) – Revit
+// IFC strings: \X\hh (ISO 8859-1), \X2\hhhh…\X0\ (UCS-2), \X4\…\X0\ (UCS-4), \S\c (upper half) – some BIM exporters
 // writes umlauts like this ("Oberfl\X\E4che")
 export function decodeIfc(s) {
     if (typeof s !== 'string' || !s.includes('\\')) return s;
@@ -51,7 +51,7 @@ function open(buffer) {
     modelID = api.OpenModel(new Uint8Array(buffer), { COORDINATE_TO_ORIGIN: true, CIRCLE_SEGMENTS: 24 });
     const schema = api.GetModelSchema(modelID);
 
-    // names for the colours: style of the representation item (Revit names them after the material) …
+    // names for the colours: style of the representation item (some BIM exporters names them after the material) …
     const styleOf = new Map();
     const styled = api.GetLineIDsWithType(modelID, WebIFC.IFCSTYLEDITEM);
     for (let i = 0; i < styled.size(); i++) {
@@ -123,7 +123,7 @@ function open(buffer) {
     };
 }
 
-// name of the first surface style (IFC2x3: via IfcPresentationStyleAssignment); Revit's placeholder
+// name of the first surface style (IFC2x3: via IfcPresentationStyleAssignment); a BIM exporter's placeholder
 // "<Unnamed>" counts as none (→ material of the element)
 const named = s => (s && !/^<.*>$/.test(s) ? s : null);
 function styleName(styles) {
@@ -217,7 +217,11 @@ function buildNodes(elements, meshes) {
         }
         for (const [cls, list] of [...byClass].sort((a, b) => a[0].localeCompare(b[0]))) {
             const group = add(null, node, { type: cls, group: true, count: list.length });
-            list.sort((a, b) => nodeName(a.id).localeCompare(nodeName(b.id), undefined, { numeric: true }));
+            // unnamed elements (some exporters write no Name) after the named ones
+            list.sort((a, b) => {
+                const na = nodeName(a.id), nb = nodeName(b.id);
+                return na === null || nb === null ? (na === null) - (nb === null) : na.localeCompare(nb, undefined, { numeric: true });
+            });
             for (const c of list) visit(c, group);
         }
     };
@@ -256,7 +260,7 @@ function nodeName(id, type = typeName(id)) {
     if (nameCache.has(id)) return nameCache.get(id);
     const line = api.GetLine(modelID, id);
     let name = text(line?.Name);
-    // Revit appends the element id ("Basiswand:AW1 25.0:12618181") – shown in the properties anyway
+    // some BIM exporters appends the element id ("Basiswand:AW1 25.0:12618181") – shown in the properties anyway
     if (name && !SPATIAL.has(type)) name = name.replace(/:\d{4,}$/, '');
     if (type === 'IFCSPACE' && text(line?.LongName)) name = [name, text(line.LongName)].filter(Boolean).join(' ');
     nameCache.set(id, name || null);

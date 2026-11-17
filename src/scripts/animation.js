@@ -1,4 +1,4 @@
-// Animation of imported glTF/FBX models.
+// Animation of imported glTF/.fbx models.
 //
 // The importer bakes models into own meshes (absolute matrices, own buffers, skinning frozen). For animated
 // files it keeps the loader's source object as a "puppet": three.js' AnimationMixer drives it.
@@ -383,7 +383,7 @@ export class ModelAnimation {
     }
 }
 
-// One draw group per material instead of one per source group (an animated FBX had 33 683 groups for 43
+// One draw group per material instead of one per source group (an animated .fbx had 33 683 groups for 43
 // materials → 101 000 draw calls per frame incl. shadow passes while live). Reorders the index so the
 // groups of a material are contiguous; vertices (and with them sourceVertex, morph/skin data) stay.
 function mergeGroups(geometry) {

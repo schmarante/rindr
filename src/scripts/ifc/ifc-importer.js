@@ -1,6 +1,6 @@
 // IFC import (BIM: .ifc, .ifczip) – web-ifc in ifc-worker.js builds the geometry; converted here into the same
 // structure as the other imports (nodes / geometries / meshes, see mesh-importer.js). Units: web-ifc delivers
-// metres → mm via the mesh matrices. Materials: one per surface style / IFC material + colour (Revit names the
+// metres → mm via the mesh matrices. Materials: one per surface style / IFC material + colour (some BIM exporters names the
 // styles after the material: "Glas", "StB - Ortbeton" …), transparent ones become glass. The worker stays alive
 // for the properties panel (result.bim.properties) until the model is removed (bim.dispose).
 import { boxProject, buildGeometryBVHs, UV_TILE } from '../step-importer.js';

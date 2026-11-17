@@ -17,9 +17,9 @@ export const INDEX_TYPES = [
     'COMPLEX',
 ];
 
-// Factor angle unit -> radians (STEP files from CATIA and others use degrees).
+// Factor angle unit -> radians (many CAD exporters write degrees).
 // What counts is the unit assigned by the geometry context (GLOBAL_UNIT_ASSIGNED_CONTEXT) –
-// not the first one in the file: CATIA e.g. first defines radians (#3) as base and on top of it degrees (#5)
+// not the first one in the file: one exporter e.g. first defines radians (#3) as base and on top of it degrees (#5)
 // as CONVERSION_BASED_UNIT; with radians, CONICAL_SURFACE(…, 30.) became a cone with a 30 rad
 // half angle (tan = −6.4) → completely wrong surface, ~100 000 triangles per cone.
 export function angleFactor(step, typeIds) {
@@ -249,7 +249,7 @@ export function buildPlan(step, typeIds, { solidDetails = true } = {}) {
         const pds = step.get(e.args[0]);
         const rep = refId(e.args[1]);
         if (!pds || rep === null) continue;
-        // Only shape definitions of products. Creo and others attach additional representations
+        // Only shape definitions of products. Some exporters attach additional representations
         // of the same solid to SHAPE_ASPECTs (validation properties) – those are not parts.
         if (pds.type !== 'PRODUCT_DEFINITION_SHAPE') continue;
         const def = refId(pds.args[2]);
@@ -667,7 +667,7 @@ function solidSize(step, geo, faces, features, sig = null) {
                     ext(geo.point(v));
                 }
                 // Circles: vertices alone underestimate the size (e.g. full circle with 1 vertex).
-                // Only consider the arc actually used – CATIA e.g. writes tori with a
+                // Only consider the arc actually used – an exporter e.g. writes tori with a
                 // 200 m radius ("homeo Torus") whose edges are tiny arcs of huge circles;
                 // the full circle made the solid 1 km large (-> far too coarse tessellation).
                 const c = step.get(ec.args[3]);

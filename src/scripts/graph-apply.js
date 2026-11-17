@@ -396,7 +396,7 @@ export class GraphApplier {
         return { min: [d.min[0] - pad[0], d.min[1] - pad[1]], max: [d.max[0] + pad[0], d.max[1] + pad[1]], scale: UV_TILE / size };
     }
 
-    // Dispose baked maps. fallback undefined: put the imported texture (glTF/FBX) back
+    // Dispose baked maps. fallback undefined: put the imported texture (glTF/.fbx) back
     // (material without graph), otherwise this value – apply() sets the map itself afterwards anyway.
     _clearMaps(material, keys, fallback) {
         const maps = material.userData.graphMaps || {};

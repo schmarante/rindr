@@ -1,9 +1,9 @@
-// Import of mesh formats (glTF/GLB, FBX) via the three.js loaders.
+// Import of mesh formats (glTF/GLB, .fbx) via the three.js loaders.
 // The loaded object is converted into the same structure as the STEP import:
 //   nodes      – object tree ({ name, parent }, children after parents)
 //   geometries – own buffers per geometry (positions/normals/uvs/index), BVH + tangents in the worker pool
 //   meshes     – instances with absolute matrix, node and material
-// Units are converted to mm (like STEP): glTF is in metres, FBX in cm × UnitScaleFactor, MAX in its system unit,
+// Units are converted to mm (like STEP): glTF is in metres, .fbx in cm × UnitScaleFactor, MAX in its system unit,
 // 3MF in the unit of its model part.
 // Materials become separate entries (source 'import') in the MaterialManager, textures are kept.
 import * as THREE from 'three/webgpu';
@@ -27,7 +27,7 @@ import { MESH_EXTENSIONS, MissingFilesError } from './mesh-formats.js';
 export { MESH_EXTENSIONS, MissingFilesError };
 const USD_FORMATS = ['usd', 'usda', 'usdc', 'usdz'];   // usd-importer.js (loaded on demand)
 
-// The loaders are loaded only with the first glTF/FBX (~170 KB that a STEP-only session never needs).
+// The loaders are loaded only with the first glTF/.fbx (~170 KB that a STEP-only session never needs).
 // Draco/Basis decoders: three.js references them itself (new URL(…, import.meta.url)) – Vite ships them
 // with hashed names in _astro/; the old copy in public/decoders is gone.
 let libs = null;
@@ -74,7 +74,7 @@ export async function importMeshFile(source, { renderer, materialManager, onStat
     if (ext === 'ifc' || ext === 'ifczip') return (await import('./ifc/ifc-importer.js')).importIfc(source, { materialManager, onStatus, bvh });
     onStatus(t('import.mesh.reading', { name: source.name }));
     let result, missing;
-    // binary FBX: own lean reader in a worker (typed arrays only – three.js' FBXLoader needs several times the
+    // binary .fbx: own lean reader in a worker (typed arrays only – three.js' FBXLoader needs several times the
     // file size in JS heap, a large CAD export crashed the tab); animated/skinned files below
     // IMPORT.fbxLoaderMaxBytes still go to FBXLoader (it reads animation, skinning, blend shapes)
     let buffer = null, fbxCameraScene = null;
@@ -121,7 +121,7 @@ export async function importMeshFile(source, { renderer, materialManager, onStat
         result = convert(object, scale, materialManager, source.name);
         if (fbxCameraScene) { result.cameras = fbxCameras(fbxCameraScene, scale); result.lights = fbxLights(fbxCameraScene, scale); }   // read by the lean reader
         if (object.userData.blend) {
-            // Blender cameras look along −Z, up +Y; modifiers are not applied (the saved meshes are their input)
+            // the modeller cameras look along −Z, up +Y; modifiers are not applied (the saved meshes are their input)
             const { cameras, lights, modifiers } = object.userData.blend;
             object.updateMatrixWorld(true);
             result.cameras = cameras.map(c => importedCamera(c.name, c.object.matrixWorld, { forward: FORWARD_MINUS_Z, up: UP_Y, fov: c.fov, fovAxis: c.fovAxis, aspect: c.aspect, scale, near: c.near }));
@@ -130,7 +130,7 @@ export async function importMeshFile(source, { renderer, materialManager, onStat
             delete object.userData.blend;
         }
         if (object.userData.c4d) {
-            // C4D cameras and lights look along their −Z after the mirroring (C4D: +Z), up = +Y; objects the reader does not
+            // .c4d cameras and lights look along their −Z after the mirroring (.c4d: +Z), up = +Y; objects the reader does not
             // build: notice
             const { cameras, lights, unsupported } = object.userData.c4d;
             object.updateMatrixWorld(true);
@@ -181,7 +181,7 @@ export async function importMeshFile(source, { renderer, materialManager, onStat
 // Loading manager that resolves the files a model references (textures, .bin) against the supplied files or the
 // model's URL; missing = references that could not be resolved, idle() = all started loads done.
 function createResolver(source) {
-    // Resolve supplied files by relative path or file name (FBX often contains absolute Windows paths)
+    // Resolve supplied files by relative path or file name (.fbx often contains absolute Windows paths)
     const byPath = new Map(), byName = new Map();
     for (const { path, file } of source.files) {
         byPath.set(path.toLowerCase().replace(/^\.?\//, ''), file);
@@ -221,7 +221,7 @@ function createResolver(source) {
         return 'data:,';   // dropped files: never fetch anything from the server
     });
     manager.onError = href => { if (fromServer.has(href)) missing.add(fromServer.get(href)); };
-    // Wait until all textures are loaded (FBX returns the object before that)
+    // Wait until all textures are loaded (.fbx returns the object before that)
     let started = false;
     const loaded = new Promise(resolve => {
         manager.onStart = () => { started = true; };
@@ -263,21 +263,21 @@ async function load(source, ext, renderer, onStatus = () => {}, preloaded = null
             object = usd.object;
             scale = usd.scale;
         } else if (ext === 'c4d') {
-            // C4D: own reader in a worker (c4d/c4d-parse.js), built into three.js objects (c4d/c4d-build.js) – skinning
-            // and animation then go the way of FBX/glTF (puppet)
+            // .c4d: own reader in a worker (c4d/c4d-parse.js), built into three.js objects (c4d/c4d-build.js) – skinning
+            // and animation then go the way of .fbx/glTF (puppet)
             if (!isC4dFile(buffer)) throw new Error(t('import.c4d.notC4d'));
-            const scene = await readC4dLean(buffer.slice(0), { onStatus });
+            const scene = await readC4dLean(buffer.slice(0), { onStatus, name: source.name });
             onStatus(t('import.mesh.buildingGeometries'));
             const built = (await import('./c4d/c4d-build.js')).buildC4d(scene, manager, source.name.replace(/\.[^.]+$/, ''));
             object = built.object;
             object.userData.c4d = { cameras: built.cameras, lights: built.lights, unsupported: built.unsupported };
             scale = built.scale;   // project unit → mm
         } else if (ext === 'blend') {
-            // Blender: own reader in a worker (blend/blend-parse.js, the file's self description), packed images from the
+            // the modeller: own reader in a worker (blend/blend-parse.js, the file's self description), packed images from the
             // file; built into three.js objects (blend/blend-build.js)
             const { isBlendFile } = await import('./blend/blend-file.js');
             if (!isBlendFile(new Uint8Array(buffer, 0, 16))) throw new Error(t('import.blend.notBlend'));
-            const scene = await readBlendLean(buffer.slice(0), { onStatus });
+            const scene = await readBlendLean(buffer.slice(0), { onStatus, name: source.name });
             onStatus(t('import.mesh.buildingGeometries'));
             const built = (await import('./blend/blend-build.js')).buildBlend(scene, manager, source.name.replace(/\.[^.]+$/, ''));
             object = built.object;
@@ -286,8 +286,8 @@ async function load(source, ext, renderer, onStatus = () => {}, preloaded = null
             scale = built.scale;
         } else if (ext === 'obj') {
             // OBJ: own reader in a worker (obj/obj-parse.js – files of hundreds of MB), materials from the MTL files it
-            // names (dropped / next to the model, through the resolver); no unit – metres like glTF (Blender writes them)
-            const scene = await readObjLean(buffer.slice(0), { onStatus });
+            // names (dropped / next to the model, through the resolver); no unit – metres like glTF (the modeller writes them)
+            const scene = await readObjLean(buffer.slice(0), { onStatus, name: source.name });
             const { buildObj, parseMtl } = await import('./obj/obj-build.js');
             const mtl = {};
             for (const lib of scene.mtllibs) {
@@ -299,10 +299,54 @@ async function load(source, ext, renderer, onStatus = () => {}, preloaded = null
             onStatus(t('import.mesh.buildingGeometries'));
             object = buildObj(scene, mtl, manager, source.name.replace(/\.[^.]+$/, ''), { linear: scene.writer === 'blender' });
             scale = 1000;   // m → mm
+        } else if (ext === 'lwo') {
+            // LWO: own reader in a worker (lwo/lwo-parse.js – LWO2), layers with a mesh per
+            // surface (lwo/lwo-build.js); metres
+            const { lwoKind } = await import('./lwo/lwo-parse.js');
+            const kind = lwoKind(new Uint8Array(buffer, 0, Math.min(12, buffer.byteLength)));
+            if (!kind) throw new Error(t('import.lwo.notLwo'));
+            if (kind !== 'LWO2') throw new Error(t('import.lwo.version', { version: kind }));
+            const scene = await readLwoLean(buffer.slice(0), { onStatus, name: source.name });
+            onStatus(t('import.mesh.buildingGeometries'));
+            object = (await import('./lwo/lwo-build.js')).buildLwo(scene, manager, source.name.replace(/\.[^.]+$/, ''), n => t('import.lwo.layer', { n }));
+            scale = 1000;   // m → mm
+        } else if (ext === 'xsi') {
+            // .xsi (text form): own reader in a worker (xsi/xsi-parse.js – files of hundreds of MB), model tree with a mesh
+            // per polygon list (xsi/xsi-build.js); no unit in the format – xsiConventions (cm, the SketchUp export mm)
+            const { xsiHeader } = await import('./xsi/xsi-parse.js');
+            const head = xsiHeader(new Uint8Array(buffer, 0, Math.min(16, buffer.byteLength)));
+            if (!head) throw new Error(t('import.xsi.notXsi'));
+            if (head.binary) throw new Error(t('import.xsi.binary'));
+            const scene = await readXsiLean(buffer.slice(0), { onStatus, name: source.name });
+            onStatus(t('import.mesh.buildingGeometries'));
+            const { buildXsi, xsiConventions } = await import('./xsi/xsi-build.js');
+            object = buildXsi(scene, manager, source.name.replace(/\.[^.]+$/, ''));
+            scale = xsiConventions(scene).scale;
+        } else if (ext === '3ds') {
+            // 3DS: own reader in a worker (3ds/3ds-parse.js), keyframer hierarchy (3ds/3ds-build.js). No unit in the format –
+            // centimetres like .xsi; Z up by the format, but exporters write Y up too – guessed from the box as with STL
+            const { is3ds } = await import('./3ds/3ds-parse.js');
+            if (!is3ds(new Uint8Array(buffer))) throw new Error(t('import.tds.not3ds'));
+            const scene = await read3dsLean(buffer.slice(0), { onStatus, name: source.name });
+            onStatus(t('import.mesh.buildingGeometries'));
+            object = (await import('./3ds/3ds-build.js')).build3ds(scene, manager, source.name.replace(/\.[^.]+$/, ''));
+            object.updateMatrixWorld(true);
+            if (meshUpAxis(new THREE.Box3().setFromObject(object), '') === 'z') object.rotation.x = -Math.PI / 2;
+            scale = 10;   // cm → mm
+        } else if (ext === 'mb') {
+            // MB (binary scene): own reader in a worker (mb/mb-parse.js), transform tree with a mesh per material
+            // (mb/mb-build.js); unit from the file (LUNI)
+            const { mbKind } = await import('./mb/mb-parse.js');
+            if (!mbKind(new Uint8Array(buffer, 0, Math.min(24, buffer.byteLength)))) throw new Error(t('import.mb.notMb'));
+            const scene = await readMbLean(buffer.slice(0), { onStatus, name: source.name });
+            onStatus(t('import.mesh.buildingGeometries'));
+            const { buildMb, mbScale } = await import('./mb/mb-build.js');
+            object = buildMb(scene, source.name.replace(/\.[^.]+$/, ''));
+            scale = mbScale(scene);
         } else if (ext === 'fbx') {
             const loader = new FBXLoader(manager);
             object = loader.parse(buffer, '');
-            // FBX: unit cm × UnitScaleFactor (1 = cm, 100 = m, 0.1 = mm, 2.54 = inch)
+            // .fbx: unit cm × UnitScaleFactor (1 = cm, 100 = m, 0.1 = mm, 2.54 = inch)
             scale = 10 * (object.userData.unitScaleFactor || 1);
         } else {
             const loader = new GLTFLoader(manager);
@@ -328,8 +372,8 @@ async function load(source, ext, renderer, onStatus = () => {}, preloaded = null
 }
 
 // Bump maps from the file are the relief of the import graph (material-graph.js IMPORT_SLOTS): its height in mm, set
-// once the meshes are known – from the file where the format gives a length (Blender: Distance × Strength), else from
-// its unitless factor (OBJ -bm, FBX BumpFactor, MAX, C4D: 1): factor × one picture's length on the model / 1024 – the
+// once the meshes are known – from the file where the format gives a length (the modeller: Distance × Strength), else from
+// its unitless factor (OBJ -bm, .fbx BumpFactor, MAX, .c4d: 1): factor × one picture's length on the model / 1024 – the
 // slope three.js showed a 1K picture with at one texel per screen pixel, now at any distance and resolution, and it
 // grows with the picture like a normal map's. The picture's length: the meshes' surface length per UV unit / repeat.
 const BUMP_TEXELS = 1024;
@@ -351,7 +395,7 @@ function fitImportRelief(result, materialManager) {
     }
     for (const [id, metric] of wanted) {
         const render = materialManager.get(id).def.render;
-        let height = Number.isFinite(render.bumpHeight) ? render.bumpHeight : null;   // negative: sunk (pbrt, Blender's invert)
+        let height = Number.isFinite(render.bumpHeight) ? render.bumpHeight : null;   // negative: sunk (pbrt, the modeller's invert)
         if (height === null) {
             const tex = render.maps.bumpMap;
             const repeat = (Math.abs(tex.repeat.x) + Math.abs(tex.repeat.y)) / 2 || 1;
@@ -688,7 +732,7 @@ function convert(object, scale, materialManager, fileName = '') {
     const addMesh = (mesh, node, copies = null) => {
         const geometry = mesh.geometry;
         const multi = Array.isArray(mesh.material);
-        // groups with the same material → one mesh of ours (FBX often has thousands of groups for a few
+        // groups with the same material → one mesh of ours (.fbx often has thousands of groups for a few
         // materials – one mesh each made loading and drawing slow). key = first group (stable for scene states)
         const buckets = new Map();
         if (multi && geometry.groups.length) {
@@ -763,7 +807,7 @@ function convert(object, scale, materialManager, fileName = '') {
     });
     if (copyGroups.length) debugLog('[Import] copies as instances', { groups: copyGroups.length, copies: copyGroups.reduce((a, g) => a + g.members.length, 0) });
     for (const g of geometries) delete g.sourceVertex;   // not to the BVH worker
-    // glTF cameras: look along −Z, vertical field of view, no target (FBX cameras: fbxCameras, from the own reader for
+    // glTF cameras: look along −Z, vertical field of view, no target (.fbx cameras: fbxCameras, from the own reader for
     // both ways of loading)
     const cameras = [], lights = [];
     if (/\.(gltf|glb)$/i.test(fileName)) object.traverseVisible(o => {
@@ -825,10 +869,10 @@ function materialIdFactory(materialManager, scale, fileName) {
     };
 }
 
-// --- lean FBX (fbx/fbx-parse.js in a worker) ---
+// --- lean .fbx (fbx/fbx-parse.js in a worker) ---
 
 /**
- * Read a binary FBX in a worker. Resolves { scene, geometries } – or { buffer } (the file handed back) when it is
+ * Read a binary .fbx in a worker. Resolves { scene, geometries } – or { buffer } (the file handed back) when it is
  * animated / has deformers and `fallback` allows three.js' loader for it.
  */
 function readFbxLean(buffer, { fallback, onStatus }) {
@@ -841,7 +885,7 @@ function readFbxLean(buffer, { fallback, onStatus }) {
             else if (data.type === 'fallback') resolve({ buffer: data.buffer, cameraScene: data.cameraScene });
             else resolve({ scene: data.scene, geometries: data.geometries });
         };
-        worker.onerror = e => { worker.terminate(); reject(new Error(e.message || 'FBX worker failed')); };
+        worker.onerror = e => { worker.terminate(); reject(new Error(e.message || '.fbx worker failed')); };
         worker.postMessage({ buffer, fallback }, [buffer]);
     });
 }
@@ -849,8 +893,8 @@ function readFbxLean(buffer, { fallback, onStatus }) {
 const fbxUp = scene => (scene.upAxis === 2 ? new THREE.Matrix4().makeRotationX(-Math.PI / 2) : new THREE.Matrix4());   // Z up → Y up (as FBXLoader)
 
 /**
- * Cameras of an FBX scene description (fbx-parse.js) in the model's space – also for files FBXLoader loads (same up
- * axis and unit). An FBX camera looks along its local +X with Y up. world: the models' world matrices if computed already
+ * Cameras of an .fbx scene description (fbx-parse.js) in the model's space – also for files FBXLoader loads (same up
+ * axis and unit). An .fbx camera looks along its local +X with Y up. world: the models' world matrices if computed already
  */
 function fbxCameras(scene, scale, world = null) {
     if (!scene?.cameras?.length) return [];
@@ -866,7 +910,7 @@ function fbxCameras(scene, scale, world = null) {
 }
 
 /**
- * Lights of an FBX scene description (fbx-parse.js) in the model's space. An FBX light shines along its local −Y; the
+ * Lights of an .fbx scene description (fbx-parse.js) in the model's space. An .fbx light shines along its local −Y; the
  * intensity is relative (percent / 100, no unit) – the viewer keeps the ratios. Area lights: 1 × 1 unit times the
  * node's scale (no size in the file). world: the models' world matrices if computed already
  */
@@ -877,7 +921,7 @@ function fbxLights(scene, scale, world = null) {
         world = [];
         scene.models.forEach((m, i) => { world[i] = new THREE.Matrix4().multiplyMatrices(m.parent >= 0 ? world[m.parent] : up, fbxLocalMatrix(m.transform)); });
     }
-    // Blender's exporter (detected from the header): linear colours, intensity = its light value – watts (point, spot,
+    // the modeller's exporter (detected from the header): linear colours, intensity = its light value – watts (point, spot,
     // area) and W/m² (sun), converted like its glTF exporter (683 lm/W; point/spot over the sphere 4π, area: radiance
     // P / (π · A)); others: sRGB colours, relative intensity
     const blender = /^blender/i.test(scene.creator || '');
@@ -901,10 +945,10 @@ function fbxLights(scene, scale, world = null) {
     });
 }
 
-// FBX RotationOrder (extrinsic eXYZ …) → three.js (intrinsic) Euler order
+// .fbx RotationOrder (extrinsic eXYZ …) → three.js (intrinsic) Euler order
 const FBX_EULER = ['ZYX', 'YZX', 'XZY', 'ZXY', 'YXZ', 'XYZ'];
 
-// Local matrix of an FBX model (FBX SDK: T · Roff · Rp · Rpre · R · Rpost⁻¹ · Rp⁻¹ · Soff · Sp · S · Sp⁻¹)
+// Local matrix of an .fbx model (.fbx SDK: T · Roff · Rp · Rpre · R · Rpost⁻¹ · Rp⁻¹ · Soff · Sp · S · Sp⁻¹)
 function fbxLocalMatrix(tr) {
     const m = new THREE.Matrix4(), tmp = new THREE.Matrix4();
     const trans = v => new THREE.Matrix4().makeTranslation(v?.[0] || 0, v?.[1] || 0, v?.[2] || 0);
@@ -917,7 +961,7 @@ function fbxLocalMatrix(tr) {
     return m;
 }
 
-/** Lean FBX result → { nodes, geometries, meshes } like convert(); materials as three.js Phong/Lambert like FBXLoader */
+/** Lean .fbx result → { nodes, geometries, meshes } like convert(); materials as three.js Phong/Lambert like FBXLoader */
 async function convertLeanFbx({ scene, geometries: parts }, source, materialManager) {
     const scale = 10 * (scene.unitScaleFactor || 1);   // cm × UnitScaleFactor → mm
     const toMm = new THREE.Matrix4().makeScale(scale, scale, scale);
@@ -1021,7 +1065,7 @@ async function convertLeanFbx({ scene, geometries: parts }, source, materialMana
     }
 }
 
-// --- cameras of a file (MAX, FBX, glTF) → saved views in the viewer (docs/mesh-import.md "Kameras") ---
+// --- cameras of a file (MAX, .fbx, glTF) → saved views in the viewer (docs/mesh-import.md "Kameras") ---
 
 /**
  * One camera in the model's space (mm, Y up – like the meshes): { name, position, direction, target (null: unknown – the
@@ -1042,7 +1086,7 @@ function importedCamera(name, world, { forward, up, target = null, distance = 0,
 }
 const FORWARD_MINUS_Z = new THREE.Vector3(0, 0, -1), UP_Y = new THREE.Vector3(0, 1, 0), FORWARD_MINUS_Y = new THREE.Vector3(0, -1, 0);
 
-// --- lights of a file (glTF, FBX, MAX, C4D, Blender, USD) → scene lights in the viewer (docs/mesh-import.md "Lichter") ---
+// --- lights of a file (glTF, .fbx, MAX, .c4d, .blend, USD) → scene lights in the viewer (docs/mesh-import.md "Lichter") ---
 
 /**
  * One light in the model's space (mm, Y up – like the meshes and cameras):
@@ -1070,9 +1114,9 @@ function importedLight(name, world, { kind, forward, color = [1, 1, 1], intensit
 }
 
 /**
- * A Blender light (blend-parse.js) → importedLight. Shines along its −Z. Watts → photometric like Blender's glTF
+ * A the modeller light (blend-parse.js) → importedLight. Shines along its −Z. Watts → photometric like the modeller's glTF
  * exporter (683 lm/W): point/spot candela = P / 4π (a spot has the power of the point light it cuts), sun lux = W/m²,
- * area luminance = P / (π · A) (A in m² – Blender's units × metersPerUnit; scale = mm per unit).
+ * area luminance = P / (π · A) (A in m² – the modeller's units × metersPerUnit; scale = mm per unit).
  */
 function blendLight(l, scale) {
     const m = l.object.matrixWorld, s = new THREE.Vector3().setFromMatrixScale(m);
@@ -1091,7 +1135,7 @@ function blendLight(l, scale) {
 }
 
 /**
- * A C4D light (c4d/c4d-build.js, values from c4d-parse.js readLight) → importedLight. Shines along its −Z after the
+ * A .c4d light (c4d/c4d-build.js, values from c4d-parse.js readLight) → importedLight. Shines along its −Z after the
  * mirroring. Types: omni / tube → point, spot / square spot → spot (cone = half the stored whole angle, penumbra =
  * 1 − inner / outer), infinite / parallel / parallel spots → directional, area: rectangle (size X = 2 × outer radius
  * along X, size Y along Y), disc (2 × outer radius), other shapes → point with that radius, photometric → point (IES
@@ -1162,29 +1206,29 @@ function usdLight(o, scale) {
     });
 }
 
-// --- Blender (blend/blend-parse.js in a worker) ---
+// --- the modeller (blend/blend-parse.js in a worker) ---
 
-function readBlendLean(buffer, { onStatus }) {
+function readBlendLean(buffer, { onStatus, name = '' }) {
     return new Promise((resolve, reject) => {
         const worker = new Worker(new URL('./blend/blend-worker.js', import.meta.url), { type: 'module', name: 'blend' });
         worker.onmessage = ({ data }) => {
-            if (data.type === 'progress') { onStatus(t('import.mesh.reading', { name: 'Blender' }), data.done); return; }
+            if (data.type === 'progress') { onStatus(t('import.mesh.reading', { name }), data.done); return; }
             worker.terminate();
             if (data.type === 'error') reject(new Error(data.message));
             else resolve(data.scene);
         };
-        worker.onerror = e => { worker.terminate(); reject(new Error(e.message || 'Blender worker failed')); };
+        worker.onerror = e => { worker.terminate(); reject(new Error(e.message || '.blend worker failed')); };
         worker.postMessage({ buffer }, [buffer]);
     });
 }
 
 // --- OBJ (obj/obj-parse.js in a worker) ---
 
-function readObjLean(buffer, { onStatus }) {
+function readObjLean(buffer, { onStatus, name = '' }) {
     return new Promise((resolve, reject) => {
         const worker = new Worker(new URL('./obj/obj-worker.js', import.meta.url), { type: 'module', name: 'obj' });
         worker.onmessage = ({ data }) => {
-            if (data.type === 'progress') { onStatus(t('import.mesh.reading', { name: 'OBJ' }), data.done); return; }
+            if (data.type === 'progress') { onStatus(t('import.mesh.reading', { name }), data.done); return; }
             worker.terminate();
             if (data.type === 'error') reject(new Error(data.message));
             else resolve(data.scene);
@@ -1194,18 +1238,82 @@ function readObjLean(buffer, { onStatus }) {
     });
 }
 
-// --- C4D (c4d/c4d-parse.js in a worker) ---
+// --- LWO (lwo/lwo-parse.js in a worker) ---
 
-function readC4dLean(buffer, { onStatus }) {
+function readLwoLean(buffer, { onStatus, name = '' }) {
     return new Promise((resolve, reject) => {
-        const worker = new Worker(new URL('./c4d/c4d-worker.js', import.meta.url), { type: 'module', name: 'c4d' });
+        const worker = new Worker(new URL('./lwo/lwo-worker.js', import.meta.url), { type: 'module', name: 'lwo' });
         worker.onmessage = ({ data }) => {
-            if (data.type === 'progress') { onStatus(t('import.mesh.reading', { name: 'C4D' }), data.done); return; }
+            if (data.type === 'progress') { onStatus(t('import.mesh.reading', { name }), data.done); return; }
             worker.terminate();
             if (data.type === 'error') reject(new Error(data.message));
             else resolve(data.scene);
         };
-        worker.onerror = e => { worker.terminate(); reject(new Error(e.message || 'C4D worker failed')); };
+        worker.onerror = e => { worker.terminate(); reject(new Error(e.message || 'LWO worker failed')); };
+        worker.postMessage({ buffer }, [buffer]);
+    });
+}
+
+// --- 3DS (3ds/3ds-parse.js in a worker) ---
+
+function read3dsLean(buffer, { onStatus, name = '' }) {
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(new URL('./3ds/3ds-worker.js', import.meta.url), { type: 'module', name: '3ds' });
+        worker.onmessage = ({ data }) => {
+            if (data.type === 'progress') { onStatus(t('import.mesh.reading', { name }), data.done); return; }
+            worker.terminate();
+            if (data.type === 'error') reject(new Error(data.message));
+            else resolve(data.scene);
+        };
+        worker.onerror = e => { worker.terminate(); reject(new Error(e.message || '3DS worker failed')); };
+        worker.postMessage({ buffer }, [buffer]);
+    });
+}
+
+// --- MB (mb/mb-parse.js in a worker) ---
+
+function readMbLean(buffer, { onStatus, name = '' }) {
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(new URL('./mb/mb-worker.js', import.meta.url), { type: 'module', name: 'mb' });
+        worker.onmessage = ({ data }) => {
+            if (data.type === 'progress') { onStatus(t('import.mesh.reading', { name }), data.done); return; }
+            worker.terminate();
+            if (data.type === 'error') reject(new Error(data.message));
+            else resolve(data.scene);
+        };
+        worker.onerror = e => { worker.terminate(); reject(new Error(e.message || 'MB worker failed')); };
+        worker.postMessage({ buffer }, [buffer]);
+    });
+}
+
+// --- .xsi (xsi/xsi-parse.js in a worker) ---
+
+function readXsiLean(buffer, { onStatus, name = '' }) {
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(new URL('./xsi/xsi-worker.js', import.meta.url), { type: 'module', name: 'xsi' });
+        worker.onmessage = ({ data }) => {
+            if (data.type === 'progress') { onStatus(t('import.mesh.reading', { name }), data.done); return; }
+            worker.terminate();
+            if (data.type === 'error') reject(new Error(data.message));
+            else resolve(data.scene);
+        };
+        worker.onerror = e => { worker.terminate(); reject(new Error(e.message || '.xsi worker failed')); };
+        worker.postMessage({ buffer }, [buffer]);
+    });
+}
+
+// --- .c4d (c4d/c4d-parse.js in a worker) ---
+
+function readC4dLean(buffer, { onStatus, name = '' }) {
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(new URL('./c4d/c4d-worker.js', import.meta.url), { type: 'module', name: 'c4d' });
+        worker.onmessage = ({ data }) => {
+            if (data.type === 'progress') { onStatus(t('import.mesh.reading', { name }), data.done); return; }
+            worker.terminate();
+            if (data.type === 'error') reject(new Error(data.message));
+            else resolve(data.scene);
+        };
+        worker.onerror = e => { worker.terminate(); reject(new Error(e.message || '.c4d worker failed')); };
         worker.postMessage({ buffer }, [buffer]);
     });
 }
@@ -1683,7 +1791,7 @@ function inBindPose(mesh) {
     return true;
 }
 
-// Normals for meshes without any: smooth across vertices at the same position (FBX/glTF often have none
+// Normals for meshes without any: smooth across vertices at the same position (.fbx/glTF often have none
 // shared), edges sharper than 30° stay hard – otherwise every triangle was flat (faceted). Corner normals from
 // crease-normals.js, corners of our indexed buffer that share a vertex averaged (vertex = index value).
 function computeNormals(positions, index, normals) {
@@ -1727,7 +1835,7 @@ async function collectUnlit(gltf, object) {
     }
 }
 
-// Source material (Standard/Physical from glTF, Phong/Lambert from FBX) -> parameters + textures
+// Source material (Standard/Physical from glTF, Phong/Lambert from .fbx) -> parameters + textures
 function convertMaterial(m, scale, meshScale = scale) {
     const hex = c => '#' + c.getHexString();
     const params = { color: m.color ? hex(m.color) : '#ffffff' };
@@ -1764,7 +1872,7 @@ function convertMaterial(m, scale, meshScale = scale) {
     const maps = {};
     // only textures with a loaded image (missing files yield image = null -> path tracer crashes); a missing one is
     // remembered with its slot (render.missing – any format, USD fills it in usd-mdl.js): its image node shows a warning
-    // and a file handed in later is linked straight into the slot. flipY: how the image is to be oriented (FBX/MAX
+    // and a file handed in later is linked straight into the slot. flipY: how the image is to be oriented (.fbx/MAX
     // like three's default, glTF not flipped)
     const missingMaps = { ...(m.userData?.usdMissingMaps || {}) };
     for (const key of MAP_KEYS) {
@@ -1789,7 +1897,7 @@ function convertMaterial(m, scale, meshScale = scale) {
         if (emissiveMap) maps.emissiveMap = emissiveMap;
     }
     // Phong specular maps have no counterpart; bump maps become the relief (material-graph.js IMPORT_SLOTS) – its height
-    // from the file where the format has one (Blender: in scene units → mm), else from the factor (fitImportRelief)
+    // from the file where the format has one (the modeller: in scene units → mm), else from the factor (fitImportRelief)
     const render = {
         maps,
         side: m.side,
@@ -1799,7 +1907,7 @@ function convertMaterial(m, scale, meshScale = scale) {
         bumpScale: m.bumpScale ?? 1,
         bumpHeight: Number.isFinite(m.userData?.bumpHeight) ? m.userData.bumpHeight * scale : null,
         aoMapIntensity: m.aoMapIntensity ?? 1,
-        // colours per vertex (glTF COLOR_0, PLY, OBJ, FBX …): × the material's colour, raster and path tracer
+        // colours per vertex (glTF COLOR_0, PLY, OBJ, .fbx …): × the material's colour, raster and path tracer
         vertexColors: !!m.vertexColors,
         // slots whose image is missing – { slot: { url, srgb, flipY?, repeat?, offset?, rotation?, color? } };
         // the viewer links a file handed in later into them without reopening the scene

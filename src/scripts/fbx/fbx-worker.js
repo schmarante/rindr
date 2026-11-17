@@ -1,4 +1,4 @@
-// Worker of the lean FBX reader (fbx-parse.js): gets the file buffer (transferred), answers with the scene
+// Worker of the lean .fbx reader (fbx-parse.js): gets the file buffer (transferred), answers with the scene
 // description and the geometry buffers (transferred, no copies). Animated files / files with deformers are handed
 // back untouched when the caller may still use three.js' loader for them (small files, `fallback`).
 import { readTree, describeScene, buildGeometry } from './fbx-parse.js';

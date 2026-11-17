@@ -1,5 +1,5 @@
 // Drawing files (DXF; DWG next) on the main thread: read in a worker (cad-worker.js), ask for the space when the file has
-// layouts with content (model space or a layout – chooseSpace), build there. Returns the STEP text of its ACIS bodies
+// layouts with content (model space or a layout – chooseSpace), build there. Returns the STEP text of its SAT bodies
 // (empty without – the viewer goes the STEP way like IGES, docs/cad-drawings.md) and the extras (lines, fills, texts,
 // 3D surfaces) that hang on the same nodes.
 import { t } from '../i18n.js';
@@ -23,7 +23,7 @@ export function convertCad(bytes, { name = '', format = 'dxf', space = null, cho
         let chosen = space;
         worker.onmessage = async ({ data }) => {
             if (data.type === 'progress') {
-                onStatus(t(data.phase === 'read' ? 'import.cad.reading' : data.phase === 'solids' ? 'import.acis.converting' : 'import.cad.building'), data.fraction);
+                onStatus(t(data.phase === 'read' ? 'import.cad.reading' : data.phase === 'solids' ? 'import.sat.converting' : 'import.cad.building'), data.fraction);
                 return;
             }
             if (data.type === 'spaces') {

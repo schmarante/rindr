@@ -1,11 +1,11 @@
-// Worker: ACIS (SAT/SAB) → STEP text (acis-to-step.js). In: { bytes (ArrayBuffer or SharedArrayBuffer), name }. Out: progress
+// Worker: SAT (SAT/SAB) → STEP text (sat-to-step.js). In: { bytes (ArrayBuffer or SharedArrayBuffer), name }. Out: progress
 // messages, then { type: 'done', bytes, stats } – the STEP text in a SharedArrayBuffer with cross-origin isolation (the
 // STEP workers read it without a copy), otherwise a transferred ArrayBuffer. Like iges/iges-worker.js.
-import { acisToStep } from './acis-to-step.js';
+import { satToStep } from './sat-to-step.js';
 
 self.onmessage = ({ data }) => {
     try {
-        const { bytes, stats } = acisToStep(new Uint8Array(data.bytes), {
+        const { bytes, stats } = satToStep(new Uint8Array(data.bytes), {
             name: data.name, onProgress: fraction => self.postMessage({ type: 'progress', fraction }),
         });
         if (self.crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined') {

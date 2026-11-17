@@ -1,6 +1,6 @@
 // Material registry: all materials of the scene with their own ID.
 //  - Dummy materials from the STEP colors (source 'step')
-//  - Materials from glTF/FBX (source 'import', with textures in def.render – not in the JSON)
+//  - Materials from glTF/.fbx (source 'import', with textures in def.render – not in the JSON)
 //  - Instances from the library (source 'library', libraryId) and custom ones (source 'custom')
 //  - Assignment to objects (groups/meshes), JSON export/import
 // Every material is a RindrMaterial (toon.js: MeshPhysicalNodeMaterial + optional toon lighting, TSL); the path

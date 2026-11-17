@@ -1,10 +1,10 @@
-// ACIS bodies (acis-file.js) → STEP text the own STEP kernel reads – the import then goes the STEP way (structure,
+// SAT bodies (sat-file.js) → STEP text the own STEP kernel reads – the import then goes the STEP way (structure,
 // workers, tessellation qualities, copies, streaming, colours), like IGES (iges/iges-to-step.js).
 //
 // Mapping:
 //   body → its lumps; a lump whose shells are closed (every coedge has a partner) → MANIFOLD_SOLID_BREP (more shells:
 //   BREP_WITH_VOIDS), sheets → OPEN_SHELLs in one SHELL_BASED_SURFACE_MODEL per body; face → ADVANCED_FACE (same sense =
-//   face sense, flipped where the ACIS surface normal points the other way than the STEP one), loop → FACE_BOUND of an
+//   face sense, flipped where the SAT surface normal points the other way than the STEP one), loop → FACE_BOUND of an
 //   EDGE_LOOP (coedges in their order, ORIENTED_EDGE with the coedge sense), edge → EDGE_CURVE shared by both faces
 //   (vertices → VERTEX_POINT; edges without a curve – poles, apexes – are left out of their loops)
 //   surfaces: plane → PLANE, cone → CYLINDRICAL_SURFACE / CONICAL_SURFACE (radius grows by sine / cosine along the axis,
@@ -17,7 +17,7 @@
 //   colours: rgb_color / colour attributes of face, lump or body → STYLED_ITEM; the body transform (affine part, scale,
 //   translation) and the caller's placement go into the coordinates, lengths in mm.
 // wire(): the edges of a body as polylines (a drawing's solid seen through a layout viewport).
-import { AcisFile } from './acis-file.js';
+import { SatFile } from './sat-file.js';
 import { StepWriter, num, str, list, ref } from '../step-text.js';
 import { aciRgb } from '../cad/drawing.js';
 import { BSplineCurve } from '../step/geometry.js';
@@ -66,20 +66,20 @@ function solveSystem(A) {
  * @param {Uint8Array} bytes
  * @returns {{ bytes: Uint8Array, stats: object }}
  */
-export function acisToStep(bytes, { name = '', onProgress = null } = {}) {
-    const file = new AcisFile(bytes);
-    const c = new AcisStep();
+export function satToStep(bytes, { name = '', onProgress = null } = {}) {
+    const file = new SatFile(bytes);
+    const c = new SatStep();
     c.onProgress = onProgress;
     // the up axis as for STEP files (step-importer.js): by the program in the header, unknown ones +Y up – a translator's
     // SAT of a vehicle stood on y (0 … 170 in); bodies inside drawings are always +Z up (cad/)
-    c.begin(name || 'ACIS', file.product.replace(/\s+/g, ' ').trim());
+    c.begin(name || 'SAT', file.product.replace(/\s+/g, ' ').trim());
     const items = [];
     for (const b of c.bodiesOf(file)) items.push(...c.body(file, b, { unit: file.unitMm }));
-    c.product(name || 'ACIS', items, null);
+    c.product(name || 'SAT', items, null);
     return { bytes: c.finish(), stats: c.stats };
 }
 
-export class AcisStep {
+export class SatStep {
     constructor() {
         this.w = new StepWriter();
         this.stats = { bodies: 0, solids: 0, sheets: 0, faces: 0, edges: 0, skipped: {} };
@@ -96,9 +96,9 @@ export class AcisStep {
     begin(name, system = 'rindr drawing converter +Z UP') {
         const w = this.w;
         w.text('ISO-10303-21;\nHEADER;\n');
-        w.text("FILE_DESCRIPTION(('converted from ACIS'),'2;1');\n");
-        // "+Z UP" (drawings – step-importer.js turns them to +Y up), else the program of the ACIS header
-        w.text(`FILE_NAME(${str(name)},'',(''),(''),'rindr ACIS converter',${str(system)},'');\n`);
+        w.text("FILE_DESCRIPTION(('converted from SAT'),'2;1');\n");
+        // "+Z UP" (drawings – step-importer.js turns them to +Y up), else the program of the SAT header
+        w.text(`FILE_NAME(${str(name)},'',(''),(''),'rindr SAT converter',${str(system)},'');\n`);
         w.text("FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\nENDSEC;\nDATA;\n");
         const mm = w.add('(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))');
         const rad = w.add('(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.))');
@@ -169,7 +169,7 @@ export class AcisStep {
     }
 
     /**
-     * STEP items of one body. options: unit = mm per ACIS unit; transform = 3 × 4 placement (mm, applied after the body's
+     * STEP items of one body. options: unit = mm per SAT unit; transform = 3 × 4 placement (mm, applied after the body's
      * own transform – a block insert); color = [r, g, b] 0…1 (the drawing's colour, attributes of the file win)
      */
     body(file, bi, { unit = 1, transform = null, color = null } = {}) {
@@ -489,7 +489,7 @@ export class AcisStep {
         return null;
     }
 
-    // --- surfaces: { id, flip (ACIS normal against the STEP one), bspline } ---
+    // --- surfaces: { id, flip (SAT normal against the STEP one), bspline } ---
     surface(si) {
         if (si < 0) return null;
         return this.once(`s${si}`, () => {
@@ -709,7 +709,7 @@ export class AcisStep {
             if (!p.every(Number.isFinite) || !Number.isFinite(w)) throw new Error('bs3 surface points');
             pts.push(p); ws.push(w);
         }
-        // ends: multiplicity degree in ACIS, degree + 1 clamped in STEP
+        // ends: multiplicity degree in SAT, degree + 1 clamped in STEP
         U.m[0]++; U.m[U.m.length - 1]++; V.m[0]++; V.m[V.m.length - 1]++;
         const ids = pts.map(p => this.cp(this.P(p)));
         const rows = [], wrows = [];
@@ -724,7 +724,7 @@ export class AcisStep {
         return this.w.add(`(BOUNDED_SURFACE()B_SPLINE_SURFACE(${du},${dv},${list(rows)},${flags})B_SPLINE_SURFACE_WITH_KNOTS(${kn})GEOMETRIC_REPRESENTATION_ITEM()RATIONAL_B_SPLINE_SURFACE(${list(wrows)})REPRESENTATION_ITEM('')SURFACE())`);
     }
 
-    // --- curves: { id, reversed (the STEP curve runs against the ACIS one) } ---
+    // --- curves: { id, reversed (the STEP curve runs against the SAT one) } ---
     curve(ci, ends, edgeReversed) {
         return this.once(`c${ci}`, () => {
             const r = this.file.record(ci);
@@ -877,4 +877,4 @@ export class AcisStep {
     }
 }
 
-export { AcisFile, IDENT };
+export { SatFile, IDENT };

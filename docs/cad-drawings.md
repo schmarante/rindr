@@ -1,8 +1,8 @@
-# Zeichnungen: DXF, DWG und Volumenkörper (ACIS)
+# Zeichnungen: DXF, DWG und Volumenkörper (SAT)
 
 Nutzer (09.11.2026): „können wir auch dwg/dxf anzeigen? das sind ja nur 2D zeichnungen oder?“. Nach der Erklärung kam „gerne alle drei“, also drei Stufen:
 1. DXF
-2. Volumenkörper (ACIS → STEP)
+2. Volumenkörper (SAT → STEP)
 3. DWG
 
 **Entscheidungen des Nutzers:**
@@ -56,7 +56,7 @@ Das gemeinsame Modell für DXF und DWG:
 - **Objekte:** Jedes Objekt wird als Liste von Paaren gesammelt, dann je Typ umgesetzt.
   - Objekte mit Folge-Datensätzen: POLYLINE mit VERTEX/SEQEND, INSERT mit ATTRIB/SEQEND.
   - Layouts aus den LAYOUT-Objekten. Ihr Name ist die Gruppe 1 **nach** `AcDbLayout`, die erste 1 ist der Name der Seiteneinrichtung.
-- **ACIS-Daten:**
+- **SAT-Daten:**
   - bis 2010: SAT-Text in den Gruppen 1/3, verschlüsselt mit 159 − c; nach einem kodierten „A“ (0x5E) folgt ein zusätzliches Leerzeichen.
   - ab 2013: SAB im Abschnitt ACDSDATA, nach Handle.
 - **Falle:** `TextDecoder` nimmt keine Sichten auf geteilten Speicher. Der Worker kopiert die Datei, wenn sie als SharedArrayBuffer kommt.
@@ -142,13 +142,13 @@ Das gemeinsame Modell für DXF und DWG:
 - Auf Papier wird Farbe 7 zu Schwarz.
 - **Ansichtsfenster:** Der Modellbereich wird in die Ansicht gerechnet (Ansichtsrichtung über das OCS der Richtung, Ziel, Maßstab Höhe/Ansichtshöhe, Drehung, Mitte) und flach gemacht. Danach zugeschnitten: Linien nach Liang-Barsky, Dreiecke und Glyphen nach Sutherland-Hodgman am Rechteck; die Farben werden dabei nicht interpoliert. Gefrorene Layer des Fensters fehlen.
 - 3D-Flächen erscheinen als Kanten (sichtbare Polygonkanten); 2D-Füllungen bleiben gefüllt wie im CAD-Programm.
-- **Volumenkörper** (ACIS) erscheinen dort ebenfalls als Kanten (`AcisStep.wire`, je Objekt einmal berechnet – mehrere Fenster zeigen dasselbe): Geraden, Bögen in Schritten ≤ 5° (Richtung aus dem Sinn der Kante, Bögen laufen gegen den Uhrzeiger um ihre Normale), Schnittkurven in 32 Stücken ihrer Näherung; Kanten ohne Kurve (Pole, Spitzen) fehlen. Kein verdecktes Kantenbild – alle Kanten sichtbar wie die Drahtansicht im CAD-Programm. Vorher fehlten die Körper in Ansichtsfenstern ganz (ein Blatt einer Visualisierungsszene war leer, jetzt 25 000 Segmente, 0,2 s).
+- **Volumenkörper** (SAT) erscheinen dort ebenfalls als Kanten (`SatStep.wire`, je Objekt einmal berechnet – mehrere Fenster zeigen dasselbe): Geraden, Bögen in Schritten ≤ 5° (Richtung aus dem Sinn der Kante, Bögen laufen gegen den Uhrzeiger um ihre Normale), Schnittkurven in 32 Stücken ihrer Näherung; Kanten ohne Kurve (Pole, Spitzen) fehlen. Kein verdecktes Kantenbild – alle Kanten sichtbar wie die Drahtansicht im CAD-Programm. Vorher fehlten die Körper in Ansichtsfenstern ganz (ein Blatt einer Visualisierungsszene war leer, jetzt 25 000 Segmente, 0,2 s).
 
 **Grenzen:**
 - Linien, Glyphen und Dreiecke aus dem Speicher-Budget (`cadLimits`).
 - Darüber: abgeschnitten, mit Hinweis „Zeichnung gekürzt“.
 
-**Lichter** (LIGHT, DXF und DWG) werden Szenen-Lichter des Viewers – derselbe Weg wie bei glTF/FBX/… (`docs/mesh-import.md` „Lichter aus Dateien“): `drawing-build.js` liefert `lights` in der Form von `importedLight` (mm, +Y oben, absolut), `mergeCadExtras` hängt sie an das Ergebnis, `addImportedLights` legt sie an und skaliert alle zusammen auf die Helligkeit der Standardlichter (Haupt- und Fülllicht gehen aus).
+**Lichter** (LIGHT, DXF und DWG) werden Szenen-Lichter des Viewers – derselbe Weg wie bei glTF/.fbx/… (`docs/mesh-import.md` „Lichter aus Dateien“): `drawing-build.js` liefert `lights` in der Form von `importedLight` (mm, +Y oben, absolut), `mergeCadExtras` hängt sie an das Ergebnis, `addImportedLights` legt sie an und skaliert alle zusammen auf die Helligkeit der Standardlichter (Haupt- und Fülllicht gehen aus).
 - Art: entfernt → Richtung, Punkt → Punkt, Spot → Spot (Hotspot/Abfall sind volle Kegelwinkel: halber Winkel = Abfall/2, Rand = 1 − Hotspot/Abfall), **Web-Licht** (Art 10 – photometrisch mit Verteilungsdatei, meist Downlights) → breiter Spot (70°, Rand 0,7).
 - Stärke: der Faktor der Datei, Einheit `relative` (die Verhältnisse der Lichter bleiben). Die photometrischen Werte (Candela, Farbtemperatur, Verteilungsdatei) stehen in einem Erweiterungs-Wörterbuch des Lichts – nicht gelesen.
 - Farbe: die eigene Lichtfarbe (DWG: CMC im Objekt; DXF: 421/63), nicht die Objektfarbe (die färbt nur das Symbol).
@@ -158,13 +158,13 @@ Das gemeinsame Modell für DXF und DWG:
 
 **Nicht dargestellt** (im Hinweis gezählt, bei DWG mit dem Objektnamen): IMAGE/Unterlagen, Proxy-Objekte, SHAPE, OLE, Toleranzen (Form- und Lagetoleranzen), Schnittobjekte.
 
-## Volumenkörper: ACIS → STEP (`src/scripts/acis/`, Stufe 2)
+## Volumenkörper: SAT → STEP (`src/scripts/sat/`, Stufe 2)
 
 **Woher die Daten kommen:**
 - 3DSOLID, REGION, BODY und SURFACE einer Zeichnung: `cad/drawing-solids.js` im CAD-Worker.
-- Einzelne `.sat`/`.sab`-Dateien: `ACIS_EXTENSIONS` in `STEP_EXTENSIONS`; `readCadContent` → `acis/acis-import.js` → `acis-worker.js`, dann wie IGES.
+- Einzelne `.sat`/`.sab`-Dateien: `SAT_EXTENSIONS` in `STEP_EXTENSIONS`; `readCadContent` → `sat/sat-import.js` → `sat-worker.js`, dann wie IGES.
 
-### `acis-file.js`
+### `sat-file.js`
 **SAT (Text):**
 - Drei Kopfzeilen: Version, Produkt, mm je Einheit. **Vor Version 2.0 nur die erste** (DWG R14 schreibt SAT 1.06) – drei überlesen hieß: der Körper-Datensatz fehlte, nichts wurde übersetzt.
 - Datensätze bis `#`; die Satzanfänge werden einmal indiziert, Tokens erst bei Bedarf gelesen (424 MB, 2,7 Mio. Sätze).
@@ -172,7 +172,7 @@ Das gemeinsame Modell für DXF und DWG:
 - Unter-Daten in `{ }` werden in Dateireihenfolge nummeriert, `ref n` zeigt darauf zurück. Auch Flächen werden so geteilt.
 
 **SAB (binär):**
-- Kennung „ACIS BinaryFile“ oder die der Kernel-Abspaltung, dann gekennzeichnete Werte.
+- Kennung „SAT BinaryFile“ oder die der Kernel-Abspaltung, dann gekennzeichnete Werte.
 - Alles wird auf dieselben Tokens wie SAT abgebildet: Zeiger `$n`, Wahrheitswerte `T`/`F`, Vektoren als drei Zahlen.
 - **Fallen:**
   - Vertex und Coedge haben in SAB eine zusätzliche Zahl vor dem nächsten Zeiger (`nextPtr`).
@@ -181,7 +181,7 @@ Das gemeinsame Modell für DXF und DWG:
 
 **Feldfolgen:** nach der öffentlichen SAT-Beschreibung 7.0 (Kegel-Beispiel: Grundellipse, Kurvenintervall, Sinus, Kosinus, u-Maßstab, Umkehr, Flächenintervalle) und an einer öffentlichen Beispieldatei geprüft.
 
-### `acis-to-step.js`
+### `sat-to-step.js`
 **Topologie:**
 - body → lumps.
 - Geschlossene Schalen (jede Coedge hat einen Partner) → `MANIFOLD_SOLID_BREP`/`BREP_WITH_VOIDS`.
@@ -199,7 +199,7 @@ Das gemeinsame Modell für DXF und DWG:
 - spline → B-Spline aus der bs3-Fläche der Unterdaten:
   - exakt: direkt nach dem Namen, „full“ vorweg;
   - prozedural: die erste B-Spline-Fläche auf oberster Ebene (verschachtelte Unterdaten – Stützflächen, Profilkurven – zählen nicht). Geprüft an Loft (`skin_spl_sur`), Versatz (`off_spl_sur`), Rundung (`rb_blend_spl_sur`, auch mit einer Rundung als Stützfläche), Rotation (`rot_spl_sur`), Sweep (`sum_spl_sur`).
-  - ACIS speichert die Kontrollpunkte **u-schnell** (an einer Datei über Parameterkurven geprüft). Die Endvielfachheit ist dort = Grad, in STEP Grad + 1.
+  - SAT speichert die Kontrollpunkte **u-schnell** (an einer Datei über Parameterkurven geprüft). Die Endvielfachheit ist dort = Grad, in STEP Grad + 1.
   - **Gewichtete Splines** (`nurbs`) haben nach den Graden ein Wort für die gewichtete Richtung (`both`, `u`, `v`), erst dann Schluss und Singularität. Ohne das Wort verschob sich alles, die Fläche galt als unlesbar – jede gewichtete Fläche fehlte (eine Szene: 10 Rotationsflächen). Kurven ebenso (`skipRationalWord`).
   - **Prozedural ohne Näherung** (Eckübergang `VBL_SURF` in neueren Dateien): `fillFace` baut einen Ersatz aus dem Rand der Fläche – Ecken, Bögen (8 Punkte) und Schnittkurven (8 Punkte ihrer Näherung); liegt er in einer Ebene → `PLANE`, sonst die quadratische Höhenfläche über der Ebene des Rands (Newell-Normale der Schleife = Außenseite, kleinste Quadrate; eine Kugelkappe ist genau so eine) als Bézier-Fläche 3 × 3 über dem Rand-Rechteck + 5 %. Das Netz behält die exakten Kanten (der Kern teilt ihre Punkte mit den Nachbarflächen), nur das Innere ist geschätzt. Passt keine Höhenfläche (Abweichung > ½ Höhe), fehlt die Fläche weiter. Zählt als `filled`, nicht im Hinweis. Vorher fehlten die Flächen, die Körper hatten Löcher (eine Szene: 2 Kappen, 160 offene Kanten).
 
@@ -218,7 +218,7 @@ Das gemeinsame Modell für DXF und DWG:
 **Seiten der Flächenmodelle** (`keepSkins`, step-importer.js):
 - Der Kern dreht offene Häute so, dass sie von der Körpermitte wegzeigen.
 - Bei Blechen, deren Außenseite zur Mitte zeigt (Rückwand eines Fahrerhauses, Kotflügel), war das falsch. Sie waren einseitig unsichtbar; 25 214 Flächen wurden gedreht.
-- ACIS-Flächen haben eine eigene Außenseite. Bei Text vom eigenen Konverter (Kopf: Präprozessor „rindr ACIS converter“) entfällt diese Regel. Die Vereinheitlichung entlang der Kanten bleibt; jetzt 1 264 Flächen.
+- SAT-Flächen haben eine eigene Außenseite. Bei Text vom eigenen Konverter (Kopf: Präprozessor „rindr SAT converter“) entfällt diese Regel. Die Vereinheitlichung entlang der Kanten bleibt; jetzt 1 264 Flächen.
 
 **Hochachse:**
 - Einzelne SAT/SAB entscheiden wie STEP über das Programm im Kopf, unbekannte sind +Y. Eine Konverter-SAT eines Fahrzeugs stand auf y 0 … 170 Zoll; als Z-oben gedreht lag sie auf dem Kopf.
@@ -232,10 +232,10 @@ Das gemeinsame Modell für DXF und DWG:
 **Gemeinsamer STEP-Schreiber:** `step-text.js`, vom IGES-Übersetzer übernommen. Dessen Ausgabe ist byte-gleich (MD5 von drei Testdateien vorher/nachher).
 
 **Prüfung:**
-- **Öffentliche Beispieldatei** (ACIS 7.0, Würfel mit Kugelmulden, Kantenrundungen): richtig in Raster und HQ, Farben aus Attributen.
-- **Fahrzeug-SAT** (ACIS 5.0, 424 MB, 114 040 Spline-Flächen):
+- **Öffentliche Beispieldatei** (SAT 7.0, Würfel mit Kugelmulden, Kantenrundungen): richtig in Raster und HQ, Farben aus Attributen.
+- **Fahrzeug-SAT** (SAT 5.0, 424 MB, 114 040 Spline-Flächen):
   - Umwandlung 12 s in Node, im Browser 7 s, Laden gesamt ≈ 21 s, 476 000 Dreiecke („mittel“).
-  - Maße 6 344 × 4 340 × 2 981 mm gegen FBX 6 344 × 4 368 × 2 982 mm; das Bild entspricht der FBX.
+  - Maße 6 344 × 4 340 × 2 981 mm gegen .fbx 6 344 × 4 368 × 2 982 mm; das Bild entspricht der .fbx.
 - **DXF mit 3DSOLID:** R2000 (SAT-Text) und R2018 (SAB in ACDSDATA) ergeben dieselben 4 Körper und 44 Flächen. Würfel, Zylinder (mit Körper-Transformation), Block gedreht und skaliert liegen richtig, neben Linie und Text.
 - **DWG-Beispiele:** dieselbe Zeichnung in R14 … 2018 (SAT 1.06, SAT 4.0, SAB im Objekt, SAB im Datenspeicher) ergibt in jeder Version dieselben 3 Körper, 10 Flächen und Punkte. Eine 2007er Baugruppe aus 58 Blechteilen (Zylinder, Tori, ein elliptischer Zylinder) und eine Flächen-Datei (Extrusion, Loft, Rotation, Ellipsen-Scheibe) richtig in Raster und HQ.
 - **Visualisierungsszenen** (DWG 2010, 50 und 76 Körper, Prüfwerkzeug `tools/stepcheck` auf der Übersetzung, Stufe Mittel, vorher → nachher): offene Kanten 814 → 0 und 45 → 9, geflippte Normalen 3 209 → 78 und 13 → 3, umgeklappte Dreiecke 1 806 → 36, Flächenfehler 3 → 0; keine Fläche mehr ausgelassen. Ursachen: gewichtete Splines, Schnittkurven-Prüfung, Ersatzflächen (oben) und zwei Fehler im STEP-Kern (`docs/step-import.md` „Geschlossene B-Spline-Kurven, Nahtprüfung“).
@@ -268,7 +268,7 @@ Eigener Leser nach der öffentlichen Formatbeschreibung der DWG-Datei. Ein freie
 - **Layer aus**: Flag-Bit 2 (ab 2000), R14 ein eigenes Bit; ein negativer Farbindex heißt ebenfalls aus.
 - **Blocknamen** sind nicht eindeutig (anonyme heißen alle `*D`, `*U` …): Schlüssel `Name#HANDLE`.
 - **Bemaßungen**: Der Block ist der letzte Block-Kopf unter den bis zu 16 Handles am Ende (Bogen- und Radiusbemaßungen haben mehr Handles).
-- **ACIS Version 2** liegt mitten im Bit-Strom, nicht auf einer Byte-Grenze (`bitBytes`) – ab dem abgerundeten Byte gelesen war die Datei Datenmüll, die Körper fehlten.
+- **SAT Version 2** liegt mitten im Bit-Strom, nicht auf einer Byte-Grenze (`bitBytes`) – ab dem abgerundeten Byte gelesen war die Datei Datenmüll, die Körper fehlten.
 - **Datenspeicher** (2013+): Die Kopf-Einträge der Datensätze (Größe, 1, Handle, Versatz) stehen nach dem 48-Byte-Segmentkopf, die Daten direkt dahinter.
 - **Tabellen** (ACAD_TABLE): die Daten beginnen wie eine Einfügung (Punkt, Maßstab, Drehung, Extrusion, Attribute), der erste eigene Handle ist der Block – auch ab 2010 (dort wanderte nur der Zellinhalt in ein eigenes Objekt). Gezeichnet wird der Block `*T…`; 2007, 2010, 2013 und 2018 derselben Zeichnung gleich und wie die DXF.
 - **Einfügungen: Zahl der eigenen Objekte nur mit Attributen.** Die Formatbeschreibung führt das BL ab 2004 immer auf; tatsächlich steht es nur, wenn das Attribut-Bit gesetzt ist. Belegt an der Tabelle: ohne das BL lesen sich die Flags als 0x16 („hat Block“ + „nach unten“) und die Richtung als (1, 0, 0) – wie in der DXF. Bei einer Einfügung ohne Attribute folgt nichts mehr (der Fehler blieb unbemerkt), bei MINSERT wären Spalten und Zeilen verschoben gewesen. 61 Beispiel-DWGs: alle Einfügungen unverändert.
@@ -312,8 +312,8 @@ Eigener Leser nach der öffentlichen Formatbeschreibung der DWG-Datei. Ein freie
 - `textdbg.mjs`: Lage der Texte.
 - `harness/cadtest.js` (Browser): Laden, Layout-Knopf, Bilder Default/HQ/oben/Zoom.
 - `harness/cadscene.js`: Szene speichern/öffnen.
-- DWG: `cad/t/dwg.mjs` (lesen + bauen, Zahlen, Zeiten), `ml.mjs` (Multileader beider Formate), `dwgcmp.mjs` (DWG gegen die DXF derselben Zeichnung: Layer, Objekte, Blöcke), `dwgsolids.mjs` (Körper → STEP; mit Ausgabedatei für das Prüfwerkzeug), `mem.mjs` (Speicher je Stufe), `acisdump.mjs`/`bodies.mjs` (ACIS-Datensätze einer DWG), `inscmp.mjs` (Einfügungen alter gegen neuen Leser).
-- ACIS: `cad/t/survey.mjs` (ausgelassene Flächen/Kurven über alle Beispiele), `icfail2.mjs` (warum eine Schnittkurve abgelehnt wird: Abstand der Ecken zur Kurve), `facemap.mjs` (STEP-Fläche → ACIS-Fläche und Unterart), `rec.mjs`/`procdump.mjs` (Datensätze roh), `faceloop.mjs` (Schleifen einer Fläche). Prüfwerkzeug auf der Übersetzung: `tools/stepcheck/check.mjs` (`dwgsolids.mjs <dwg> tools/stepcheck/cad/x.stp`), Vergleich mit dem alten Stand über `--src` (Quellbaum per `git archive`).
+- DWG: `cad/t/dwg.mjs` (lesen + bauen, Zahlen, Zeiten), `ml.mjs` (Multileader beider Formate), `dwgcmp.mjs` (DWG gegen die DXF derselben Zeichnung: Layer, Objekte, Blöcke), `dwgsolids.mjs` (Körper → STEP; mit Ausgabedatei für das Prüfwerkzeug), `mem.mjs` (Speicher je Stufe), `satdump.mjs`/`bodies.mjs` (SAT-Datensätze einer DWG), `inscmp.mjs` (Einfügungen alter gegen neuen Leser).
+- SAT: `cad/t/survey.mjs` (ausgelassene Flächen/Kurven über alle Beispiele), `icfail2.mjs` (warum eine Schnittkurve abgelehnt wird: Abstand der Ecken zur Kurve), `facemap.mjs` (STEP-Fläche → SAT-Fläche und Unterart), `rec.mjs`/`procdump.mjs` (Datensätze roh), `faceloop.mjs` (Schleifen einer Fläche). Prüfwerkzeug auf der Übersetzung: `tools/stepcheck/check.mjs` (`dwgsolids.mjs <dwg> tools/stepcheck/cad/x.stp`), Vergleich mit dem alten Stand über `--src` (Quellbaum per `git archive`).
 
 **Ergebnisse (Windows-Chrome, RTX 3080):**
 - **Synthetische Datei:** deckungsgleich mit dem Referenzbild – Lage, Bögen (auch Extrusion −Z), Ellipsen, Splines, Blöcke, Schraffur mit Insel, Muster mit Bogenkante, Linientypen, Linienstärke, Texte samt Umbruch, ⌀/°/±, gedrehter Text.
@@ -323,7 +323,7 @@ Eigener Leser nach der öffentlichen Formatbeschreibung der DWG-Datei. Ein freie
 - **Große Zeichnung:** 330 000 Segmente, 1,1 s, Draufsicht von selbst, 60 fps.
 - **Szene mit Layout:** Wieder geöffnet zeigt sie dasselbe Blatt, ohne Rückfrage.
 - **DWG, öffentliche Beispiele** (47 Dateien R13–2018, darunter R2007): alle lesen und bauen ohne Fehler. Dieselbe Zeichnung in sieben Versionen gegen ihre DXF: Layer, Layouts, Blöcke und Objekte gleich bis auf Splines (s. o.) und Tabellen ab 2010.
-- **DWG 2018, Flächen-Baugruppe** (48 MB, 101 MESH, 1,25 Mio. Dreiecke – dieselbe Zahl wie die FBX): lesen 0,9 s, aufbauen 1,1 s (Node), im Browser 4,8 s bis zum Bild, Raster und HQ richtig.
+- **DWG 2018, Flächen-Baugruppe** (48 MB, 101 MESH, 1,25 Mio. Dreiecke – dieselbe Zahl wie die .fbx): lesen 0,9 s, aufbauen 1,1 s (Node), im Browser 4,8 s bis zum Bild, Raster und HQ richtig.
 - **DWG 2004** (23 MB, 94 Polyface-Netze, 619 000 Dreiecke): 4,6 s im Browser.
 - **Weitere Nutzer-Dateien** (lokal unter `tests/dwg/`, nicht im Repo): Dachziegel-Zeichnung als DWG und DXF (2 Multileader, Bemaßungen in Blöcken), 3D-Bett aus Polyface-Netzen, imperiale Beispiele (Grundriss, Maschinenbau, Tablett mit 3D-Flächen), Visualisierungsszenen mit 15–76 Volumenkörpern: alle lesen in < 0,1 s und öffnen in 1–2 s; seit der zweiten Runde ohne ausgelassene Flächen und Kanten, mit ihren Lichtern, und die Blätter zeigen die Körper als Kanten. Offen: die Sonne einer Szene. Eine `.dwf` (Plot-/Ansichtsformat, kein DWG) wird nicht gelesen.
 - **Multileader-Testdatei** (`cad/t/mlgen.py` mit dem Python-DXF-Werkzeug, Referenzbild per `ref.py`): Text mit Landung, zwei Wurzeln mit Spline-Linien und Punkt-Pfeilen, Positionsnummer als Block mit Attribut – deckungsgleich bis auf die Rundung der Splines.

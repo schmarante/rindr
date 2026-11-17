@@ -144,7 +144,7 @@ export class PropertiesPanel {
     }
 
     // IFC (BIM): class, name, GlobalId …, material, property sets and quantities – loaded from the web-ifc worker
-    // on selection; scrollable (Revit elements have a dozen sets)
+    // on selection; scrollable (some BIM exporters elements have a dozen sets)
     _bimSection(entry, bim) {
         const box = el('div', 'mt-1.5 max-h-[40cqh] overflow-auto border-t border-white/10 pt-1.5 select-text');
         box.append(el('div', 'text-white/40', t('bim.props.loading')));

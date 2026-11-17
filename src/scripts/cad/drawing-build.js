@@ -1,8 +1,8 @@
 // Drawing model (drawing.js) → scene data (CAD worker): one node per layer; per node the lines (by width), the flat
 // fills (hatches, filled polylines, 2D solids, wipeouts) and the texts – drawn over the picture by cad/annotations.js in
 // raster and HQ – and the 3D surfaces (3D faces, polyface/polygon meshes, MESH, thickness) as real meshes with a colour
-// material. ACIS bodies are collected for the STEP way (stage 2). Model space, or a layout: its paper sheet, its own
-// objects and the model seen through its viewports (scaled, turned, clipped to the viewport; 3D as wireframe – ACIS
+// material. SAT bodies are collected for the STEP way (stage 2). Model space, or a layout: its paper sheet, its own
+// objects and the model seen through its viewports (scaled, turned, clipped to the viewport; 3D as wireframe – SAT
 // bodies with their edges).
 //
 // Output coordinates: millimetres, +Y up (the drawing's +Z), relative to `origin` (Float32 keeps its precision for
@@ -15,8 +15,8 @@ import { TextAtlas } from './text-atlas.js';
 import { creaseCornerNormals } from '../crease-normals.js';
 import { boxProject } from '../box-project.js';
 import earcut from 'earcut';
-import { AcisFile } from '../acis/acis-file.js';
-import { AcisStep } from '../acis/acis-to-step.js';
+import { SatFile } from '../sat/sat-file.js';
+import { SatStep } from '../sat/sat-to-step.js';
 
 const DEG = Math.PI / 180;
 const WHITE = 0xffffff, BLACK = 0x000000;
@@ -93,9 +93,9 @@ class Builder {
         this.fills = new Map();    // node → { pos, col, idx }
         this.texts = new Map();    // node → { pos, uv, col, idx }
         this.meshes = new Map();   // node|rgb → { node, rgb, pos, idx }
-        this.acis = [];
+        this.satBodies = [];
         this.lights = [];
-        this.wires = new Map();   // ACIS object → its edges as polylines (layout viewports)
+        this.wires = new Map();   // SAT object → its edges as polylines (layout viewports)
         this.atlas = new TextAtlas();
         this.counts = { segments: 0, glyphs: 0, triangles: 0, truncated: false, denseHatches: 0, noFont: 0, xrefs: 0, missingBlocks: 0 };
         this.unit = d.unitMm;
@@ -626,23 +626,23 @@ class Builder {
             case 'VIEWPORT': break;
             case 'LIGHT': this.light(e, ctx); break;
             default:
-                if (e.acis && ctx.wire) { this.acisWire(e, ctx); break; }
-                if (e.acis) { this.acis.push({ entity: e, matrix: ctx.m, node: this.nodeOf(e, ctx), rgb: this.rgbOf(e, ctx), wire: ctx.wire }); break; }
+                if (e.satData && ctx.wire) { this.satWire(e, ctx); break; }
+                if (e.satData) { this.satBodies.push({ entity: e, matrix: ctx.m, node: this.nodeOf(e, ctx), rgb: this.rgbOf(e, ctx), wire: ctx.wire }); break; }
                 this.d.skip(e.type);
         }
     }
 
-    // an ACIS body seen through a layout's viewport: its edges as lines (wireframe, like the 3D surfaces there); the
+    // an SAT body seen through a layout's viewport: its edges as lines (wireframe, like the 3D surfaces there); the
     // polylines are kept per object – several viewports may show it
-    acisWire(e, ctx) {
+    satWire(e, ctx) {
         let lines = this.wires.get(e);
         if (!lines) {
             lines = [];
-            const a = e.acis;
-            const bytes = a.sab || (a.sat ? new TextEncoder().encode(a.sat) : this.d.acisBlobs.get(a.ref));
+            const a = e.satData;
+            const bytes = a.sab || (a.sat ? new TextEncoder().encode(a.sat) : this.d.satBlobs.get(a.ref));
             try {
-                const file = new AcisFile(bytes);
-                const c = new AcisStep();
+                const file = new SatFile(bytes);
+                const c = new SatStep();
                 for (const bi of c.bodiesOf(file)) lines.push(...c.wire(file, bi));
             } catch { this.d.skip(`${e.type} (wireframe)`); }
             this.wires.set(e, lines);
@@ -1039,9 +1039,9 @@ class Builder {
             };
         });
         // only 2D: every point in one plane parallel to the ground and no 3D surfaces
-        const is2D = !meshes.length && !this.acis.length && !empty && max[1] - min[1] <= Math.max(max[0] - min[0], max[2] - min[2]) * 1e-6;
+        const is2D = !meshes.length && !this.satBodies.length && !empty && max[1] - min[1] <= Math.max(max[0] - min[0], max[2] - min[2]) * 1e-6;
         return {
-            nodes: this.nodes, origin, lines, fills, texts, atlas, geometries, meshes, acis: this.acis, lights,
+            nodes: this.nodes, origin, lines, fills, texts, atlas, geometries, meshes, satBodies: this.satBodies, lights,
             bounds: empty ? null : [...min, ...max], is2D, counts: this.counts, skipped: this.d.skipped, unit: u,
         };
     }

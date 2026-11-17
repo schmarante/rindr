@@ -1,4 +1,4 @@
-// C4D reader (.c4d) – own analysis of the file format (no public description; no third-party code).
+// .c4d reader (.c4d) – own analysis of the file format (no public description; no third-party code).
 //
 // File: "?C4DC4D6" (8 bytes), u32 program version (e.g. 18057), then one stream of tokens, big-endian:
 //   0x01 chunk start: u32 id, u32 version      0x02 chunk end
@@ -48,7 +48,7 @@ export function isC4dFile(buffer) {
  * @returns {{ version: number, objects: object[], materials: object[], unsupported: { name: string, count: number }[] }}
  */
 export function parseC4d(buffer, onProgress = () => {}) {
-    if (!isC4dFile(buffer)) throw new Error('not a C4D file');
+    if (!isC4dFile(buffer)) throw new Error('not a .c4d file');
     const reader = new Reader(buffer, onProgress);
     const root = reader.tree();
     return interpret(root, reader.version, reader.buf);
@@ -114,7 +114,7 @@ class Reader {
         const n = dv.getUint32(p);
         const start = p + 4;
         this.p = start + n;
-        if (this.p > buf.length) throw new Error(`C4D: block beyond the end of the file at ${p}`);
+        if (this.p > buf.length) throw new Error(`.c4d: block beyond the end of the file at ${p}`);
         switch (t) {
             case 0x82: case 0x83: {
                 let s = '';
@@ -126,7 +126,7 @@ class Reader {
                 if (n === 14 && (buf[start] === 0x61)) return { mark: this.mark(start) };   // "agoal1" / "alias2"
                 return { mem: { offset: start, length: n } };
             default:
-                throw new Error(`C4D: unknown token 0x${t.toString(16)} at ${p - 1}`);
+                throw new Error(`.c4d: unknown token 0x${t.toString(16)} at ${p - 1}`);
         }
     }
 
@@ -164,7 +164,13 @@ class Reader {
 const kid = (node, id) => node?.kids.find(k => k.id === id) ?? null;
 const kidsOf = (node, id) => node?.kids.filter(k => k.id === id) ?? [];
 // the list nodes of a 110100 list (its 110069 header left out)
-const listItems = list => (list ? list.kids.filter(k => k.id !== 110069) : []);
+// – files of other programs' exporters (R13, saved through the exchange library) nest the list once more: 110100 >
+// 110100 > nodes, without header; read through
+const listItems = list => {
+    if (!list) return [];
+    const items = list.kids.filter(k => k.id !== 110069);
+    return items.length === 1 && items[0].id === 110100 ? listItems(items[0]) : items;
+};
 
 // parameter container of a node's 110050: key → value (nested containers as Map)
 function container(data) {

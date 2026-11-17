@@ -1,5 +1,5 @@
-// Lean reader for binary FBX (own implementation after the public format description: node records with typed
-// properties, zlib-compressed arrays). Used for static FBX files instead of three.js' FBXLoader, which expands
+// Lean reader for binary .fbx (own implementation after the public format description: node records with typed
+// properties, zlib-compressed arrays). Used for static .fbx files instead of three.js' FBXLoader, which expands
 // every polygon corner into plain JS arrays – a 650 MB CAD export needed > 4 GB of JS heap and crashed the tab
 // (Chrome: all JS heaps of a tab share one 4 GB area, typed array data does not count).
 //
@@ -13,7 +13,7 @@
 
 const MAGIC = 'Kaydara FBX Binary  \0';
 
-/** Is this a binary FBX? (ASCII FBX goes to three.js' loader) */
+/** Is this a binary .fbx? (ASCII .fbx goes to three.js' loader) */
 export function isBinaryFbx(buffer) {
     if (buffer.byteLength < 27) return false;
     const head = new Uint8Array(buffer, 0, 21);
@@ -23,7 +23,7 @@ export function isBinaryFbx(buffer) {
 
 // --- node tree ---
 
-/** Node tree of a binary FBX: { name, props, children }; array properties are { array: type, len, enc, off, clen } */
+/** Node tree of a binary .fbx: { name, props, children }; array properties are { array: type, len, enc, off, clen } */
 export function readTree(buffer) {
     const view = new DataView(buffer);
     const bytes = new Uint8Array(buffer);
@@ -60,7 +60,7 @@ export function readTree(buffer) {
                     p += 12 + clen;
                     break;
                 }
-                default: throw new Error(`FBX: unknown property type ${t}`);
+                default: throw new Error(`.fbx: unknown property type ${t}`);
             }
         }
         const node = { name, props, children: [] };
@@ -110,7 +110,7 @@ async function arrayOf(buffer, desc, inflate) {
     if (!desc?.array) return null;
     const T = TYPED[desc.array];
     const bytes = desc.enc === 1 ? await inflate(new Uint8Array(buffer, desc.off, desc.clen)) : new Uint8Array(buffer.slice(desc.off, desc.off + desc.clen));
-    if (bytes.byteLength !== desc.len * SIZE[desc.array]) throw new Error('FBX: array size mismatch');
+    if (bytes.byteLength !== desc.len * SIZE[desc.array]) throw new Error('.fbx: array size mismatch');
     return bytes.byteOffset % SIZE[desc.array] === 0 ? new T(bytes.buffer, bytes.byteOffset, desc.len) : new T(bytes.slice().buffer);
 }
 
@@ -267,7 +267,7 @@ export function describeScene(tree) {
     // lights (the viewer creates scene lights): transform and parent like a model, look-at target, the attribute's
     // LightType (0 point, 1 directional, 2 spot, 3 area – AreaLightShape 0 rectangle, 1 sphere; 4 volume → point),
     // Color, Intensity (percent), CastLightOnObject (0 = off), Inner/OuterAngle (degrees, whole cone), DecayType (0 none,
-    // 1 linear, 2 quadratic, 3 cubic). An FBX light shines along its local −Y.
+    // 1 linear, 2 quadratic, 3 cubic). An .fbx light shines along its local −Y.
     const lights = lightModels.map(([oid, o]) => {
         const attr = (childrenOf.get(oid) || []).map(c => byId.get(c.id)).find(a => a?.name === 'NodeAttribute');
         const a = attr ? properties70(attr) : {};
@@ -295,7 +295,7 @@ export function describeScene(tree) {
         // animation of cameras and lights alone (exporters key them) leaves the models still – no reason for FBXLoader
         if (o.name === 'AnimationCurveNode' && (parentsOf.get(id(o.props[0])) || []).some(p => !stillModels.has(p))) hasAnimation = true;
     }
-    // exporting program (header): Blender writes light colours linear and the intensity as its own value (watts, sun in
+    // exporting program (header): the modeller writes light colours linear and the intensity as its own value (watts, sun in
     // W/m²) – other programs sRGB colours and a relative intensity
     const headerExt = top('FBXHeaderExtension');
     const creator = String(child(headerExt, 'Creator')?.props[0] ?? top('Creator')?.props[0] ?? '');
@@ -313,7 +313,7 @@ export function describeScene(tree) {
 
 // small matrix helpers (column-major 4×4 like three.js) for the geometric transform
 const deg = Math.PI / 180;
-function rotationZYX([x, y, z]) {   // FBX default order eXYZ = intrinsic Z·Y·X
+function rotationZYX([x, y, z]) {   // .fbx default order eXYZ = intrinsic Z·Y·X
     const cx = Math.cos(x * deg), sx = Math.sin(x * deg), cy = Math.cos(y * deg), sy = Math.sin(y * deg), cz = Math.cos(z * deg), sz = Math.sin(z * deg);
     // R = Rz · Ry · Rx (rows)
     return [
@@ -394,7 +394,7 @@ export async function buildGeometry(buffer, node, inflate, geometric = null) {
         let v = polys[c];
         const last = v < 0;
         if (last) v = ~v;
-        if (v < 0 || v >= nv) throw new Error('FBX: invalid polygon index');
+        if (v < 0 || v >= nv) throw new Error('.fbx: invalid polygon index');
         const ni = element(normalLayer, c, p, v), ui = element(uvLayer, c, p, v), ci = element(colorLayer, c, p, v);
         let nx = 0, ny = 0, nz = 0;
         if (nvals && ni >= 0) { nx = nvals[ni * 3]; ny = nvals[ni * 3 + 1]; nz = nvals[ni * 3 + 2]; }
